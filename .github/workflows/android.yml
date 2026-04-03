@@ -1,0 +1,87 @@
+name: Android
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: "28.2.13676358"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build host Rust (for uniffi-bindgen)
+        run: cargo build -p mango_core --release
+
+      - name: Generate Kotlin bindings
+        run: |
+          cargo run -p uniffi-bindgen -- generate \
+            --library target/release/libmango_core.so \
+            --language kotlin \
+            --out-dir android/app/src/main/java \
+            --no-format \
+            --config rust/uniffi.toml
+
+      - name: Cross-compile Rust for Android (arm64)
+        run: |
+          cargo ndk -o android/app/src/main/jniLibs -P 28 \
+            -t arm64-v8a \
+            build -p mango_core --release
+
+      - name: Bundle libc++_shared.so (required by ONNX Runtime)
+        run: |
+          NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          cp "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+            android/app/src/main/jniLibs/arm64-v8a/
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mango-android-${{ github.sha }}
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+      - name: Attach APK to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/app/build/outputs/apk/release/*.apk
