@@ -1,0 +1,62 @@
+name: Mango
+options:
+  bundleIdPrefix: dev.disobey.mango
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  Textual:
+    url: https://github.com/gonzalezreal/textual.git
+    exactVersion: "0.3.1"
+  HighlightSwift:
+    url: https://github.com/appstefan/highlightswift.git
+    from: "1.1.0"
+  onnxruntime:
+    url: https://github.com/microsoft/onnxruntime-swift-package-manager
+    exactVersion: "1.24.2"
+
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: dev.disobey.mango
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    SWIFT_VERSION: 5.9
+  configs:
+    Debug:
+      PRODUCT_BUNDLE_IDENTIFIER: dev.disobey.mango.dev
+
+targets:
+  Mango:
+    type: application
+    platform: iOS
+    sources:
+      - path: Mango
+        excludes:
+          - "Resources/**"
+      - path: Mango/Resources
+        type: folder
+        buildPhase: resources
+      - path: Bindings
+        excludes:
+          - "*.h"
+          - "*.modulemap"
+    settings:
+      base:
+        INFOPLIST_FILE: Mango/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - framework: Frameworks/MangoCore.xcframework
+        embed: false
+      - package: Textual
+        product: Textual
+      - package: HighlightSwift
+        product: HighlightSwift
+      - package: onnxruntime
+        product: OnnxRuntimeBindings
+
+schemes:
+  Mango:
+    build:
+      targets:
+        Mango: all

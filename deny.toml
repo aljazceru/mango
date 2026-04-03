@@ -1,0 +1,38 @@
+[advisories]
+vulnerability = "deny"
+unmaintained = "warn"
+
+[bans]
+multiple-versions = "warn"
+deny = [
+    { name = "sentry" },
+    { name = "sentry-core" },
+    { name = "amplitude" },
+    { name = "datadog" },
+    { name = "newrelic" },
+    { name = "mixpanel" },
+    { name = "segment" },
+    { name = "rudderstack" },
+    { name = "posthog" },
+    { name = "opentelemetry" },
+    { name = "tracing-opentelemetry" },
+]
+
+[licenses]
+unlicensed = "deny"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "OpenSSL",
+    "Zlib",
+    "BSL-1.0",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

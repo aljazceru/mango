@@ -1,0 +1,6 @@
+// AGENTS HIDDEN: pub mod agents;
+pub mod chat;
+pub mod documents;
+pub mod home;
+pub mod onboarding;
+pub mod settings;

@@ -1,0 +1,3 @@
+[workspace]
+members = ["rust", "uniffi-bindgen", "desktop/iced"]
+resolver = "2"
