@@ -1,0 +1,50 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+*.png
+# Allow tracked app icons
+!mango-icon.png
+!android/app/src/main/res/mipmap-hdpi/*.png
+!android/app/src/main/res/mipmap-mdpi/*.png
+!android/app/src/main/res/mipmap-xhdpi/*.png
+!android/app/src/main/res/mipmap-xxhdpi/*.png
+!android/app/src/main/res/mipmap-xxxhdpi/*.png
+!ios/Mango/Mango/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+# Editor swap files
+*.swp
+*.swo
+*~
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Compiled native libraries (build outputs, not source)
+build-output/**/*.dylib
+build-output/**/*.so
+build-output/**/*.a
+.fastembed_cache/
+CLAUDE.md
+rmp.toml
+target/
+build/
+android/local.properties
+android/app/build/
+android/app/src/main/jniLibs/
+android/.gradle/
+android/.kotlin/
+# iOS/Xcode generated files
+ios/Frameworks/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+rmp/
+# Staging directories (xcframework build)
+staging/
+.planning/
+.claude/
+# Staged artifacts waiting for manual review before deletion
+to-delete/
+# Note: flake.lock is intentionally NOT ignored -- it pins exact dependency versions
+SECURITY_REVIEW.md
