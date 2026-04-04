@@ -1270,19 +1270,20 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         })
         .unwrap_or_default();
 
+    // Hoist embedding: used by both RAG context and memory injection (computed once).
+    let query_emb = actor_state
+        .embedding_provider
+        .embed(vec![final_text.clone()]);
+
     // Phase 8: RAG context injection (D-04, D-05, D-06).
-    // If documents are attached to this conversation, embed the user message,
-    // search the vector index for relevant chunks, and inject them into the system prompt.
+    // If documents are attached to this conversation, search the vector index for
+    // relevant chunks and inject them into the system prompt.
     let mut rag_doc_count: Option<u32> = None;
-    let system_prompt = if !actor_state
+    let system_prompt_after_rag = if !actor_state
         .app_state
         .current_conversation_attached_docs
         .is_empty()
     {
-        // Embed query text synchronously (single sentence -- fast path < 10ms for NullProvider)
-        let query_emb = actor_state
-            .embedding_provider
-            .embed(vec![final_text.clone()]);
         if !query_emb.is_empty() {
             // Search the vector index for top-k chunks
             match actor_state
@@ -1326,6 +1327,44 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         }
     } else {
         base_system_prompt
+    };
+
+    // Phase 21: Memory injection (MEM-03).
+    // Search shared usearch index for memories relevant to the user's message.
+    // Keys that hit the memories table are memory content; chunk keys are silently ignored.
+    let system_prompt = if !query_emb.is_empty() {
+        match actor_state
+            .vector_index
+            .search(&query_emb, memory::retrieve::DEFAULT_MEMORY_TOP_K)
+        {
+            Ok(results) => {
+                let keys: Vec<i64> = results.iter().map(|(k, _)| *k as i64).collect();
+                let memory_hits = persistence::queries::get_memory_content_by_usearch_keys(
+                    actor_state.db.conn(),
+                    &keys,
+                )
+                .unwrap_or_default();
+                if !memory_hits.is_empty() {
+                    let mem_results: Vec<memory::retrieve::MemoryResult> = memory_hits
+                        .into_iter()
+                        .zip(results.iter())
+                        .map(|((_, content), (_, score))| memory::retrieve::MemoryResult {
+                            content,
+                            score: *score,
+                        })
+                        .collect();
+                    memory::retrieve::build_system_with_memories(
+                        &system_prompt_after_rag,
+                        &mem_results,
+                    )
+                } else {
+                    system_prompt_after_rag
+                }
+            }
+            Err(_) => system_prompt_after_rag,
+        }
+    } else {
+        system_prompt_after_rag
     };
 
     // Store pending RAG doc count for StreamDone to attach to the assistant message
