@@ -111,6 +111,19 @@ pub fn sidebar_view<'a>(
 
     // AGENTS HIDDEN: agents_btn removed until polished
 
+    let memories_btn = button(
+        container(text("Memories").size(13))
+            .padding(Padding::from([4u16, 12])),
+    )
+    .on_press(Message::OpenMemories)
+    .padding(0)
+    .width(Length::Fill)
+    .style(move |_theme, _status| button::Style {
+        background: None,
+        text_color: vc.text_dim,
+        ..Default::default()
+    });
+
     let docs_btn = button(
         container(text("Documents").size(13))
             .padding(Padding::from([4u16, 12])),
@@ -141,6 +154,9 @@ pub fn sidebar_view<'a>(
 
     let bottom_nav = column![
         // AGENTS HIDDEN: agents_btn entry removed until polished
+        container(memories_btn)
+            .padding(Padding { top: 0.0, right: 8.0, bottom: 4.0, left: 8.0 })
+            .width(Length::Fill),
         container(docs_btn)
             .padding(Padding { top: 0.0, right: 8.0, bottom: 4.0, left: 8.0 })
             .width(Length::Fill),

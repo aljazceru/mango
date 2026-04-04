@@ -1,7 +1,7 @@
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
 
-use mango_core::{AppAction, AppState, MemorySummary, Screen};
+use mango_core::{AppAction, AppState, MemorySummary};
 
 use crate::Message;
 

@@ -68,6 +68,9 @@ fun MainApp(
                 onRename = { id, title -> manager.dispatch(AppAction.RenameConversation(id = id, title = title)) },
                 topBarActions = {
                     // AGENTS HIDDEN: TextButton for Agents removed until polished
+                    TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Memories)) }) {
+                        Text("Memories")
+                    }
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Documents)) }) {
                         Text("RAG")
                     }
@@ -79,6 +82,13 @@ fun MainApp(
         }
         is Screen.Documents -> {
             DocumentLibraryScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
+        is Screen.Memories -> {
+            MemoryScreen(
                 appState = state,
                 onDispatch = { action -> manager.dispatch(action) },
                 onBack = { manager.dispatch(AppAction.PopScreen) }
