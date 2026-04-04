@@ -862,3 +862,35 @@ pub fn delete_memory(conn: &Connection, memory_id: &str) -> Result<(), Persisten
         .execute(rusqlite::params![memory_id])?;
     Ok(())
 }
+
+/// Return the content of memories whose usearch_key is in `keys`.
+///
+/// Returns `Vec<(usearch_key, content)>` pairs. Missing keys are silently omitted.
+/// If `keys` is empty, returns `Ok(vec![])` immediately without a DB query.
+pub fn get_memory_content_by_usearch_keys(
+    conn: &Connection,
+    keys: &[i64],
+) -> Result<Vec<(i64, String)>, PersistenceError> {
+    if keys.is_empty() {
+        return Ok(vec![]);
+    }
+    let placeholders: String = keys
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT usearch_key, content FROM memories WHERE usearch_key IN ({})",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = keys
+        .iter()
+        .map(|k| k as &dyn rusqlite::types::ToSql)
+        .collect();
+    let rows = stmt
+        .query_map(params.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
