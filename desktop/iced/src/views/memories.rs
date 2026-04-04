@@ -152,6 +152,7 @@ fn build_memory_row<'a>(
             .size(14)
             .padding(Padding::from([6u16, 8]));
 
+        // Save dispatches AppAction::UpdateMemory via MemorySaveEdit handler in update()
         let save_btn = button(text("Save").size(12).color(bg))
             .on_press(Message::MemorySaveEdit)
             .padding(Padding::from([4u16, 10]))
@@ -211,6 +212,7 @@ fn build_memory_row<'a>(
             a: 0.15,
         };
 
+        // Delete dispatches AppAction::DeleteMemory via MemoryConfirmDelete handler in update()
         let delete_id = memory_id.clone();
         let delete_btn = button(text("Delete").size(12))
             .on_press(Message::MemoryConfirmDelete(delete_id))
