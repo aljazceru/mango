@@ -166,7 +166,7 @@ pub fn agent_list_view<'a>(
 }
 
 fn build_session_row<'a>(session: &'a AgentSessionSummary, vc: crate::theme::ViewColors) -> Element<'a, Message> {
-    let status_col = status_color(&session.status, vc);
+    let status_col = status_color(&session.status, &vc);
     let status_badge = container(
         text(&session.status).size(11).color(status_col),
     )
@@ -254,7 +254,7 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
         ("Agent Session", "unknown")
     };
 
-    let status_col = status_color(status_str, vc);
+    let status_col = status_color(status_str, &vc);
     let status_badge = container(
         text(status_str).size(12).color(status_col),
     )
@@ -427,10 +427,35 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
 }
 
 fn build_step_row<'a>(step: &'a AgentStepSummary, vc: crate::theme::ViewColors) -> Element<'a, Message> {
+    let muted = vc.muted;
+    let secondary_surface = vc.secondary_surface;
+
+    // Final answer steps get distinct full-text display
+    if step.action_type == "final_answer" {
+        let answer_text = step.result_snippet.as_deref().unwrap_or("");
+        let col_children: Vec<Element<'_, Message>> = vec![
+            text("Final Answer").size(12).color(vc.accent).into(),
+            text(answer_text).size(14).into(),
+        ];
+        return container(
+            column(col_children).spacing(6),
+        )
+        .padding(Padding::from([8u16, 12]))
+        .width(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(secondary_surface)),
+            border: Border {
+                radius: 5.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into();
+    }
+
     let step_label = format!("#{}", step.step_number);
     let type_label = action_type_label(&step.action_type);
 
-    let muted = vc.muted;
     let surface = vc.surface;
     let step_num = container(text(step_label).size(12).color(muted))
         .padding(Padding::from([2u16, 6]))
@@ -480,6 +505,20 @@ fn build_step_row<'a>(step: &'a AgentStepSummary, vc: crate::theme::ViewColors) 
 
     let mut col_children: Vec<Element<'_, Message>> = vec![header_with_status.into()];
 
+    // Tool input (NEW: display truncated tool input below header)
+    if let Some(tool_input) = &step.tool_input {
+        if !tool_input.is_empty() {
+            let display = if tool_input.len() > 200 {
+                format!("{}...", &tool_input[..197])
+            } else {
+                tool_input.clone()
+            };
+            col_children.push(
+                text(display).size(12).color(muted).into(),
+            );
+        }
+    }
+
     if let Some(snippet) = &step.result_snippet {
         if !snippet.is_empty() {
             // Truncate to 200 chars (already done server-side, but cap here too)
@@ -494,7 +533,6 @@ fn build_step_row<'a>(step: &'a AgentStepSummary, vc: crate::theme::ViewColors) 
         }
     }
 
-    let secondary_surface = vc.secondary_surface;
     container(
         column(col_children).spacing(4),
     )

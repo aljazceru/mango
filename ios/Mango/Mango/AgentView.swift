@@ -224,38 +224,29 @@ private struct AgentStepRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text("#\(step.stepNumber)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    .background(Color(.systemGray5))
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-                Text(actionLabel)
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    .background(Color.blue.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-                if let toolName = step.toolName {
-                    Text(toolName)
-                        .font(.caption)
-                        .foregroundStyle(.primary)
+            if step.actionType == "final_answer" {
+                VStack(alignment: .leading) {
+                    Text("Final Answer").font(.caption).bold()
+                    Text(step.resultSnippet ?? "").font(.body)
                 }
-                Spacer()
-                if step.status == "failed" {
-                    Text("FAILED")
-                        .font(.caption2)
-                        .foregroundStyle(.red)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Step \(step.stepNumber)").font(.caption).bold()
+                        if let toolName = step.toolName {
+                            Text(toolName).font(.caption).foregroundColor(.blue)
+                        }
+                        Spacer()
+                        Text(step.status).font(.caption2)
+                            .foregroundColor(step.status == "completed" ? .green : step.status == "failed" ? .red : .orange)
+                    }
+                    if let input = step.toolInput {
+                        Text(input).font(.caption).foregroundColor(.secondary).lineLimit(3)
+                    }
+                    if let result = step.resultSnippet {
+                        Text(result).font(.caption).foregroundColor(.secondary).lineLimit(3)
+                    }
                 }
-            }
-            if let snippet = step.resultSnippet, !snippet.isEmpty {
-                Text(snippet)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
             }
         }
         .padding(.vertical, 4)

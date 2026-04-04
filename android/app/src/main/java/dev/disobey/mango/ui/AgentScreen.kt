@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import dev.disobey.mango.ui.theme.*
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.disobey.mango.rust.AgentSessionSummary
@@ -344,59 +345,27 @@ private fun AgentStepItem(step: AgentStepSummary) {
                 .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                // Step number badge
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = MaterialTheme.shapes.small
-                ) {
-                    Text(
-                        text = "#${step.stepNumber}",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                    )
+            if (step.actionType == "final_answer") {
+                Column {
+                    Text("Final Answer", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    Text(step.resultSnippet ?: "", style = MaterialTheme.typography.bodyMedium)
                 }
-                // Action type badge
-                Surface(
-                    color = (if (isDark) DarkAgentCompleted else LightAgentCompleted).copy(alpha = 0.1f),
-                    shape = MaterialTheme.shapes.small
-                ) {
-                    Text(
-                        text = actionTypeLabel(step.actionType),
-                        fontSize = 10.sp,
-                        color = if (isDark) DarkAgentCompleted else LightAgentCompleted,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                    )
-                }
-                // Tool name
-                step.toolName?.let { toolName ->
-                    Text(
-                        text = toolName,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                if (step.status == "failed") {
-                    Text(
-                        text = "FAILED",
-                        fontSize = 10.sp,
-                        color = if (isDark) DarkAgentFailed else LightAgentFailed
-                    )
-                }
-            }
-            step.resultSnippet?.let { snippet ->
-                if (snippet.isNotEmpty()) {
-                    Text(
-                        text = snippet,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2
-                    )
+            } else {
+                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Step ${step.stepNumber}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        step.toolName?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
+                        Spacer(modifier = Modifier.weight(1f))
+                        Text(step.status, style = MaterialTheme.typography.labelSmall,
+                            color = when(step.status) { "completed" -> Color.Green; "failed" -> Color.Red; else -> Color(0xFFFFA500) })
+                    }
+                    step.toolInput?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
+                    step.resultSnippet?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
         }
