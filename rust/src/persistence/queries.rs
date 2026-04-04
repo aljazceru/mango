@@ -863,6 +863,20 @@ pub fn delete_memory(conn: &Connection, memory_id: &str) -> Result<(), Persisten
     Ok(())
 }
 
+/// Update the content of a memory by ID.
+///
+/// Does NOT re-embed the vector -- the existing usearch entry becomes stale.
+/// This is a deliberate v1 simplification; re-embedding is deferred.
+pub fn update_memory(
+    conn: &Connection,
+    memory_id: &str,
+    new_content: &str,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached("UPDATE memories SET content = ?2 WHERE id = ?1")?
+        .execute(rusqlite::params![memory_id, new_content])?;
+    Ok(())
+}
+
 /// Return the content of memories whose usearch_key is in `keys`.
 ///
 /// Returns `Vec<(usearch_key, content)>` pairs. Missing keys are silently omitted.

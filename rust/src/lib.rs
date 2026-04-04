@@ -95,10 +95,31 @@ pub struct AgentStepSummary {
     pub action_type: String,
     /// Name of the tool called, if this is a tool_call step.
     pub tool_name: Option<String>,
+    /// First ~200 chars of the tool call input payload, if this is a tool_call step (per D-06).
+    pub tool_input: Option<String>,
     /// First 200 chars of the result, if available.
     pub result_snippet: Option<String>,
     /// One of: "pending", "completed", "failed"
     pub status: String,
+}
+
+/// A memory entry for the UI memory management screen (per D-14).
+///
+/// Carried in AppState.memories when the user navigates to Screen::Memories.
+/// Maps from MemoryRow with display-safe fields.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct MemorySummary {
+    pub id: String,
+    /// Full content of the extracted fact (memories are short enough to carry fully).
+    pub content: String,
+    /// First ~100 chars for list display (per D-01).
+    pub content_preview: String,
+    /// Unix timestamp (millis) when memory was created.
+    pub created_at: i64,
+    /// Title of the source conversation, if the conversation still exists.
+    pub conversation_title: Option<String>,
+    /// The usearch HNSW index key -- needed to remove the vector on delete without extra DB query.
+    pub usearch_key: i64,
 }
 
 /// A single message in the active conversation, for UI rendering.
@@ -220,6 +241,9 @@ pub struct AppState {
     /// Active: real provider running. Degraded: init failed, NullEmbeddingProvider in use.
     /// Unavailable: no provider supplied by design.
     pub embedding_status: EmbeddingStatus,
+    // Phase 23 additions:
+    /// Memory summaries loaded on demand when user navigates to Screen::Memories (per D-14).
+    pub memories: Vec<MemorySummary>,
 }
 
 impl Default for AppState {
@@ -252,6 +276,7 @@ impl Default for AppState {
             attestation_interval_minutes: 15,
             global_system_prompt: None,
             embedding_status: EmbeddingStatus::Active,
+            memories: vec![],
         }
     }
 }
@@ -330,6 +355,8 @@ pub enum Screen {
     Documents,
     /// Agent session list -- shown when user navigates to the agent management screen (Phase 9).
     Agents,
+    /// Memory management screen -- view, edit, delete stored memories (Phase 23, per D-09).
+    Memories,
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
@@ -486,6 +513,13 @@ pub enum AppAction {
     /// Set the global default system prompt used when a conversation has no per-conversation instructions.
     /// None or empty string clears the setting.
     SetGlobalSystemPrompt { prompt: Option<String> },
+    // Phase 23 additions: memory management actions
+    /// Load all memories into AppState.memories for the memory management screen (MEM-04).
+    ListMemories,
+    /// Delete a memory from both SQLite and the usearch vector index (MEM-05).
+    DeleteMemory { memory_id: String },
+    /// Update a memory's text content in SQLite (MEM-06). Does NOT re-embed.
+    UpdateMemory { memory_id: String, content: String },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -2030,11 +2064,18 @@ fn handle_load_agent_session(actor_state: &mut ActorState, session_id: &str) {
                 chars
             });
 
+            let tool_input = if step.action_type == "tool_call" {
+                Some(step.action_payload.chars().take(200).collect())
+            } else {
+                None
+            };
+
             AgentStepSummary {
                 id: step.id.clone(),
                 step_number: step.step_number as u32,
                 action_type: step.action_type.clone(),
                 tool_name,
+                tool_input,
                 result_snippet,
                 status: step.status.clone(),
             }
@@ -2042,6 +2083,33 @@ fn handle_load_agent_session(actor_state: &mut ActorState, session_id: &str) {
         .collect();
 
     actor_state.app_state.current_agent_session_id = Some(session_id.to_string());
+}
+
+/// Load all memory rows from SQLite and map them to MemorySummary records.
+///
+/// Used by both PushScreen::Memories and ListMemories handlers to avoid
+/// duplicating the mapping logic.
+fn load_memory_summaries(actor_state: &ActorState) -> Vec<MemorySummary> {
+    let rows = persistence::queries::list_memories(actor_state.db.conn()).unwrap_or_default();
+    rows.into_iter()
+        .map(|row| {
+            let preview: String = row.content.chars().take(100).collect();
+            let title = actor_state
+                .app_state
+                .conversations
+                .iter()
+                .find(|c| c.id == row.conversation_id)
+                .map(|c| c.title.clone());
+            MemorySummary {
+                id: row.id,
+                content: row.content,
+                content_preview: preview,
+                created_at: row.created_at,
+                conversation_title: title,
+                usearch_key: row.usearch_key,
+            }
+        })
+        .collect()
 }
 
 /// Emit state snapshot to shared RwLock and update channel.
@@ -2451,6 +2519,10 @@ impl FfiApp {
                                     .router
                                     .screen_stack
                                     .push(screen.clone());
+                                // Auto-load memories when navigating to the Memories screen (per Pitfall 4)
+                                if screen == Screen::Memories {
+                                    actor_state.app_state.memories = load_memory_summaries(&actor_state);
+                                }
                                 actor_state.app_state.router.current_screen = screen;
                             }
                             AppAction::PopScreen => {
@@ -3650,6 +3722,35 @@ impl FfiApp {
                                         );
                                         actor_state.app_state.global_system_prompt = None;
                                     }
+                                }
+                            }
+
+                            // Phase 23 additions: memory management handlers
+                            AppAction::ListMemories => {
+                                actor_state.app_state.memories = load_memory_summaries(&actor_state);
+                            }
+
+                            AppAction::DeleteMemory { memory_id } => {
+                                // Look up usearch_key from already-loaded AppState (no extra DB query)
+                                let usearch_key = actor_state.app_state.memories
+                                    .iter()
+                                    .find(|m| m.id == memory_id)
+                                    .map(|m| m.usearch_key);
+
+                                if let Some(key) = usearch_key {
+                                    let _ = actor_state.vector_index.remove(key as u64);
+                                    let _ = actor_state.vector_index.save(); // CRITICAL: persist to disk (Pitfall 1)
+                                }
+                                let _ = persistence::queries::delete_memory(actor_state.db.conn(), &memory_id);
+                                actor_state.app_state.memories.retain(|m| m.id != memory_id);
+                            }
+
+                            AppAction::UpdateMemory { memory_id, content } => {
+                                let _ = persistence::queries::update_memory(actor_state.db.conn(), &memory_id, &content);
+                                // Update in-place in AppState
+                                if let Some(mem) = actor_state.app_state.memories.iter_mut().find(|m| m.id == memory_id) {
+                                    mem.content = content.clone();
+                                    mem.content_preview = content.chars().take(100).collect();
                                 }
                             }
                         }
