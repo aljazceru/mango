@@ -241,7 +241,8 @@ enum App {
         cached_theme: Theme,
         // Manual theme override preference (per D-06, D-07)
         theme_override: ThemeOverride,
-        // AGENTS HIDDEN: agent_task_input removed until polished
+        // Agent task input text (local form state before dispatch)
+        agent_task_input: String,
     },
 }
 
@@ -324,7 +325,10 @@ enum Message {
     MemorySaveEdit,
     MemoryCancelEdit,
     MemoryConfirmDelete(String),  // memory_id
-    // AGENTS HIDDEN: OpenAgents, AgentTaskInputChanged, LaunchAgent removed until polished
+    // Agent screen messages
+    OpenAgents,
+    AgentTaskInputChanged(String),
+    LaunchAgent,
     // Window close request (D-12: checkpoint running agent sessions on exit)
     WindowCloseRequested,
     // OS dark/light theme change
@@ -372,7 +376,7 @@ impl App {
                     is_dark: initial_dark,
                     cached_theme: theme::app_theme(initial_dark),
                     theme_override: prefs.theme_override,
-                    // AGENTS HIDDEN: agent_task_input removed
+                    agent_task_input: String::new(),
                 }
             }
             Err(error) => Self::BootError { error },
@@ -444,6 +448,7 @@ impl App {
                 is_dark,
                 cached_theme,
                 theme_override,
+                agent_task_input,
             } => {
                 match message {
                     Message::CoreUpdated => {
@@ -845,7 +850,22 @@ impl App {
                         *show_docs_attachment_overlay = false;
                     }
 
-                    // AGENTS HIDDEN: OpenAgents, AgentTaskInputChanged, LaunchAgent handlers removed
+                    Message::OpenAgents => {
+                        manager.dispatch(AppAction::PushScreen {
+                            screen: Screen::Agents,
+                        });
+                    }
+                    Message::AgentTaskInputChanged(text) => {
+                        *agent_task_input = text;
+                    }
+                    Message::LaunchAgent => {
+                        if !agent_task_input.is_empty() {
+                            manager.dispatch(AppAction::LaunchAgentSession {
+                                task_description: agent_task_input.clone(),
+                            });
+                            *agent_task_input = String::new();
+                        }
+                    }
 
                     Message::OpenMemories => {
                         manager.dispatch(AppAction::PushScreen {
@@ -962,6 +982,7 @@ impl App {
                 is_dark,
                 cached_theme,
                 theme_override,
+                agent_task_input,
                 ..
             } => {
                 // Onboarding screen: full-screen overlay (no sidebar)
@@ -1004,7 +1025,10 @@ impl App {
                     return views::memories::view(state, memory_edit_state, *is_dark);
                 }
 
-                // AGENTS HIDDEN: Screen::Agents overlay removed until polished
+                // Agents screen: full-screen overlay (no sidebar)
+                if matches!(&state.router.current_screen, Screen::Agents) {
+                    return views::agents::agent_list_view(state, agent_task_input, *is_dark);
+                }
 
                 let sidebar = views::home::sidebar_view(state, rename_state, *is_dark);
 

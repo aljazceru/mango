@@ -109,7 +109,18 @@ pub fn sidebar_view<'a>(
     let conv_list = column(conv_rows).spacing(2).padding(Padding::from([4u16, 8]));
     let list_scroll = scrollable(conv_list).height(Length::Fill);
 
-    // AGENTS HIDDEN: agents_btn removed until polished
+    let agents_btn = button(
+        container(text("Agents").size(13))
+            .padding(Padding::from([4u16, 12])),
+    )
+    .on_press(Message::OpenAgents)
+    .padding(0)
+    .width(Length::Fill)
+    .style(move |_theme, _status| button::Style {
+        background: None,
+        text_color: vc.text_dim,
+        ..Default::default()
+    });
 
     let memories_btn = button(
         container(text("Memories").size(13))
@@ -153,7 +164,9 @@ pub fn sidebar_view<'a>(
     });
 
     let bottom_nav = column![
-        // AGENTS HIDDEN: agents_btn entry removed until polished
+        container(agents_btn)
+            .padding(Padding { top: 0.0, right: 8.0, bottom: 4.0, left: 8.0 })
+            .width(Length::Fill),
         container(memories_btn)
             .padding(Padding { top: 0.0, right: 8.0, bottom: 4.0, left: 8.0 })
             .width(Length::Fill),
