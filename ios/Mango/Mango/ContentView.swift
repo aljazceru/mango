@@ -16,6 +16,9 @@ struct ContentView: View {
         case .documents:
             DocumentLibraryView()
                 .environmentObject(appManager)
+        case .memories:
+            MemoryManagementView()
+                .environmentObject(appManager)
         // .agents — hidden until polished
         case .chat(let conversationId):
             ChatView(
@@ -54,6 +57,10 @@ struct ContentView: View {
                     HStack(spacing: 12) {
                         Button("Documents") {
                             appManager.dispatch(.pushScreen(screen: .documents))
+                        }
+                        .font(.subheadline)
+                        Button("Memories") {
+                            appManager.dispatch(.pushScreen(screen: .memories))
                         }
                         .font(.subheadline)
                         Button("Settings") {

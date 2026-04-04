@@ -233,6 +233,8 @@ enum App {
         onboarding_show_learn_more: bool,
         // Documents attachment overlay local state (not in AppState -- pure UI)
         show_docs_attachment_overlay: bool,
+        // Memory edit state: (memory_id, current_edit_text) when user is editing a memory
+        memory_edit_state: Option<(String, String)>,
         // OS dark/light theme state (updated via SystemThemeChanged subscription)
         is_dark: bool,
         // Cached theme derived from is_dark; updated whenever is_dark changes
@@ -315,6 +317,13 @@ enum Message {
     DeleteDocument(String),
     ToggleDocumentAttachment(String),
     ToggleDocAttachmentOverlay,
+    // Memory screen messages (Phase 23, MEM-04/05/06)
+    OpenMemories,
+    MemoryStartEdit(String, String),  // (memory_id, full_content)
+    MemoryEditChanged(String),
+    MemorySaveEdit,
+    MemoryCancelEdit,
+    MemoryConfirmDelete(String),  // memory_id
     // AGENTS HIDDEN: OpenAgents, AgentTaskInputChanged, LaunchAgent removed until polished
     // Window close request (D-12: checkpoint running agent sessions on exit)
     WindowCloseRequested,
@@ -359,6 +368,7 @@ impl App {
                     onboarding_api_key: String::new(),
                     onboarding_show_learn_more: false,
                     show_docs_attachment_overlay: false,
+                    memory_edit_state: None,
                     is_dark: initial_dark,
                     cached_theme: theme::app_theme(initial_dark),
                     theme_override: prefs.theme_override,
@@ -430,6 +440,7 @@ impl App {
                 onboarding_api_key,
                 onboarding_show_learn_more,
                 show_docs_attachment_overlay,
+                memory_edit_state,
                 is_dark,
                 cached_theme,
                 theme_override,
@@ -836,6 +847,40 @@ impl App {
 
                     // AGENTS HIDDEN: OpenAgents, AgentTaskInputChanged, LaunchAgent handlers removed
 
+                    Message::OpenMemories => {
+                        manager.dispatch(AppAction::PushScreen {
+                            screen: Screen::Memories,
+                        });
+                    }
+
+                    Message::MemoryStartEdit(id, content) => {
+                        *memory_edit_state = Some((id, content));
+                    }
+
+                    Message::MemoryEditChanged(text) => {
+                        if let Some((_, ref mut edit_text)) = memory_edit_state {
+                            *edit_text = text;
+                        }
+                    }
+
+                    Message::MemorySaveEdit => {
+                        if let Some((ref id, ref content)) = memory_edit_state {
+                            manager.dispatch(AppAction::UpdateMemory {
+                                memory_id: id.clone(),
+                                content: content.clone(),
+                            });
+                        }
+                        *memory_edit_state = None;
+                    }
+
+                    Message::MemoryCancelEdit => {
+                        *memory_edit_state = None;
+                    }
+
+                    Message::MemoryConfirmDelete(id) => {
+                        manager.dispatch(AppAction::DeleteMemory { memory_id: id });
+                    }
+
                     Message::SystemThemeChanged(dark) => {
                         if *theme_override == ThemeOverride::FollowSystem {
                             *is_dark = dark;
@@ -913,6 +958,7 @@ impl App {
                 onboarding_api_key,
                 onboarding_show_learn_more,
                 show_docs_attachment_overlay,
+                memory_edit_state,
                 is_dark,
                 cached_theme,
                 theme_override,
@@ -951,6 +997,11 @@ impl App {
                 // Documents screen: full-screen overlay (no sidebar)
                 if matches!(&state.router.current_screen, Screen::Documents) {
                     return views::documents::view(state, *is_dark);
+                }
+
+                // Memories screen: full-screen overlay (no sidebar)
+                if matches!(&state.router.current_screen, Screen::Memories) {
+                    return views::memories::view(state, memory_edit_state, *is_dark);
                 }
 
                 // AGENTS HIDDEN: Screen::Agents overlay removed until polished
