@@ -166,7 +166,7 @@ pub fn agent_list_view<'a>(
 }
 
 fn build_session_row<'a>(session: &'a AgentSessionSummary, vc: crate::theme::ViewColors) -> Element<'a, Message> {
-    let status_col = status_color(&session.status, vc);
+    let status_col = status_color(&session.status, &vc);
     let status_badge = container(
         text(&session.status).size(11).color(status_col),
     )
@@ -254,7 +254,7 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
         ("Agent Session", "unknown")
     };
 
-    let status_col = status_color(status_str, vc);
+    let status_col = status_color(status_str, &vc);
     let status_badge = container(
         text(status_str).size(12).color(status_col),
     )

@@ -67,7 +67,9 @@ fun MainApp(
                 onDelete = { id -> manager.dispatch(AppAction.DeleteConversation(id = id)) },
                 onRename = { id, title -> manager.dispatch(AppAction.RenameConversation(id = id, title = title)) },
                 topBarActions = {
-                    // AGENTS HIDDEN: TextButton for Agents removed until polished
+                    TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Agents)) }) {
+                        Text("Agents")
+                    }
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Memories)) }) {
                         Text("Memories")
                     }
@@ -94,6 +96,13 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) }
             )
         }
-        else -> {} // AGENTS HIDDEN: Screen.Agents removed until polished
+        is Screen.Agents -> {
+            AgentScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
+        else -> {}
     }
 }

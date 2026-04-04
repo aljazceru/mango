@@ -19,7 +19,9 @@ struct ContentView: View {
         case .memories:
             MemoryManagementView()
                 .environmentObject(appManager)
-        // .agents — hidden until polished
+        case .agents:
+            AgentSessionListView()
+                .environmentObject(appManager)
         case .chat(let conversationId):
             ChatView(
                 state: appManager.appState,
@@ -61,6 +63,10 @@ struct ContentView: View {
                         .font(.subheadline)
                         Button("Memories") {
                             appManager.dispatch(.pushScreen(screen: .memories))
+                        }
+                        .font(.subheadline)
+                        Button("Agents") {
+                            appManager.dispatch(.pushScreen(screen: .agents))
                         }
                         .font(.subheadline)
                         Button("Settings") {
