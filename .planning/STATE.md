@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: executing
-stopped_at: Completed 22-agent-tools-expansion 22-01-PLAN.md
-last_updated: "2026-04-04T15:45:08.126Z"
+status: verifying
+stopped_at: Completed 22-agent-tools-expansion 22-02-PLAN.md
+last_updated: "2026-04-04T15:51:35.934Z"
 last_activity: 2026-04-04
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 5
-  completed_plans: 4
+  completed_plans: 5
   percent: 25
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 Phase: 22 (Agent Tools Expansion) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-04
 
 Progress: [██░░░░░░░░] 25%
@@ -54,6 +54,7 @@ Progress: [██░░░░░░░░] 25%
 *Updated after each plan completion*
 | Phase 21-memory-retrieval-injection P01 | 4 | 2 tasks | 5 files |
 | Phase 22-agent-tools-expansion P01 | 8min | 2 tasks | 4 files |
+| Phase 22-agent-tools-expansion P02 | 5min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,8 @@ Key architectural context for v2.0:
 - [Phase 21-memory-retrieval-injection]: Reuse shared usearch HNSW index for memory search; chunk keys silently fall through via get_memory_content_by_usearch_keys returning empty
 - [Phase 21-memory-retrieval-injection]: Hoist query embedding before RAG and memory blocks so embed() is called once per message
 - [Phase 22-agent-tools-expansion]: pub(crate) visibility for dispatch functions enables direct testing; empty-string sentinel for brave_api_key/data_dir disables tools gracefully
+- [Phase 22-agent-tools-expansion]: Fetch brave_api_key fresh from settings DB at each dispatch_tools call to pick up key changes without restart
+- [Phase 22-agent-tools-expansion]: ActorState.data_dir initialized from vector_data_dir.clone() - agent file sandbox shares app data directory with RAG index
 
 ### Pending Todos
 
@@ -87,6 +90,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-04T15:45:08.124Z
-Stopped at: Completed 22-agent-tools-expansion 22-01-PLAN.md
+Last session: 2026-04-04T15:51:35.932Z
+Stopped at: Completed 22-agent-tools-expansion 22-02-PLAN.md
 Resume file: None

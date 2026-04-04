@@ -52,7 +52,7 @@
 
 - [x] **Phase 20: Memory Core** - Rust memory module with SQLite schema, LLM-driven extraction, and background execution (completed 2026-04-03)
 - [x] **Phase 21: Memory Retrieval & Injection** - Semantic search over memories and injection into conversation context (completed 2026-04-04)
-- [ ] **Phase 22: Agent Tools Expansion** - Brave Search, URL fetch, file operations, and calculator tools in ReAct loop
+- [x] **Phase 22: Agent Tools Expansion** - Brave Search, URL fetch, file operations, and calculator tools in ReAct loop (completed 2026-04-04)
 - [ ] **Phase 23: Memory Management UI + Agent UI** - Memory view/edit/delete screens and agent UI re-enable on all platforms
 
 ## Phase Details
@@ -95,10 +95,10 @@ Plans:
   3. Agent can create, read, and edit files within the app sandbox directory
   4. Agent can evaluate a mathematical expression and return a precise numeric result
   5. All four tools appear in the existing tool dispatch registry and their steps are checkpointed to SQLite
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [x] 22-01-PLAN.md — Add scraper/evalexpr deps, implement 4 tool schemas and dispatch functions
-- [ ] 22-02-PLAN.md — Wire dispatch_tools into lib.rs (ActorState.data_dir, call sites, system prompts)
+- [x] 22-02-PLAN.md — Wire dispatch_tools into lib.rs (ActorState.data_dir, call sites, system prompts)
 
 ### Phase 23: Memory Management UI + Agent UI
 **Goal**: Users can view, edit, and delete their stored memories through a dedicated screen, and the agent system with its expanded tools is fully accessible on all platforms
@@ -122,5 +122,5 @@ Phases execute in numeric order: 20 → 21 → 22 → 23
 |-------|-----------|----------------|--------|-----------|
 | 20. Memory Core | v2.0 | 2/2 | Complete | 2026-04-03 |
 | 21. Memory Retrieval & Injection | v2.0 | 1/1 | Complete    | 2026-04-04 |
-| 22. Agent Tools Expansion | v2.0 | 1/2 | In Progress|  |
+| 22. Agent Tools Expansion | v2.0 | 2/2 | Complete   | 2026-04-04 |
 | 23. Memory Management UI + Agent UI | v2.0 | 0/? | Not started | - |
