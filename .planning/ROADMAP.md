@@ -53,7 +53,7 @@
 - [x] **Phase 20: Memory Core** - Rust memory module with SQLite schema, LLM-driven extraction, and background execution (completed 2026-04-03)
 - [x] **Phase 21: Memory Retrieval & Injection** - Semantic search over memories and injection into conversation context (completed 2026-04-04)
 - [x] **Phase 22: Agent Tools Expansion** - Brave Search, URL fetch, file operations, and calculator tools in ReAct loop (completed 2026-04-04)
-- [ ] **Phase 23: Memory Management UI + Agent UI** - Memory view/edit/delete screens and agent UI re-enable on all platforms
+- [x] **Phase 23: Memory Management UI + Agent UI** - Memory view/edit/delete screens and agent UI re-enable on all platforms (completed 2026-04-04)
 
 ## Phase Details
 
@@ -110,11 +110,11 @@ Plans:
   3. User can tap a memory to edit its text and save the correction
   4. Agent UI is accessible on iOS, Android, and Desktop with the expanded tool set listed
   5. Agent session detail view shows each tool call step with tool name, input, and output
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 - [x] 23-01-PLAN.md — Rust core: MemorySummary, Screen::Memories, AppAction variants, actor handlers, AgentStepSummary.tool_input
 - [x] 23-02-PLAN.md — Memory management UI screens on iOS, Android, Desktop with navigation wiring
-- [ ] 23-03-PLAN.md — Re-enable agent navigation and enhance step display with tool_input on all platforms
+- [x] 23-03-PLAN.md — Re-enable agent navigation and enhance step display with tool_input on all platforms
 **UI hint**: yes
 
 ## Progress
@@ -127,4 +127,4 @@ Phases execute in numeric order: 20 → 21 → 22 → 23
 | 20. Memory Core | v2.0 | 2/2 | Complete | 2026-04-03 |
 | 21. Memory Retrieval & Injection | v2.0 | 1/1 | Complete    | 2026-04-04 |
 | 22. Agent Tools Expansion | v2.0 | 2/2 | Complete    | 2026-04-04 |
-| 23. Memory Management UI + Agent UI | v2.0 | 2/3 | In Progress|  |
+| 23. Memory Management UI + Agent UI | v2.0 | 3/3 | Complete   | 2026-04-04 |

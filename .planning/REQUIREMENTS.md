@@ -27,7 +27,7 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 
 ### Agent UI
 
-- [ ] **AUI-01**: Agent UI is re-enabled on all platforms with the expanded tool set visible
+- [x] **AUI-01**: Agent UI is re-enabled on all platforms with the expanded tool set visible
 - [x] **AUI-02**: Agent tool usage is displayed step-by-step in the session detail view (tool name, input, output)
 
 ## Future Requirements
@@ -70,7 +70,7 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 | MEM-04 | Phase 23 | Complete |
 | MEM-05 | Phase 23 | Complete |
 | MEM-06 | Phase 23 | Complete |
-| AUI-01 | Phase 23 | Pending |
+| AUI-01 | Phase 23 | Complete |
 | AUI-02 | Phase 23 | Complete |
 
 **Coverage:**
