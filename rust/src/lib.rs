@@ -1631,11 +1631,16 @@ fn handle_agent_step_complete(
             }
 
             // Dispatch tools synchronously on the actor thread
+            // NOTE: runtime/data_dir/brave_api_key are temporary stubs here;
+            // Plan 22-02 will wire these properly from ActorState.
             let tool_results = agent::dispatch_tools(
                 &calls,
                 actor_state.db.conn(),
                 &actor_state.vector_index,
                 actor_state.embedding_provider.as_ref(),
+                &actor_state.runtime,
+                "",
+                "",
             );
 
             // Get mutable exec_state
