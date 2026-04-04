@@ -58,6 +58,10 @@ usearch = "2.24.0"
 pdf-extract = "0.10.0"
 once_cell = "1"
 
+# Phase 22: Agent tools expansion
+scraper = "0.26"
+evalexpr = "13.1"
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.14"
 
