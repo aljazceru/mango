@@ -110,7 +110,11 @@ Plans:
   3. User can tap a memory to edit its text and save the correction
   4. Agent UI is accessible on iOS, Android, and Desktop with the expanded tool set listed
   5. Agent session detail view shows each tool call step with tool name, input, and output
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 23-01-PLAN.md — Rust core: MemorySummary, Screen::Memories, AppAction variants, actor handlers, AgentStepSummary.tool_input
+- [ ] 23-02-PLAN.md — Memory management UI screens on iOS, Android, Desktop with navigation wiring
+- [ ] 23-03-PLAN.md — Re-enable agent navigation and enhance step display with tool_input on all platforms
 **UI hint**: yes
 
 ## Progress
@@ -122,5 +126,5 @@ Phases execute in numeric order: 20 → 21 → 22 → 23
 |-------|-----------|----------------|--------|-----------|
 | 20. Memory Core | v2.0 | 2/2 | Complete | 2026-04-03 |
 | 21. Memory Retrieval & Injection | v2.0 | 1/1 | Complete    | 2026-04-04 |
-| 22. Agent Tools Expansion | v2.0 | 2/2 | Complete   | 2026-04-04 |
-| 23. Memory Management UI + Agent UI | v2.0 | 0/? | Not started | - |
+| 22. Agent Tools Expansion | v2.0 | 2/2 | Complete    | 2026-04-04 |
+| 23. Memory Management UI + Agent UI | v2.0 | 0/3 | Planning complete | - |
