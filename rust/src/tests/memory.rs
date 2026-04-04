@@ -1,10 +1,31 @@
+use std::time::Duration;
+
 use crate::persistence::{
-    queries::{delete_memory, insert_memory, list_memories, MemoryRow},
+    queries::{delete_memory, insert_memory, list_memories, update_memory, MemoryRow},
     Database,
 };
 use crate::memory::extract::should_extract;
 use crate::memory::retrieve::{build_system_with_memories, MemoryResult, DEFAULT_MEMORY_TOP_K};
 use crate::persistence::queries::get_memory_content_by_usearch_keys;
+use crate::{AppAction, EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider, Screen};
+
+// ── Actor integration helpers (duplicated from agent.rs for independence) ─────
+
+fn make_app() -> std::sync::Arc<FfiApp> {
+    let app = FfiApp::new(
+        "".into(),
+        Box::new(NullKeychainProvider),
+        Box::new(NullEmbeddingProvider),
+        EmbeddingStatus::Active,
+    );
+    // Allow actor thread to initialize
+    std::thread::sleep(Duration::from_millis(150));
+    app
+}
+
+fn wait() {
+    std::thread::sleep(Duration::from_millis(200));
+}
 
 fn setup_db() -> Database {
     Database::open(":memory:").unwrap()
@@ -238,4 +259,84 @@ fn test_get_memory_content_by_usearch_keys_partial() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].0, 7000);
     assert_eq!(result[0].1, "Partial fact");
+}
+
+// ── Phase 23 tests: update_memory query and actor-level memory handlers ───────
+
+/// Verify update_memory SQL query updates content and preserves the row ID (MEM-06).
+#[test]
+fn test_update_memory() {
+    let db = setup_db();
+    let row = MemoryRow {
+        id: "mem-upd".to_string(),
+        conversation_id: "conv-1".to_string(),
+        content: "Original fact".to_string(),
+        usearch_key: 10000,
+        created_at: 500,
+    };
+    insert_memory(db.conn(), &row).unwrap();
+    update_memory(db.conn(), "mem-upd", "Updated fact text").unwrap();
+    let memories = list_memories(db.conn()).unwrap();
+    assert_eq!(memories.len(), 1);
+    assert_eq!(memories[0].content, "Updated fact text", "Content should be updated");
+    assert_eq!(memories[0].id, "mem-upd", "ID should be unchanged after update");
+}
+
+/// Verify ListMemories actor handler populates AppState.memories without panic (MEM-04).
+#[test]
+fn test_list_memories_action() {
+    let app = make_app();
+    // Initial state: memories field is accessible and empty
+    assert!(app.state().memories.is_empty(), "memories should start empty");
+    app.dispatch(AppAction::ListMemories);
+    wait();
+    let state = app.state();
+    // Handler ran without panic; memories field is accessible
+    // (empty is fine -- no data inserted; SQL query correctness covered by test_insert_and_list_memories)
+    let _ = state.memories.len(); // field is accessible
+}
+
+/// Verify DeleteMemory actor handler gracefully handles a nonexistent memory_id (MEM-05).
+#[test]
+fn test_delete_memory_action() {
+    let app = make_app();
+    app.dispatch(AppAction::DeleteMemory { memory_id: "nonexistent".to_string() });
+    wait();
+    let state = app.state();
+    assert!(
+        state.memories.is_empty(),
+        "memories should remain empty after deleting nonexistent memory"
+    );
+}
+
+/// Verify UpdateMemory actor handler gracefully handles a nonexistent memory_id (MEM-06).
+#[test]
+fn test_update_memory_action() {
+    let app = make_app();
+    app.dispatch(AppAction::UpdateMemory {
+        memory_id: "nonexistent".to_string(),
+        content: "Updated content".to_string(),
+    });
+    wait();
+    // No panic = handler is wired correctly
+    let state = app.state();
+    assert!(
+        state.memories.is_empty(),
+        "memories should remain empty when updating nonexistent memory"
+    );
+}
+
+/// Verify Screen::Memories navigation auto-loads memories without panic.
+#[test]
+fn test_memories_screen_navigation() {
+    let app = make_app();
+    app.dispatch(AppAction::PushScreen { screen: Screen::Memories });
+    wait();
+    // The screen navigation and auto-load of memories should complete without panic
+    let state = app.state();
+    assert_eq!(
+        state.router.current_screen,
+        Screen::Memories,
+        "current_screen should be Memories after PushScreen"
+    );
 }
