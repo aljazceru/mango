@@ -671,6 +671,8 @@ struct ActorState {
     /// Pre-populated from SQLite vcek_cert_cache table at startup.
     /// Shared with async attestation tasks via Arc<RwLock>.
     vcek_cache: attestation::task::CertificateCache,
+    /// Phase 22: Base data directory for agent file sandbox.
+    data_dir: String,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1496,8 +1498,11 @@ fn handle_launch_agent_session(
 
     // Build system + user messages
     let system_content = format!(
-        "You are an autonomous agent. You have the following tools: search_documents, read_document, finish. \
-         Use search_documents to find relevant information, read_document to read full documents, \
+        "You are an autonomous agent. You have the following tools: search_documents, read_document, \
+         web_search, fetch_url, file, calculate, finish. \
+         Use search_documents to search your document library, read_document to read full documents, \
+         web_search to search the web via Brave Search, fetch_url to read a webpage's text content, \
+         file to read/write/append files in your sandbox, calculate to evaluate math expressions, \
          and finish to provide your final answer. The user's task is: {}",
         task_description
     );
@@ -1631,16 +1636,21 @@ fn handle_agent_step_complete(
             }
 
             // Dispatch tools synchronously on the actor thread
-            // NOTE: runtime/data_dir/brave_api_key are temporary stubs here;
-            // Plan 22-02 will wire these properly from ActorState.
+            let brave_api_key = persistence::queries::get_setting(
+                actor_state.db.conn(),
+                "brave_api_key",
+            )
+            .unwrap_or(None)
+            .unwrap_or_default();
+
             let tool_results = agent::dispatch_tools(
                 &calls,
                 actor_state.db.conn(),
                 &actor_state.vector_index,
                 actor_state.embedding_provider.as_ref(),
                 &actor_state.runtime,
-                "",
-                "",
+                &actor_state.data_dir,
+                &brave_api_key,
             );
 
             // Get mutable exec_state
@@ -1852,8 +1862,11 @@ fn handle_resume_agent_session(
 
     // System + user message (title is the original task description)
     let system_content = format!(
-        "You are an autonomous agent. You have the following tools: search_documents, read_document, finish. \
-         Use search_documents to find relevant information, read_document to read full documents, \
+        "You are an autonomous agent. You have the following tools: search_documents, read_document, \
+         web_search, fetch_url, file, calculate, finish. \
+         Use search_documents to search your document library, read_document to read full documents, \
+         web_search to search the web via Brave Search, fetch_url to read a webpage's text content, \
+         file to read/write/append files in your sandbox, calculate to evaluate math expressions, \
          and finish to provide your final answer. The user's task is: {}",
         session_row.title
     );
@@ -2356,6 +2369,7 @@ impl FfiApp {
                 active_agent_sessions: HashMap::new(),
                 attestation_timer_token: None,
                 vcek_cache,
+                data_dir: vector_data_dir.clone(),
             };
 
             // Initialize per-backend concurrency semaphores from max_concurrent_requests.
