@@ -12,9 +12,9 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 - [x] **MEM-01**: App automatically extracts facts, preferences, and entities from completed conversations
 - [x] **MEM-02**: Extracted memories are stored locally in SQLite with vector embeddings in usearch index
 - [x] **MEM-03**: Relevant memories are injected into new conversation system prompts via semantic search
-- [ ] **MEM-04**: User can view all stored memories in a dedicated memory management screen
-- [ ] **MEM-05**: User can delete individual memories
-- [ ] **MEM-06**: User can edit extracted memories to correct or refine them
+- [x] **MEM-04**: User can view all stored memories in a dedicated memory management screen
+- [x] **MEM-05**: User can delete individual memories
+- [x] **MEM-06**: User can edit extracted memories to correct or refine them
 - [x] **MEM-07**: Memory extraction runs in background without blocking chat flow
 
 ### Agent Tools
@@ -28,7 +28,7 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 ### Agent UI
 
 - [ ] **AUI-01**: Agent UI is re-enabled on all platforms with the expanded tool set visible
-- [ ] **AUI-02**: Agent tool usage is displayed step-by-step in the session detail view (tool name, input, output)
+- [x] **AUI-02**: Agent tool usage is displayed step-by-step in the session detail view (tool name, input, output)
 
 ## Future Requirements
 
@@ -67,11 +67,11 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 | TOOL-03 | Phase 22 | Complete |
 | TOOL-04 | Phase 22 | Complete |
 | TOOL-05 | Phase 22 | Complete |
-| MEM-04 | Phase 23 | Pending |
-| MEM-05 | Phase 23 | Pending |
-| MEM-06 | Phase 23 | Pending |
+| MEM-04 | Phase 23 | Complete |
+| MEM-05 | Phase 23 | Complete |
+| MEM-06 | Phase 23 | Complete |
 | AUI-01 | Phase 23 | Pending |
-| AUI-02 | Phase 23 | Pending |
+| AUI-02 | Phase 23 | Complete |
 
 **Coverage:**
 - v2.0 requirements: 14 total
