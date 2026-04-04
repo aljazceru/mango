@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: verifying
-stopped_at: Completed 21-memory-retrieval-injection 21-01-PLAN.md
-last_updated: "2026-04-04T14:50:23.331Z"
+status: executing
+stopped_at: Completed 22-agent-tools-expansion 22-01-PLAN.md
+last_updated: "2026-04-04T15:45:08.126Z"
 last_activity: 2026-04-04
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 5
+  completed_plans: 4
   percent: 25
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Every inference request is provably confidential -- verified via remote attestation, all data stays local
-**Current focus:** Phase 21 — memory-retrieval-injection
+**Current focus:** Phase 22 — Agent Tools Expansion
 
 ## Current Position
 
-Phase: 21 (memory-retrieval-injection) — EXECUTING
-Plan: 1 of 1
-Status: Phase complete — ready for verification
+Phase: 22 (Agent Tools Expansion) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
 Last activity: 2026-04-04
 
 Progress: [██░░░░░░░░] 25%
@@ -53,6 +53,7 @@ Progress: [██░░░░░░░░] 25%
 
 *Updated after each plan completion*
 | Phase 21-memory-retrieval-injection P01 | 4 | 2 tasks | 5 files |
+| Phase 22-agent-tools-expansion P01 | 8min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,7 @@ Key architectural context for v2.0:
 - Agent UI was hidden in quick task 260326-pgd -- Phase 23 re-enables it
 - [Phase 21-memory-retrieval-injection]: Reuse shared usearch HNSW index for memory search; chunk keys silently fall through via get_memory_content_by_usearch_keys returning empty
 - [Phase 21-memory-retrieval-injection]: Hoist query embedding before RAG and memory blocks so embed() is called once per message
+- [Phase 22-agent-tools-expansion]: pub(crate) visibility for dispatch functions enables direct testing; empty-string sentinel for brave_api_key/data_dir disables tools gracefully
 
 ### Pending Todos
 
@@ -85,6 +87,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-04T14:50:23.329Z
-Stopped at: Completed 21-memory-retrieval-injection 21-01-PLAN.md
+Last session: 2026-04-04T15:45:08.124Z
+Stopped at: Completed 22-agent-tools-expansion 22-01-PLAN.md
 Resume file: None

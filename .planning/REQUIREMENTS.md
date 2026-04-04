@@ -19,11 +19,11 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 
 ### Agent Tools
 
-- [ ] **TOOL-01**: Agent can search the web using Brave Search API and return results
-- [ ] **TOOL-02**: Agent can fetch and read content from URLs (HTML parsed to text)
-- [ ] **TOOL-03**: Agent can create, read, and edit files in the app sandbox
-- [ ] **TOOL-04**: Agent can evaluate mathematical expressions with precision
-- [ ] **TOOL-05**: Agent tool dispatch integrates with existing ReAct loop and step checkpointing
+- [x] **TOOL-01**: Agent can search the web using Brave Search API and return results
+- [x] **TOOL-02**: Agent can fetch and read content from URLs (HTML parsed to text)
+- [x] **TOOL-03**: Agent can create, read, and edit files in the app sandbox
+- [x] **TOOL-04**: Agent can evaluate mathematical expressions with precision
+- [x] **TOOL-05**: Agent tool dispatch integrates with existing ReAct loop and step checkpointing
 
 ### Agent UI
 
@@ -62,11 +62,11 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 | MEM-02 | Phase 20 | Done |
 | MEM-07 | Phase 20 | Done |
 | MEM-03 | Phase 21 | Complete |
-| TOOL-01 | Phase 22 | Pending |
-| TOOL-02 | Phase 22 | Pending |
-| TOOL-03 | Phase 22 | Pending |
-| TOOL-04 | Phase 22 | Pending |
-| TOOL-05 | Phase 22 | Pending |
+| TOOL-01 | Phase 22 | Complete |
+| TOOL-02 | Phase 22 | Complete |
+| TOOL-03 | Phase 22 | Complete |
+| TOOL-04 | Phase 22 | Complete |
+| TOOL-05 | Phase 22 | Complete |
 | MEM-04 | Phase 23 | Pending |
 | MEM-05 | Phase 23 | Pending |
 | MEM-06 | Phase 23 | Pending |
