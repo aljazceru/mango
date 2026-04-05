@@ -92,3 +92,9 @@ grep -n "SettingsMemoriesEnabledToggled" desktop/iced/src/main.rs
 
 cargo build -p mango-desktop -> Finished (2 warnings, no errors)
 ```
+
+## Self-Check: PASSED
+
+- FOUND: .planning/phases/25-disable-enable-making-memories-in-the-app/25-02-SUMMARY.md
+- FOUND: commit 8f9800d (feat(25-02): regenerate UniFFI bindings with memoriesEnabled, update AppManager default)
+- FOUND: commit 0846991 (feat(25-02): add Auto-extract Memories toggle to Settings on iOS, Android, and Desktop)
