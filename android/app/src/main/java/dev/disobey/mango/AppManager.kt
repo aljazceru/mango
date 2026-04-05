@@ -75,6 +75,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             attestationIntervalMinutes = 30u,
             embeddingStatus = EmbeddingStatus.ACTIVE,
             globalSystemPrompt = null,
+            memories = emptyList(),
         ),
     )
         private set

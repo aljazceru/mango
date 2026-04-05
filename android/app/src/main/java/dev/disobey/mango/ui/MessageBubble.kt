@@ -144,7 +144,26 @@ private fun AssistantBubble(
             Markdown(
                 content = message.content,
                 colors = markdownColor(),
-                typography = markdownTypography(),
+                typography = markdownTypography(
+                    h1 = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    ),
+                    h2 = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    ),
+                    h3 = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    ),
+                    h4 = MaterialTheme.typography.bodyLarge.copy(
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    ),
+                    h5 = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    ),
+                    h6 = MaterialTheme.typography.bodySmall.copy(
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    ),
+                ),
                 modifier = Modifier
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             )
@@ -215,10 +234,9 @@ fun StreamingMessageBubble(
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
         ) {
-            Markdown(
-                content = text,
-                colors = markdownColor(),
-                typography = markdownTypography(),
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier
                     .padding(horizontal = 16.dp, vertical = 8.dp)
                     .semantics { liveRegion = LiveRegionMode.Polite },
