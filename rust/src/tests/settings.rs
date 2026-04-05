@@ -2,7 +2,25 @@
 ///
 /// These tests exercise the persistence layer directly using an in-memory SQLite
 /// database to verify ROUT-03, SETT-02, and SETT-03 behaviors.
+use std::time::Duration;
+
 use crate::persistence::{self, queries, Database};
+use crate::{AppAction, EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider};
+
+fn make_app() -> std::sync::Arc<FfiApp> {
+    let app = FfiApp::new(
+        "".into(),
+        Box::new(NullKeychainProvider),
+        Box::new(NullEmbeddingProvider),
+        EmbeddingStatus::Active,
+    );
+    std::thread::sleep(Duration::from_millis(150));
+    app
+}
+
+fn wait() {
+    std::thread::sleep(Duration::from_millis(200));
+}
 
 #[test]
 fn test_add_backend_persists() {
@@ -123,4 +141,46 @@ fn test_override_conversation_backend_persists() {
         updated.backend_id, "custom-backend",
         "backend_id should be updated to custom-backend"
     );
+}
+
+/// Verify SetBraveApiKey action persists the key and updates brave_api_key_set (Phase 24, D-18).
+#[test]
+fn test_brave_api_key_persists() {
+    let app = make_app();
+
+    // Initially brave_api_key_set should be false (no key set)
+    let initial_state = app.state();
+    assert!(!initial_state.brave_api_key_set, "brave_api_key_set should start false");
+
+    // Set a Brave API key
+    app.dispatch(AppAction::SetBraveApiKey { api_key: "test-brave-key-abc123".to_string() });
+    wait();
+
+    let state = app.state();
+    assert!(state.brave_api_key_set, "brave_api_key_set should be true after setting key");
+
+    // Clear the key with empty string
+    app.dispatch(AppAction::SetBraveApiKey { api_key: "".to_string() });
+    wait();
+
+    let state = app.state();
+    assert!(!state.brave_api_key_set, "brave_api_key_set should be false after clearing key");
+}
+
+/// Verify memory_count field in AppState tracks memory count correctly (Phase 24, D-03/D-04).
+#[test]
+fn test_memory_count() {
+
+    let app = make_app();
+
+    // Initially memory_count should be 0
+    let initial_state = app.state();
+    assert_eq!(initial_state.memory_count, 0, "memory_count should start at 0");
+
+    // Delete a nonexistent memory (should update count, still 0)
+    app.dispatch(AppAction::DeleteMemory { memory_id: "nonexistent".to_string() });
+    wait();
+
+    let state = app.state();
+    assert_eq!(state.memory_count, 0, "memory_count should remain 0 after deleting nonexistent");
 }
