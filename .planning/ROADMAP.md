@@ -134,7 +134,7 @@ Phases execute in numeric order: 20 → 21 → 22 → 23
 **Goal:** Settings screen redesigned with grouped sections (PROVIDERS/DEFAULTS/MEMORY/TOOLS/APPEARANCE/Advanced), Memories entry point moved from home toolbar into Settings, and Brave Search API key configurable via Tools section -- all on iOS, Android, and Desktop
 **Requirements**: SET-01, SET-02, SET-03, SET-04, SET-05, SET-06, SET-07
 **Depends on:** Phase 23
-**Plans:** 2/3 plans executed
+**Plans:** 1/3 plans executed
 
 Plans:
 - [x] 24-00-PLAN.md — Wave 0: unit test stubs for SET-04 (brave_api_key persistence) and SET-06 (memory_count)
