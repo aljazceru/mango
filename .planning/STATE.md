@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: verifying
-stopped_at: Phase 24 context gathered
-last_updated: "2026-04-05T08:49:08.506Z"
-last_activity: 2026-04-04
+status: executing
+stopped_at: Completed 24-01-PLAN.md
+last_updated: "2026-04-05T09:35:51.454Z"
+last_activity: 2026-04-05
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
+  total_plans: 11
+  completed_plans: 10
   percent: 25
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Every inference request is provably confidential -- verified via remote attestation, all data stays local
-**Current focus:** Phase 23 — memory-management-ui-agent-ui
+**Current focus:** Phase 24 — redesign-settings-ux-move-memories-into-settings-redesign-layout-with-grouped-sections-add-tool-configuration-for-agents-and-chats
 
 ## Current Position
 
-Phase: 23
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-04-04
+Phase: 24 (redesign-settings-ux-move-memories-into-settings-redesign-layout-with-grouped-sections-add-tool-configuration-for-agents-and-chats) — EXECUTING
+Plan: 3 of 3
+Status: Ready to execute
+Last activity: 2026-04-05
 
 Progress: [██░░░░░░░░] 25%
 
@@ -58,6 +58,8 @@ Progress: [██░░░░░░░░] 25%
 | Phase 23-memory-management-ui-agent-ui P01 | 12 | 2 tasks | 4 files |
 | Phase 23-memory-management-ui-agent-ui P02 | 7min | 2 tasks | 8 files |
 | Phase 23-memory-management-ui-agent-ui P03 | 8min | 2 tasks | 9 files |
+| Phase 24-redesign-settings-ux P00 | 3min | 1 tasks | 1 files |
+| Phase 24-redesign-settings-ux P01 | 8min | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -82,6 +84,9 @@ Key architectural context for v2.0:
 - [Phase 23-memory-management-ui-agent-ui]: memory_edit_state: Option<(String, String)> in App::Loaded follows established edit_state pattern for chat message editing
 - [Phase 23-memory-management-ui-agent-ui]: Agent navigation re-enabled on all three platforms by removing AGENTS HIDDEN guards and restoring routing code
 - [Phase 23-memory-management-ui-agent-ui]: final_answer steps skip tool name/input display entirely and show full resultSnippet as primary content (D-08)
+- [Phase 24-redesign-settings-ux]: MemoryRow.usearch_key field required in persistence test stubs -- plan interface snippet was incomplete, set to 1 as placeholder integer
+- [Phase 24-redesign-settings-ux]: memory_count is re-queried from DB after each mutation rather than in-memory arithmetic to avoid off-by-one errors
+- [Phase 24-redesign-settings-ux]: brave_api_key_set bool exposes key presence only, never raw key, across UniFFI boundary (per D-11)
 
 ### Roadmap Evolution
 
@@ -103,6 +108,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T08:49:08.504Z
-Stopped at: Phase 24 context gathered
-Resume file: .planning/phases/24-redesign-settings-ux-move-memories-into-settings-redesign-layout-with-grouped-sections-add-tool-configuration-for-agents-and-chats/24-CONTEXT.md
+Last session: 2026-04-05T09:35:51.452Z
+Stopped at: Completed 24-01-PLAN.md
+Resume file: None
