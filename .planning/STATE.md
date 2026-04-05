@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: verifying
-stopped_at: Completed 23-03-PLAN.md
-last_updated: "2026-04-04T16:55:30.671Z"
+stopped_at: Phase 24 context gathered
+last_updated: "2026-04-05T08:49:08.506Z"
 last_activity: 2026-04-04
 progress:
-  total_phases: 4
-  completed_phases: 1
-  total_plans: 3
-  completed_plans: 6
+  total_phases: 5
+  completed_phases: 4
+  total_plans: 8
+  completed_plans: 8
   percent: 25
 ---
 
@@ -25,8 +25,8 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 ## Current Position
 
-Phase: 23 (memory-management-ui-agent-ui) — EXECUTING
-Plan: 3 of 3
+Phase: 23
+Plan: Not started
 Status: Phase complete — ready for verification
 Last activity: 2026-04-04
 
@@ -83,6 +83,10 @@ Key architectural context for v2.0:
 - [Phase 23-memory-management-ui-agent-ui]: Agent navigation re-enabled on all three platforms by removing AGENTS HIDDEN guards and restoring routing code
 - [Phase 23-memory-management-ui-agent-ui]: final_answer steps skip tool name/input display entirely and show full resultSnippet as primary content (D-08)
 
+### Roadmap Evolution
+
+- Phase 24 added: Redesign Settings UX — move memories into settings, redesign layout with grouped sections, add tool configuration for agents and chats
+
 ### Pending Todos
 
 None yet.
@@ -99,6 +103,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-04T16:55:30.669Z
-Stopped at: Completed 23-03-PLAN.md
-Resume file: None
+Last session: 2026-04-05T08:49:08.504Z
+Stopped at: Phase 24 context gathered
+Resume file: .planning/phases/24-redesign-settings-ux-move-memories-into-settings-redesign-layout-with-grouped-sections-add-tool-configuration-for-agents-and-chats/24-CONTEXT.md
