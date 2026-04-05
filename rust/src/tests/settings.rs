@@ -170,7 +170,6 @@ fn test_brave_api_key_persists() {
 /// Verify memory_count field in AppState tracks memory count correctly (Phase 24, D-03/D-04).
 #[test]
 fn test_memory_count() {
-
     let app = make_app();
 
     // Initially memory_count should be 0
