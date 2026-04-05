@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -430,7 +431,7 @@ fun SettingsScreen(
                             fontWeight = FontWeight.Medium
                         )
                         Spacer(Modifier.weight(1f))
-                        if (appState.memoryCount > 0L) {
+                        if (appState.memoryCount > 0UL) {
                             Text(
                                 appState.memoryCount.toString(),
                                 style = MaterialTheme.typography.labelSmall,
@@ -439,7 +440,7 @@ fun SettingsScreen(
                             Spacer(Modifier.width(8.dp))
                         }
                         Icon(
-                            Icons.Default.KeyboardArrowRight,
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
                             contentDescription = "View memories",
                             modifier = Modifier.size(16.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
