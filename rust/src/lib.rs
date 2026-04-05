@@ -244,6 +244,14 @@ pub struct AppState {
     // Phase 23 additions:
     /// Memory summaries loaded on demand when user navigates to Screen::Memories (per D-14).
     pub memories: Vec<MemorySummary>,
+    // Phase 24 additions:
+    /// Count of stored memories for Settings badge display (per D-03).
+    /// Loaded at startup via SELECT COUNT(*) FROM memories.
+    /// Updated on DeleteMemory and MemoryExtractionComplete (per D-04).
+    pub memory_count: u64,
+    /// Whether a Brave Search API key is configured (per D-11).
+    /// Never exposes the raw key across UniFFI boundary.
+    pub brave_api_key_set: bool,
 }
 
 impl Default for AppState {
@@ -277,6 +285,8 @@ impl Default for AppState {
             global_system_prompt: None,
             embedding_status: EmbeddingStatus::Active,
             memories: vec![],
+            memory_count: 0,
+            brave_api_key_set: false,
         }
     }
 }
@@ -520,6 +530,9 @@ pub enum AppAction {
     DeleteMemory { memory_id: String },
     /// Update a memory's text content in SQLite (MEM-06). Does NOT re-embed.
     UpdateMemory { memory_id: String, content: String },
+    /// Save a Brave Search API key to the settings table (per D-18).
+    /// Follows SetGlobalSystemPrompt pattern (per D-19).
+    SetBraveApiKey { api_key: String },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -2470,6 +2483,17 @@ impl FfiApp {
             .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
             actor_state.app_state.global_system_prompt = global_system_prompt;
 
+            // Phase 24: Load memory count and brave_api_key_set at startup
+            let memory_count: u64 = actor_state.db.conn()
+                .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0))
+                .unwrap_or(0) as u64;
+            actor_state.app_state.memory_count = memory_count;
+
+            let brave_api_key_set = persistence::queries::get_setting(
+                actor_state.db.conn(), "brave_api_key",
+            ).ok().flatten().map(|k| !k.trim().is_empty()).unwrap_or(false);
+            actor_state.app_state.brave_api_key_set = brave_api_key_set;
+
             // Per D-03: auto-trigger attestation for the active backend on init.
             if let Some(active_id) = &final_active_id {
                 if let Some(backend) = actor_state.backends.iter().find(|b| &b.id == active_id) {
@@ -3743,6 +3767,10 @@ impl FfiApp {
                                 }
                                 let _ = persistence::queries::delete_memory(actor_state.db.conn(), &memory_id);
                                 actor_state.app_state.memories.retain(|m| m.id != memory_id);
+                                // Re-query count (per D-04 -- simpler than decrement, avoids off-by-one)
+                                actor_state.app_state.memory_count = actor_state.db.conn()
+                                    .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0))
+                                    .unwrap_or(0) as u64;
                             }
 
                             AppAction::UpdateMemory { memory_id, content } => {
@@ -3752,6 +3780,18 @@ impl FfiApp {
                                     mem.content = content.clone();
                                     mem.content_preview = content.chars().take(100).collect();
                                 }
+                            }
+
+                            AppAction::SetBraveApiKey { api_key } => {
+                                let trimmed = api_key.trim().to_string();
+                                if !trimmed.is_empty() {
+                                    let _ = persistence::queries::set_setting(
+                                        actor_state.db.conn(),
+                                        "brave_api_key",
+                                        &trimmed,
+                                    );
+                                }
+                                actor_state.app_state.brave_api_key_set = !trimmed.is_empty();
                             }
                         }
 
@@ -4527,6 +4567,10 @@ impl FfiApp {
                                         added_count,
                                         conversation_id
                                     );
+                                    // Re-query memory count (per D-04)
+                                    actor_state.app_state.memory_count = actor_state.db.conn()
+                                        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0))
+                                        .unwrap_or(0) as u64;
                                 }
                                 // No AppState rev increment -- memories are invisible in Phase 20 UI
                                 continue;
