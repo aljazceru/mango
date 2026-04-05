@@ -4872,6 +4872,18 @@ sealed class Screen {
     object Memories : Screen()
     
     
+    /**
+     * Provider management sub-screen -- pushed from Settings main screen (Phase 26).
+     */
+    object SettingsProviders : Screen()
+    
+    
+    /**
+     * Defaults sub-screen (model picker + default instructions) -- pushed from Settings (Phase 26).
+     */
+    object SettingsDefaults : Screen()
+    
+    
 
     
     companion object
@@ -4894,6 +4906,8 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             5 -> Screen.Documents
             6 -> Screen.Agents
             7 -> Screen.Memories
+            8 -> Screen.SettingsProviders
+            9 -> Screen.SettingsDefaults
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4943,6 +4957,18 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 4UL
             )
         }
+        is Screen.SettingsProviders -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is Screen.SettingsDefaults -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
     }
 
     override fun write(value: Screen, buf: ByteBuffer) {
@@ -4975,6 +5001,14 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             }
             is Screen.Memories -> {
                 buf.putInt(7)
+                Unit
+            }
+            is Screen.SettingsProviders -> {
+                buf.putInt(8)
+                Unit
+            }
+            is Screen.SettingsDefaults -> {
+                buf.putInt(9)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
