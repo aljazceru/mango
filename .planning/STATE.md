@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: executing
-stopped_at: Completed 25-01-PLAN.md
-last_updated: "2026-04-05T13:14:26.277Z"
+status: verifying
+stopped_at: Completed 25-02-PLAN.md
+last_updated: "2026-04-05T13:26:33.920Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 13
-  completed_plans: 12
+  completed_plans: 13
   percent: 25
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 Phase: 25 (disable-enable-making-memories-in-the-app) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-05
 
 Progress: [██░░░░░░░░] 25%
@@ -62,6 +62,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 24-redesign-settings-ux P01 | 8min | 1 tasks | 2 files |
 | Phase 24-redesign-settings-ux P02 | 15min | 2 tasks | 8 files |
 | Phase 25-disable-enable-making-memories-in-the-app P01 | 2min | 1 tasks | 2 files |
+| Phase 25-disable-enable-making-memories-in-the-app P25-02 | 15min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -94,6 +95,7 @@ Key architectural context for v2.0:
 - [Phase 25-disable-enable-making-memories-in-the-app]: memories_enabled defaults to true via unwrap_or(true) so existing users are unaffected on upgrade
 - [Phase 25-disable-enable-making-memories-in-the-app]: Extraction gate placed as outermost condition before should_extract in StreamDone, not nested inside bid block
 - [Phase 25-disable-enable-making-memories-in-the-app]: memories_enabled persisted as '0'/'1' string in settings table consistent with other settings entries
+- [Phase 25-disable-enable-making-memories-in-the-app]: Merge main into worktree before regenerating bindings -- worktree was behind main after plan 25-01 landed
 
 ### Roadmap Evolution
 
@@ -116,6 +118,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T13:14:26.275Z
-Stopped at: Completed 25-01-PLAN.md
+Last session: 2026-04-05T13:26:33.918Z
+Stopped at: Completed 25-02-PLAN.md
 Resume file: None
