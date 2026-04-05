@@ -4433,6 +4433,14 @@ public enum Screen {
      * Memory management screen -- view, edit, delete stored memories (Phase 23, per D-09).
      */
     case memories
+    /**
+     * Provider management sub-screen -- pushed from Settings main screen (Phase 26).
+     */
+    case settingsProviders
+    /**
+     * Defaults sub-screen (model picker + default instructions) -- pushed from Settings (Phase 26).
+     */
+    case settingsDefaults
 }
 
 
@@ -4465,6 +4473,10 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         case 6: return .agents
         
         case 7: return .memories
+        
+        case 8: return .settingsProviders
+        
+        case 9: return .settingsDefaults
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4502,6 +4514,14 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         
         case .memories:
             writeInt(&buf, Int32(7))
+        
+        
+        case .settingsProviders:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .settingsDefaults:
+            writeInt(&buf, Int32(9))
         
         }
     }

@@ -372,6 +372,10 @@ pub enum Screen {
     Agents,
     /// Memory management screen -- view, edit, delete stored memories (Phase 23, per D-09).
     Memories,
+    /// Provider management sub-screen -- pushed from Settings main screen (Phase 26).
+    SettingsProviders,
+    /// Defaults sub-screen (model picker + default instructions) -- pushed from Settings (Phase 26).
+    SettingsDefaults,
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
