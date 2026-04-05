@@ -147,9 +147,9 @@ Plans:
 **Goal:** User can toggle automatic memory extraction on/off via a switch in the Settings MEMORY section, persisted across app restarts, defaulting to enabled
 **Requirements**: MEM-TOGGLE-01, MEM-TOGGLE-02, MEM-TOGGLE-03, MEM-TOGGLE-04
 **Depends on:** Phase 24
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
-- [ ] 25-01-PLAN.md — Rust core: memories_enabled in AppState, SetMemoriesEnabled action, startup load, extraction gate in StreamDone, unit test
+- [x] 25-01-PLAN.md — Rust core: memories_enabled in AppState, SetMemoriesEnabled action, startup load, extraction gate in StreamDone, unit test
 - [ ] 25-02-PLAN.md — Regenerate UniFFI bindings, add toggle to iOS/Android/Desktop Settings MEMORY sections
 **UI hint**: yes

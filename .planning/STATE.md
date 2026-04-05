@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: verifying
-stopped_at: Completed 24-02-PLAN.md
-last_updated: "2026-04-05T09:50:21.363Z"
+status: executing
+stopped_at: Completed 25-01-PLAN.md
+last_updated: "2026-04-05T13:14:26.277Z"
 last_activity: 2026-04-05
 progress:
-  total_phases: 5
-  completed_phases: 1
-  total_plans: 6
-  completed_plans: 7
+  total_phases: 6
+  completed_phases: 5
+  total_plans: 13
+  completed_plans: 12
   percent: 25
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Every inference request is provably confidential -- verified via remote attestation, all data stays local
-**Current focus:** Phase 24 — redesign-settings-ux-move-memories-into-settings-redesign-layout-with-grouped-sections-add-tool-configuration-for-agents-and-chats
+**Current focus:** Phase 25 — disable-enable-making-memories-in-the-app
 
 ## Current Position
 
-Phase: 24 (redesign-settings-ux-move-memories-into-settings-redesign-layout-with-grouped-sections-add-tool-configuration-for-agents-and-chats) — EXECUTING
-Plan: 3 of 3
-Status: Phase complete — ready for verification
+Phase: 25 (disable-enable-making-memories-in-the-app) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
 Last activity: 2026-04-05
 
 Progress: [██░░░░░░░░] 25%
@@ -61,6 +61,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 24-redesign-settings-ux P00 | 3min | 1 tasks | 1 files |
 | Phase 24-redesign-settings-ux P01 | 8min | 1 tasks | 2 files |
 | Phase 24-redesign-settings-ux P02 | 15min | 2 tasks | 8 files |
+| Phase 25-disable-enable-making-memories-in-the-app P01 | 2min | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -90,10 +91,14 @@ Key architectural context for v2.0:
 - [Phase 24-redesign-settings-ux]: brave_api_key_set bool exposes key presence only, never raw key, across UniFFI boundary (per D-11)
 - [Phase 24-redesign-settings-ux]: UniFFI bindings regenerated in Wave 2 plan (not Wave 1) — Rust AppState changes from 24-01 not propagated to Kotlin/Swift binding files; regenerated via 'just bindings-kotlin' and 'just bindings-swift'
 - [Phase 24-redesign-settings-ux]: ios/Bindings/ directory committed to repo so Xcode build picks up updated AppState (memoryCount, braveApiKeySet) without requiring local bindings regeneration
+- [Phase 25-disable-enable-making-memories-in-the-app]: memories_enabled defaults to true via unwrap_or(true) so existing users are unaffected on upgrade
+- [Phase 25-disable-enable-making-memories-in-the-app]: Extraction gate placed as outermost condition before should_extract in StreamDone, not nested inside bid block
+- [Phase 25-disable-enable-making-memories-in-the-app]: memories_enabled persisted as '0'/'1' string in settings table consistent with other settings entries
 
 ### Roadmap Evolution
 
 - Phase 24 added: Redesign Settings UX — move memories into settings, redesign layout with grouped sections, add tool configuration for agents and chats
+- Phase 25 added: disable/enable making memories in the app
 
 ### Pending Todos
 
@@ -111,6 +116,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T09:50:21.361Z
-Stopped at: Completed 24-02-PLAN.md
+Last session: 2026-04-05T13:14:26.275Z
+Stopped at: Completed 25-01-PLAN.md
 Resume file: None
