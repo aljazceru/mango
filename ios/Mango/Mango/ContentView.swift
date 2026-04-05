@@ -19,6 +19,12 @@ struct ContentView: View {
         case .memories:
             MemoryManagementView()
                 .environmentObject(appManager)
+        case .settingsProviders:
+            SettingsProvidersView()
+                .environmentObject(appManager)
+        case .settingsDefaults:
+            SettingsDefaultsView()
+                .environmentObject(appManager)
         case .agents:
             AgentSessionListView()
                 .environmentObject(appManager)

@@ -100,6 +100,20 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) }
             )
         }
+        is Screen.SettingsProviders -> {
+            SettingsProvidersScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
+        is Screen.SettingsDefaults -> {
+            SettingsDefaultsScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
         else -> {}
     }
 }
