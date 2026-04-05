@@ -61,10 +61,6 @@ struct ContentView: View {
                             appManager.dispatch(.pushScreen(screen: .documents))
                         }
                         .font(.subheadline)
-                        Button("Memories") {
-                            appManager.dispatch(.pushScreen(screen: .memories))
-                        }
-                        .font(.subheadline)
                         Button("Agents") {
                             appManager.dispatch(.pushScreen(screen: .agents))
                         }

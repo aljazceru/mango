@@ -70,9 +70,6 @@ fun MainApp(
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Agents)) }) {
                         Text("Agents")
                     }
-                    TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Memories)) }) {
-                        Text("Memories")
-                    }
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Documents)) }) {
                         Text("RAG")
                     }

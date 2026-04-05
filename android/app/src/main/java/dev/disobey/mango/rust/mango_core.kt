@@ -1902,6 +1902,10 @@ data class AgentStepSummary (
      */
     var `toolName`: kotlin.String?, 
     /**
+     * First ~200 chars of the tool call input payload, if this is a tool_call step (per D-06).
+     */
+    var `toolInput`: kotlin.String?, 
+    /**
      * First 200 chars of the result, if available.
      */
     var `resultSnippet`: kotlin.String?, 
@@ -1925,6 +1929,7 @@ public object FfiConverterTypeAgentStepSummary: FfiConverterRustBuffer<AgentStep
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterString.read(buf),
         )
     }
@@ -1934,6 +1939,7 @@ public object FfiConverterTypeAgentStepSummary: FfiConverterRustBuffer<AgentStep
             FfiConverterUInt.allocationSize(value.`stepNumber`) +
             FfiConverterString.allocationSize(value.`actionType`) +
             FfiConverterOptionalString.allocationSize(value.`toolName`) +
+            FfiConverterOptionalString.allocationSize(value.`toolInput`) +
             FfiConverterOptionalString.allocationSize(value.`resultSnippet`) +
             FfiConverterString.allocationSize(value.`status`)
     )
@@ -1943,6 +1949,7 @@ public object FfiConverterTypeAgentStepSummary: FfiConverterRustBuffer<AgentStep
             FfiConverterUInt.write(value.`stepNumber`, buf)
             FfiConverterString.write(value.`actionType`, buf)
             FfiConverterOptionalString.write(value.`toolName`, buf)
+            FfiConverterOptionalString.write(value.`toolInput`, buf)
             FfiConverterOptionalString.write(value.`resultSnippet`, buf)
             FfiConverterString.write(value.`status`, buf)
     }
@@ -2053,7 +2060,22 @@ data class AppState (
      * Active: real provider running. Degraded: init failed, NullEmbeddingProvider in use.
      * Unavailable: no provider supplied by design.
      */
-    var `embeddingStatus`: EmbeddingStatus
+    var `embeddingStatus`: EmbeddingStatus, 
+    /**
+     * Memory summaries loaded on demand when user navigates to Screen::Memories (per D-14).
+     */
+    var `memories`: List<MemorySummary>, 
+    /**
+     * Count of stored memories for Settings badge display (per D-03).
+     * Loaded at startup via SELECT COUNT(*) FROM memories.
+     * Updated on DeleteMemory and MemoryExtractionComplete (per D-04).
+     */
+    var `memoryCount`: kotlin.ULong, 
+    /**
+     * Whether a Brave Search API key is configured (per D-11).
+     * Never exposes the raw key across UniFFI boundary.
+     */
+    var `braveApiKeySet`: kotlin.Boolean
 ) {
     
     companion object
@@ -2089,6 +2111,9 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterUInt.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterTypeEmbeddingStatus.read(buf),
+            FfiConverterSequenceTypeMemorySummary.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -2116,7 +2141,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeAgentStepSummary.allocationSize(value.`currentAgentSteps`) +
             FfiConverterUInt.allocationSize(value.`attestationIntervalMinutes`) +
             FfiConverterOptionalString.allocationSize(value.`globalSystemPrompt`) +
-            FfiConverterTypeEmbeddingStatus.allocationSize(value.`embeddingStatus`)
+            FfiConverterTypeEmbeddingStatus.allocationSize(value.`embeddingStatus`) +
+            FfiConverterSequenceTypeMemorySummary.allocationSize(value.`memories`) +
+            FfiConverterULong.allocationSize(value.`memoryCount`) +
+            FfiConverterBoolean.allocationSize(value.`braveApiKeySet`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -2144,6 +2172,9 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterUInt.write(value.`attestationIntervalMinutes`, buf)
             FfiConverterOptionalString.write(value.`globalSystemPrompt`, buf)
             FfiConverterTypeEmbeddingStatus.write(value.`embeddingStatus`, buf)
+            FfiConverterSequenceTypeMemorySummary.write(value.`memories`, buf)
+            FfiConverterULong.write(value.`memoryCount`, buf)
+            FfiConverterBoolean.write(value.`braveApiKeySet`, buf)
     }
 }
 
@@ -2499,6 +2530,75 @@ public object FfiConverterTypeIngestionProgress: FfiConverterRustBuffer<Ingestio
     override fun write(value: IngestionProgress, buf: ByteBuffer) {
             FfiConverterString.write(value.`documentName`, buf)
             FfiConverterString.write(value.`stage`, buf)
+    }
+}
+
+
+
+/**
+ * A memory entry for the UI memory management screen (per D-14).
+ *
+ * Carried in AppState.memories when the user navigates to Screen::Memories.
+ * Maps from MemoryRow with display-safe fields.
+ */
+data class MemorySummary (
+    var `id`: kotlin.String, 
+    /**
+     * Full content of the extracted fact (memories are short enough to carry fully).
+     */
+    var `content`: kotlin.String, 
+    /**
+     * First ~100 chars for list display (per D-01).
+     */
+    var `contentPreview`: kotlin.String, 
+    /**
+     * Unix timestamp (millis) when memory was created.
+     */
+    var `createdAt`: kotlin.Long, 
+    /**
+     * Title of the source conversation, if the conversation still exists.
+     */
+    var `conversationTitle`: kotlin.String?, 
+    /**
+     * The usearch HNSW index key -- needed to remove the vector on delete without extra DB query.
+     */
+    var `usearchKey`: kotlin.Long
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMemorySummary: FfiConverterRustBuffer<MemorySummary> {
+    override fun read(buf: ByteBuffer): MemorySummary {
+        return MemorySummary(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MemorySummary) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`content`) +
+            FfiConverterString.allocationSize(value.`contentPreview`) +
+            FfiConverterLong.allocationSize(value.`createdAt`) +
+            FfiConverterOptionalString.allocationSize(value.`conversationTitle`) +
+            FfiConverterLong.allocationSize(value.`usearchKey`)
+    )
+
+    override fun write(value: MemorySummary, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`content`, buf)
+            FfiConverterString.write(value.`contentPreview`, buf)
+            FfiConverterLong.write(value.`createdAt`, buf)
+            FfiConverterOptionalString.write(value.`conversationTitle`, buf)
+            FfiConverterLong.write(value.`usearchKey`, buf)
     }
 }
 
@@ -3120,6 +3220,38 @@ sealed class AppAction {
         companion object
     }
     
+    /**
+     * Load all memories into AppState.memories for the memory management screen (MEM-04).
+     */
+    object ListMemories : AppAction()
+    
+    
+    /**
+     * Delete a memory from both SQLite and the usearch vector index (MEM-05).
+     */
+    data class DeleteMemory(
+        val `memoryId`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Update a memory's text content in SQLite (MEM-06). Does NOT re-embed.
+     */
+    data class UpdateMemory(
+        val `memoryId`: kotlin.String, 
+        val `content`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Save a Brave Search API key to the settings table (per D-18).
+     * Follows SetGlobalSystemPrompt pattern (per D-19).
+     */
+    data class SetBraveApiKey(
+        val `apiKey`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
 
     
     companion object
@@ -3255,6 +3387,17 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 )
             45 -> AppAction.SetGlobalSystemPrompt(
                 FfiConverterOptionalString.read(buf),
+                )
+            46 -> AppAction.ListMemories
+            47 -> AppAction.DeleteMemory(
+                FfiConverterString.read(buf),
+                )
+            48 -> AppAction.UpdateMemory(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            49 -> AppAction.SetBraveApiKey(
+                FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
@@ -3578,6 +3721,34 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterOptionalString.allocationSize(value.`prompt`)
             )
         }
+        is AppAction.ListMemories -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.DeleteMemory -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`memoryId`)
+            )
+        }
+        is AppAction.UpdateMemory -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`memoryId`)
+                + FfiConverterString.allocationSize(value.`content`)
+            )
+        }
+        is AppAction.SetBraveApiKey -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`apiKey`)
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -3807,6 +3978,26 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             is AppAction.SetGlobalSystemPrompt -> {
                 buf.putInt(45)
                 FfiConverterOptionalString.write(value.`prompt`, buf)
+                Unit
+            }
+            is AppAction.ListMemories -> {
+                buf.putInt(46)
+                Unit
+            }
+            is AppAction.DeleteMemory -> {
+                buf.putInt(47)
+                FfiConverterString.write(value.`memoryId`, buf)
+                Unit
+            }
+            is AppAction.UpdateMemory -> {
+                buf.putInt(48)
+                FfiConverterString.write(value.`memoryId`, buf)
+                FfiConverterString.write(value.`content`, buf)
+                Unit
+            }
+            is AppAction.SetBraveApiKey -> {
+                buf.putInt(49)
+                FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -4643,6 +4834,12 @@ sealed class Screen {
     object Agents : Screen()
     
     
+    /**
+     * Memory management screen -- view, edit, delete stored memories (Phase 23, per D-09).
+     */
+    object Memories : Screen()
+    
+    
 
     
     companion object
@@ -4664,6 +4861,7 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 )
             5 -> Screen.Documents
             6 -> Screen.Agents
+            7 -> Screen.Memories
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4707,6 +4905,12 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 4UL
             )
         }
+        is Screen.Memories -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
     }
 
     override fun write(value: Screen, buf: ByteBuffer) {
@@ -4735,6 +4939,10 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             }
             is Screen.Agents -> {
                 buf.putInt(6)
+                Unit
+            }
+            is Screen.Memories -> {
+                buf.putInt(7)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -5535,6 +5743,34 @@ public object FfiConverterSequenceTypeDocumentSummary: FfiConverterRustBuffer<Li
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeDocumentSummary.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeMemorySummary: FfiConverterRustBuffer<List<MemorySummary>> {
+    override fun read(buf: ByteBuffer): List<MemorySummary> {
+        val len = buf.getInt()
+        return List<MemorySummary>(len) {
+            FfiConverterTypeMemorySummary.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MemorySummary>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMemorySummary.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MemorySummary>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMemorySummary.write(it, buf)
         }
     }
 }
