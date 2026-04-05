@@ -3,6 +3,7 @@ package dev.disobey.mango.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,6 +59,7 @@ import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.AttestationStatus
 import dev.disobey.mango.rust.HealthStatus
+import dev.disobey.mango.rust.Screen
 import dev.disobey.mango.rust.TeeType
 import dev.disobey.mango.rust.knownProviderPresets
 import dev.disobey.mango.ui.theme.*
@@ -82,6 +86,7 @@ fun SettingsScreen(
     var defaultModelExp     by remember { mutableStateOf(false) }
     var defaultModel        by remember { mutableStateOf("") }
     var defaultInstructions by remember { mutableStateOf(appState.globalSystemPrompt ?: "") }
+    var braveApiKeyInput   by remember { mutableStateOf("") }
     var themeExpanded by remember { mutableStateOf(false) }
     val themeOptions = listOf("system" to "Follow System", "light" to "Force Light", "dark" to "Force Dark")
     val themeLabel = themeOptions.firstOrNull { it.first == themeMode }?.second ?: "Follow System"
@@ -375,6 +380,119 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(8.dp)
                 ) { Text("Save Instructions") }
+            }
+
+            // ── Memory ───────────────────────────────────────────────────────
+            item {
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "MEMORY",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                )
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .clickable { onDispatch(AppAction.PushScreen(screen = Screen.Memories)) }
+                            .padding(16.dp)
+                            .fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Memories",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Spacer(Modifier.weight(1f))
+                        if (appState.memoryCount > 0L) {
+                            Text(
+                                appState.memoryCount.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Icon(
+                            Icons.Default.KeyboardArrowRight,
+                            contentDescription = "View memories",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // ── Tools ────────────────────────────────────────────────────────
+            item {
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "TOOLS",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                )
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Web Search",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(Modifier.weight(1f))
+                            if (appState.braveApiKeySet) {
+                                Text(
+                                    "Configured",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Required for agent web search. Keys are stored locally and never sent to third parties.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = braveApiKeyInput,
+                            onValueChange = { braveApiKeyInput = it },
+                            label = {
+                                Text(
+                                    if (appState.braveApiKeySet)
+                                        "Key configured — enter new key to update"
+                                    else
+                                        "Enter Brave Search API Key"
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                val trimmed = braveApiKeyInput.trim()
+                                if (trimmed.isNotEmpty()) {
+                                    onDispatch(AppAction.SetBraveApiKey(apiKey = trimmed))
+                                    braveApiKeyInput = ""
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            enabled = braveApiKeyInput.trim().isNotEmpty()
+                        ) { Text("Save API Key") }
+                    }
+                }
             }
 
             // ── Appearance ────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State private var defaultModel: String = ""
     @State private var defaultInstructions: String = ""
     @State private var defaultInstructionsInitialized: Bool = false
+    @State private var braveApiKeyInput: String = ""
     @AppStorage("theme_preference") private var themePreference: String = "system"
 
     var appState: AppState { appManager.appState }
@@ -28,6 +29,8 @@ struct SettingsView: View {
             List {
                 providersSection
                 defaultsSection
+                memorySection
+                toolsSection
                 appearanceSection
                 advancedSection
             }
@@ -198,6 +201,66 @@ struct SettingsView: View {
                     defaultInstructionsInitialized = true
                 }
             }
+        }
+    }
+
+    // MARK: - Memory
+
+    private var memorySection: some View {
+        Section("Memory") {
+            Button(action: { appManager.dispatch(.pushScreen(screen: .memories)) }) {
+                HStack {
+                    Label("Memories", systemImage: "brain")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if appState.memoryCount > 0 {
+                        Text("\(appState.memoryCount)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    // MARK: - Tools
+
+    private var toolsSection: some View {
+        Section("Tools") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Web Search")
+                        .font(.subheadline).fontWeight(.medium)
+                    Spacer()
+                    if appState.braveApiKeySet {
+                        Text("Configured")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("Required for agent web search. Keys are stored locally and never sent to third parties.")
+                    .font(.caption).foregroundStyle(.secondary)
+                SecureField(
+                    appState.braveApiKeySet
+                        ? "Key configured — enter new key to update"
+                        : "Enter Brave Search API Key",
+                    text: $braveApiKeyInput
+                )
+                .textFieldStyle(.roundedBorder)
+                Button("Save API Key") {
+                    let trimmed = braveApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        appManager.dispatch(.setBraveApiKey(apiKey: trimmed))
+                        braveApiKeyInput = ""
+                    }
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+                .disabled(braveApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.vertical, 4)
         }
     }
 
