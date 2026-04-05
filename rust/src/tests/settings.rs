@@ -124,3 +124,55 @@ fn test_override_conversation_backend_persists() {
         "backend_id should be updated to custom-backend"
     );
 }
+
+#[test]
+fn test_brave_api_key_persists() {
+    let db = Database::open(":memory:").unwrap();
+    // Initially no key set
+    let val = queries::get_setting(db.conn(), "brave_api_key").unwrap();
+    assert_eq!(val, None, "brave_api_key should be None initially");
+
+    // Set a key
+    queries::set_setting(db.conn(), "brave_api_key", "test-key-123").unwrap();
+    let val = queries::get_setting(db.conn(), "brave_api_key").unwrap();
+    assert_eq!(val, Some("test-key-123".to_string()), "brave_api_key should persist");
+
+    // Overwrite the key
+    queries::set_setting(db.conn(), "brave_api_key", "updated-key-456").unwrap();
+    let val = queries::get_setting(db.conn(), "brave_api_key").unwrap();
+    assert_eq!(val, Some("updated-key-456".to_string()), "brave_api_key should be overwritten");
+}
+
+#[test]
+fn test_memory_count() {
+    let db = Database::open(":memory:").unwrap();
+
+    // Initially zero memories
+    let count: i64 = db.conn()
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "memory count should be 0 initially");
+
+    // Insert a memory
+    let row = queries::MemoryRow {
+        id: "mem-1".into(),
+        conversation_id: "conv-1".into(),
+        content: "Test memory content".into(),
+        usearch_key: 1,
+        created_at: 1000,
+    };
+    queries::insert_memory(db.conn(), &row).unwrap();
+
+    let count: i64 = db.conn()
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "memory count should be 1 after insert");
+
+    // Delete the memory
+    queries::delete_memory(db.conn(), "mem-1").unwrap();
+
+    let count: i64 = db.conn()
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "memory count should be 0 after delete");
+}
