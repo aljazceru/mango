@@ -134,10 +134,22 @@ Phases execute in numeric order: 20 → 21 → 22 → 23
 **Goal:** Settings screen redesigned with grouped sections (PROVIDERS/DEFAULTS/MEMORY/TOOLS/APPEARANCE/Advanced), Memories entry point moved from home toolbar into Settings, and Brave Search API key configurable via Tools section -- all on iOS, Android, and Desktop
 **Requirements**: SET-01, SET-02, SET-03, SET-04, SET-05, SET-06, SET-07
 **Depends on:** Phase 23
-**Plans:** 1/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [x] 24-00-PLAN.md — Wave 0: unit test stubs for SET-04 (brave_api_key persistence) and SET-06 (memory_count)
 - [x] 24-01-PLAN.md — Rust core: memory_count + brave_api_key_set in AppState, SetBraveApiKey action, memory_count updates in handlers
 - [ ] 24-02-PLAN.md — Add MEMORY + TOOLS sections to Settings on all 3 platforms, remove Memories from home toolbars
+**UI hint**: yes
+
+### Phase 25: disable/enable making memories in the app
+
+**Goal:** User can toggle automatic memory extraction on/off via a switch in the Settings MEMORY section, persisted across app restarts, defaulting to enabled
+**Requirements**: MEM-TOGGLE-01, MEM-TOGGLE-02, MEM-TOGGLE-03, MEM-TOGGLE-04
+**Depends on:** Phase 24
+**Plans:** 2 plans
+
+Plans:
+- [ ] 25-01-PLAN.md — Rust core: memories_enabled in AppState, SetMemoriesEnabled action, startup load, extraction gate in StreamDone, unit test
+- [ ] 25-02-PLAN.md — Regenerate UniFFI bindings, add toggle to iOS/Android/Desktop Settings MEMORY sections
 **UI hint**: yes

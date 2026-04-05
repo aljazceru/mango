@@ -252,6 +252,10 @@ pub struct AppState {
     /// Whether a Brave Search API key is configured (per D-11).
     /// Never exposes the raw key across UniFFI boundary.
     pub brave_api_key_set: bool,
+    // Phase 25 additions:
+    /// Whether memory extraction is enabled (MEM-TOGGLE-01).
+    /// Defaults to true. Persisted via settings table key "memories_enabled".
+    pub memories_enabled: bool,
 }
 
 impl Default for AppState {
@@ -287,6 +291,7 @@ impl Default for AppState {
             memories: vec![],
             memory_count: 0,
             brave_api_key_set: false,
+            memories_enabled: true,
         }
     }
 }
@@ -533,6 +538,9 @@ pub enum AppAction {
     /// Save a Brave Search API key to the settings table (per D-18).
     /// Follows SetGlobalSystemPrompt pattern (per D-19).
     SetBraveApiKey { api_key: String },
+    /// Enable or disable automatic memory extraction after each conversation (MEM-TOGGLE-01).
+    /// Persisted as "1"/"0" in the settings table under key "memories_enabled".
+    SetMemoriesEnabled { enabled: bool },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -2494,6 +2502,13 @@ impl FfiApp {
             ).ok().flatten().map(|k| !k.trim().is_empty()).unwrap_or(false);
             actor_state.app_state.brave_api_key_set = brave_api_key_set;
 
+            // Phase 25: Load memories_enabled toggle (MEM-TOGGLE-01).
+            // Default true so existing users are unaffected on upgrade.
+            let memories_enabled = persistence::queries::get_setting(
+                actor_state.db.conn(), "memories_enabled",
+            ).ok().flatten().map(|v| v != "0").unwrap_or(true);
+            actor_state.app_state.memories_enabled = memories_enabled;
+
             // Per D-03: auto-trigger attestation for the active backend on init.
             if let Some(active_id) = &final_active_id {
                 if let Some(backend) = actor_state.backends.iter().find(|b| &b.id == active_id) {
@@ -3793,6 +3808,15 @@ impl FfiApp {
                                 }
                                 actor_state.app_state.brave_api_key_set = !trimmed.is_empty();
                             }
+
+                            AppAction::SetMemoriesEnabled { enabled } => {
+                                let _ = persistence::queries::set_setting(
+                                    actor_state.db.conn(),
+                                    "memories_enabled",
+                                    if enabled { "1" } else { "0" },
+                                );
+                                actor_state.app_state.memories_enabled = enabled;
+                            }
                         }
 
                         actor_state.app_state.rev += 1;
@@ -3919,7 +3943,9 @@ impl FfiApp {
                                         .map(|m| (m.role.clone(), m.content.clone()))
                                         .collect();
 
-                                    if memory::extract::should_extract(&messages_snapshot) {
+                                    if actor_state.app_state.memories_enabled
+                                        && memory::extract::should_extract(&messages_snapshot)
+                                    {
                                         let bid = extraction_backend_id
                                             .as_ref()
                                             .or_else(|| {
