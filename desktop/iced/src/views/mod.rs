@@ -5,3 +5,5 @@ pub mod home;
 pub mod memories;
 pub mod onboarding;
 pub mod settings;
+pub mod settings_defaults;
+pub mod settings_providers;
