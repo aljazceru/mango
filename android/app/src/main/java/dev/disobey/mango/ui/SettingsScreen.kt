@@ -20,8 +20,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -395,6 +397,26 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
                 ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Auto-extract Memories",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = appState.memoriesEnabled,
+                            onCheckedChange = { checked ->
+                                onDispatch(AppAction.SetMemoriesEnabled(enabled = checked))
+                            }
+                        )
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                     Row(
                         modifier = Modifier
                             .clickable { onDispatch(AppAction.PushScreen(screen = Screen.Memories)) }
