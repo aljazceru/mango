@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use iced::widget::{button, column, container, pick_list, row, rule, scrollable, text, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
 
-use mango_core::{AppAction, AppState, AttestationStatus, HealthStatus, TeeType, known_provider_presets};
+use mango_core::{AppAction, AppState, AttestationStatus, HealthStatus, Screen, TeeType, known_provider_presets};
 
 use crate::Message;
 
@@ -123,6 +123,7 @@ pub fn view<'a>(
     show_advanced: bool,
     attestation_interval_input: &'a str,
     default_instructions: &'a str,
+    brave_api_key_input: &'a str,
     theme_override: crate::ThemeOverride,
 ) -> Element<'a, Message> {
     let vc = crate::theme::view_colors(is_dark);
@@ -513,12 +514,111 @@ pub fn view<'a>(
         iced::widget::Space::new().height(0).into()
     };
 
+    // ── Memory Section ────────────────────────────────────────────────────────
+    let memory_count_el: Element<'_, Message> = if state.memory_count > 0 {
+        text(format!("{}", state.memory_count)).size(12).color(vc.muted).into()
+    } else {
+        iced::widget::Space::new().width(0).into()
+    };
+
+    let memory_row = container(
+        button(
+            row![
+                text("Memories").size(14).color(vc.text),
+                iced::widget::Space::new().width(Length::Fill),
+                memory_count_el,
+                text(">").size(12).color(vc.muted),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        )
+        .on_press(Message::DispatchAction(AppAction::PushScreen {
+            screen: Screen::Memories,
+        }))
+        .padding(Padding::from([8u16, 16]))
+        .width(Length::Fill)
+        .style(move |_, _| button::Style {
+            background: Some(Background::Color(vc.card)),
+            border: Border {
+                radius: 8.0.into(),
+                color: vc.border,
+                width: 1.0,
+            },
+            ..Default::default()
+        }),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([0u16, 16]));
+
+    // ── Tools Section ─────────────────────────────────────────────────────────
+    let brave_placeholder = if state.brave_api_key_set {
+        "Key configured — enter new key to update"
+    } else {
+        "Enter Brave Search API Key"
+    };
+
+    let configured_label: Element<'_, Message> = if state.brave_api_key_set {
+        text("Configured").size(11).color(vc.muted).into()
+    } else {
+        iced::widget::Space::new().width(0).into()
+    };
+
+    let brave_key_field = text_input(brave_placeholder, brave_api_key_input)
+        .secure(true)
+        .on_input(Message::SettingsBraveApiKeyChanged)
+        .size(14)
+        .padding(Padding::from([7u16, 10]));
+
+    let brave_save_btn = action_btn(
+        "Save API Key",
+        Message::SettingsSaveBraveApiKey,
+        !brave_api_key_input.trim().is_empty(),
+        vc,
+    );
+
+    let tools_content = container(
+        column![
+            row![
+                text("Web Search").size(14).color(vc.text),
+                iced::widget::Space::new().width(Length::Fill),
+                configured_label,
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+            text("Required for agent web search. Keys are stored locally and never sent to third parties.")
+                .size(11)
+                .color(vc.muted),
+            brave_key_field,
+            brave_save_btn,
+        ]
+        .spacing(8),
+    )
+    .padding(Padding::from([10u16, 16]))
+    .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(vc.card)),
+        border: Border {
+            radius: 8.0.into(),
+            color: vc.border,
+            width: 1.0,
+        },
+        ..Default::default()
+    });
+
+    let tools_body = container(tools_content)
+        .padding(Padding::from([0u16, 16]))
+        .width(Length::Fill);
+
     // ── Compose ───────────────────────────────────────────────────────────────
     let content = column![
         section_header("PROVIDERS", vc.muted),
         providers_col,
         section_header("DEFAULTS", vc.muted),
         defaults_content,
+        section_header("MEMORY", vc.muted),
+        memory_row,
+        section_header("TOOLS", vc.muted),
+        tools_body,
         section_header("APPEARANCE", vc.muted),
         appearance_row,
         divider(),

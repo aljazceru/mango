@@ -235,6 +235,8 @@ enum App {
         show_docs_attachment_overlay: bool,
         // Memory edit state: (memory_id, current_edit_text) when user is editing a memory
         memory_edit_state: Option<(String, String)>,
+        // Brave Search API key input field (local form state before dispatch)
+        settings_brave_api_key: String,
         // OS dark/light theme state (updated via SystemThemeChanged subscription)
         is_dark: bool,
         // Cached theme derived from is_dark; updated whenever is_dark changes
@@ -299,6 +301,10 @@ enum Message {
     SettingsDefaultInstructionsChanged(String),
     // Save the default instructions to the Rust core
     SettingsSaveDefaultInstructions,
+    // Brave Search API key field changed
+    SettingsBraveApiKeyChanged(String),
+    // Save the Brave Search API key to the Rust core
+    SettingsSaveBraveApiKey,
     // Theme override preference changed (per D-07)
     SettingsThemeOverrideChanged(ThemeOverride),
     // Onboarding wizard messages
@@ -373,6 +379,7 @@ impl App {
                     onboarding_show_learn_more: false,
                     show_docs_attachment_overlay: false,
                     memory_edit_state: None,
+                    settings_brave_api_key: String::new(),
                     is_dark: initial_dark,
                     cached_theme: theme::app_theme(initial_dark),
                     theme_override: prefs.theme_override,
@@ -445,6 +452,7 @@ impl App {
                 onboarding_show_learn_more,
                 show_docs_attachment_overlay,
                 memory_edit_state,
+                settings_brave_api_key,
                 is_dark,
                 cached_theme,
                 theme_override,
@@ -740,6 +748,18 @@ impl App {
                         manager.dispatch(AppAction::SetGlobalSystemPrompt { prompt });
                     }
 
+                    Message::SettingsBraveApiKeyChanged(val) => {
+                        *settings_brave_api_key = val;
+                    }
+
+                    Message::SettingsSaveBraveApiKey => {
+                        let trimmed = settings_brave_api_key.trim().to_string();
+                        if !trimmed.is_empty() {
+                            manager.dispatch(AppAction::SetBraveApiKey { api_key: trimmed });
+                            *settings_brave_api_key = String::new();
+                        }
+                    }
+
                     // Onboarding wizard handlers
                     Message::OnboardingSelectBackend(id) => {
                         *onboarding_selected_backend = id;
@@ -979,6 +999,7 @@ impl App {
                 onboarding_show_learn_more,
                 show_docs_attachment_overlay,
                 memory_edit_state,
+                settings_brave_api_key,
                 is_dark,
                 cached_theme,
                 theme_override,
@@ -1011,6 +1032,7 @@ impl App {
                         *settings_show_advanced,
                         settings_attestation_interval,
                         settings_default_instructions,
+                        settings_brave_api_key,
                         *theme_override,
                     );
                 }
