@@ -1029,17 +1029,33 @@ impl App {
                     return views::settings::view(
                         state,
                         *is_dark,
+                        *settings_show_advanced,
+                        settings_attestation_interval,
+                        settings_brave_api_key,
+                        *theme_override,
+                    );
+                }
+
+                // SettingsProviders screen: full-screen overlay (no sidebar)
+                if matches!(&state.router.current_screen, Screen::SettingsProviders) {
+                    return views::settings_providers::view(
+                        state,
+                        *is_dark,
                         settings_add_name,
                         settings_add_url,
                         settings_add_key,
                         settings_add_tee,
-                        settings_default_model,
                         settings_preset_keys,
-                        *settings_show_advanced,
-                        settings_attestation_interval,
+                    );
+                }
+
+                // SettingsDefaults screen: full-screen overlay (no sidebar)
+                if matches!(&state.router.current_screen, Screen::SettingsDefaults) {
+                    return views::settings_defaults::view(
+                        state,
+                        *is_dark,
+                        settings_default_model,
                         settings_default_instructions,
-                        settings_brave_api_key,
-                        *theme_override,
                     );
                 }
 
