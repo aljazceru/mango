@@ -127,4 +127,17 @@ Phases execute in numeric order: 20 → 21 → 22 → 23
 | 20. Memory Core | v2.0 | 2/2 | Complete | 2026-04-03 |
 | 21. Memory Retrieval & Injection | v2.0 | 1/1 | Complete    | 2026-04-04 |
 | 22. Agent Tools Expansion | v2.0 | 2/2 | Complete    | 2026-04-04 |
-| 23. Memory Management UI + Agent UI | v2.0 | 3/3 | Complete   | 2026-04-04 |
+| 23. Memory Management UI + Agent UI | v2.0 | 3/3 | Complete    | 2026-04-04 |
+
+### Phase 24: Redesign Settings UX — move memories into settings, redesign layout with grouped sections, add tool configuration for agents and chats
+
+**Goal:** Settings screen redesigned with grouped sections (PROVIDERS/DEFAULTS/MEMORY/TOOLS/APPEARANCE/Advanced), Memories entry point moved from home toolbar into Settings, and Brave Search API key configurable via Tools section -- all on iOS, Android, and Desktop
+**Requirements**: SET-01, SET-02, SET-03, SET-04, SET-05, SET-06, SET-07
+**Depends on:** Phase 23
+**Plans:** 3 plans
+
+Plans:
+- [ ] 24-00-PLAN.md — Wave 0: unit test stubs for SET-04 (brave_api_key persistence) and SET-06 (memory_count)
+- [ ] 24-01-PLAN.md — Rust core: memory_count + brave_api_key_set in AppState, SetBraveApiKey action, memory_count updates in handlers
+- [ ] 24-02-PLAN.md — Add MEMORY + TOOLS sections to Settings on all 3 platforms, remove Memories from home toolbars
+**UI hint**: yes
