@@ -305,6 +305,8 @@ enum Message {
     SettingsBraveApiKeyChanged(String),
     // Save the Brave Search API key to the Rust core
     SettingsSaveBraveApiKey,
+    // Toggle the memories enabled setting (Phase 25, MEM-TOGGLE-04)
+    SettingsMemoriesEnabledToggled(bool),
     // Theme override preference changed (per D-07)
     SettingsThemeOverrideChanged(ThemeOverride),
     // Onboarding wizard messages
@@ -758,6 +760,10 @@ impl App {
                             manager.dispatch(AppAction::SetBraveApiKey { api_key: trimmed });
                             *settings_brave_api_key = String::new();
                         }
+                    }
+
+                    Message::SettingsMemoriesEnabledToggled(enabled) => {
+                        manager.dispatch(AppAction::SetMemoriesEnabled { enabled });
                     }
 
                     // Onboarding wizard handlers

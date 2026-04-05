@@ -208,6 +208,12 @@ struct SettingsView: View {
 
     private var memorySection: some View {
         Section("Memory") {
+            Toggle(isOn: Binding(
+                get: { appState.memoriesEnabled },
+                set: { appManager.dispatch(.setMemoriesEnabled(enabled: $0)) }
+            )) {
+                Label("Auto-extract Memories", systemImage: "brain")
+            }
             Button(action: { appManager.dispatch(.pushScreen(screen: .memories)) }) {
                 HStack {
                     Label("Memories", systemImage: "brain")

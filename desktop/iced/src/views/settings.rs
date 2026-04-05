@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use iced::widget::{button, column, container, pick_list, row, rule, scrollable, text, text_input};
+use iced::widget::{button, column, container, pick_list, row, rule, scrollable, text, text_input, toggler};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
 
 use mango_core::{AppAction, AppState, AttestationStatus, HealthStatus, Screen, TeeType, known_provider_presets};
@@ -515,6 +515,33 @@ pub fn view<'a>(
     };
 
     // ── Memory Section ────────────────────────────────────────────────────────
+    let memory_toggle = container(
+        row![
+            text("Auto-extract Memories").size(14).color(vc.text),
+            iced::widget::Space::new().width(Length::Fill),
+            toggler(state.memories_enabled)
+                .on_toggle(Message::SettingsMemoriesEnabledToggled)
+                .size(20),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+    )
+    .padding(Padding::from([10u16, 16]))
+    .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(vc.card)),
+        border: Border {
+            radius: 8.0.into(),
+            color: vc.border,
+            width: 1.0,
+        },
+        ..Default::default()
+    });
+
+    let memory_toggle_row = container(memory_toggle)
+        .padding(Padding::from([0u16, 16]))
+        .width(Length::Fill);
+
     let memory_count_el: Element<'_, Message> = if state.memory_count > 0 {
         text(format!("{}", state.memory_count)).size(12).color(vc.muted).into()
     } else {
@@ -616,6 +643,7 @@ pub fn view<'a>(
         section_header("DEFAULTS", vc.muted),
         defaults_content,
         section_header("MEMORY", vc.muted),
+        memory_toggle_row,
         memory_row,
         section_header("TOOLS", vc.muted),
         tools_body,
