@@ -43,8 +43,10 @@ rmp/
 # Staging directories (xcframework build)
 staging/
 .planning/
+.planning/**
 .claude/
 # Staged artifacts waiting for manual review before deletion
 to-delete/
 # Note: flake.lock is intentionally NOT ignored -- it pins exact dependency versions
 SECURITY_REVIEW.md
+local.properties
