@@ -159,10 +159,10 @@ Plans:
 **Goal:** Providers and Defaults settings sections reorganized into dedicated sub-screens accessible via tappable summary rows on the main Settings screen, reducing scroll depth and matching platform-native Settings app patterns -- on iOS, Android, and Desktop
 **Requirements**: TBD
 **Depends on:** Phase 25
-**Plans:** 2/2 plans complete
+**Plans:** 3/3 plans complete
 
 Plans:
 - [x] 26-01-PLAN.md — Add SettingsProviders + SettingsDefaults Screen variants to Rust, regenerate UniFFI bindings
-- [ ] 26-02-PLAN.md — iOS + Android: extract Providers/Defaults into sub-screens, add summary rows and routing
+- [x] 26-02-PLAN.md — iOS + Android: extract Providers/Defaults into sub-screens, add summary rows and routing
 - [x] 26-03-PLAN.md — Desktop: extract Providers/Defaults into sub-screen view modules, add summary rows and routing
 **UI hint**: yes

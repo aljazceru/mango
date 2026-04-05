@@ -8,9 +8,9 @@ last_updated: "2026-04-05T15:27:47.147Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 7
-  completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  completed_phases: 6
+  total_plans: 16
+  completed_plans: 16
   percent: 25
 ---
 
@@ -64,6 +64,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 25-disable-enable-making-memories-in-the-app P01 | 2min | 1 tasks | 2 files |
 | Phase 25-disable-enable-making-memories-in-the-app P25-02 | 15min | 2 tasks | 9 files |
 | Phase 26 P01 | 4min | 1 tasks | 3 files |
+| Phase 26 P02 | 7min | 2 tasks | 8 files |
 | Phase 26 P03 | 15min | 1 tasks | 5 files |
 
 ## Accumulated Context
@@ -100,6 +101,8 @@ Key architectural context for v2.0:
 - [Phase 25-disable-enable-making-memories-in-the-app]: Merge main into worktree before regenerating bindings -- worktree was behind main after plan 25-01 landed
 - [Phase 26]: SettingsProviders and SettingsDefaults added as unit variants (no associated data) matching pattern of existing navigation screens like Agents and Memories
 - [Phase 26]: Desktop sub-screen params stripped from settings::view() and threaded from main.rs directly to sub-screen view calls; custom provider form moved from Advanced section to settings_providers.rs sub-screen
+- [Phase 26]: Helper functions duplicated into sub-screen files (not shared util) to keep each screen self-contained for v1
+- [Phase 26]: Android provider helpers use Providers suffix in name to avoid package-level collision after SettingsScreen helpers removed
 
 ### Roadmap Evolution
 
