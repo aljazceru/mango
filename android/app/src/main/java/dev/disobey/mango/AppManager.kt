@@ -76,6 +76,9 @@ class AppManager private constructor(context: Context) : AppReconciler {
             embeddingStatus = EmbeddingStatus.ACTIVE,
             globalSystemPrompt = null,
             memories = emptyList(),
+            memoryCount = 0UL,
+            braveApiKeySet = false,
+            memoriesEnabled = true,
         ),
     )
         private set

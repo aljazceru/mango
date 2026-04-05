@@ -2075,7 +2075,12 @@ data class AppState (
      * Whether a Brave Search API key is configured (per D-11).
      * Never exposes the raw key across UniFFI boundary.
      */
-    var `braveApiKeySet`: kotlin.Boolean
+    var `braveApiKeySet`: kotlin.Boolean, 
+    /**
+     * Whether memory extraction is enabled (MEM-TOGGLE-01).
+     * Defaults to true. Persisted via settings table key "memories_enabled".
+     */
+    var `memoriesEnabled`: kotlin.Boolean
 ) {
     
     companion object
@@ -2114,6 +2119,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeMemorySummary.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -2144,7 +2150,8 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterTypeEmbeddingStatus.allocationSize(value.`embeddingStatus`) +
             FfiConverterSequenceTypeMemorySummary.allocationSize(value.`memories`) +
             FfiConverterULong.allocationSize(value.`memoryCount`) +
-            FfiConverterBoolean.allocationSize(value.`braveApiKeySet`)
+            FfiConverterBoolean.allocationSize(value.`braveApiKeySet`) +
+            FfiConverterBoolean.allocationSize(value.`memoriesEnabled`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -2175,6 +2182,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeMemorySummary.write(value.`memories`, buf)
             FfiConverterULong.write(value.`memoryCount`, buf)
             FfiConverterBoolean.write(value.`braveApiKeySet`, buf)
+            FfiConverterBoolean.write(value.`memoriesEnabled`, buf)
     }
 }
 
@@ -3252,6 +3260,15 @@ sealed class AppAction {
         companion object
     }
     
+    /**
+     * Enable or disable automatic memory extraction after each conversation (MEM-TOGGLE-01).
+     * Persisted as "1"/"0" in the settings table under key "memories_enabled".
+     */
+    data class SetMemoriesEnabled(
+        val `enabled`: kotlin.Boolean) : AppAction() {
+        companion object
+    }
+    
 
     
     companion object
@@ -3398,6 +3415,9 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 )
             49 -> AppAction.SetBraveApiKey(
                 FfiConverterString.read(buf),
+                )
+            50 -> AppAction.SetMemoriesEnabled(
+                FfiConverterBoolean.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
@@ -3749,6 +3769,13 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterString.allocationSize(value.`apiKey`)
             )
         }
+        is AppAction.SetMemoriesEnabled -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterBoolean.allocationSize(value.`enabled`)
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -3998,6 +4025,11 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             is AppAction.SetBraveApiKey -> {
                 buf.putInt(49)
                 FfiConverterString.write(value.`apiKey`, buf)
+                Unit
+            }
+            is AppAction.SetMemoriesEnabled -> {
+                buf.putInt(50)
+                FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
