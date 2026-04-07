@@ -1036,7 +1036,7 @@ fn parse_ohttp_key_config(bytes: &[u8]) -> Result<[u8; 32], LlmError> {
         u16::from_be_bytes([bytes[public_key_end], bytes[public_key_end + 1]]) as usize;
     let suites_start = public_key_end + 2;
     let suites_end = suites_start + cipher_suites_len;
-    if bytes.len() < suites_end || cipher_suites_len < 4 || cipher_suites_len % 4 != 0 {
+    if bytes.len() < suites_end || cipher_suites_len < 4 || !cipher_suites_len.is_multiple_of(4) {
         return Err(LlmError::NetworkError {
             reason: "Invalid HPKE cipher suite list from endpoint".to_string(),
         });

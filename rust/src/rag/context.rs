@@ -1,8 +1,8 @@
-/// Context injection into LLM system prompts for RAG.
-///
-/// Phase 8 (D-05, D-06, LRAG-05): builds the augmented system prompt by
-/// prepending retrieved chunk text in a structured XML block before the
-/// base system prompt.
+//! Context injection into LLM system prompts for RAG.
+//!
+//! Phase 8 (D-05, D-06, LRAG-05): builds the augmented system prompt by
+//! prepending retrieved chunk text in a structured XML block before the
+//! base system prompt.
 
 /// Default number of top-k chunks to retrieve for context injection.
 pub const DEFAULT_TOP_K: usize = 4;

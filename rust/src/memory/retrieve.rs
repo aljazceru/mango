@@ -1,7 +1,7 @@
-/// Memory retrieval and system prompt injection for Phase 21.
-///
-/// Mirrors the pattern from `rag/context.rs` (`build_system_with_context`)
-/// but operates on the `memories` table rather than document chunks.
+//! Memory retrieval and system prompt injection for Phase 21.
+//!
+//! Mirrors the pattern from `rag/context.rs` (`build_system_with_context`)
+//! but operates on the `memories` table rather than document chunks.
 
 /// Default number of top-k memories to retrieve for injection.
 pub const DEFAULT_MEMORY_TOP_K: usize = 5;

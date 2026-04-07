@@ -271,7 +271,7 @@ fn dispatch_search_documents(
     let top_k = args
         .get("top_k")
         .and_then(|v| v.as_i64())
-        .map(|n| n.max(1).min(20) as usize)
+        .map(|n| n.clamp(1, 20) as usize)
         .unwrap_or(4);
 
     // Embed the query using the embedding provider

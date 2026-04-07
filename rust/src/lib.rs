@@ -325,7 +325,7 @@ pub enum OnboardingStep {
 /// and attestation demo. Carried in AppState so the UI can render validation
 /// spinners and error messages without additional queries.
 /// UniFFI-exported as a Record so all platforms can destructure the fields.
-#[derive(uniffi::Record, Clone, Debug)]
+#[derive(uniffi::Record, Clone, Debug, Default)]
 pub struct OnboardingState {
     /// The backend ID selected or entered by the user during BackendSetup.
     pub selected_backend_id: Option<String>,
@@ -341,19 +341,6 @@ pub struct OnboardingState {
     pub validating_api_key: bool,
     /// Error message from the last failed API key validation. Cleared on retry.
     pub api_key_error: Option<String>,
-}
-
-impl Default for OnboardingState {
-    fn default() -> Self {
-        Self {
-            selected_backend_id: None,
-            attestation_stage: None,
-            attestation_result: None,
-            attestation_tee_label: None,
-            validating_api_key: false,
-            api_key_error: None,
-        }
-    }
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
@@ -1071,9 +1058,7 @@ fn spawn_health_check(
                     .unwrap_or_default()
                     .into_iter()
                     .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(str::to_owned))
-                    .filter(|id| {
-                        model_prefix_filter.map_or(true, |prefix| id.starts_with(prefix))
-                    })
+                    .filter(|id| model_prefix_filter.is_none_or(|prefix| id.starts_with(prefix)))
                     .collect::<Vec<String>>();
                 let preview: Vec<&str> = models.iter().take(5).map(|s| s.as_str()).collect();
                 log::debug!(target: "health_check", "[health_check] backend={} model_count={} models_preview={:?}", backend_id, models.len(), preview);
@@ -2302,10 +2287,12 @@ impl FfiApp {
             // Build initial AppState with conversations and agent sessions.
             // backends and active_backend_id will be set after router init below.
             let active_backend_id = active_id;
-            let mut initial_state = AppState::default();
-            initial_state.conversations = conversations;
-            initial_state.agent_sessions = agent_sessions;
-            initial_state.embedding_status = embedding_status;
+            let mut initial_state = AppState {
+                conversations,
+                agent_sessions,
+                embedding_status,
+                ..AppState::default()
+            };
 
             // Initialize FailoverRouter with health state loaded from SQLite
             let mut router = llm::FailoverRouter::new();
@@ -3504,18 +3491,15 @@ impl FfiApp {
                                 let mut chunk_rowids: Vec<i64> = Vec::new();
                                 let mut chunk_texts: Vec<String> = Vec::new();
                                 for (i, chunk) in chunks.iter().enumerate() {
-                                    match persistence::queries::insert_chunk(
+                                    if let Ok(rowid) = persistence::queries::insert_chunk(
                                         actor_state.db.conn(),
                                         &document_id,
                                         i as i64,
                                         &chunk.text,
                                         chunk.char_offset as i64,
                                     ) {
-                                        Ok(rowid) => {
-                                            chunk_rowids.push(rowid);
-                                            chunk_texts.push(chunk.text.clone());
-                                        }
-                                        Err(_) => {}
+                                        chunk_rowids.push(rowid);
+                                        chunk_texts.push(chunk.text.clone());
                                     }
                                 }
 
@@ -3952,9 +3936,7 @@ impl FfiApp {
                                     {
                                         let bid = extraction_backend_id
                                             .as_ref()
-                                            .or_else(|| {
-                                                actor_state.app_state.active_backend_id.as_ref()
-                                            });
+                                            .or(actor_state.app_state.active_backend_id.as_ref());
                                         if let Some(bid) = bid {
                                             if let Some(backend) = actor_state
                                                 .backends

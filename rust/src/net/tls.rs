@@ -47,7 +47,7 @@ pub fn live_tls_public_key_fp(response: &reqwest::Response) -> Result<String, Tl
         .get::<TlsInfo>()
         .and_then(|info| info.peer_certificate())
         .ok_or_else(|| TlsPinError::InvalidCertificate("missing tls peer certificate".to_string()))
-        .and_then(|der| certificate_public_key_fp_from_der(der.as_ref()))
+        .and_then(certificate_public_key_fp_from_der)
 }
 
 pub fn pinned_reqwest_client(

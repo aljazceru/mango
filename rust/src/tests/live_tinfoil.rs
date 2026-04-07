@@ -143,8 +143,7 @@ fn live_streaming_tinfoil() {
             let last = state
                 .messages
                 .iter()
-                .filter(|m| m.role == "assistant")
-                .last()
+                .rfind(|m| m.role == "assistant")
                 .unwrap();
             eprintln!("OK: Tinfoil streaming response: {:?}", last.content);
             return;
@@ -251,8 +250,7 @@ fn live_e2e_tinfoil() {
             let last = state
                 .messages
                 .iter()
-                .filter(|m| m.role == "assistant")
-                .last()
+                .rfind(|m| m.role == "assistant")
                 .unwrap();
             eprintln!("Step 2/3: Streaming OK — {:?}", last.content);
             break;

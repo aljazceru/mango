@@ -191,6 +191,7 @@ fn manager_update_stream(manager: &AppManager) -> impl iced::futures::Stream<Ite
 
 // ── App ─────────────────────────────────────────────────────────────────────
 
+#[allow(clippy::large_enum_variant)]
 enum App {
     BootError {
         error: String,
@@ -248,6 +249,7 @@ enum App {
     },
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone)]
 enum Message {
     CoreUpdated,
@@ -319,6 +321,7 @@ enum Message {
     OnboardingRetryAttestation,
     OnboardingToggleLearnMore,
     OnboardingSkip,
+    #[allow(dead_code)]
     RunSetupWizard,
     // Documents screen messages (Phase 8, LRAG-06)
     OpenDocuments,
@@ -327,6 +330,7 @@ enum Message {
     ToggleDocumentAttachment(String),
     ToggleDocAttachmentOverlay,
     // Memory screen messages (Phase 23, MEM-04/05/06)
+    #[allow(dead_code)]
     OpenMemories,
     MemoryStartEdit(String, String),  // (memory_id, full_content)
     MemoryEditChanged(String),

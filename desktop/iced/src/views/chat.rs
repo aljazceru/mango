@@ -19,6 +19,7 @@ fn md_settings(theme: &Theme) -> markdown::Settings {
     markdown::Settings::with_style(markdown::Style::from_palette(theme.palette()))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn chat_view<'a>(
     state: &'a AppState,
     theme: &'a Theme,
@@ -224,7 +225,7 @@ pub fn chat_view<'a>(
         let error_bubble = build_error_bubble(err, vc);
         column![msg_column, error_bubble].spacing(4).into()
     } else {
-        msg_column.into()
+        msg_column
     };
 
     let messages_scroll = scrollable(thread_with_error)
@@ -332,6 +333,7 @@ pub fn chat_view<'a>(
         .into()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_message<'a>(
     msg: &'a UiMessage,
     is_last: bool,
@@ -447,7 +449,6 @@ fn render_assistant_message<'a>(
             } else {
                 markdown::view(items.iter(), md_settings(theme))
                     .map(|_uri| Message::ToggleAttestationDetail)
-                    .into()
             }
         } else {
             // Not yet parsed (e.g., freshly received) -- show plain text
@@ -527,14 +528,14 @@ fn build_md_view<'a>(
             iced::widget::Space::new().into()
         }
     } else {
-        let md_elem = markdown::view(items_vec.into_iter(), md_settings(theme))
+        let md_elem = markdown::view(items_vec, md_settings(theme))
             .map(|_uri| Message::ToggleAttestationDetail);
         if with_cursor {
             column![md_elem, text(STREAM_CURSOR).size(16)]
                 .spacing(0)
                 .into()
         } else {
-            md_elem.into()
+            md_elem
         }
     }
 }

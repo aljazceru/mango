@@ -1,5 +1,6 @@
 package dev.disobey.mango.ui
 
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -52,6 +53,7 @@ class AgentWorker(
         return Result.success()
     }
 
+    @SuppressLint("NotificationPermission")
     private fun postCompletionNotification(
         context: Context,
         sessionId: String,
@@ -99,7 +101,16 @@ class AgentWorker(
             .setAutoCancel(true)
             .build()
 
-        notificationManager.notify(sessionId.hashCode(), notification)
+        val hasNotificationPermission =
+            android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU ||
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        if (hasNotificationPermission) {
+            notificationManager.notify(sessionId.hashCode(), notification)
+        }
     }
 }
 

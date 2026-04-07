@@ -280,7 +280,7 @@ async fn stream_decrypted_sse(
                             seq = seq.saturating_add(1);
                             sse.push_str(&String::from_utf8_lossy(&plaintext));
                             while let Some(event) = take_sse_event(&mut sse) {
-                                if !handle_sse_event(&event, &core_tx)? {
+                                if !handle_sse_event(&event, core_tx)? {
                                     let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
                                         crate::llm::streaming::InternalEvent::StreamDone,
                                     )));
@@ -490,7 +490,7 @@ async fn parse_problem_response(response: reqwest::Response) -> (u16, String, Op
 }
 
 fn map_plain_error_body(status: u16, body_text: &str, problem: Option<&ProblemDetails>) -> LlmError {
-    let parsed = serde_json::from_str::<Value>(&body_text).ok();
+    let parsed = serde_json::from_str::<Value>(body_text).ok();
     let message = parsed
         .as_ref()
         .and_then(|value| value.get("error"))

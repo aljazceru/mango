@@ -1,8 +1,8 @@
-/// Fixed-size text chunking with overlap for the RAG pipeline.
-///
-/// Phase 8 (D-01, D-02): produces overlapping chunks from a document so nearby
-/// context is always present at retrieval time. Chunk boundaries are snapped to
-/// whitespace to avoid splitting mid-word.
+//! Fixed-size text chunking with overlap for the RAG pipeline.
+//!
+//! Phase 8 (D-01, D-02): produces overlapping chunks from a document so nearby
+//! context is always present at retrieval time. Chunk boundaries are snapped to
+//! whitespace to avoid splitting mid-word.
 
 /// Default chunk size in approximate tokens (chars / 4).
 pub const DEFAULT_MAX_TOKENS: usize = 512;
