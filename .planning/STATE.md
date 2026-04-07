@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 27-00-PLAN.md
-last_updated: "2026-04-07T15:12:05.123Z"
+stopped_at: Completed 27-01-PLAN.md
+last_updated: "2026-04-07T15:18:58.344Z"
 last_activity: 2026-04-07
 progress:
   total_phases: 8
   completed_phases: 7
   total_plans: 20
-  completed_plans: 17
+  completed_plans: 18
   percent: 25
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 27 (add-optional-tool-use-to-chat) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-04-07
 
@@ -67,6 +67,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 26 P02 | 7min | 2 tasks | 8 files |
 | Phase 26 P03 | 15min | 1 tasks | 5 files |
 | Phase 27-add-optional-tool-use-to-chat P00 | 5min | 1 tasks | 2 files |
+| Phase 27 P01 | 10min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -105,6 +106,8 @@ Key architectural context for v2.0:
 - [Phase 26]: Helper functions duplicated into sub-screen files (not shared util) to keep each screen self-contained for v1
 - [Phase 26]: Android provider helpers use Providers suffix in name to avoid package-level collision after SettingsScreen helpers removed
 - [Phase 27-add-optional-tool-use-to-chat]: Wave 0 stubs intentionally do not compile until Plan 01 adds tools_enabled field, update_conversation_tools_enabled, and build_chat_tools
+- [Phase 27]: ChatCompletionTools::Custom variant handled with pass-through in build_chat_tools filter for forward-compatibility
+- [Phase 27]: LoadConversation uses list_conversations lookup for tools_enabled rather than a dedicated single-row query
 
 ### Roadmap Evolution
 
@@ -129,6 +132,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-07T15:12:05.121Z
-Stopped at: Completed 27-00-PLAN.md
+Last session: 2026-04-07T15:18:58.341Z
+Stopped at: Completed 27-01-PLAN.md
 Resume file: None

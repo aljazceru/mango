@@ -172,11 +172,11 @@ Plans:
 **Goal:** Chat conversations can optionally use LLM tool calling (web search, URL fetch, calculator, file ops) via a per-conversation toggle, reusing agent tool infrastructure with a non-streaming first round for tool detection and streaming follow-up for the final response
 **Requirements**: CHAT-TOOL-01, CHAT-TOOL-02, CHAT-TOOL-03, CHAT-TOOL-04, CHAT-TOOL-05, CHAT-TOOL-06, CHAT-TOOL-07, CHAT-TOOL-08
 **Depends on:** Phase 26
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 Plans:
 - [x] 27-00-PLAN.md — Wave 0: test stubs for migration, persistence, and tool subset builder
-- [ ] 27-01-PLAN.md — Migration V16, persistence queries, build_chat_tools, SetConversationToolsEnabled action, unit tests
+- [x] 27-01-PLAN.md — Migration V16, persistence queries, build_chat_tools, SetConversationToolsEnabled action, unit tests
 - [ ] 27-02-PLAN.md — InternalEvent variants, spawn_chat_tool_round, do_send_message tool branch, ChatToolCallsReady handler
 - [ ] 27-03-PLAN.md — UniFFI bindings regeneration, tools toggle UI on iOS/Android/Desktop
 **UI hint**: yes
