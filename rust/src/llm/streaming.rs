@@ -73,6 +73,25 @@ pub enum InternalEvent {
         /// Each string is one extracted memory fact. Empty vec means nothing to store.
         memories: Vec<String>,
     },
+    /// Non-streaming tool round returned tool calls (Phase 27, CHAT-TOOL-04).
+    /// Actor thread dispatches tools and spawns streaming follow-up.
+    /// CRITICAL: Tool dispatch MUST happen on actor thread, NOT inside async task
+    /// (dispatch_tools calls runtime.block_on which panics inside Tokio).
+    ChatToolCallsReady {
+        conv_id: String,
+        tool_calls: Vec<async_openai::types::chat::ChatCompletionMessageToolCall>,
+        /// Full ChatCompletionRequestMessage history up to and including user message.
+        /// Actor appends assistant tool_calls msg + tool result msgs, then spawns streaming.
+        pre_tool_messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage>,
+        backend_id: String,
+        model: String,
+    },
+    /// Non-streaming tool round returned a final answer (no tools called) (Phase 27).
+    /// Actor emits the text as StreamChunk + StreamDone.
+    ChatToolNone {
+        conv_id: String,
+        text: String,
+    },
 }
 
 /// Spawn an async-openai streaming task on the given Tokio runtime.
@@ -84,7 +103,7 @@ pub enum InternalEvent {
 /// - `runtime`: the Tokio runtime owned by the actor thread
 /// - `backend`: which provider to use (base_url + api_key)
 /// - `model`: model ID string
-/// - `messages`: conversation history
+/// - `messages`: conversation history as simple ChatMessage types (converted internally)
 /// - `core_tx`: flume sender for InternalEvent delivery back to the actor
 /// - `semaphore`: optional per-backend concurrency limiter; permit acquired at task start
 pub fn spawn_streaming_task(
@@ -96,13 +115,10 @@ pub fn spawn_streaming_task(
     core_tx: flume::Sender<crate::CoreMsg>,
     semaphore: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 ) -> CancellationToken {
-    use super::error::map_openai_error;
     use async_openai::types::chat::{
         ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
         ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
-        CreateChatCompletionRequestArgs,
     };
-    use futures::StreamExt;
 
     let cancel_token = CancellationToken::new();
     let token_for_task = cancel_token.clone();
@@ -111,18 +127,15 @@ pub fn spawn_streaming_task(
     let transport = backend.transport_kind();
     let base_url = backend.base_url.trim_end_matches('/').to_string();
     let model = model.to_string();
-    let pinned_tls_public_key_fp = pinned_tls_public_key_fp.clone();
 
     log::debug!(target: "streaming", "[streaming] connection setup base_url={} model={}", base_url, model);
 
     runtime.spawn(async move {
         // Acquire concurrency permit -- queues if semaphore is full (per D-02).
-        // The permit is held for the entire streaming task duration and released on drop.
         let _permit = if let Some(sem) = semaphore {
             match sem.acquire_owned().await {
                 Ok(permit) => Some(permit),
                 Err(_) => {
-                    // Semaphore closed -- should not happen in normal operation
                     let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
                         InternalEvent::StreamError {
                             error: LlmError::NetworkError {
@@ -160,20 +173,7 @@ pub fn spawn_streaming_task(
             return;
         }
 
-        let make_client = |pin: Option<&str>| {
-            transport.build_openai_client(&backend, pin, std::time::Duration::from_secs(60))
-        };
-        let (client, used_pin) = match make_client(pinned_tls_public_key_fp.as_deref()) {
-            Ok(client) => client,
-            Err(error) => {
-                let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                    InternalEvent::StreamError { error },
-                )));
-                return;
-            }
-        };
-
-        // Convert our ChatMessage types to async-openai request message types
+        // Convert ChatMessage types to async-openai request message types
         let mut openai_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
         for msg in &messages {
             let result: Result<ChatCompletionRequestMessage, String> = match msg.role {
@@ -206,123 +206,301 @@ pub fn spawn_streaming_task(
             }
         }
 
-        // Build the streaming request
-        let request = match CreateChatCompletionRequestArgs::default()
-            .model(model.as_str())
-            .messages(openai_messages)
-            .stream(true)
-            .build()
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let err_msg = e.to_string();
-                let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                    InternalEvent::StreamError {
-                        error: LlmError::NetworkError { reason: err_msg },
-                    },
-                )));
-                return;
-            }
-        };
+        run_streaming_with_api_messages(
+            backend,
+            transport,
+            base_url,
+            model,
+            openai_messages,
+            pinned_tls_public_key_fp,
+            token_for_task,
+            core_tx,
+        )
+        .await;
+    });
 
-        let mut stream = match client.chat().create_stream(request.clone()).await {
-            Ok(s) => s,
-            Err(e) if used_pin => {
-                let mapped = map_openai_error(e);
-                log::warn!(
-                    target: "streaming",
-                    "[streaming] pinned stream open failed base_url={} model={} error={} retrying unpinned",
-                    base_url,
-                    model,
-                    mapped
-                );
-                let (retry_client, _) = match make_client(None) {
-                    Ok(client) => client,
-                    Err(error) => {
-                        let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                            InternalEvent::StreamError { error },
-                        )));
-                        return;
-                    }
-                };
-                match retry_client.chat().create_stream(request).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let mapped = map_openai_error(e);
-                        log::warn!(target: "streaming", "[streaming] failed to open stream base_url={} model={} error={}", base_url, model, mapped);
-                        let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                            InternalEvent::StreamError {
-                                error: mapped,
-                            },
-                        )));
-                        return;
-                    }
-                }
-            }
-            Err(e) => {
-                let mapped = map_openai_error(e);
-                log::warn!(target: "streaming", "[streaming] failed to open stream base_url={} model={} error={}", base_url, model, mapped);
-                let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                    InternalEvent::StreamError {
-                        error: mapped,
-                    },
-                )));
-                return;
-            }
-        };
+    cancel_token
+}
 
-        // Consume the SSE stream with cooperative cancellation support (per Pattern 5).
-        // tokio::select! races the cancellation signal against the next chunk.
-        loop {
-            tokio::select! {
-                biased;  // check cancellation first to avoid processing extra chunks
-                _ = token_for_task.cancelled() => {
-                    log::debug!(target: "streaming", "[streaming] stream cancelled base_url={} model={}", base_url, model);
+/// Spawn a streaming task using async-openai ChatCompletionRequestMessage types directly.
+///
+/// Used by the ChatToolCallsReady handler (Phase 27) to avoid lossy conversion of
+/// Tool and Assistant-with-tool-calls messages through the simpler ChatMessage type.
+/// Messages from the tool round already contain Tool-role entries that must be passed
+/// to the model verbatim for the follow-up streaming response.
+///
+/// For Tinfoil/PPQ backends (which have custom streaming paths that accept ChatMessage),
+/// the messages are converted via best-effort: System/User/Assistant roles are kept,
+/// Tool-role messages are summarised as assistant messages so context is not lost.
+pub fn spawn_streaming_task_from_api_messages(
+    runtime: &tokio::runtime::Runtime,
+    backend: &super::backend::BackendConfig,
+    model: &str,
+    messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage>,
+    pinned_tls_public_key_fp: Option<String>,
+    core_tx: flume::Sender<crate::CoreMsg>,
+    semaphore: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+) -> CancellationToken {
+    let cancel_token = CancellationToken::new();
+    let token_for_task = cancel_token.clone();
+
+    let backend = backend.clone();
+    let transport = backend.transport_kind();
+    let base_url = backend.base_url.trim_end_matches('/').to_string();
+    let model = model.to_string();
+
+    log::debug!(target: "streaming", "[streaming/tool-followup] connection setup base_url={} model={}", base_url, model);
+
+    runtime.spawn(async move {
+        // Acquire concurrency permit
+        let _permit = if let Some(sem) = semaphore {
+            match sem.acquire_owned().await {
+                Ok(permit) => Some(permit),
+                Err(_) => {
                     let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                        InternalEvent::StreamCancelled,
+                        InternalEvent::StreamError {
+                            error: LlmError::NetworkError {
+                                reason: "Concurrency limiter closed".into(),
+                            },
+                        },
                     )));
-                    break;
+                    return;
                 }
-                chunk = stream.next() => {
-                    match chunk {
-                        Some(Ok(response)) => {
-                            // Extract delta content from first choice (SSE chunk)
-                            if let Some(content) = response
-                                .choices
-                                .first()
-                                .and_then(|c| c.delta.content.as_deref())
-                            {
-                                let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                                    InternalEvent::StreamChunk {
-                                        token: content.to_string(),
-                                    },
-                                )));
-                            }
-                        }
-                        Some(Err(e)) => {
-                            // Mid-stream error -- per D-12 the partial message is preserved
-                            let mapped = map_openai_error(e);
-                            log::warn!(target: "streaming", "[streaming] stream error base_url={} model={} error={}", base_url, model, mapped);
+            }
+        } else {
+            None
+        };
+
+        if transport == super::transport::ProviderTransportKind::TinfoilSecure {
+            // Tinfoil backend takes ChatMessage -- convert API messages best-effort.
+            // Tool-role messages are not representable in ChatMessage; they are dropped
+            // since their semantic content was already injected into the assistant turn.
+            let chat_msgs = api_messages_to_chat_messages(&messages);
+            crate::llm::tinfoil_secure::run_streaming_chat_completion(
+                backend,
+                model,
+                chat_msgs,
+                token_for_task,
+                core_tx,
+            )
+            .await;
+            return;
+        }
+        if transport == super::transport::ProviderTransportKind::PpqPrivateE2ee {
+            let chat_msgs = api_messages_to_chat_messages(&messages);
+            crate::llm::ppq_private::run_streaming_chat_completion(
+                backend,
+                model,
+                chat_msgs,
+                token_for_task,
+                core_tx,
+            )
+            .await;
+            return;
+        }
+
+        // Standard OpenAI-compatible path: pass API messages directly, no conversion needed.
+        run_streaming_with_api_messages(
+            backend,
+            transport,
+            base_url,
+            model,
+            messages,
+            pinned_tls_public_key_fp,
+            token_for_task,
+            core_tx,
+        )
+        .await;
+    });
+
+    cancel_token
+}
+
+/// Convert async-openai ChatCompletionRequestMessage list to simple ChatMessage list.
+///
+/// Used as a best-effort fallback for custom backends (Tinfoil, PPQ) that only accept
+/// ChatMessage. Tool-role messages are converted to assistant messages with a summary
+/// of the tool result so the model has some context about what was executed.
+fn api_messages_to_chat_messages(
+    messages: &[async_openai::types::chat::ChatCompletionRequestMessage],
+) -> Vec<ChatMessage> {
+    use async_openai::types::chat::ChatCompletionRequestMessage;
+
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            ChatCompletionRequestMessage::System(s) => {
+                let content = match &s.content {
+                    async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(t) => t.clone(),
+                    _ => return None,
+                };
+                Some(ChatMessage { role: ChatRole::System, content })
+            }
+            ChatCompletionRequestMessage::User(u) => {
+                let content = match &u.content {
+                    async_openai::types::chat::ChatCompletionRequestUserMessageContent::Text(t) => t.clone(),
+                    _ => return None,
+                };
+                Some(ChatMessage { role: ChatRole::User, content })
+            }
+            ChatCompletionRequestMessage::Assistant(a) => {
+                let content = match a.content.as_ref() {
+                    Some(async_openai::types::chat::ChatCompletionRequestAssistantMessageContent::Text(t)) => t.clone(),
+                    _ => String::new(),
+                };
+                Some(ChatMessage { role: ChatRole::Assistant, content })
+            }
+            ChatCompletionRequestMessage::Tool(t) => {
+                // Tool result -- represent as assistant context so the model knows the outcome
+                let content = match &t.content {
+                    async_openai::types::chat::ChatCompletionRequestToolMessageContent::Text(s) => {
+                        format!("[tool result]: {}", s)
+                    }
+                    _ => "[tool result]".to_string(),
+                };
+                Some(ChatMessage { role: ChatRole::Assistant, content })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Inner async function that runs the OpenAI-compatible streaming request.
+///
+/// Shared between `spawn_streaming_task` (after ChatMessage conversion) and
+/// `spawn_streaming_task_from_api_messages` (direct API message types).
+/// Handles client construction, TLS pinning retry, and SSE consumption loop.
+async fn run_streaming_with_api_messages(
+    backend: super::backend::BackendConfig,
+    transport: super::transport::ProviderTransportKind,
+    base_url: String,
+    model: String,
+    messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage>,
+    pinned_tls_public_key_fp: Option<String>,
+    token_for_task: CancellationToken,
+    core_tx: flume::Sender<crate::CoreMsg>,
+) {
+    use super::error::map_openai_error;
+    use async_openai::types::chat::CreateChatCompletionRequestArgs;
+    use futures::StreamExt;
+
+    let make_client = |pin: Option<&str>| {
+        transport.build_openai_client(&backend, pin, std::time::Duration::from_secs(60))
+    };
+    let (client, used_pin) = match make_client(pinned_tls_public_key_fp.as_deref()) {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                InternalEvent::StreamError { error },
+            )));
+            return;
+        }
+    };
+
+    // Build the streaming request
+    let request = match CreateChatCompletionRequestArgs::default()
+        .model(model.as_str())
+        .messages(messages)
+        .stream(true)
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let err_msg = e.to_string();
+            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                InternalEvent::StreamError {
+                    error: LlmError::NetworkError { reason: err_msg },
+                },
+            )));
+            return;
+        }
+    };
+
+    let mut stream = match client.chat().create_stream(request.clone()).await {
+        Ok(s) => s,
+        Err(e) if used_pin => {
+            let mapped = map_openai_error(e);
+            log::warn!(
+                target: "streaming",
+                "[streaming] pinned stream open failed base_url={} model={} error={} retrying unpinned",
+                base_url,
+                model,
+                mapped
+            );
+            let (retry_client, _) = match make_client(None) {
+                Ok(client) => client,
+                Err(error) => {
+                    let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                        InternalEvent::StreamError { error },
+                    )));
+                    return;
+                }
+            };
+            match retry_client.chat().create_stream(request).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let mapped = map_openai_error(e);
+                    log::warn!(target: "streaming", "[streaming] failed to open stream base_url={} model={} error={}", base_url, model, mapped);
+                    let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                        InternalEvent::StreamError { error: mapped },
+                    )));
+                    return;
+                }
+            }
+        }
+        Err(e) => {
+            let mapped = map_openai_error(e);
+            log::warn!(target: "streaming", "[streaming] failed to open stream base_url={} model={} error={}", base_url, model, mapped);
+            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                InternalEvent::StreamError { error: mapped },
+            )));
+            return;
+        }
+    };
+
+    // Consume the SSE stream with cooperative cancellation support (per Pattern 5).
+    loop {
+        tokio::select! {
+            biased;  // check cancellation first to avoid processing extra chunks
+            _ = token_for_task.cancelled() => {
+                log::debug!(target: "streaming", "[streaming] stream cancelled base_url={} model={}", base_url, model);
+                let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                    InternalEvent::StreamCancelled,
+                )));
+                break;
+            }
+            chunk = stream.next() => {
+                match chunk {
+                    Some(Ok(response)) => {
+                        if let Some(content) = response
+                            .choices
+                            .first()
+                            .and_then(|c| c.delta.content.as_deref())
+                        {
                             let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                                InternalEvent::StreamError {
-                                    error: mapped,
+                                InternalEvent::StreamChunk {
+                                    token: content.to_string(),
                                 },
                             )));
-                            break;
                         }
-                        None => {
-                            // Stream ended naturally ([DONE] sentinel received by async-openai)
-                            log::debug!(target: "streaming", "[streaming] stream completed base_url={} model={}", base_url, model);
-                            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                                InternalEvent::StreamDone,
-                            )));
-                            break;
-                        }
+                    }
+                    Some(Err(e)) => {
+                        let mapped = map_openai_error(e);
+                        log::warn!(target: "streaming", "[streaming] stream error base_url={} model={} error={}", base_url, model, mapped);
+                        let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                            InternalEvent::StreamError { error: mapped },
+                        )));
+                        break;
+                    }
+                    None => {
+                        log::debug!(target: "streaming", "[streaming] stream completed base_url={} model={}", base_url, model);
+                        let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                            InternalEvent::StreamDone,
+                        )));
+                        break;
                     }
                 }
             }
         }
-    });
-
-    cancel_token
+    }
 }

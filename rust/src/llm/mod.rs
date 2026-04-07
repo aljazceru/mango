@@ -12,5 +12,5 @@ pub use backend::{
 };
 pub use error::LlmError;
 pub use router::FailoverRouter;
-pub use streaming::{spawn_streaming_task, InternalEvent};
+pub use streaming::{spawn_streaming_task, spawn_streaming_task_from_api_messages, InternalEvent};
 pub use transport::ProviderTransportKind;
