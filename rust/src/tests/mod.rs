@@ -6,6 +6,7 @@ mod attestation_integration;
 mod attestation_types;
 mod backend_config;
 mod chat;
+mod chat_tools;
 mod error_mapping;
 mod live_ppq_private;
 mod live_tinfoil;
