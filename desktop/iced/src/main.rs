@@ -341,6 +341,8 @@ enum Message {
     OpenAgents,
     AgentTaskInputChanged(String),
     LaunchAgent,
+    // Toggle tools enabled for the current conversation (Phase 27, CHAT-TOOL-07)
+    ToggleConvToolsEnabled,
     // Window close request (D-12: checkpoint running agent sessions on exit)
     WindowCloseRequested,
     // OS dark/light theme change
@@ -955,6 +957,20 @@ impl App {
                             }
                         }
                         save_preferences(&Preferences { theme_override: new_override });
+                    }
+
+                    // Phase 27: Toggle tools enabled for the current conversation (CHAT-TOOL-07)
+                    Message::ToggleConvToolsEnabled => {
+                        if let Some(conv_id) = state.current_conversation_id.clone() {
+                            let current = state.conversations.iter()
+                                .find(|c| c.id == conv_id)
+                                .map(|c| c.tools_enabled)
+                                .unwrap_or(false);
+                            manager.dispatch(AppAction::SetConversationToolsEnabled {
+                                conversation_id: conv_id,
+                                enabled: !current,
+                            });
+                        }
                     }
 
                     // D-12: On window close, checkpoint all running agent sessions to SQLite

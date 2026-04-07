@@ -15,6 +15,7 @@ struct ChatView: View {
     let onClearAttachment: () -> Void
     let onSelectModel: (String) -> Void
     let onSetSystemPrompt: (String?) -> Void
+    let onSetToolsEnabled: (Bool) -> Void
     let onBack: () -> Void
     // Phase 8: per-conversation document attachment (D-08)
     var onAttachDocument: (String) -> Void = { _ in }
@@ -137,6 +138,19 @@ struct ChatView: View {
                     }
                     .font(.subheadline)
                     .accessibilityLabel("Set instructions for this conversation")
+                    // Phase 27: tools toggle (CHAT-TOOL-07)
+                    Toggle(isOn: Binding(
+                        get: { currentConversation?.toolsEnabled ?? false },
+                        set: { newValue in
+                            onSetToolsEnabled(newValue)
+                        }
+                    )) {
+                        Label("Tools", systemImage: "wrench.fill")
+                            .font(.subheadline)
+                    }
+                    .toggleStyle(.button)
+                    .tint(currentConversation?.toolsEnabled == true ? .blue : .secondary)
+                    .accessibilityLabel(currentConversation?.toolsEnabled == true ? "Disable tools" : "Enable tools")
                 }
             }
         }

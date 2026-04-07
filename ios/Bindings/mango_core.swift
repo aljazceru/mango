@@ -1844,6 +1844,12 @@ public struct ConversationSummary {
      * None means no per-conversation override; the global fallback applies at inference time.
      */
     public var systemPrompt: String?
+    /**
+     * Phase 27 (CHAT-TOOL-01): whether tool use is enabled for this conversation.
+     * Loaded from conversations.tools_enabled (MIGRATION_V16). Exposed to UI so the
+     * toggle control can reflect the persisted state without additional queries.
+     */
+    public var toolsEnabled: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1851,13 +1857,19 @@ public struct ConversationSummary {
         /**
          * Per-conversation system prompt ("Instructions"), if set.
          * None means no per-conversation override; the global fallback applies at inference time.
-         */systemPrompt: String?) {
+         */systemPrompt: String?, 
+        /**
+         * Phase 27 (CHAT-TOOL-01): whether tool use is enabled for this conversation.
+         * Loaded from conversations.tools_enabled (MIGRATION_V16). Exposed to UI so the
+         * toggle control can reflect the persisted state without additional queries.
+         */toolsEnabled: Bool) {
         self.id = id
         self.title = title
         self.modelId = modelId
         self.backendId = backendId
         self.updatedAt = updatedAt
         self.systemPrompt = systemPrompt
+        self.toolsEnabled = toolsEnabled
     }
 }
 
@@ -1886,6 +1898,9 @@ extension ConversationSummary: Equatable, Hashable {
         if lhs.systemPrompt != rhs.systemPrompt {
             return false
         }
+        if lhs.toolsEnabled != rhs.toolsEnabled {
+            return false
+        }
         return true
     }
 
@@ -1896,6 +1911,7 @@ extension ConversationSummary: Equatable, Hashable {
         hasher.combine(backendId)
         hasher.combine(updatedAt)
         hasher.combine(systemPrompt)
+        hasher.combine(toolsEnabled)
     }
 }
 
@@ -1913,7 +1929,8 @@ public struct FfiConverterTypeConversationSummary: FfiConverterRustBuffer {
                 modelId: FfiConverterString.read(from: &buf), 
                 backendId: FfiConverterString.read(from: &buf), 
                 updatedAt: FfiConverterInt64.read(from: &buf), 
-                systemPrompt: FfiConverterOptionString.read(from: &buf)
+                systemPrompt: FfiConverterOptionString.read(from: &buf), 
+                toolsEnabled: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -1924,6 +1941,7 @@ public struct FfiConverterTypeConversationSummary: FfiConverterRustBuffer {
         FfiConverterString.write(value.backendId, into: &buf)
         FfiConverterInt64.write(value.updatedAt, into: &buf)
         FfiConverterOptionString.write(value.systemPrompt, into: &buf)
+        FfiConverterBool.write(value.toolsEnabled, into: &buf)
     }
 }
 
@@ -3117,6 +3135,12 @@ public enum AppAction {
      */
     case setMemoriesEnabled(enabled: Bool
     )
+    /**
+     * Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
+     * Persisted in conversations.tools_enabled column via update_conversation_tools_enabled.
+     */
+    case setConversationToolsEnabled(conversationId: String, enabled: Bool
+    )
 }
 
 
@@ -3269,6 +3293,9 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         )
         
         case 50: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 51: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3528,6 +3555,12 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         
         case let .setMemoriesEnabled(enabled):
             writeInt(&buf, Int32(50))
+            FfiConverterBool.write(enabled, into: &buf)
+            
+        
+        case let .setConversationToolsEnabled(conversationId,enabled):
+            writeInt(&buf, Int32(51))
+            FfiConverterString.write(conversationId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         }
