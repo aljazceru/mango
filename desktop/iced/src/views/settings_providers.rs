@@ -36,7 +36,7 @@ fn tee_label(t: &TeeType) -> &'static str {
     }
 }
 
-fn attest_label<'a>(s: &AttestationStatus, vc: crate::theme::ViewColors) -> (&'static str, Color) {
+fn attest_label(s: &AttestationStatus, vc: crate::theme::ViewColors) -> (&'static str, Color) {
     match s {
         AttestationStatus::Verified      => ("Verified",   vc.success),
         AttestationStatus::Unverified    => ("Unverified", vc.muted),

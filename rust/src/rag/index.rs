@@ -67,7 +67,7 @@ impl VectorIndex {
         let pairs = results
             .keys
             .into_iter()
-            .zip(results.distances.into_iter())
+            .zip(results.distances)
             .collect();
         Ok(pairs)
     }

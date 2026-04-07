@@ -1,11 +1,11 @@
-/// Local embedding abstraction for the RAG pipeline.
-///
-/// Phase 8: EmbeddingProvider is a UniFFI callback_interface so mobile platforms
-/// can inject their own native implementation (Core ML on iOS, XNNPACK on Android)
-/// while the Rust core owns the chunking, indexing, and retrieval logic.
-///
-/// Desktop uses DesktopEmbeddingProvider (fastembed + ONNX Runtime CPU EP).
-/// Mobile platforms register a native callback via UniFFI.
+//! Local embedding abstraction for the RAG pipeline.
+//!
+//! Phase 8: EmbeddingProvider is a UniFFI callback_interface so mobile platforms
+//! can inject their own native implementation (Core ML on iOS, XNNPACK on Android)
+//! while the Rust core owns the chunking, indexing, and retrieval logic.
+//!
+//! Desktop uses DesktopEmbeddingProvider (fastembed + ONNX Runtime CPU EP).
+//! Mobile platforms register a native callback via UniFFI.
 
 /// Embedding dimension for all-MiniLM-L6-v2 (quantised and full variants).
 pub const EMBEDDING_DIM: usize = 384;

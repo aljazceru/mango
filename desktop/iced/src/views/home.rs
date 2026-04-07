@@ -1,5 +1,5 @@
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
-use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
+use iced::{Alignment, Background, Border, Element, Length, Padding};
 
 use mango_core::{AppAction, AppState, ConversationSummary, Screen};
 

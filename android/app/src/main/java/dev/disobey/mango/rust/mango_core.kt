@@ -1252,28 +1252,38 @@ private class UniffiJnaCleanable(
 // of the cleaner.
 private fun UniffiCleaner.Companion.create(): UniffiCleaner =
     try {
-        // For safety's sake: if the library hasn't been run in android_cleaner = true
-        // mode, but is being run on Android, then we still need to think about
-        // Android API versions.
-        // So we check if java.lang.ref.Cleaner is there, and use that…
-        java.lang.Class.forName("java.lang.ref.Cleaner")
-        JavaLangRefCleaner()
-    } catch (e: ClassNotFoundException) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            JavaLangRefCleaner()
+        } else {
+            UniffiJnaCleaner()
+        }
+    } catch (_: ReflectiveOperationException) {
         // … otherwise, fallback to the JNA cleaner.
+        UniffiJnaCleaner()
+    } catch (_: LinkageError) {
         UniffiJnaCleaner()
     }
 
 private class JavaLangRefCleaner : UniffiCleaner {
-    val cleaner = java.lang.ref.Cleaner.create()
+    private val cleaner: Any = java.lang.Class
+        .forName("java.lang.ref.Cleaner")
+        .getMethod("create")
+        .invoke(null)
 
-    override fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable =
-        JavaLangRefCleanable(cleaner.register(value, cleanUpTask))
+    override fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable {
+        val cleanable = cleaner.javaClass
+            .getMethod("register", Any::class.java, Runnable::class.java)
+            .invoke(cleaner, value, cleanUpTask)
+        return JavaLangRefCleanable(cleanable)
+    }
 }
 
 private class JavaLangRefCleanable(
-    val cleanable: java.lang.ref.Cleaner.Cleanable
+    private val cleanable: Any
 ) : UniffiCleaner.Cleanable {
-    override fun clean() = cleanable.clean()
+    override fun clean() {
+        cleanable.javaClass.getMethod("clean").invoke(cleanable)
+    }
 }
 
 /**
@@ -5936,5 +5946,4 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
     )
     }
     
-
 
