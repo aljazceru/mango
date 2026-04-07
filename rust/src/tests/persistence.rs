@@ -60,8 +60,8 @@ fn test_migration_v1_to_v2() {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(
-            version, 15,
-            "user_version should be 15 after all migrations (v15 adds memories table)"
+            version, 16,
+            "user_version should be 16 after all migrations (v16 adds tools_enabled column)"
         );
 
         // Verify pre-existing data survived
@@ -156,8 +156,8 @@ fn test_migration_version_increments() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 15,
-        "user_version should be 15 after all migrations (v1+v2+...+v15)"
+        version, 16,
+        "user_version should be 16 after all migrations (v1+v2+...+v16)"
     );
 }
 
@@ -177,8 +177,8 @@ fn test_migration_idempotent() {
             .unwrap();
         // Second open should not re-run migrations, so version stays at 13
         assert_eq!(
-            version, 15,
-            "user_version must still be 15 on second open (idempotent)"
+            version, 16,
+            "user_version must still be 16 on second open (idempotent)"
         );
     }
     let _ = std::fs::remove_file(&tmp);
@@ -235,6 +235,7 @@ fn test_conversation_survives_reopen() {
                 system_prompt: None,
                 created_at: 100,
                 updated_at: 100,
+                tools_enabled: false,
             },
         )
         .unwrap();
@@ -277,6 +278,7 @@ fn test_list_conversations_ordered() {
             system_prompt: None,
             created_at: 100,
             updated_at: 100,
+            tools_enabled: false,
         },
     )
     .unwrap();
@@ -290,6 +292,7 @@ fn test_list_conversations_ordered() {
             system_prompt: None,
             created_at: 200,
             updated_at: 200,
+            tools_enabled: false,
         },
     )
     .unwrap();
@@ -315,6 +318,7 @@ fn test_messages_ordered_by_created_at() {
             system_prompt: None,
             created_at: 1,
             updated_at: 1,
+            tools_enabled: false,
         },
     )
     .unwrap();
@@ -542,6 +546,7 @@ fn test_ffiapp_loads_conversations_from_db() {
                 system_prompt: None,
                 created_at: 1000,
                 updated_at: 2000,
+                tools_enabled: false,
             },
         )
         .unwrap();
@@ -724,8 +729,8 @@ fn test_migration_v11_seeds_ppq_ai_private_transport() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 15,
-        "user_version should be 15 after all migrations including v15"
+        version, 16,
+        "user_version should be 16 after all migrations including v16"
     );
 
     // Query the ppq-ai row directly

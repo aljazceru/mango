@@ -193,6 +193,37 @@ pub fn build_agent_tools() -> Vec<ChatCompletionTools> {
     ]
 }
 
+/// Build the tool subset for chat tool use (Phase 27, CHAT-TOOL-03).
+///
+/// Excludes `finish` (not meaningful in chat context -- chat has no "task complete" signal).
+/// Conditionally includes `search_documents`/`read_document` only when docs are attached
+/// to the conversation (`include_doc_search = true`). Excludes `web_search` when no
+/// Brave API key is configured (`brave_api_key_set = false`).
+///
+/// # Parameters
+/// - `include_doc_search`: true when the active conversation has attached documents
+/// - `brave_api_key_set`: true when a non-empty Brave Search API key is configured
+pub fn build_chat_tools(
+    include_doc_search: bool,
+    brave_api_key_set: bool,
+) -> Vec<ChatCompletionTools> {
+    let all = build_agent_tools();
+    all.into_iter()
+        .filter(|tool| {
+            let name = match tool {
+                ChatCompletionTools::Function(ref t) => t.function.name.as_str(),
+                ChatCompletionTools::Custom(_) => return true, // pass through unknown tool types
+            };
+            match name {
+                "finish" => false,
+                "search_documents" | "read_document" => include_doc_search,
+                "web_search" => brave_api_key_set,
+                _ => true,
+            }
+        })
+        .collect()
+}
+
 /// Dispatch tool calls synchronously on the actor thread.
 ///
 /// Returns a Vec of `(tool_call_id, result_text)` pairs. One pair per call in `calls`.
