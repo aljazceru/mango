@@ -46,8 +46,8 @@ fn test_migration_v6_version() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 15,
-        "user_version should be 15 after all migrations including MIGRATION_V15"
+        version, 16,
+        "user_version should be 16 after all migrations including MIGRATION_V16"
     );
 }
 
@@ -217,6 +217,7 @@ fn insert_test_conversation(db: &Database, id: &str) {
             system_prompt: None,
             created_at: 1000,
             updated_at: 1000,
+            tools_enabled: false,
         },
     )
     .unwrap();

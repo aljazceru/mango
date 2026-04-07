@@ -31,6 +31,9 @@ pub struct ConversationRow {
     pub system_prompt: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Phase 27 (CHAT-TOOL-01): whether tool use is enabled for this conversation.
+    /// Persisted as INTEGER (0/1) in the conversations.tools_enabled column (MIGRATION_V16).
+    pub tools_enabled: bool,
 }
 
 /// A row from the `messages` table.
@@ -92,8 +95,8 @@ pub fn insert_conversation(
     row: &ConversationRow,
 ) -> Result<(), PersistenceError> {
     conn.prepare_cached(
-        "INSERT INTO conversations (id, title, model_id, backend_id, system_prompt, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO conversations (id, title, model_id, backend_id, system_prompt, created_at, updated_at, tools_enabled)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?
     .execute(rusqlite::params![
         row.id,
@@ -103,6 +106,7 @@ pub fn insert_conversation(
         row.system_prompt,
         row.created_at,
         row.updated_at,
+        row.tools_enabled as i64,
     ])?;
     Ok(())
 }
@@ -110,7 +114,7 @@ pub fn insert_conversation(
 /// Return all conversations ordered by `updated_at` descending (newest first).
 pub fn list_conversations(conn: &Connection) -> Result<Vec<ConversationRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, title, model_id, backend_id, system_prompt, created_at, updated_at
+        "SELECT id, title, model_id, backend_id, system_prompt, created_at, updated_at, tools_enabled
          FROM conversations ORDER BY updated_at DESC",
     )?;
     let rows = stmt
@@ -123,10 +127,32 @@ pub fn list_conversations(conn: &Connection) -> Result<Vec<ConversationRow>, Per
                 system_prompt: row.get(4)?,
                 created_at: row.get(5)?,
                 updated_at: row.get(6)?,
+                tools_enabled: row.get::<_, i64>(7)? != 0,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
+///
+/// Updates the `tools_enabled` column and refreshes `updated_at`. Used by the
+/// `SetConversationToolsEnabled` actor action handler.
+pub fn update_conversation_tools_enabled(
+    conn: &Connection,
+    conversation_id: &str,
+    enabled: bool,
+    updated_at: i64,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "UPDATE conversations SET tools_enabled = ?2, updated_at = ?3 WHERE id = ?1",
+    )?
+    .execute(rusqlite::params![
+        conversation_id,
+        enabled as i64,
+        updated_at
+    ])?;
+    Ok(())
 }
 
 /// A row from the `agent_sessions` table.

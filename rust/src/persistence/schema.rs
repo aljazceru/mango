@@ -282,6 +282,16 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE INDEX IF NOT EXISTS idx_memories_conversation ON memories(conversation_id);
 ";
 
+/// Migration v16: add tools_enabled column to conversations table (Phase 27, CHAT-TOOL-01).
+///
+/// Per-conversation toggle for chat tool use. DEFAULT 0 means tools are off by default,
+/// preserving existing behaviour for all pre-Phase-27 conversations. Users opt-in via the
+/// SetConversationToolsEnabled action. The column drives build_chat_tools() call selection
+/// in do_send_message (Plan 02).
+pub const MIGRATION_V16: &str = "
+ALTER TABLE conversations ADD COLUMN tools_enabled INTEGER NOT NULL DEFAULT 0;
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -299,4 +309,5 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V13,
     MIGRATION_V14,
     MIGRATION_V15,
+    MIGRATION_V16,
 ];

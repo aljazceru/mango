@@ -131,6 +131,7 @@ fn test_override_conversation_backend_persists() {
         system_prompt: None,
         created_at: 1000,
         updated_at: 1000,
+        tools_enabled: false,
     };
     queries::insert_conversation(db.conn(), &conv).unwrap();
     // Override the backend to a custom value (backend_id is a plain text field, no FK constraint)

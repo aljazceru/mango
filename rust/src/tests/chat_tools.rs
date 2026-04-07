@@ -77,11 +77,12 @@ fn test_update_conversation_tools_enabled() {
 #[test]
 fn test_build_chat_tools() {
     use crate::agent::tools::build_chat_tools;
-    use async_openai::types::ChatCompletionTools;
+    use async_openai::types::chat::ChatCompletionTools;
 
     let tools = build_chat_tools(false, true);
-    let names: Vec<String> = tools.iter().map(|t| match t {
-        ChatCompletionTools::Function(f) => f.function.name.clone(),
+    let names: Vec<String> = tools.iter().filter_map(|t| match t {
+        ChatCompletionTools::Function(f) => Some(f.function.name.clone()),
+        _ => None,
     }).collect();
 
     assert!(!names.contains(&"finish".to_string()), "chat tools must not contain finish");
@@ -93,11 +94,12 @@ fn test_build_chat_tools() {
 #[test]
 fn test_chat_tools_no_brave() {
     use crate::agent::tools::build_chat_tools;
-    use async_openai::types::ChatCompletionTools;
+    use async_openai::types::chat::ChatCompletionTools;
 
     let tools = build_chat_tools(false, false);
-    let names: Vec<String> = tools.iter().map(|t| match t {
-        ChatCompletionTools::Function(f) => f.function.name.clone(),
+    let names: Vec<String> = tools.iter().filter_map(|t| match t {
+        ChatCompletionTools::Function(f) => Some(f.function.name.clone()),
+        _ => None,
     }).collect();
 
     assert!(!names.contains(&"web_search".to_string()), "chat tools must not contain web_search when brave_api_key_set=false");
@@ -107,11 +109,12 @@ fn test_chat_tools_no_brave() {
 #[test]
 fn test_chat_tools_with_docs() {
     use crate::agent::tools::build_chat_tools;
-    use async_openai::types::ChatCompletionTools;
+    use async_openai::types::chat::ChatCompletionTools;
 
     let tools = build_chat_tools(true, true);
-    let names: Vec<String> = tools.iter().map(|t| match t {
-        ChatCompletionTools::Function(f) => f.function.name.clone(),
+    let names: Vec<String> = tools.iter().filter_map(|t| match t {
+        ChatCompletionTools::Function(f) => Some(f.function.name.clone()),
+        _ => None,
     }).collect();
 
     assert!(names.contains(&"search_documents".to_string()), "chat tools must contain search_documents when include_doc_search=true");
