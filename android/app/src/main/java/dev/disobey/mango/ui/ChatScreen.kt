@@ -79,6 +79,8 @@ fun ChatScreen(
     // Phase 8: per-conversation document attachment (D-08)
     onAttachDocument: (String) -> Unit = {},
     onDetachDocument: (String) -> Unit = {},
+    // Phase 27: tools toggle (CHAT-TOOL-07)
+    onDispatchAction: (AppAction) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val isStreaming = state.busyState is BusyState.Streaming
@@ -130,6 +132,7 @@ fun ChatScreen(
                 onSelectModel = onSelectModel,
                 onShowSystemPrompt = { showSystemPromptSheet = true },
                 onShowDocAttach = { showDocAttachSheet = true },
+                onDispatchAction = onDispatchAction,
             )
         },
         bottomBar = {
@@ -255,6 +258,7 @@ private fun ChatTopBar(
     onSelectModel: (String) -> Unit,
     onShowSystemPrompt: () -> Unit,
     onShowDocAttach: () -> Unit = {},
+    onDispatchAction: (AppAction) -> Unit = {},
 ) {
     val currentConversation = state.currentConversationId?.let { id ->
         state.conversations.firstOrNull { it.id == id }
@@ -341,6 +345,24 @@ private fun ChatTopBar(
                 Text(
                     "Instructions",
                     style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            // Phase 27: tools toggle (CHAT-TOOL-07)
+            val toolsEnabled = state.conversations
+                .firstOrNull { it.id == state.currentConversationId }
+                ?.toolsEnabled ?: false
+            TextButton(onClick = {
+                val convId = state.currentConversationId ?: return@TextButton
+                onDispatchAction(AppAction.SetConversationToolsEnabled(
+                    conversationId = convId,
+                    enabled = !toolsEnabled
+                ))
+            }) {
+                Text(
+                    text = if (toolsEnabled) "Tools [ON]" else "Tools",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (toolsEnabled) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         },

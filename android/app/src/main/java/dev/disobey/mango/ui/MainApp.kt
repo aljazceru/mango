@@ -56,7 +56,8 @@ fun MainApp(
                 onSetSystemPrompt = { prompt -> manager.dispatch(AppAction.SetSystemPrompt(prompt = prompt)) },
                 onBack = { manager.dispatch(AppAction.PopScreen) },
                 onAttachDocument = { docId -> manager.dispatch(AppAction.AttachDocumentToConversation(documentId = docId)) },
-                onDetachDocument = { docId -> manager.dispatch(AppAction.DetachDocumentFromConversation(documentId = docId)) }
+                onDetachDocument = { docId -> manager.dispatch(AppAction.DetachDocumentFromConversation(documentId = docId)) },
+                onDispatchAction = { action -> manager.dispatch(action) }
             )
         }
         is Screen.Home -> {

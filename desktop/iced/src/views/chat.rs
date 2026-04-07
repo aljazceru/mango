@@ -102,10 +102,39 @@ pub fn chat_view<'a>(
             ..Default::default()
         });
 
+    // Tools toggle button (Phase 27, CHAT-TOOL-07)
+    let tools_enabled = state
+        .current_conversation_id
+        .as_deref()
+        .and_then(|cid| state.conversations.iter().find(|c| c.id == cid))
+        .map(|c| c.tools_enabled)
+        .unwrap_or(false);
+    let tools_label = if tools_enabled { "Tools [ON]" } else { "Tools" };
+    let tools_active_bg = vc.accent;
+    let tools_inactive_bg = vc.surface;
+    let tools_text_color = if tools_enabled { Color::WHITE } else { vc.text_dim };
+    let tools_btn = button(text(tools_label).size(13).color(tools_text_color))
+        .on_press(Message::ToggleConvToolsEnabled)
+        .padding(Padding::from([4u16, 10]))
+        .style(move |_theme, _status| button::Style {
+            background: Some(Background::Color(if tools_enabled {
+                tools_active_bg
+            } else {
+                tools_inactive_bg
+            })),
+            border: Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            text_color: tools_text_color,
+            ..Default::default()
+        });
+
     let header_row = row![
         title_elem,
         iced::widget::Space::new().width(Length::Fill),
         badge_elem,
+        tools_btn,
         docs_btn,
         model_picker,
     ]

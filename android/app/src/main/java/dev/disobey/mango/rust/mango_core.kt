@@ -1252,38 +1252,28 @@ private class UniffiJnaCleanable(
 // of the cleaner.
 private fun UniffiCleaner.Companion.create(): UniffiCleaner =
     try {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            JavaLangRefCleaner()
-        } else {
-            UniffiJnaCleaner()
-        }
-    } catch (_: ReflectiveOperationException) {
+        // For safety's sake: if the library hasn't been run in android_cleaner = true
+        // mode, but is being run on Android, then we still need to think about
+        // Android API versions.
+        // So we check if java.lang.ref.Cleaner is there, and use that…
+        java.lang.Class.forName("java.lang.ref.Cleaner")
+        JavaLangRefCleaner()
+    } catch (e: ClassNotFoundException) {
         // … otherwise, fallback to the JNA cleaner.
-        UniffiJnaCleaner()
-    } catch (_: LinkageError) {
         UniffiJnaCleaner()
     }
 
 private class JavaLangRefCleaner : UniffiCleaner {
-    private val cleaner: Any = java.lang.Class
-        .forName("java.lang.ref.Cleaner")
-        .getMethod("create")
-        .invoke(null)
+    val cleaner = java.lang.ref.Cleaner.create()
 
-    override fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable {
-        val cleanable = cleaner.javaClass
-            .getMethod("register", Any::class.java, Runnable::class.java)
-            .invoke(cleaner, value, cleanUpTask)
-        return JavaLangRefCleanable(cleanable)
-    }
+    override fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable =
+        JavaLangRefCleanable(cleaner.register(value, cleanUpTask))
 }
 
 private class JavaLangRefCleanable(
-    private val cleanable: Any
+    val cleanable: java.lang.ref.Cleaner.Cleanable
 ) : UniffiCleaner.Cleanable {
-    override fun clean() {
-        cleanable.javaClass.getMethod("clean").invoke(cleanable)
-    }
+    override fun clean() = cleanable.clean()
 }
 
 /**
@@ -2370,7 +2360,13 @@ data class ConversationSummary (
      * Per-conversation system prompt ("Instructions"), if set.
      * None means no per-conversation override; the global fallback applies at inference time.
      */
-    var `systemPrompt`: kotlin.String?
+    var `systemPrompt`: kotlin.String?, 
+    /**
+     * Phase 27 (CHAT-TOOL-01): whether tool use is enabled for this conversation.
+     * Loaded from conversations.tools_enabled (MIGRATION_V16). Exposed to UI so the
+     * toggle control can reflect the persisted state without additional queries.
+     */
+    var `toolsEnabled`: kotlin.Boolean
 ) {
     
     companion object
@@ -2388,6 +2384,7 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
             FfiConverterString.read(buf),
             FfiConverterLong.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -2397,7 +2394,8 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
             FfiConverterString.allocationSize(value.`modelId`) +
             FfiConverterString.allocationSize(value.`backendId`) +
             FfiConverterLong.allocationSize(value.`updatedAt`) +
-            FfiConverterOptionalString.allocationSize(value.`systemPrompt`)
+            FfiConverterOptionalString.allocationSize(value.`systemPrompt`) +
+            FfiConverterBoolean.allocationSize(value.`toolsEnabled`)
     )
 
     override fun write(value: ConversationSummary, buf: ByteBuffer) {
@@ -2407,6 +2405,7 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
             FfiConverterString.write(value.`backendId`, buf)
             FfiConverterLong.write(value.`updatedAt`, buf)
             FfiConverterOptionalString.write(value.`systemPrompt`, buf)
+            FfiConverterBoolean.write(value.`toolsEnabled`, buf)
     }
 }
 
@@ -3279,6 +3278,16 @@ sealed class AppAction {
         companion object
     }
     
+    /**
+     * Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
+     * Persisted in conversations.tools_enabled column via update_conversation_tools_enabled.
+     */
+    data class SetConversationToolsEnabled(
+        val `conversationId`: kotlin.String, 
+        val `enabled`: kotlin.Boolean) : AppAction() {
+        companion object
+    }
+    
 
     
     companion object
@@ -3427,6 +3436,10 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.read(buf),
                 )
             50 -> AppAction.SetMemoriesEnabled(
+                FfiConverterBoolean.read(buf),
+                )
+            51 -> AppAction.SetConversationToolsEnabled(
+                FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -3786,6 +3799,14 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterBoolean.allocationSize(value.`enabled`)
             )
         }
+        is AppAction.SetConversationToolsEnabled -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`conversationId`)
+                + FfiConverterBoolean.allocationSize(value.`enabled`)
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -4039,6 +4060,12 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             }
             is AppAction.SetMemoriesEnabled -> {
                 buf.putInt(50)
+                FfiConverterBoolean.write(value.`enabled`, buf)
+                Unit
+            }
+            is AppAction.SetConversationToolsEnabled -> {
+                buf.putInt(51)
+                FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
@@ -5946,4 +5973,5 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
     )
     }
     
+
 

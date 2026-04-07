@@ -41,6 +41,11 @@ struct ContentView: View {
                 onClearAttachment: { appManager.dispatch(.clearAttachment) },
                 onSelectModel: { model in appManager.dispatch(.selectModel(modelId: model)) },
                 onSetSystemPrompt: { prompt in appManager.dispatch(.setSystemPrompt(prompt: prompt)) },
+                onSetToolsEnabled: { enabled in
+                    if let convId = appManager.appState.currentConversationId {
+                        appManager.dispatch(.setConversationToolsEnabled(conversationId: convId, enabled: enabled))
+                    }
+                },
                 onBack: { appManager.dispatch(.popScreen) },
                 onAttachDocument: { docId in appManager.dispatch(.attachDocumentToConversation(documentId: docId)) },
                 onDetachDocument: { docId in appManager.dispatch(.detachDocumentFromConversation(documentId: docId)) }
