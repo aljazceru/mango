@@ -1449,6 +1449,78 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         });
     }
 
+    // Phase 27: Chat tool use branch.
+    // When tools are enabled for this conversation and the backend supports tool calling,
+    // run a non-streaming first round to detect tool calls before streaming the answer.
+    if actor_state.current_conv_tools_enabled && backend.supports_tool_use {
+        let brave_key_set = persistence::queries::get_setting(
+            actor_state.db.conn(), "brave_api_key"
+        ).unwrap_or(None).map(|k: String| !k.is_empty()).unwrap_or(false);
+
+        let has_docs = !actor_state.app_state.current_conversation_attached_docs.is_empty();
+
+        let tools = agent::build_chat_tools(has_docs, brave_key_set);
+
+        if !tools.is_empty() {
+            // Convert ChatMessage vec to ChatCompletionRequestMessage vec
+            // for run_agent_step_for_backend (which requires API message types).
+            use async_openai::types::chat::{
+                ChatCompletionRequestMessage,
+                ChatCompletionRequestSystemMessageArgs,
+                ChatCompletionRequestUserMessageArgs,
+                ChatCompletionRequestAssistantMessageArgs,
+            };
+
+            let mut api_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+            for msg in &chat_messages {
+                let api_msg = match msg.role {
+                    llm::streaming::ChatRole::System => {
+                        ChatCompletionRequestSystemMessageArgs::default()
+                            .content(msg.content.as_str())
+                            .build()
+                            .map(ChatCompletionRequestMessage::from)
+                    }
+                    llm::streaming::ChatRole::User => {
+                        ChatCompletionRequestUserMessageArgs::default()
+                            .content(msg.content.as_str())
+                            .build()
+                            .map(ChatCompletionRequestMessage::from)
+                    }
+                    llm::streaming::ChatRole::Assistant => {
+                        ChatCompletionRequestAssistantMessageArgs::default()
+                            .content(msg.content.as_str())
+                            .build()
+                            .map(ChatCompletionRequestMessage::from)
+                    }
+                };
+                if let Ok(m) = api_msg {
+                    api_messages.push(m);
+                }
+            }
+
+            // Set busy state to Loading -- tool round is non-streaming.
+            actor_state.app_state.busy_state = BusyState::Loading {
+                message: "Running tools...".to_string(),
+            };
+            actor_state.app_state.streaming_text = Some(String::new());
+            actor_state.app_state.last_error = None;
+
+            spawn_chat_tool_round(
+                &actor_state.runtime,
+                &backend,
+                &model,
+                api_messages,
+                tools,
+                conv_id.clone(),
+                core_tx.clone(),
+            );
+
+            refresh_backend_summaries(actor_state);
+            return; // Don't fall through to normal streaming
+        }
+        // tools.is_empty() -- no tools available, fall through to normal streaming
+    }
+
     // Set busy state and start streaming
     actor_state.app_state.busy_state = BusyState::Streaming {
         model: model.clone(),
@@ -1467,6 +1539,62 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     );
     actor_state.active_stream_token = Some(token);
     refresh_backend_summaries(actor_state);
+}
+
+// ── Phase 27: Chat tool helpers ───────────────────────────────────────────────
+
+/// Spawn a non-streaming tool detection round for chat (Phase 27, CHAT-TOOL-04).
+///
+/// Calls run_agent_step_for_backend with the chat-specific tool set, then sends
+/// ChatToolCallsReady or ChatToolNone back to the actor loop.
+///
+/// CRITICAL: Tool dispatch (dispatch_tools) MUST happen on the actor thread, not inside
+/// this async task. dispatch_tools calls runtime.block_on internally, which panics when
+/// called from within a Tokio task. This function only runs the LLM non-streaming round;
+/// the actor handles tool dispatch in the ChatToolCallsReady handler.
+fn spawn_chat_tool_round(
+    runtime: &tokio::runtime::Runtime,
+    backend: &llm::BackendConfig,
+    model: &str,
+    messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage>,
+    tools: Vec<async_openai::types::chat::ChatCompletionTools>,
+    conv_id: String,
+    core_tx: flume::Sender<CoreMsg>,
+) {
+    let backend = backend.clone();
+    let model = model.to_string();
+    runtime.spawn(async move {
+        let result = agent::run_agent_step_for_backend(
+            &backend, &model, messages.clone(), tools,
+        ).await;
+        match result {
+            Ok(agent::AgentStepResult::ToolCalls(calls)) => {
+                let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                    llm::InternalEvent::ChatToolCallsReady {
+                        conv_id,
+                        tool_calls: calls,
+                        pre_tool_messages: messages,
+                        backend_id: backend.id.clone(),
+                        model,
+                    }
+                )));
+            }
+            Ok(agent::AgentStepResult::FinalAnswer(text))
+            | Ok(agent::AgentStepResult::FinishTool(text)) => {
+                let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                    llm::InternalEvent::ChatToolNone {
+                        conv_id,
+                        text,
+                    }
+                )));
+            }
+            Err(e) => {
+                let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                    llm::InternalEvent::StreamError { error: e }
+                )));
+            }
+        }
+    });
 }
 
 // ── Phase 9: Agent helpers ────────────────────────────────────────────────────
@@ -4627,6 +4755,140 @@ impl FfiApp {
                                 }
                                 // No AppState rev increment -- memories are invisible in Phase 20 UI
                                 continue;
+                            }
+
+                            llm::InternalEvent::ChatToolCallsReady {
+                                conv_id,
+                                tool_calls,
+                                pre_tool_messages,
+                                backend_id,
+                                model,
+                            } => {
+                                // RACE GUARD: if user switched conversations during the async tool
+                                // detection round, drop the stale event.
+                                if actor_state.app_state.current_conversation_id.as_deref() != Some(&conv_id) {
+                                    log::warn!(
+                                        "ChatToolCallsReady for conv {} but current is {:?}, dropping",
+                                        conv_id, actor_state.app_state.current_conversation_id
+                                    );
+                                    actor_state.app_state.busy_state = BusyState::Idle;
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                use async_openai::types::chat::{
+                                    ChatCompletionMessageToolCalls,
+                                    ChatCompletionRequestAssistantMessageArgs,
+                                    ChatCompletionRequestMessage,
+                                    ChatCompletionRequestToolMessageArgs,
+                                };
+
+                                // Dispatch tools SYNCHRONOUSLY on actor thread.
+                                // dispatch_tools uses runtime.block_on() for async network calls,
+                                // which would panic if called from inside a Tokio task.
+                                let brave_api_key = persistence::queries::get_setting(
+                                    actor_state.db.conn(), "brave_api_key"
+                                ).unwrap_or(None).unwrap_or_default();
+
+                                let tool_results = agent::dispatch_tools(
+                                    &tool_calls,
+                                    actor_state.db.conn(),
+                                    &actor_state.vector_index,
+                                    actor_state.embedding_provider.as_ref(),
+                                    &actor_state.runtime,
+                                    &actor_state.data_dir,
+                                    &brave_api_key,
+                                );
+
+                                // Build full message history: original messages + assistant
+                                // tool_calls turn + tool result messages.
+                                let mut messages = pre_tool_messages;
+
+                                // Wrap tool calls in ChatCompletionMessageToolCalls::Function
+                                // as required by the assistant message builder.
+                                let assistant_tool_calls: Vec<ChatCompletionMessageToolCalls> = tool_calls
+                                    .iter()
+                                    .map(|c| ChatCompletionMessageToolCalls::Function(c.clone()))
+                                    .collect();
+
+                                // Append assistant message with the tool_calls field set.
+                                if let Ok(assistant_msg) =
+                                    ChatCompletionRequestAssistantMessageArgs::default()
+                                        .tool_calls(assistant_tool_calls)
+                                        .build()
+                                        .map(ChatCompletionRequestMessage::from)
+                                {
+                                    messages.push(assistant_msg);
+                                }
+
+                                // Append one tool-result message per dispatched call.
+                                for (tool_call_id, result_text) in &tool_results {
+                                    if let Ok(tool_msg) =
+                                        ChatCompletionRequestToolMessageArgs::default()
+                                            .tool_call_id(tool_call_id.as_str())
+                                            .content(result_text.as_str())
+                                            .build()
+                                            .map(ChatCompletionRequestMessage::from)
+                                    {
+                                        messages.push(tool_msg);
+                                    }
+                                }
+
+                                // Look up the backend for the streaming follow-up.
+                                let backend = actor_state.backends.iter().find(|b| b.id == backend_id).cloned();
+                                let backend = match backend {
+                                    Some(b) => b,
+                                    None => {
+                                        actor_state.app_state.busy_state = BusyState::Idle;
+                                        actor_state.app_state.last_error = Some("Backend not found for tool follow-up".into());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                };
+
+                                // Resolve API key (keychain or inline).
+                                let api_key = if backend.api_key.is_empty() {
+                                    actor_state.keychain.load("mango".to_string(), backend_id.clone()).unwrap_or_default()
+                                } else {
+                                    backend.api_key.clone()
+                                };
+                                let backend_for_stream = llm::BackendConfig { api_key, ..backend.clone() };
+
+                                // Transition to streaming state.
+                                actor_state.app_state.busy_state = BusyState::Streaming { model: model.clone() };
+
+                                // Spawn the follow-up streaming request with full API message history.
+                                // Using spawn_streaming_task_from_api_messages avoids lossy conversion
+                                // of Tool and Assistant-with-tool-calls messages through ChatMessage.
+                                let token = llm::spawn_streaming_task_from_api_messages(
+                                    &actor_state.runtime,
+                                    &backend_for_stream,
+                                    &model,
+                                    messages,
+                                    pinned_tls_public_key_fp_for_backend(&actor_state, &backend.id),
+                                    core_tx_for_thread.clone(),
+                                    actor_state.router.get_semaphore(&backend.id),
+                                );
+                                actor_state.active_stream_token = Some(token);
+
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
+                            llm::InternalEvent::ChatToolNone { conv_id: _, text } => {
+                                // Model answered without calling any tools.
+                                // Inject the text into streaming_text and trigger StreamDone
+                                // so the standard message-persist and emit path handles it.
+                                if let Some(ref mut st) = actor_state.app_state.streaming_text {
+                                    st.push_str(&text);
+                                }
+                                let _ = core_tx_for_thread.send(CoreMsg::InternalEvent(Box::new(
+                                    llm::InternalEvent::StreamDone
+                                )));
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
                         }
                     }
