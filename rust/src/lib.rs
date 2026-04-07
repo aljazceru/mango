@@ -62,6 +62,10 @@ pub struct ConversationSummary {
     /// Per-conversation system prompt ("Instructions"), if set.
     /// None means no per-conversation override; the global fallback applies at inference time.
     pub system_prompt: Option<String>,
+    /// Phase 27 (CHAT-TOOL-01): whether tool use is enabled for this conversation.
+    /// Loaded from conversations.tools_enabled (MIGRATION_V16). Exposed to UI so the
+    /// toggle control can reflect the persisted state without additional queries.
+    pub tools_enabled: bool,
 }
 
 /// Lightweight agent session summary for the UI agent session list.
@@ -532,6 +536,9 @@ pub enum AppAction {
     /// Enable or disable automatic memory extraction after each conversation (MEM-TOGGLE-01).
     /// Persisted as "1"/"0" in the settings table under key "memories_enabled".
     SetMemoriesEnabled { enabled: bool },
+    /// Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
+    /// Persisted in conversations.tools_enabled column via update_conversation_tools_enabled.
+    SetConversationToolsEnabled { conversation_id: String, enabled: bool },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -719,6 +726,10 @@ struct ActorState {
     vcek_cache: attestation::task::CertificateCache,
     /// Phase 22: Base data directory for agent file sandbox.
     data_dir: String,
+    /// Phase 27 (CHAT-TOOL-01): tool use toggle state for the currently loaded conversation.
+    /// Set by LoadConversation and reset by NewConversation. Consulted by do_send_message
+    /// (Plan 02) to decide whether to call build_chat_tools() for the outgoing request.
+    current_conv_tools_enabled: bool,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -789,6 +800,7 @@ fn refresh_conversations(actor_state: &mut ActorState) {
             backend_id: row.backend_id.clone(),
             updated_at: row.updated_at,
             system_prompt: row.system_prompt.clone(),
+            tools_enabled: row.tools_enabled,
         })
         .collect();
 }
@@ -2261,6 +2273,7 @@ impl FfiApp {
                     backend_id: row.backend_id.clone(),
                     updated_at: row.updated_at,
                     system_prompt: row.system_prompt.clone(),
+                    tools_enabled: row.tools_enabled,
                 })
                 .collect();
 
@@ -2450,6 +2463,7 @@ impl FfiApp {
                 attestation_timer_token: None,
                 vcek_cache,
                 data_dir: vector_data_dir.clone(),
+                current_conv_tools_enabled: false,
             };
 
             // Initialize per-backend concurrency semaphores from max_concurrent_requests.
@@ -2605,6 +2619,7 @@ impl FfiApp {
                                         system_prompt: None,
                                         created_at: now,
                                         updated_at: now,
+                                        tools_enabled: false,
                                     };
                                     let _ = persistence::queries::insert_conversation(
                                         actor_state.db.conn(),
@@ -2703,6 +2718,7 @@ impl FfiApp {
                                     system_prompt: None,
                                     created_at: now,
                                     updated_at: now,
+                                    tools_enabled: false,
                                 };
                                 let _ = persistence::queries::insert_conversation(
                                     actor_state.db.conn(),
@@ -2715,6 +2731,8 @@ impl FfiApp {
                                 actor_state.app_state.router.current_screen = Screen::Chat {
                                     conversation_id: conv_id,
                                 };
+                                // Phase 27: new conversations start with tools disabled.
+                                actor_state.current_conv_tools_enabled = false;
                             }
 
                             AppAction::LoadConversation { conversation_id } => {
@@ -2730,6 +2748,13 @@ impl FfiApp {
                                     .unwrap_or_default();
                                 actor_state.app_state.current_conversation_attached_docs =
                                     attached_docs;
+                                // Phase 27: load tools_enabled for this conversation.
+                                actor_state.current_conv_tools_enabled = persistence::queries::list_conversations(actor_state.db.conn())
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .find(|r| r.id == conversation_id)
+                                    .map(|r| r.tools_enabled)
+                                    .unwrap_or(false);
                                 actor_state.app_state.router.current_screen =
                                     Screen::Chat { conversation_id };
                             }
@@ -3288,6 +3313,7 @@ impl FfiApp {
                                     system_prompt: None,
                                     created_at: now,
                                     updated_at: now,
+                                    tools_enabled: false,
                                 };
                                 let _ = persistence::queries::insert_conversation(
                                     actor_state.db.conn(),
@@ -3804,6 +3830,21 @@ impl FfiApp {
                                     if enabled { "1" } else { "0" },
                                 );
                                 actor_state.app_state.memories_enabled = enabled;
+                            }
+
+                            AppAction::SetConversationToolsEnabled { conversation_id, enabled } => {
+                                let now = now_secs();
+                                let _ = persistence::queries::update_conversation_tools_enabled(
+                                    actor_state.db.conn(),
+                                    &conversation_id,
+                                    enabled,
+                                    now,
+                                );
+                                // Update in-memory tracking if this is the active conversation.
+                                if actor_state.app_state.current_conversation_id.as_deref() == Some(&conversation_id) {
+                                    actor_state.current_conv_tools_enabled = enabled;
+                                }
+                                refresh_conversations(&mut actor_state);
                             }
                         }
 
