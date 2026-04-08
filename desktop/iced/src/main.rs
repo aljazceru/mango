@@ -234,10 +234,16 @@ enum App {
         onboarding_show_learn_more: bool,
         // Documents attachment overlay local state (not in AppState -- pure UI)
         show_docs_attachment_overlay: bool,
+        // Conversation options menu (Docs/Instructions/Tools panel) local state
+        show_conv_menu: bool,
+        // Tools sub-panel within the conv menu (individual tool toggles)
+        show_tools_panel: bool,
         // Memory edit state: (memory_id, current_edit_text) when user is editing a memory
         memory_edit_state: Option<(String, String)>,
         // Brave Search API key input field (local form state before dispatch)
         settings_brave_api_key: String,
+        // Inline feedback message after Brave API key validation (success or error text)
+        settings_brave_api_key_message: Option<String>,
         // OS dark/light theme state (updated via SystemThemeChanged subscription)
         is_dark: bool,
         // Cached theme derived from is_dark; updated whenever is_dark changes
@@ -343,6 +349,10 @@ enum Message {
     LaunchAgent,
     // Toggle tools enabled for the current conversation (Phase 27, CHAT-TOOL-07)
     ToggleConvToolsEnabled,
+    // Toggle the conversation options menu (Docs / Instructions / Tools panel)
+    ToggleConvMenu,
+    // Toggle the tools sub-panel within the conv menu
+    ToggleToolsPanel,
     // Window close request (D-12: checkpoint running agent sessions on exit)
     WindowCloseRequested,
     // OS dark/light theme change
@@ -386,8 +396,11 @@ impl App {
                     onboarding_api_key: String::new(),
                     onboarding_show_learn_more: false,
                     show_docs_attachment_overlay: false,
+                    show_conv_menu: false,
+                    show_tools_panel: false,
                     memory_edit_state: None,
                     settings_brave_api_key: String::new(),
+                    settings_brave_api_key_message: None,
                     is_dark: initial_dark,
                     cached_theme: theme::app_theme(initial_dark),
                     theme_override: prefs.theme_override,
@@ -459,8 +472,11 @@ impl App {
                 onboarding_api_key,
                 onboarding_show_learn_more,
                 show_docs_attachment_overlay,
+                show_conv_menu,
+                show_tools_panel,
                 memory_edit_state,
                 settings_brave_api_key,
+                settings_brave_api_key_message,
                 is_dark,
                 cached_theme,
                 theme_override,
@@ -510,6 +526,12 @@ impl App {
                                     *settings_default_instructions = sp.clone();
                                 }
                                 *settings_default_instructions_initialized = true;
+                            }
+                            // Mirror Brave API key validation toast into the inline
+                            // settings message, then clear it from the core state.
+                            if let Some(toast) = &latest.toast.clone() {
+                                *settings_brave_api_key_message = Some(toast.clone());
+                                manager.dispatch(AppAction::ClearToast);
                             }
                             *state = latest;
                         }
@@ -763,7 +785,8 @@ impl App {
                     Message::SettingsSaveBraveApiKey => {
                         let trimmed = settings_brave_api_key.trim().to_string();
                         if !trimmed.is_empty() {
-                            manager.dispatch(AppAction::SetBraveApiKey { api_key: trimmed });
+                            *settings_brave_api_key_message = None;
+                            manager.dispatch(AppAction::ValidateBraveApiKey { api_key: trimmed });
                             *settings_brave_api_key = String::new();
                         }
                     }
@@ -866,6 +889,17 @@ impl App {
 
                     Message::ToggleDocAttachmentOverlay => {
                         *show_docs_attachment_overlay = !*show_docs_attachment_overlay;
+                    }
+
+                    Message::ToggleConvMenu => {
+                        *show_conv_menu = !*show_conv_menu;
+                        if !*show_conv_menu {
+                            *show_tools_panel = false;
+                        }
+                    }
+
+                    Message::ToggleToolsPanel => {
+                        *show_tools_panel = !*show_tools_panel;
                     }
 
                     Message::ToggleDocumentAttachment(doc_id) => {
@@ -1024,8 +1058,11 @@ impl App {
                 onboarding_api_key,
                 onboarding_show_learn_more,
                 show_docs_attachment_overlay,
+                show_conv_menu,
+                show_tools_panel,
                 memory_edit_state,
                 settings_brave_api_key,
+                settings_brave_api_key_message,
                 is_dark,
                 cached_theme,
                 theme_override,
@@ -1052,6 +1089,7 @@ impl App {
                         *settings_show_advanced,
                         settings_attestation_interval,
                         settings_brave_api_key,
+                        settings_brave_api_key_message.as_deref(),
                         *theme_override,
                     );
                 }
@@ -1109,6 +1147,8 @@ impl App {
                         system_prompt_text,
                         parsed_messages,
                         *show_docs_attachment_overlay,
+                        *show_conv_menu,
+                        *show_tools_panel,
                     ),
                     _ => {
                         // Home: show welcome/empty chat area

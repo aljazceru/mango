@@ -9,7 +9,6 @@ use iced::Theme;
 
 use mango_core::{AppAction, AppState, BusyState, UiMessage};
 
-use crate::widgets::attestation_badge;
 use crate::Message;
 
 // Streaming cursor character (per UI-SPEC)
@@ -27,11 +26,13 @@ pub fn chat_view<'a>(
     streaming_content: &'a markdown::Content,
     input_text: &'a str,
     edit_state: &'a Option<(String, String)>,
-    show_attestation_detail: bool,
+    _show_attestation_detail: bool,
     show_system_prompt_input: bool,
     system_prompt_text: &'a str,
     parsed_messages: &'a HashMap<String, Vec<markdown::Item>>,
     show_docs_attachment_overlay: bool,
+    show_conv_menu: bool,
+    show_tools_panel: bool,
 ) -> Element<'a, Message> {
     let vc = crate::theme::view_colors(is_dark);
     let is_streaming = matches!(&state.busy_state, BusyState::Streaming { .. });
@@ -45,9 +46,9 @@ pub fn chat_view<'a>(
         .unwrap_or("New Conversation");
 
     let title_elem = text(conv_title).size(20);
-    let badge_elem = attestation_badge::view(state, show_attestation_detail, is_dark);
 
-    // Model picker: collect available models from active backend
+    // Model picker: collect available models from active backend.
+    // Show a small colored dot before the pick_list to indicate attestation status.
     let available_models: Vec<String> = state
         .active_backend_id
         .as_deref()
@@ -76,23 +77,42 @@ pub fn chat_view<'a>(
             .into()
     };
 
-    // Docs button: shows attached count, toggles attachment overlay (D-08)
-    let attached_count = state.current_conversation_attached_docs.len();
-    let docs_label = if attached_count > 0 {
-        format!("Docs ({})", attached_count)
-    } else {
-        "Docs".to_string()
-    };
-    let docs_active_bg = vc.accent_dim;
-    let docs_inactive_bg = vc.surface;
-    let docs_btn = button(text(docs_label).size(13))
-        .on_press(Message::ToggleDocAttachmentOverlay)
+    // Attestation dot next to the model picker (replaces separate badge widget in header)
+    let attest_status = state
+        .active_backend_id
+        .as_deref()
+        .and_then(|id| state.attestation_statuses.iter().find(|e| e.backend_id == id))
+        .map(|e| &e.status);
+    let attest_dot: Option<Element<'_, Message>> = attest_status.and_then(|s| {
+        use mango_core::AttestationStatus;
+        let dot_color = match s {
+            AttestationStatus::Verified  => Some(Color::from_rgb(0.20, 0.75, 0.30)),
+            AttestationStatus::Expired   => Some(Color::from_rgb(0.98, 0.75, 0.14)),
+            AttestationStatus::Failed { .. } => Some(Color::from_rgb(0.90, 0.24, 0.24)),
+            AttestationStatus::Unverified => None,
+        };
+        dot_color.map(|c| {
+            container(iced::widget::Space::new().width(7).height(7))
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(c)),
+                    border: Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+                .into()
+        })
+    });
+
+    // "..." button: toggles the conv options panel (Docs / Instructions / Tools)
+    let menu_active_bg = vc.accent_dim;
+    let menu_inactive_bg = vc.surface;
+    let conv_menu_btn = button(text("···").size(16))
+        .on_press(Message::ToggleConvMenu)
         .padding(Padding::from([4u16, 10]))
         .style(move |_theme, _status| button::Style {
-            background: Some(Background::Color(if show_docs_attachment_overlay {
-                docs_active_bg
+            background: Some(Background::Color(if show_conv_menu {
+                menu_active_bg
             } else {
-                docs_inactive_bg
+                menu_inactive_bg
             })),
             border: Border {
                 radius: 4.0.into(),
@@ -102,111 +122,204 @@ pub fn chat_view<'a>(
             ..Default::default()
         });
 
-    // Tools toggle button (Phase 27, CHAT-TOOL-07)
+    let mut header_children: Vec<Element<'_, Message>> = vec![title_elem.into()];
+    header_children.push(iced::widget::Space::new().width(Length::Fill).into());
+    if let Some(dot) = attest_dot {
+        header_children.push(dot);
+    }
+    header_children.push(conv_menu_btn.into());
+    header_children.push(model_picker);
+
+    let header_row = row(header_children)
+        .align_y(Alignment::Center)
+        .spacing(8)
+        .padding(Padding::from([8u16, 16]));
+
+    // ── Conversation options panel (replaces separate Instructions row + inline buttons) ──
+    // Shown below the header when show_conv_menu is true.
     let tools_enabled = state
         .current_conversation_id
         .as_deref()
         .and_then(|cid| state.conversations.iter().find(|c| c.id == cid))
         .map(|c| c.tools_enabled)
         .unwrap_or(false);
-    let tools_label = if tools_enabled { "Tools [ON]" } else { "Tools" };
-    let tools_active_bg = vc.accent;
-    let tools_inactive_bg = vc.surface;
-    let tools_text_color = if tools_enabled { Color::WHITE } else { vc.text_dim };
-    let tools_btn = button(text(tools_label).size(13).color(tools_text_color))
-        .on_press(Message::ToggleConvToolsEnabled)
-        .padding(Padding::from([4u16, 10]))
-        .style(move |_theme, _status| button::Style {
-            background: Some(Background::Color(if tools_enabled {
-                tools_active_bg
-            } else {
-                tools_inactive_bg
-            })),
-            border: Border {
-                radius: 4.0.into(),
+    let attached_count = state.current_conversation_attached_docs.len();
+
+    let instructions_section: Element<'_, Message> = if show_conv_menu {
+        // ── RAG row ──
+        let rag_label = if attached_count > 0 {
+            format!("RAG ({})", attached_count)
+        } else {
+            "RAG".to_string()
+        };
+        let docs_active_bg = vc.accent_dim;
+        let docs_inactive_bg = vc.surface;
+        let docs_btn = button(text(rag_label).size(13))
+            .on_press(Message::ToggleDocAttachmentOverlay)
+            .padding(Padding::from([4u16, 8]))
+            .style(move |_theme, _status| button::Style {
+                background: Some(Background::Color(if show_docs_attachment_overlay {
+                    docs_active_bg
+                } else {
+                    docs_inactive_bg
+                })),
+                border: Border { radius: 4.0.into(), ..Default::default() },
+                text_color: vc.text_dim,
                 ..Default::default()
-            },
-            text_color: tools_text_color,
-            ..Default::default()
-        });
+            });
 
-    let header_row = row![
-        title_elem,
-        iced::widget::Space::new().width(Length::Fill),
-        badge_elem,
-        tools_btn,
-        docs_btn,
-        model_picker,
-    ]
-    .align_y(Alignment::Center)
-    .spacing(8)
-    .padding(Padding::from([8u16, 16]));
+        // ── Tools row: button opens sub-panel ──
+        let tools_label = if tools_enabled { "Tools: On" } else { "Tools" };
+        let tools_panel_bg = if show_tools_panel { vc.accent_dim } else { vc.surface };
+        let tools_btn = button(text(tools_label).size(13))
+            .on_press(Message::ToggleToolsPanel)
+            .padding(Padding::from([4u16, 8]))
+            .style(move |_theme, _status| button::Style {
+                background: Some(Background::Color(tools_panel_bg)),
+                border: Border { radius: 4.0.into(), ..Default::default() },
+                text_color: vc.text_dim,
+                ..Default::default()
+            });
 
-    // ── System prompt (Instructions) section ────────────────────────────────
-    let instructions_section: Element<'_, Message> = if show_system_prompt_input {
-        let prompt_input = text_input(
-            "Optional: give the assistant a role or set of instructions.",
-            system_prompt_text,
-        )
-        .on_input(Message::SystemPromptChanged)
-        .on_submit(Message::SubmitSystemPrompt)
-        .size(14)
-        .padding(Padding::from([6u16, 10]));
+        // ── Tools sub-panel: individual tool toggles ──
+        let brave_key_set = state.brave_api_key_set;
+        let tools_sub_panel: Option<Element<'_, Message>> = if show_tools_panel {
+            // Brave Search toggle row
+            let brave_label = if tools_enabled { "Brave Search: On" } else { "Brave Search: Off" };
+            let brave_note = if !brave_key_set {
+                Some(
+                    text("API key not configured — set in Settings")
+                        .size(11)
+                        .color(vc.muted)
+                        .into()
+                )
+            } else {
+                None
+            };
+            let brave_toggle_color = if tools_enabled && brave_key_set { vc.accent } else { vc.surface };
+            let brave_text_color = if tools_enabled && brave_key_set { Color::WHITE } else { vc.text_dim };
+            let brave_btn: Element<'_, Message> = if brave_key_set {
+                button(text(brave_label).size(12).color(brave_text_color))
+                    .on_press(Message::ToggleConvToolsEnabled)
+                    .padding(Padding::from([3u16, 8]))
+                    .style(move |_theme, _status| button::Style {
+                        background: Some(Background::Color(brave_toggle_color)),
+                        border: Border { radius: 4.0.into(), ..Default::default() },
+                        text_color: brave_text_color,
+                        ..Default::default()
+                    })
+                    .into()
+            } else {
+                text(brave_label).size(12).color(vc.muted).into()
+            };
 
-        let text_dim = vc.text_dim;
-        let action_row = row![
-            button(text("Save").size(13))
-                .on_press(Message::SubmitSystemPrompt)
-                .padding(Padding::from([4u16, 10])),
-            button(text("Cancel").size(13))
-                .on_press(Message::ToggleSystemPromptInput)
-                .padding(Padding::from([4u16, 10]))
-                .style(move |_theme, _status| button::Style {
-                    background: None,
-                    text_color: text_dim,
+            let mut brave_col: Vec<Element<'_, Message>> = vec![brave_btn];
+            if let Some(note) = brave_note {
+                brave_col.push(note);
+            }
+
+            let secondary_surface = vc.secondary_surface;
+            let accent = vc.accent;
+            Some(
+                container(
+                    column(brave_col).spacing(4)
+                )
+                .padding(Padding::from([6u16, 12]))
+                .style(move |_theme| container::Style {
+                    background: Some(Background::Color(secondary_surface)),
+                    border: Border {
+                        color: accent,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
                     ..Default::default()
-                }),
-        ]
-        .spacing(8);
+                })
+                .into()
+            )
+        } else {
+            None
+        };
 
-        let secondary_surface = vc.secondary_surface;
-        container(
+        // ── Instructions row ──
+        let instructions_section_inner: Element<'_, Message> = if show_system_prompt_input {
+            let prompt_input = text_input(
+                "Optional: give the assistant a role or set of instructions.",
+                system_prompt_text,
+            )
+            .on_input(Message::SystemPromptChanged)
+            .on_submit(Message::SubmitSystemPrompt)
+            .size(14)
+            .padding(Padding::from([6u16, 10]));
+
+            let text_dim = vc.text_dim;
+            let action_row = row![
+                button(text("Save").size(13))
+                    .on_press(Message::SubmitSystemPrompt)
+                    .padding(Padding::from([4u16, 10])),
+                button(text("Cancel").size(13))
+                    .on_press(Message::ToggleSystemPromptInput)
+                    .padding(Padding::from([4u16, 10]))
+                    .style(move |_theme, _status| button::Style {
+                        background: None,
+                        text_color: text_dim,
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(8);
+
             column![
-                text("Instructions").size(14),
+                text("Instructions").size(13).color(vc.text_dim),
                 prompt_input,
                 action_row,
             ]
-            .spacing(6),
+            .spacing(6)
+            .into()
+        } else {
+            let text_dim = vc.text_dim;
+            let border = vc.border;
+            button(text("Instructions").size(13).color(text_dim))
+                .on_press(Message::ToggleSystemPromptInput)
+                .padding(Padding::from([4u16, 8]))
+                .style(move |_theme, _status| button::Style {
+                    background: None,
+                    border: Border {
+                        color: border,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .into()
+        };
+
+        let secondary_surface = vc.secondary_surface;
+        let accent = vc.accent;
+        let menu_row = container(
+            row![docs_btn, tools_btn, instructions_section_inner]
+                .spacing(12)
+                .align_y(Alignment::Center),
         )
         .padding(Padding::from([8u16, 16]))
         .width(Length::Fill)
         .style(move |_theme| container::Style {
             background: Some(Background::Color(secondary_surface)),
-            ..Default::default()
-        })
-        .into()
-    } else {
-        let text_dim = vc.text_dim;
-        let border = vc.border;
-        let instructions_btn = button(
-            text("Instructions").size(13).color(text_dim),
-        )
-        .on_press(Message::ToggleSystemPromptInput)
-        .padding(Padding::from([2u16, 8]))
-        .style(move |_theme, _status| button::Style {
-            background: None,
             border: Border {
-                color: border,
-                width: 1.0,
-                radius: 4.0.into(),
+                color: accent,
+                width: 0.0,
+                radius: 0.0.into(),
             },
             ..Default::default()
         });
 
-        container(instructions_btn)
-            .padding(Padding::from([4u16, 16]))
-            .width(Length::Fill)
-            .into()
+        // Stack tools sub-panel below the menu row when expanded
+        if let Some(sub_panel) = tools_sub_panel {
+            column![menu_row, sub_panel].spacing(0).into()
+        } else {
+            menu_row.into()
+        }
+    } else {
+        // Hidden: zero-height spacer so the layout doesn't jump
+        iced::widget::Space::new().height(0).into()
     };
 
     // ── Message thread ───────────────────────────────────────────────────────

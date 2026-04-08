@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var attestationIntervalInput: String = ""
 
     @State private var braveApiKeyInput: String = ""
+    @State private var braveApiKeyMessage: String? = nil
     @AppStorage("theme_preference") private var themePreference: String = "system"
 
     var appState: AppState { appManager.appState }
@@ -121,10 +122,17 @@ struct SettingsView: View {
                     Text("Web Search")
                         .font(.subheadline).fontWeight(.medium)
                     Spacer()
-                    if appState.braveApiKeySet {
-                        Text("Configured")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    if appState.braveApiKeyValidating {
+                        ProgressView().scaleEffect(0.7)
+                    } else if appState.braveApiKeySet {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                            Text("Configured")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Text("Required for agent web search. Keys are stored locally and never sent to third parties.")
@@ -136,17 +144,35 @@ struct SettingsView: View {
                     text: $braveApiKeyInput
                 )
                 .textFieldStyle(.roundedBorder)
-                Button("Save API Key") {
+                .disabled(appState.braveApiKeyValidating)
+                if let msg = braveApiKeyMessage {
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(msg.contains("saved") ? Color.green : Color.red)
+                }
+                Button(appState.braveApiKeyValidating ? "Verifying…" : "Save API Key") {
                     let trimmed = braveApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty {
-                        appManager.dispatch(.setBraveApiKey(apiKey: trimmed))
+                        braveApiKeyMessage = nil
+                        appManager.dispatch(.validateBraveApiKey(apiKey: trimmed))
                         braveApiKeyInput = ""
                     }
                 }
                 .buttonStyle(.borderedProminent).controlSize(.small)
-                .disabled(braveApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    braveApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || appState.braveApiKeyValidating
+                )
             }
             .padding(.vertical, 4)
+            .onChange(of: appState.toast) { _, newToast in
+                // Mirror the Rust-side toast into our local inline message when it
+                // relates to Brave key validation (the only source of toasts on this screen).
+                if let t = newToast {
+                    braveApiKeyMessage = t
+                    appManager.dispatch(.clearToast)
+                }
+            }
         }
     }
 

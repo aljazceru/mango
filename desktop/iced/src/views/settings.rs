@@ -54,6 +54,7 @@ pub fn view<'a>(
     show_advanced: bool,
     attestation_interval_input: &'a str,
     brave_api_key_input: &'a str,
+    brave_api_key_message: Option<&'a str>,
     theme_override: crate::ThemeOverride,
 ) -> Element<'a, Message> {
     let vc = crate::theme::view_colors(is_dark);
@@ -307,24 +308,45 @@ pub fn view<'a>(
         "Enter Brave Search API Key"
     };
 
-    let configured_label: Element<'_, Message> = if state.brave_api_key_set {
-        text("Configured").size(11).color(vc.muted).into()
+    let configured_label: Element<'_, Message> = if state.brave_api_key_validating {
+        text("Verifying…").size(11).color(vc.muted).into()
+    } else if state.brave_api_key_set {
+        text("Configured ✓").size(11).color(Color { r: 0.3, g: 0.75, b: 0.4, a: 1.0 }).into()
     } else {
         iced::widget::Space::new().width(0).into()
     };
 
-    let brave_key_field = text_input(brave_placeholder, brave_api_key_input)
-        .secure(true)
-        .on_input(Message::SettingsBraveApiKeyChanged)
-        .size(14)
-        .padding(Padding::from([7u16, 10]));
+    let brave_key_field = if state.brave_api_key_validating {
+        text_input(brave_placeholder, brave_api_key_input)
+            .secure(true)
+            .size(14)
+            .padding(Padding::from([7u16, 10]))
+    } else {
+        text_input(brave_placeholder, brave_api_key_input)
+            .secure(true)
+            .on_input(Message::SettingsBraveApiKeyChanged)
+            .size(14)
+            .padding(Padding::from([7u16, 10]))
+    };
 
+    let save_btn_label = if state.brave_api_key_validating { "Verifying…" } else { "Save API Key" };
     let brave_save_btn = action_btn(
-        "Save API Key",
+        save_btn_label,
         Message::SettingsSaveBraveApiKey,
-        !brave_api_key_input.trim().is_empty(),
+        !brave_api_key_input.trim().is_empty() && !state.brave_api_key_validating,
         vc,
     );
+
+    let feedback_el: Element<'_, Message> = if let Some(msg) = brave_api_key_message {
+        let color = if msg.contains("saved") {
+            Color { r: 0.3, g: 0.75, b: 0.4, a: 1.0 }
+        } else {
+            Color { r: 0.85, g: 0.25, b: 0.25, a: 1.0 }
+        };
+        text(msg).size(11).color(color).into()
+    } else {
+        iced::widget::Space::new().height(0).into()
+    };
 
     let tools_content = container(
         column![
@@ -339,6 +361,7 @@ pub fn view<'a>(
                 .size(11)
                 .color(vc.muted),
             brave_key_field,
+            feedback_el,
             brave_save_btn,
         ]
         .spacing(8),
