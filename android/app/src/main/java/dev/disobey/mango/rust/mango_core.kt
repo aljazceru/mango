@@ -2080,7 +2080,12 @@ data class AppState (
      * Whether memory extraction is enabled (MEM-TOGGLE-01).
      * Defaults to true. Persisted via settings table key "memories_enabled".
      */
-    var `memoriesEnabled`: kotlin.Boolean
+    var `memoriesEnabled`: kotlin.Boolean, 
+    /**
+     * True while a ValidateBraveApiKey health-check is in flight.
+     * Used by Settings UI to show a loading indicator on the Save button.
+     */
+    var `braveApiKeyValidating`: kotlin.Boolean
 ) {
     
     companion object
@@ -2120,6 +2125,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterULong.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -2151,7 +2157,8 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeMemorySummary.allocationSize(value.`memories`) +
             FfiConverterULong.allocationSize(value.`memoryCount`) +
             FfiConverterBoolean.allocationSize(value.`braveApiKeySet`) +
-            FfiConverterBoolean.allocationSize(value.`memoriesEnabled`)
+            FfiConverterBoolean.allocationSize(value.`memoriesEnabled`) +
+            FfiConverterBoolean.allocationSize(value.`braveApiKeyValidating`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -2183,6 +2190,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterULong.write(value.`memoryCount`, buf)
             FfiConverterBoolean.write(value.`braveApiKeySet`, buf)
             FfiConverterBoolean.write(value.`memoriesEnabled`, buf)
+            FfiConverterBoolean.write(value.`braveApiKeyValidating`, buf)
     }
 }
 
@@ -3270,6 +3278,17 @@ sealed class AppAction {
     }
     
     /**
+     * Validate a Brave Search API key by making a lightweight test request.
+     * Sets brave_api_key_validating=true while in-flight.
+     * On success: persists the key, sets brave_api_key_set=true, shows success toast.
+     * On failure: shows an error toast, does NOT persist the key.
+     */
+    data class ValidateBraveApiKey(
+        val `apiKey`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
      * Enable or disable automatic memory extraction after each conversation (MEM-TOGGLE-01).
      * Persisted as "1"/"0" in the settings table under key "memories_enabled".
      */
@@ -3435,10 +3454,13 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             49 -> AppAction.SetBraveApiKey(
                 FfiConverterString.read(buf),
                 )
-            50 -> AppAction.SetMemoriesEnabled(
+            50 -> AppAction.ValidateBraveApiKey(
+                FfiConverterString.read(buf),
+                )
+            51 -> AppAction.SetMemoriesEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            51 -> AppAction.SetConversationToolsEnabled(
+            52 -> AppAction.SetConversationToolsEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
@@ -3792,6 +3814,13 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterString.allocationSize(value.`apiKey`)
             )
         }
+        is AppAction.ValidateBraveApiKey -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`apiKey`)
+            )
+        }
         is AppAction.SetMemoriesEnabled -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -4058,13 +4087,18 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
-            is AppAction.SetMemoriesEnabled -> {
+            is AppAction.ValidateBraveApiKey -> {
                 buf.putInt(50)
+                FfiConverterString.write(value.`apiKey`, buf)
+                Unit
+            }
+            is AppAction.SetMemoriesEnabled -> {
+                buf.putInt(51)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetConversationToolsEnabled -> {
-                buf.putInt(51)
+                buf.putInt(52)
                 FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit

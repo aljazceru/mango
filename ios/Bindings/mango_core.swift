@@ -1171,6 +1171,11 @@ public struct AppState {
      * Defaults to true. Persisted via settings table key "memories_enabled".
      */
     public var memoriesEnabled: Bool
+    /**
+     * True while a ValidateBraveApiKey health-check is in flight.
+     * Used by Settings UI to show a loading indicator on the Save button.
+     */
+    public var braveApiKeyValidating: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1269,7 +1274,11 @@ public struct AppState {
         /**
          * Whether memory extraction is enabled (MEM-TOGGLE-01).
          * Defaults to true. Persisted via settings table key "memories_enabled".
-         */memoriesEnabled: Bool) {
+         */memoriesEnabled: Bool, 
+        /**
+         * True while a ValidateBraveApiKey health-check is in flight.
+         * Used by Settings UI to show a loading indicator on the Save button.
+         */braveApiKeyValidating: Bool) {
         self.rev = rev
         self.router = router
         self.busyState = busyState
@@ -1298,6 +1307,7 @@ public struct AppState {
         self.memoryCount = memoryCount
         self.braveApiKeySet = braveApiKeySet
         self.memoriesEnabled = memoriesEnabled
+        self.braveApiKeyValidating = braveApiKeyValidating
     }
 }
 
@@ -1392,6 +1402,9 @@ extension AppState: Equatable, Hashable {
         if lhs.memoriesEnabled != rhs.memoriesEnabled {
             return false
         }
+        if lhs.braveApiKeyValidating != rhs.braveApiKeyValidating {
+            return false
+        }
         return true
     }
 
@@ -1424,6 +1437,7 @@ extension AppState: Equatable, Hashable {
         hasher.combine(memoryCount)
         hasher.combine(braveApiKeySet)
         hasher.combine(memoriesEnabled)
+        hasher.combine(braveApiKeyValidating)
     }
 }
 
@@ -1463,7 +1477,8 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 memories: FfiConverterSequenceTypeMemorySummary.read(from: &buf), 
                 memoryCount: FfiConverterUInt64.read(from: &buf), 
                 braveApiKeySet: FfiConverterBool.read(from: &buf), 
-                memoriesEnabled: FfiConverterBool.read(from: &buf)
+                memoriesEnabled: FfiConverterBool.read(from: &buf), 
+                braveApiKeyValidating: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -1496,6 +1511,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.memoryCount, into: &buf)
         FfiConverterBool.write(value.braveApiKeySet, into: &buf)
         FfiConverterBool.write(value.memoriesEnabled, into: &buf)
+        FfiConverterBool.write(value.braveApiKeyValidating, into: &buf)
     }
 }
 
@@ -3130,6 +3146,14 @@ public enum AppAction {
     case setBraveApiKey(apiKey: String
     )
     /**
+     * Validate a Brave Search API key by making a lightweight test request.
+     * Sets brave_api_key_validating=true while in-flight.
+     * On success: persists the key, sets brave_api_key_set=true, shows success toast.
+     * On failure: shows an error toast, does NOT persist the key.
+     */
+    case validateBraveApiKey(apiKey: String
+    )
+    /**
      * Enable or disable automatic memory extraction after each conversation (MEM-TOGGLE-01).
      * Persisted as "1"/"0" in the settings table under key "memories_enabled".
      */
@@ -3292,10 +3316,13 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 49: return .setBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 50: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 50: return .validateBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 51: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 51: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 52: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3553,13 +3580,18 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterString.write(apiKey, into: &buf)
             
         
-        case let .setMemoriesEnabled(enabled):
+        case let .validateBraveApiKey(apiKey):
             writeInt(&buf, Int32(50))
+            FfiConverterString.write(apiKey, into: &buf)
+            
+        
+        case let .setMemoriesEnabled(enabled):
+            writeInt(&buf, Int32(51))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setConversationToolsEnabled(conversationId,enabled):
-            writeInt(&buf, Int32(51))
+            writeInt(&buf, Int32(52))
             FfiConverterString.write(conversationId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             

@@ -4,7 +4,7 @@ milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
 stopped_at: "Checkpoint 27-03 Task 2: human-verify tools toggle on Desktop"
-last_updated: "2026-04-07T15:41:15.211Z"
+last_updated: "2026-04-07T15:47:52.477Z"
 last_activity: 2026-04-07
 progress:
   total_phases: 8
@@ -25,8 +25,8 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 ## Current Position
 
-Phase: 27 (add-optional-tool-use-to-chat) — EXECUTING
-Plan: 3 of 4
+Phase: 27
+Plan: Not started
 Status: Ready to execute
 Last activity: 2026-04-07
 

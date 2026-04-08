@@ -26,6 +26,8 @@ struct ChatView: View {
     @State private var currentSystemPrompt: String = ""
     @State private var showDeleteConfirmation = false
     @State private var showDocAttachSheet = false
+    @State private var showConvMenu = false
+    @State private var showToolsSheet = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -104,53 +106,44 @@ struct ChatView: View {
         .navigationBarBackButtonHidden(false)
         .toolbar {
             ToolbarItemGroup(placement: .principal) {
-                HStack(spacing: 8) {
-                    // Model picker
-                    ModelPickerView(
-                        backends: state.backends,
-                        activeBackendId: state.activeBackendId,
-                        selectedModelId: currentConversation?.modelId,
-                        onSelectModel: onSelectModel
-                    )
-                    // Attestation badge
-                    if let badge = activeAttestationStatus {
-                        AttestationBadgeView(status: badge)
-                    }
-                }
+                // Model picker with inline attestation indicator
+                ModelPickerView(
+                    backends: state.backends,
+                    activeBackendId: state.activeBackendId,
+                    selectedModelId: currentConversation?.modelId,
+                    attestationStatus: activeAttestationStatus,
+                    onSelectModel: onSelectModel
+                )
             }
             ToolbarItem(placement: .primaryAction) {
-                HStack(spacing: 8) {
-                    // Per-conversation document attachment (D-08)
+                // Collapsed "..." menu: RAG, Instructions, Tools
+                Menu {
+                    let attachedCount = state.currentConversationAttachedDocs.count
                     Button {
                         showDocAttachSheet = true
                     } label: {
-                        let attachedCount = state.currentConversationAttachedDocs.count
-                        Label(
-                            attachedCount > 0 ? "Docs (\(attachedCount))" : "Docs",
-                            systemImage: "doc.badge.plus"
-                        )
-                        .font(.subheadline)
+                        Text(attachedCount > 0 ? "RAG (\(attachedCount))" : "RAG")
                     }
-                    .accessibilityLabel("Attach documents to this conversation")
-                    Button("Instructions") {
+
+                    Button {
                         currentSystemPrompt = currentConversation?.systemPrompt ?? ""
                         showSystemPromptSheet = true
+                    } label: {
+                        Label("Instructions", systemImage: "text.alignleft")
                     }
-                    .font(.subheadline)
-                    .accessibilityLabel("Set instructions for this conversation")
-                    // Phase 27: tools toggle (CHAT-TOOL-07)
-                    Toggle(isOn: Binding(
-                        get: { currentConversation?.toolsEnabled ?? false },
-                        set: { newValue in
-                            onSetToolsEnabled(newValue)
-                        }
-                    )) {
-                        Label("Tools", systemImage: "wrench.fill")
-                            .font(.subheadline)
+
+                    let toolsOn = currentConversation?.toolsEnabled ?? false
+                    Button {
+                        showToolsSheet = true
+                    } label: {
+                        Label(
+                            toolsOn ? "Tools: On" : "Tools",
+                            systemImage: toolsOn ? "wrench.fill" : "wrench"
+                        )
                     }
-                    .toggleStyle(.button)
-                    .tint(currentConversation?.toolsEnabled == true ? .blue : .secondary)
-                    .accessibilityLabel(currentConversation?.toolsEnabled == true ? "Disable tools" : "Enable tools")
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .accessibilityLabel("Conversation options")
                 }
             }
         }
@@ -184,6 +177,16 @@ struct ChatView: View {
                     }
                 },
                 onDismiss: { showDocAttachSheet = false }
+            )
+        }
+        .sheet(isPresented: $showToolsSheet) {
+            ToolsSheet(
+                toolsEnabled: currentConversation?.toolsEnabled ?? false,
+                braveApiKeySet: state.braveApiKeySet,
+                onSetToolsEnabled: { enabled in
+                    onSetToolsEnabled(enabled)
+                },
+                onDismiss: { showToolsSheet = false }
             )
         }
     }
@@ -301,6 +304,54 @@ private struct ErrorBubbleView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.red.opacity(0.3), lineWidth: 1)
         )
+    }
+}
+
+// MARK: - Tools Sheet
+
+/// Sheet for configuring per-conversation tool toggles (Phase 27, CHAT-TOOL-07).
+/// Shows individual tool toggles so more tools can be added without UI changes.
+private struct ToolsSheet: View {
+    let toolsEnabled: Bool
+    let braveApiKeySet: Bool
+    let onSetToolsEnabled: (Bool) -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { toolsEnabled },
+                        set: { onSetToolsEnabled($0) }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Brave Search")
+                                .font(.subheadline)
+                            if !braveApiKeySet {
+                                Text("API key not configured — set it in Settings")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .disabled(!braveApiKeySet)
+                } header: {
+                    Text("Available Tools")
+                } footer: {
+                    Text("Tools let the assistant search the web and access other capabilities during this conversation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Tools")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { onDismiss() }
+                }
+            }
+        }
     }
 }
 

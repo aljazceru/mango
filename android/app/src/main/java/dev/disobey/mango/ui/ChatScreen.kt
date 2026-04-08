@@ -9,13 +9,17 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -23,9 +27,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -274,6 +281,13 @@ private fun ChatTopBar(
         state.attestationStatuses.firstOrNull { it.backendId == backendId }?.status
     }
 
+    var showConvMenu by remember { mutableStateOf(false) }
+    var showToolsSheet by remember { mutableStateOf(false) }
+    val toolsEnabled = state.conversations
+        .firstOrNull { it.id == state.currentConversationId }
+        ?.toolsEnabled ?: false
+    val attachedCount = state.currentConversationAttachedDocs.size
+
     TopAppBar(
         title = {
             Text(
@@ -288,9 +302,29 @@ private fun ChatTopBar(
             }
         },
         actions = {
-            // Model picker
+            // Model picker with inline attestation dot
             Box {
                 TextButton(onClick = { showModelMenu = true }) {
+                    // Attestation dot: shown to the left of the model name
+                    val dotColor: Color? = when (activeAttestation) {
+                        is dev.disobey.mango.rust.AttestationStatus.Verified ->
+                            Color(0xFF34C759)  // green
+                        is dev.disobey.mango.rust.AttestationStatus.Expired ->
+                            Color(0xFFFFCC00)  // amber
+                        is dev.disobey.mango.rust.AttestationStatus.Failed ->
+                            Color(0xFFFF3B30)  // red
+                        else -> null
+                    }
+                    if (dotColor != null) {
+                        Surface(
+                            shape = CircleShape,
+                            color = dotColor,
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape),
+                        ) {}
+                        Spacer(Modifier.size(4.dp))
+                    }
                     Text(
                         text = selectedModelId?.let { shortModelName(it) } ?: "Model",
                         style = MaterialTheme.typography.labelMedium,
@@ -328,45 +362,82 @@ private fun ChatTopBar(
                     }
                 }
             }
-            // Attestation badge
-            activeAttestation?.let { status ->
-                AttestationBadge(status = status)
-            }
-            // Per-conversation document attachment (D-08)
-            val attachedCount = state.currentConversationAttachedDocs.size
-            TextButton(onClick = onShowDocAttach) {
-                Text(
-                    if (attachedCount > 0) "RAG ($attachedCount)" else "RAG",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            // Instructions button (system prompt per CHAT-11)
-            TextButton(onClick = onShowSystemPrompt) {
-                Text(
-                    "Instructions",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            // Phase 27: tools toggle (CHAT-TOOL-07)
-            val toolsEnabled = state.conversations
-                .firstOrNull { it.id == state.currentConversationId }
-                ?.toolsEnabled ?: false
-            TextButton(onClick = {
-                val convId = state.currentConversationId ?: return@TextButton
-                onDispatchAction(AppAction.SetConversationToolsEnabled(
-                    conversationId = convId,
-                    enabled = !toolsEnabled
-                ))
-            }) {
-                Text(
-                    text = if (toolsEnabled) "Tools [ON]" else "Tools",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (toolsEnabled) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            // Collapsed "..." menu: RAG, Instructions, Tools
+            Box {
+                IconButton(onClick = { showConvMenu = true }) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Conversation options",
+                    )
+                }
+                DropdownMenu(
+                    expanded = showConvMenu,
+                    onDismissRequest = { showConvMenu = false },
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                if (attachedCount > 0) "RAG ($attachedCount)" else "RAG",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        },
+                        onClick = {
+                            showConvMenu = false
+                            onShowDocAttach()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Instructions",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        },
+                        onClick = {
+                            showConvMenu = false
+                            onShowSystemPrompt()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                if (toolsEnabled) "Tools: On" else "Tools",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (toolsEnabled)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        onClick = {
+                            showConvMenu = false
+                            showToolsSheet = true
+                        },
+                    )
+                }
             }
         },
     )
+
+    // Tools bottom sheet: individual tool toggles
+    if (showToolsSheet) {
+        val convId = state.currentConversationId
+        ToolsSheet(
+            toolsEnabled = toolsEnabled,
+            braveApiKeySet = state.braveApiKeySet,
+            onSetToolsEnabled = { enabled ->
+                if (convId != null) {
+                    onDispatchAction(
+                        AppAction.SetConversationToolsEnabled(
+                            conversationId = convId,
+                            enabled = enabled,
+                        )
+                    )
+                }
+            },
+            onDismiss = { showToolsSheet = false },
+        )
+    }
 }
 
 // MARK: - Helper
@@ -435,6 +506,64 @@ private fun DocAttachSheet(
                 }
             }
         }
+        Spacer(Modifier.height(16.dp))
+    }
+}
+
+// MARK: - Tools Sheet
+
+/// ModalBottomSheet for configuring per-conversation tool toggles (Phase 27, CHAT-TOOL-07).
+/// Shows individual tool toggles so more tools can be added without layout changes.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ToolsSheet(
+    toolsEnabled: Boolean,
+    braveApiKeySet: Boolean,
+    onSetToolsEnabled: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState()
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
+        Text(
+            text = "Tools",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+        )
+        HorizontalDivider()
+        ListItem(
+            headlineContent = {
+                Text(
+                    text = "Brave Search",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            supportingContent = if (!braveApiKeySet) {
+                {
+                    Text(
+                        text = "API key not configured — set it in Settings",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else null,
+            trailingContent = {
+                androidx.compose.material3.Switch(
+                    checked = toolsEnabled,
+                    onCheckedChange = { onSetToolsEnabled(it) },
+                    enabled = braveApiKeySet,
+                )
+            },
+        )
+        Text(
+            text = "Tools let the assistant search the web and access other capabilities during this conversation.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
         Spacer(Modifier.height(16.dp))
     }
 }

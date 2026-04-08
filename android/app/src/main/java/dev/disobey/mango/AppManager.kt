@@ -78,6 +78,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             memories = emptyList(),
             memoryCount = 0UL,
             braveApiKeySet = false,
+            braveApiKeyValidating = false,
             memoriesEnabled = true,
         ),
     )

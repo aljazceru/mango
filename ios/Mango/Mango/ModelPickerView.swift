@@ -2,10 +2,13 @@ import SwiftUI
 
 /// Inline model picker shown in the chat header.
 /// Presents available models from the active backend via a menu.
+/// Shows a small colored dot next to the model name to indicate attestation status
+/// (green = verified, yellow = expired, red = failed, none = unverified).
 struct ModelPickerView: View {
     let backends: [BackendSummary]
     let activeBackendId: String?
     let selectedModelId: String?
+    var attestationStatus: AttestationStatus? = nil
     let onSelectModel: (String) -> Void
 
     var body: some View {
@@ -21,6 +24,13 @@ struct ModelPickerView: View {
             }
         } label: {
             HStack(spacing: 4) {
+                // Attestation dot indicator: replaces the separate badge in the header
+                if let dot = attestationDotColor {
+                    Circle()
+                        .fill(dot)
+                        .frame(width: 7, height: 7)
+                        .accessibilityLabel(attestationAccessibilityLabel)
+                }
                 Text(currentModelName)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
@@ -29,7 +39,29 @@ struct ModelPickerView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .accessibilityLabel("Model: \(currentModelName)")
+        .accessibilityLabel("Model: \(currentModelName). \(attestationAccessibilityLabel)")
+    }
+
+    /// Returns the dot color for the current attestation status.
+    /// Returns nil for .unverified (no dot shown when unverified).
+    private var attestationDotColor: Color? {
+        guard let status = attestationStatus else { return nil }
+        switch status {
+        case .verified:  return Color(red: 0.2, green: 0.75, blue: 0.3)   // green
+        case .expired:   return Color(red: 0.98, green: 0.75, blue: 0.14) // amber
+        case .failed:    return Color(red: 0.9, green: 0.24, blue: 0.24)  // red
+        case .unverified: return nil
+        }
+    }
+
+    private var attestationAccessibilityLabel: String {
+        guard let status = attestationStatus else { return "" }
+        switch status {
+        case .verified:   return "Verified"
+        case .unverified: return ""
+        case .expired:    return "Attestation expired"
+        case .failed:     return "Attestation failed"
+        }
     }
 
     private var availableModels: [ModelInfo] {

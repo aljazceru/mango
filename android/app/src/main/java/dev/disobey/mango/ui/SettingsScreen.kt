@@ -22,8 +22,13 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Switch
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -79,7 +84,19 @@ fun SettingsScreen(
     var teeExpanded         by remember { mutableStateOf(false) }
     var attestationInterval by remember { mutableStateOf("") }
     var braveApiKeyInput   by remember { mutableStateOf("") }
+    var braveApiKeyMessage by remember { mutableStateOf<String?>(null) }
     var themeExpanded by remember { mutableStateOf(false) }
+
+    // Mirror toast into inline message when validation completes, then clear toast.
+    LaunchedEffect(Unit) {
+        snapshotFlow { appState.toast }
+            .collect { toast ->
+                if (toast != null) {
+                    braveApiKeyMessage = toast
+                    onDispatch(AppAction.ClearToast)
+                }
+            }
+    }
     val themeOptions = listOf("system" to "Follow System", "light" to "Force Light", "dark" to "Force Dark")
     val themeLabel = themeOptions.firstOrNull { it.first == themeMode }?.second ?: "Follow System"
 
@@ -280,12 +297,28 @@ fun SettingsScreen(
                                 fontWeight = FontWeight.Medium
                             )
                             Spacer(Modifier.weight(1f))
-                            if (appState.braveApiKeySet) {
-                                Text(
-                                    "Configured",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            if (appState.braveApiKeyValidating) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
                                 )
+                            } else if (appState.braveApiKeySet) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.CheckCircle,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = Color(0xFF4CAF50)
+                                    )
+                                    Text(
+                                        "Configured",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                         Spacer(Modifier.height(4.dp))
@@ -309,21 +342,32 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(8.dp),
                             singleLine = true,
+                            enabled = !appState.braveApiKeyValidating,
                             visualTransformation = PasswordVisualTransformation()
                         )
+                        braveApiKeyMessage?.let { msg ->
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                msg,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (msg.contains("saved")) Color(0xFF4CAF50)
+                                        else MaterialTheme.colorScheme.error
+                            )
+                        }
                         Spacer(Modifier.height(8.dp))
                         Button(
                             onClick = {
                                 val trimmed = braveApiKeyInput.trim()
                                 if (trimmed.isNotEmpty()) {
-                                    onDispatch(AppAction.SetBraveApiKey(apiKey = trimmed))
+                                    braveApiKeyMessage = null
+                                    onDispatch(AppAction.ValidateBraveApiKey(apiKey = trimmed))
                                     braveApiKeyInput = ""
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(8.dp),
-                            enabled = braveApiKeyInput.trim().isNotEmpty()
-                        ) { Text("Save API Key") }
+                            enabled = braveApiKeyInput.trim().isNotEmpty() && !appState.braveApiKeyValidating
+                        ) { Text(if (appState.braveApiKeyValidating) "Verifying…" else "Save API Key") }
                     }
                 }
             }
