@@ -92,6 +92,17 @@ pub enum InternalEvent {
         conv_id: String,
         text: String,
     },
+    /// Result of a background Brave Search API key validation call.
+    ///
+    /// Sent by spawn_brave_api_key_validation back to the actor loop.
+    /// On success the actor persists the key and shows a success toast.
+    /// On failure the actor shows an error toast without persisting.
+    BraveApiKeyValidationResult {
+        api_key: String,
+        success: bool,
+        /// Human-readable error detail when success=false.
+        error_message: Option<String>,
+    },
 }
 
 /// Spawn an async-openai streaming task on the given Tokio runtime.

@@ -38,8 +38,8 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 - [ ] **CHAT-TOOL-04**: When tools enabled, chat uses non-streaming first round to detect tool calls via run_agent_step_for_backend
 - [ ] **CHAT-TOOL-05**: Tool dispatch runs on actor thread (not inside Tokio task) to avoid runtime.block_on panic
 - [ ] **CHAT-TOOL-06**: After tool dispatch, streaming follow-up includes full message history with tool results
-- [ ] **CHAT-TOOL-07**: Tools toggle is visible in chat toolbar on iOS, Android, and Desktop
-- [ ] **CHAT-TOOL-08**: Tool messages (assistant tool_calls + tool results) never appear in AppState.messages UI bubble list
+- [x] **CHAT-TOOL-07**: Tools toggle is visible in chat toolbar on iOS, Android, and Desktop
+- [x] **CHAT-TOOL-08**: Tool messages (assistant tool_calls + tool results) never appear in AppState.messages UI bubble list
 
 ## Future Requirements
 

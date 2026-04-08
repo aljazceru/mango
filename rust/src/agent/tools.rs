@@ -419,13 +419,16 @@ pub(crate) fn dispatch_web_search(
 
     let key = brave_api_key.to_string();
     let result = runtime.block_on(async move {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .hickory_dns(false)
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         client
             .get("https://api.search.brave.com/res/v1/web/search")
             .query(&[("q", query.as_str()), ("count", count_str.as_str())])
             .header("X-Subscription-Token", &key)
             .header("Accept", "application/json")
-            .timeout(Duration::from_secs(10))
             .send()
             .await
             .map_err(|e| format!("Error: web search failed: {}", e))?
@@ -486,9 +489,10 @@ pub(crate) fn dispatch_fetch_url(
     let url_for_error = url.clone();
     let result = runtime.block_on(async move {
         let client = reqwest::Client::builder()
+            .hickory_dns(false)
             .timeout(Duration::from_secs(15))
             .build()
-            .unwrap();
+            .unwrap_or_else(|_| reqwest::Client::new());
         client
             .get(&url)
             .send()

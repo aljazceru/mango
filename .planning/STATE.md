@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 27-01-PLAN.md
-last_updated: "2026-04-07T15:18:58.344Z"
+stopped_at: "Checkpoint 27-03 Task 2: human-verify tools toggle on Desktop"
+last_updated: "2026-04-07T15:41:15.211Z"
 last_activity: 2026-04-07
 progress:
   total_phases: 8
-  completed_phases: 7
+  completed_phases: 8
   total_plans: 20
-  completed_plans: 18
+  completed_plans: 20
   percent: 25
 ---
 
@@ -68,6 +68,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 26 P03 | 15min | 1 tasks | 5 files |
 | Phase 27-add-optional-tool-use-to-chat P00 | 5min | 1 tasks | 2 files |
 | Phase 27 P01 | 10min | 2 tasks | 8 files |
+| Phase 27-add-optional-tool-use-to-chat P03 | 20min | 1 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -108,6 +109,9 @@ Key architectural context for v2.0:
 - [Phase 27-add-optional-tool-use-to-chat]: Wave 0 stubs intentionally do not compile until Plan 01 adds tools_enabled field, update_conversation_tools_enabled, and build_chat_tools
 - [Phase 27]: ChatCompletionTools::Custom variant handled with pass-through in build_chat_tools filter for forward-compatibility
 - [Phase 27]: LoadConversation uses list_conversations lookup for tools_enabled rather than a dedicated single-row query
+- [Phase 27-add-optional-tool-use-to-chat]: iOS ChatView receives onSetToolsEnabled callback; ContentView.swift wires dispatch to setConversationToolsEnabled (consistent with callback pattern)
+- [Phase 27-add-optional-tool-use-to-chat]: Android onDispatchAction: (AppAction) -> Unit threaded through ChatScreen -> ChatTopBar to avoid per-action callback proliferation (27-03)
+- [Phase 27-add-optional-tool-use-to-chat]: Desktop Tools button uses accent background when active showing Tools [ON], surface background when off - consistent with docs_btn visual pattern (27-03)
 
 ### Roadmap Evolution
 
@@ -132,6 +136,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-07T15:18:58.341Z
-Stopped at: Completed 27-01-PLAN.md
+Last session: 2026-04-07T15:41:01.293Z
+Stopped at: Checkpoint 27-03 Task 2: human-verify tools toggle on Desktop
 Resume file: None
