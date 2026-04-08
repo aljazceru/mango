@@ -19,3 +19,4 @@ mod settings;
 mod streaming;
 mod tee_policy;
 mod transport;
+mod live_brave;

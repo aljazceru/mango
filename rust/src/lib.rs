@@ -260,6 +260,9 @@ pub struct AppState {
     /// Whether memory extraction is enabled (MEM-TOGGLE-01).
     /// Defaults to true. Persisted via settings table key "memories_enabled".
     pub memories_enabled: bool,
+    /// True while a ValidateBraveApiKey health-check is in flight.
+    /// Used by Settings UI to show a loading indicator on the Save button.
+    pub brave_api_key_validating: bool,
 }
 
 impl Default for AppState {
@@ -296,6 +299,7 @@ impl Default for AppState {
             memory_count: 0,
             brave_api_key_set: false,
             memories_enabled: true,
+            brave_api_key_validating: false,
         }
     }
 }
@@ -533,6 +537,11 @@ pub enum AppAction {
     /// Save a Brave Search API key to the settings table (per D-18).
     /// Follows SetGlobalSystemPrompt pattern (per D-19).
     SetBraveApiKey { api_key: String },
+    /// Validate a Brave Search API key by making a lightweight test request.
+    /// Sets brave_api_key_validating=true while in-flight.
+    /// On success: persists the key, sets brave_api_key_set=true, shows success toast.
+    /// On failure: shows an error toast, does NOT persist the key.
+    ValidateBraveApiKey { api_key: String },
     /// Enable or disable automatic memory extraction after each conversation (MEM-TOGGLE-01).
     /// Persisted as "1"/"0" in the settings table under key "memories_enabled".
     SetMemoriesEnabled { enabled: bool },
@@ -1166,6 +1175,98 @@ fn spawn_health_check(
         let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
             llm::InternalEvent::HealthCheckResult { backend_id, success, models },
         )));
+    });
+}
+
+/// Spawn a background task that validates a Brave Search API key with a lightweight request.
+///
+/// Makes a `GET /res/v1/web/search?q=test&count=1` call with the provided key.
+/// Sends `BraveApiKeyValidationResult` back to the actor loop via `core_tx`.
+fn spawn_brave_api_key_validation(
+    runtime: &tokio::runtime::Runtime,
+    api_key: String,
+    core_tx: flume::Sender<CoreMsg>,
+) {
+    runtime.spawn(async move {
+        let client = match reqwest::Client::builder()
+            .hickory_dns(false)
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                    llm::InternalEvent::BraveApiKeyValidationResult {
+                        api_key,
+                        success: false,
+                        error_message: Some(format!("Failed to build HTTP client: {}", e)),
+                    },
+                )));
+                return;
+            }
+        };
+
+        let result = client
+            .get("https://api.search.brave.com/res/v1/web/search")
+            .query(&[("q", "test"), ("count", "1")])
+            .header("X-Subscription-Token", &api_key)
+            .header("Accept", "application/json")
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                        llm::InternalEvent::BraveApiKeyValidationResult {
+                            api_key,
+                            success: true,
+                            error_message: None,
+                        },
+                    )));
+                } else if status.as_u16() == 401 || status.as_u16() == 403 {
+                    let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                        llm::InternalEvent::BraveApiKeyValidationResult {
+                            api_key,
+                            success: false,
+                            error_message: Some("Invalid API key — check your Brave Search subscription.".to_string()),
+                        },
+                    )));
+                } else if status.as_u16() == 429 {
+                    // Rate limited but the key is valid
+                    let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                        llm::InternalEvent::BraveApiKeyValidationResult {
+                            api_key,
+                            success: true,
+                            error_message: None,
+                        },
+                    )));
+                } else {
+                    let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                        llm::InternalEvent::BraveApiKeyValidationResult {
+                            api_key,
+                            success: false,
+                            error_message: Some(format!("Brave API returned HTTP {}", status.as_u16())),
+                        },
+                    )));
+                }
+            }
+            Err(e) => {
+                let msg = if e.is_timeout() {
+                    "Could not reach Brave API — check your internet connection.".to_string()
+                } else {
+                    "Could not reach Brave API — check your internet connection.".to_string()
+                };
+                let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                    llm::InternalEvent::BraveApiKeyValidationResult {
+                        api_key,
+                        success: false,
+                        error_message: Some(msg),
+                    },
+                )));
+            }
+        }
     });
 }
 
@@ -3951,6 +4052,25 @@ impl FfiApp {
                                 actor_state.app_state.brave_api_key_set = !trimmed.is_empty();
                             }
 
+                            AppAction::ValidateBraveApiKey { api_key } => {
+                                let trimmed = api_key.trim().to_string();
+                                if !trimmed.is_empty() {
+                                    // Save immediately so the key is usable even if validation network fails
+                                    let _ = persistence::queries::set_setting(
+                                        actor_state.db.conn(),
+                                        "brave_api_key",
+                                        &trimmed,
+                                    );
+                                    actor_state.app_state.brave_api_key_set = true;
+                                    actor_state.app_state.brave_api_key_validating = true;
+                                    spawn_brave_api_key_validation(
+                                        &actor_state.runtime,
+                                        trimmed,
+                                        core_tx_for_thread.clone(),
+                                    );
+                                }
+                            }
+
                             AppAction::SetMemoriesEnabled { enabled } => {
                                 let _ = persistence::queries::set_setting(
                                     actor_state.db.conn(),
@@ -4887,6 +5007,33 @@ impl FfiApp {
                                 let _ = core_tx_for_thread.send(CoreMsg::InternalEvent(Box::new(
                                     llm::InternalEvent::StreamDone
                                 )));
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
+                            llm::InternalEvent::BraveApiKeyValidationResult { api_key: _, success, error_message } => {
+                                actor_state.app_state.brave_api_key_validating = false;
+                                if success {
+                                    actor_state.app_state.toast = Some("API key saved and verified.".to_string());
+                                } else {
+                                    // Key is already saved optimistically. Show a softer message
+                                    // for network errors vs actual invalid key errors.
+                                    let msg = error_message.unwrap_or_else(|| "Could not verify API key.".to_string());
+                                    let is_invalid_key = msg.contains("Invalid API key");
+                                    if is_invalid_key {
+                                        // Actually invalid — remove the saved key
+                                        let _ = persistence::queries::set_setting(
+                                            actor_state.db.conn(),
+                                            "brave_api_key",
+                                            "",
+                                        );
+                                        actor_state.app_state.brave_api_key_set = false;
+                                        actor_state.app_state.toast = Some(msg);
+                                    } else {
+                                        // Network error — key saved but couldn't verify
+                                        actor_state.app_state.toast = Some("API key saved. Could not verify — check your connection.".to_string());
+                                    }
+                                }
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
