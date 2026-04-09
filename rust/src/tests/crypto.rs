@@ -163,14 +163,14 @@ fn test_bootstrap_db_write_read_round_trips() {
     let kek = derive_kek(b"test_pin", &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
         .expect("derive_kek");
     let wrapped = wrap_dek(&kek, &dek);
-    let duress_salt = generate_salt();
-    let duress_hash = hash_pin(b"duress_pin", &duress_salt);
+    // hash_pin embeds its own random salt in the PHC string; no separate duress_salt needed.
+    let dummy_salt = generate_salt();
+    let duress_hash = hash_pin(b"duress_pin", &dummy_salt);
 
     let params = AuthParams {
         salt: salt.to_vec(),
         wrapped_dek: wrapped,
         duress_hash: Some(duress_hash.clone()),
-        duress_salt: Some(duress_salt.to_vec()),
         kdf_memory_kib: DEFAULT_MEMORY_KIB,
         kdf_iterations: DEFAULT_ITERATIONS,
         kdf_parallelism: DEFAULT_PARALLELISM,
@@ -201,7 +201,6 @@ fn test_bootstrap_db_delete_all_clears_params() {
         salt: salt.to_vec(),
         wrapped_dek: wrap_dek(&kek, &dek),
         duress_hash: None,
-        duress_salt: None,
         kdf_memory_kib: DEFAULT_MEMORY_KIB,
         kdf_iterations: DEFAULT_ITERATIONS,
         kdf_parallelism: DEFAULT_PARALLELISM,

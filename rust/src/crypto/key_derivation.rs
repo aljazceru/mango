@@ -164,19 +164,17 @@ pub fn setup_pin_auth(
     )?;
     let wrapped_dek = wrap_dek(&kek, &dek);
 
-    let (duress_hash, duress_salt) = if let Some(dp) = duress_pin {
-        let ds = generate_salt();
-        let h = hash_pin(dp.as_bytes(), &ds);
-        (Some(h), Some(ds.to_vec()))
-    } else {
-        (None, None)
-    };
+    // hash_pin generates and embeds its own random salt in the PHC string;
+    // no separate duress_salt field is needed.
+    let duress_hash = duress_pin.map(|dp| {
+        let dummy_salt = generate_salt();
+        hash_pin(dp.as_bytes(), &dummy_salt)
+    });
 
     bootstrap.write_auth_params(&super::bootstrap_db::AuthParams {
         salt: salt.to_vec(),
         wrapped_dek,
         duress_hash,
-        duress_salt,
         kdf_memory_kib: DEFAULT_MEMORY_KIB,
         kdf_iterations: DEFAULT_ITERATIONS,
         kdf_parallelism: DEFAULT_PARALLELISM,
