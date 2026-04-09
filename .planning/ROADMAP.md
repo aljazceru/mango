@@ -180,3 +180,20 @@ Plans:
 - [x] 27-02-PLAN.md — InternalEvent variants, spawn_chat_tool_round, do_send_message tool branch, ChatToolCallsReady handler
 - [x] 27-03-PLAN.md — UniFFI bindings regeneration, tools toggle UI on iOS/Android/Desktop
 **UI hint**: yes
+
+### Phase 28: Local Data Encryption & Authentication
+
+**Goal:** All local data (SQLite database, usearch vector indices, cached documents) is encrypted at rest using platform hardware capabilities. Users authenticate via biometrics or PIN/password to unlock. Duress PIN triggers full data wipe. Graceful degradation on devices without biometric hardware. All three platforms: iOS, Android, Desktop.
+**Requirements**: ENC-01, ENC-02, ENC-03, ENC-04, ENC-05, ENC-06, ENC-07, ENC-08, ENC-09, ENC-10, ENC-11, ENC-12, ENC-13, ENC-14
+**Depends on:** Phase 27
+**Plans:** 7 plans
+
+Plans:
+- [ ] 28-01-PLAN.md — Crypto foundation: SQLCipher, AES-256-GCM file encryption, Argon2id key derivation, bootstrap DB
+- [ ] 28-02-PLAN.md — Actor restructure: Screen::Locked, BiometricProvider, deferred DB open, auth AppActions
+- [ ] 28-03-PLAN.md — Encrypted VectorIndex save/load with DEK
+- [ ] 28-04-PLAN.md — iOS: UniFFI bindings, BiometricProviderImpl, LockScreen, PinSetupScreen
+- [ ] 28-05-PLAN.md — Android: BiometricProviderImpl (BiometricPrompt+CountDownLatch), LockScreen, PinSetupScreen
+- [ ] 28-06-PLAN.md — Desktop: PIN-only LockScreen, PinSetupScreen
+- [ ] 28-07-PLAN.md — Background lock timeout on all platforms, lock timeout Settings picker
+**UI hint**: yes

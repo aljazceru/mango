@@ -119,6 +119,7 @@ Key architectural context for v2.0:
 - Phase 25 added: disable/enable making memories in the app
 - Phase 26 added: settings submenus and organization — group related settings into collapsible sections or sub-screens
 - Phase 27 added: Add optional tool use to chat — extend chat streaming with inline tool calling, reusing agent tool infrastructure
+- Phase 28 added: Local Data Encryption & Authentication — encrypt all local data (SQLite, vector indices, documents) with platform hardware (Keychain/Keystore/TPM), biometric/PIN unlock, duress PIN for data wipe, graceful degradation on older devices
 
 ### Pending Todos
 
