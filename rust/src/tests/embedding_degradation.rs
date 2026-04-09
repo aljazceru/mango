@@ -8,6 +8,7 @@ fn test_degraded_status_propagates_to_app_state() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Degraded,
+        Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(100));
     let state = app.state();
@@ -21,6 +22,7 @@ fn test_actor_handles_send_message_when_degraded() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Degraded,
+        Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(100));
     app.dispatch(AppAction::NewConversation);
@@ -37,6 +39,7 @@ fn test_active_status_on_normal_init() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(100));
     let state = app.state();

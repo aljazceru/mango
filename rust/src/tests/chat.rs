@@ -1,7 +1,7 @@
 use crate::llm::streaming::InternalEvent;
 use crate::{
-    AppAction, BusyState, EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider,
-    Screen,
+    AppAction, BusyState, EmbeddingStatus, FfiApp, NullBiometricProvider, NullEmbeddingProvider,
+    NullKeychainProvider, Screen,
 };
 use std::time::Duration;
 
@@ -12,6 +12,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(50));
     app
@@ -509,6 +510,7 @@ fn test_system_prompt_resolution_global() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(50));
 

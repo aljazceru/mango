@@ -496,6 +496,7 @@ fn test_ffiapp_loads_backends_from_db() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+    Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
     let state = app.state();
@@ -559,6 +560,7 @@ fn test_ffiapp_loads_conversations_from_db() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+    Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -666,6 +668,7 @@ fn test_ffiapp_loads_agent_sessions_from_db() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+    Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
 

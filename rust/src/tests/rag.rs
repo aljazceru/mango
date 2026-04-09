@@ -292,6 +292,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+    Box::new(crate::NullBiometricProvider),
     );
     // 100ms is stable under parallel test load; actor init includes VectorIndex + document list load.
     std::thread::sleep(Duration::from_millis(100));

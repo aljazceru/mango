@@ -646,14 +646,15 @@ open class FfiApp: FfiAppProtocol, @unchecked Sendable {
      * `embedding_status` reflects whether the real embedding provider loaded successfully
      * (`Active`) or fell back to `NullEmbeddingProvider` due to an init failure (`Degraded`).
      */
-public convenience init(dataDir: String, keychain: KeychainProvider, embeddingProvider: EmbeddingProvider, embeddingStatus: EmbeddingStatus) {
+public convenience init(dataDir: String, keychain: KeychainProvider, embeddingProvider: EmbeddingProvider, embeddingStatus: EmbeddingStatus, biometricProvider: BiometricProvider) {
     let pointer =
         try! rustCall() {
     uniffi_mango_core_fn_constructor_ffiapp_new(
         FfiConverterString.lower(dataDir),
         FfiConverterCallbackInterfaceKeychainProvider_lower(keychain),
         FfiConverterCallbackInterfaceEmbeddingProvider_lower(embeddingProvider),
-        FfiConverterTypeEmbeddingStatus_lower(embeddingStatus),$0
+        FfiConverterTypeEmbeddingStatus_lower(embeddingStatus),
+        FfiConverterCallbackInterfaceBiometricProvider_lower(biometricProvider),$0
     )
 }
     self.init(unsafeFromRawPointer: pointer)
@@ -1176,6 +1177,23 @@ public struct AppState {
      * Used by Settings UI to show a loading indicator on the Save button.
      */
     public var braveApiKeyValidating: Bool
+    /**
+     * Whether biometric authentication is available and enrolled on this device (D-20, D-21).
+     * Set at actor startup by querying the BiometricProvider.
+     */
+    public var biometricAvailable: Bool
+    /**
+     * Lock timeout in seconds. Default: 300 (5 minutes). 0 = never lock (D-13).
+     */
+    public var lockTimeoutSeconds: Int64
+    /**
+     * True once the user has set up a PIN (auth_params written to bootstrap DB) (D-14).
+     */
+    public var authInitialized: Bool
+    /**
+     * True when the main DB was opened with SQLCipher encryption (D-01).
+     */
+    public var encryptionEnabled: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1278,7 +1296,20 @@ public struct AppState {
         /**
          * True while a ValidateBraveApiKey health-check is in flight.
          * Used by Settings UI to show a loading indicator on the Save button.
-         */braveApiKeyValidating: Bool) {
+         */braveApiKeyValidating: Bool, 
+        /**
+         * Whether biometric authentication is available and enrolled on this device (D-20, D-21).
+         * Set at actor startup by querying the BiometricProvider.
+         */biometricAvailable: Bool, 
+        /**
+         * Lock timeout in seconds. Default: 300 (5 minutes). 0 = never lock (D-13).
+         */lockTimeoutSeconds: Int64, 
+        /**
+         * True once the user has set up a PIN (auth_params written to bootstrap DB) (D-14).
+         */authInitialized: Bool, 
+        /**
+         * True when the main DB was opened with SQLCipher encryption (D-01).
+         */encryptionEnabled: Bool) {
         self.rev = rev
         self.router = router
         self.busyState = busyState
@@ -1308,6 +1339,10 @@ public struct AppState {
         self.braveApiKeySet = braveApiKeySet
         self.memoriesEnabled = memoriesEnabled
         self.braveApiKeyValidating = braveApiKeyValidating
+        self.biometricAvailable = biometricAvailable
+        self.lockTimeoutSeconds = lockTimeoutSeconds
+        self.authInitialized = authInitialized
+        self.encryptionEnabled = encryptionEnabled
     }
 }
 
@@ -1405,6 +1440,18 @@ extension AppState: Equatable, Hashable {
         if lhs.braveApiKeyValidating != rhs.braveApiKeyValidating {
             return false
         }
+        if lhs.biometricAvailable != rhs.biometricAvailable {
+            return false
+        }
+        if lhs.lockTimeoutSeconds != rhs.lockTimeoutSeconds {
+            return false
+        }
+        if lhs.authInitialized != rhs.authInitialized {
+            return false
+        }
+        if lhs.encryptionEnabled != rhs.encryptionEnabled {
+            return false
+        }
         return true
     }
 
@@ -1438,6 +1485,10 @@ extension AppState: Equatable, Hashable {
         hasher.combine(braveApiKeySet)
         hasher.combine(memoriesEnabled)
         hasher.combine(braveApiKeyValidating)
+        hasher.combine(biometricAvailable)
+        hasher.combine(lockTimeoutSeconds)
+        hasher.combine(authInitialized)
+        hasher.combine(encryptionEnabled)
     }
 }
 
@@ -1478,7 +1529,11 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 memoryCount: FfiConverterUInt64.read(from: &buf), 
                 braveApiKeySet: FfiConverterBool.read(from: &buf), 
                 memoriesEnabled: FfiConverterBool.read(from: &buf), 
-                braveApiKeyValidating: FfiConverterBool.read(from: &buf)
+                braveApiKeyValidating: FfiConverterBool.read(from: &buf), 
+                biometricAvailable: FfiConverterBool.read(from: &buf), 
+                lockTimeoutSeconds: FfiConverterInt64.read(from: &buf), 
+                authInitialized: FfiConverterBool.read(from: &buf), 
+                encryptionEnabled: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -1512,6 +1567,10 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.braveApiKeySet, into: &buf)
         FfiConverterBool.write(value.memoriesEnabled, into: &buf)
         FfiConverterBool.write(value.braveApiKeyValidating, into: &buf)
+        FfiConverterBool.write(value.biometricAvailable, into: &buf)
+        FfiConverterInt64.write(value.lockTimeoutSeconds, into: &buf)
+        FfiConverterBool.write(value.authInitialized, into: &buf)
+        FfiConverterBool.write(value.encryptionEnabled, into: &buf)
     }
 }
 
@@ -3165,6 +3224,38 @@ public enum AppAction {
      */
     case setConversationToolsEnabled(conversationId: String, enabled: Bool
     )
+    /**
+     * First-time PIN setup: derive KEK, wrap DEK, write bootstrap DB, migrate DB to SQLCipher (D-14).
+     * `duress_pin` is optional; if Some, its hash is stored in the bootstrap DB (D-18).
+     * `enable_biometric` determines whether biometric unlock is offered after setup (D-14).
+     */
+    case setupPin(pin: String, duressPin: String?, enableBiometric: Bool
+    )
+    /**
+     * Unlock with an already-unwrapped DEK (hex string). Used internally after biometric unlock
+     * when the keychain provides the raw DEK (D-06).
+     */
+    case unlockWithDek(dekHex: String
+    )
+    /**
+     * Unlock with a PIN: reads auth params from bootstrap DB, derives KEK, unwraps DEK,
+     * detects duress PIN before attempting decryption (D-19, T-28-11), opens encrypted DB (D-07).
+     */
+    case unlockWithPin(pin: String
+    )
+    /**
+     * Lock the app: drop the DB handle, save pre-lock screen, clear sensitive AppState (D-12, T-28-10).
+     */
+    case lockApp
+    /**
+     * Attempt biometric authentication. On success, dispatches UnlockWithPin internally (D-11).
+     */
+    case attemptBiometricUnlock
+    /**
+     * Set the lock timeout in seconds. 0 = never lock. Persisted to settings table (D-13).
+     */
+    case setLockTimeout(seconds: Int64
+    )
 }
 
 
@@ -3323,6 +3414,22 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         )
         
         case 52: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 53: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 54: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 55: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 56: return .lockApp
+        
+        case 57: return .attemptBiometricUnlock
+        
+        case 58: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3594,6 +3701,36 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(52))
             FfiConverterString.write(conversationId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
+            
+        
+        case let .setupPin(pin,duressPin,enableBiometric):
+            writeInt(&buf, Int32(53))
+            FfiConverterString.write(pin, into: &buf)
+            FfiConverterOptionString.write(duressPin, into: &buf)
+            FfiConverterBool.write(enableBiometric, into: &buf)
+            
+        
+        case let .unlockWithDek(dekHex):
+            writeInt(&buf, Int32(54))
+            FfiConverterString.write(dekHex, into: &buf)
+            
+        
+        case let .unlockWithPin(pin):
+            writeInt(&buf, Int32(55))
+            FfiConverterString.write(pin, into: &buf)
+            
+        
+        case .lockApp:
+            writeInt(&buf, Int32(56))
+        
+        
+        case .attemptBiometricUnlock:
+            writeInt(&buf, Int32(57))
+        
+        
+        case let .setLockTimeout(seconds):
+            writeInt(&buf, Int32(58))
+            FfiConverterInt64.write(seconds, into: &buf)
             
         }
     }
@@ -4506,6 +4643,14 @@ public enum Screen {
      * Defaults sub-screen (model picker + default instructions) -- pushed from Settings (Phase 26).
      */
     case settingsDefaults
+    /**
+     * Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
+     */
+    case locked
+    /**
+     * PIN/password setup screen -- shown on first launch after onboarding (Phase 28, D-14).
+     */
+    case pinSetup
 }
 
 
@@ -4542,6 +4687,10 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         case 8: return .settingsProviders
         
         case 9: return .settingsDefaults
+        
+        case 10: return .locked
+        
+        case 11: return .pinSetup
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4587,6 +4736,14 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         
         case .settingsDefaults:
             writeInt(&buf, Int32(9))
+        
+        
+        case .locked:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .pinSetup:
+            writeInt(&buf, Int32(11))
         
         }
     }
@@ -4816,6 +4973,165 @@ public func FfiConverterCallbackInterfaceAppReconciler_lift(_ handle: UInt64) th
 #endif
 public func FfiConverterCallbackInterfaceAppReconciler_lower(_ v: AppReconciler) -> UInt64 {
     return FfiConverterCallbackInterfaceAppReconciler.lower(v)
+}
+
+
+
+
+/**
+ * Biometric authentication capability bridge. Implemented natively on each platform.
+ *
+ * Per D-11 / D-21: iOS uses LAContext, Android uses BiometricPrompt, Desktop has no
+ * standard biometric API. The Rust actor calls this to check availability and attempt
+ * authentication. The result crosses the UniFFI boundary as a blocking call (the native
+ * implementation uses a DispatchSemaphore / CountDownLatch to bridge the async callback).
+ *
+ * This is a UniFFI callback_interface so native layers (Swift, Kotlin) can inject
+ * their platform biometric implementation, following the same pattern as KeychainProvider.
+ */
+public protocol BiometricProvider: AnyObject, Sendable {
+    
+    /**
+     * Check whether biometric authentication is available and enrolled.
+     * Returns one of: "available", "not_enrolled", "not_available".
+     */
+    func biometricStatus()  -> String
+    
+    /**
+     * Attempt biometric authentication with the given localized reason string.
+     * Blocks until the platform callback fires. Returns true on success, false on failure/cancel.
+     */
+    func authenticate(reason: String)  -> Bool
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceBiometricProvider {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceBiometricProvider] = [UniffiVTableCallbackInterfaceBiometricProvider(
+        biometricStatus: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceBiometricProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.biometricStatus(
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        authenticate: { (
+            uniffiHandle: UInt64,
+            reason: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> Bool in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceBiometricProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.authenticate(
+                     reason: try FfiConverterString.lift(reason)
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            let result = try? FfiConverterCallbackInterfaceBiometricProvider.handleMap.remove(handle: uniffiHandle)
+            if result == nil {
+                print("Uniffi callback interface BiometricProvider: handle missing in uniffiFree")
+            }
+        }
+    )]
+}
+
+private func uniffiCallbackInitBiometricProvider() {
+    uniffi_mango_core_fn_init_callback_vtable_biometricprovider(UniffiCallbackInterfaceBiometricProvider.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceBiometricProvider {
+    fileprivate static let handleMap = UniffiHandleMap<BiometricProvider>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceBiometricProvider : FfiConverter {
+    typealias SwiftType = BiometricProvider
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceBiometricProvider_lift(_ handle: UInt64) throws -> BiometricProvider {
+    return try FfiConverterCallbackInterfaceBiometricProvider.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceBiometricProvider_lower(_ v: BiometricProvider) -> UInt64 {
+    return FfiConverterCallbackInterfaceBiometricProvider.lower(v)
 }
 
 
@@ -5792,10 +6108,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_method_ffiapp_state() != 64379) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_constructor_ffiapp_new() != 49469) {
+    if (uniffi_mango_core_checksum_constructor_ffiapp_new() != 30597) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_appreconciler_reconcile() != 36412) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_biometricprovider_biometric_status() != 51844) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_biometricprovider_authenticate() != 25231) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_embeddingprovider_embed() != 3552) {
@@ -5815,6 +6137,7 @@ private let initializationResult: InitializationResult = {
     }
 
     uniffiCallbackInitAppReconciler()
+    uniffiCallbackInitBiometricProvider()
     uniffiCallbackInitEmbeddingProvider()
     uniffiCallbackInitFilePickerProvider()
     uniffiCallbackInitKeychainProvider()
