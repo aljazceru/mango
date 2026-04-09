@@ -183,9 +183,14 @@ impl Database {
         }
         drop(verify);
         // Atomically replace original with encrypted copy
-        std::fs::rename(&enc_path, path).map_err(|e| PersistenceError::MigrationFailed {
-            version: 0,
-            message: format!("rename after encryption: {}", e),
+        std::fs::rename(&enc_path, path).map_err(|e| {
+            // Best-effort cleanup: remove temp file since rename failed and the
+            // original plaintext DB is still in place.
+            let _ = std::fs::remove_file(&enc_path);
+            PersistenceError::MigrationFailed {
+                version: 0,
+                message: format!("rename after encryption: {}", e),
+            }
         })?;
         Ok(())
     }
