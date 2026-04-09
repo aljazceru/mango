@@ -16,9 +16,11 @@ pub struct AuthParams {
     /// DEK wrapped (AES-256-GCM encrypted) with the KEK derived from the user's PIN.
     pub wrapped_dek: Vec<u8>,
     /// PHC-format Argon2id hash of the duress PIN (optional).
+    ///
+    /// The Argon2id PHC string embeds its own random salt internally; no separate
+    /// `duress_salt` column is needed — `verify_pin_hash` re-extracts the salt from
+    /// the PHC string at verification time.
     pub duress_hash: Option<String>,
-    /// 32-byte salt used when hashing the duress PIN (optional).
-    pub duress_salt: Option<Vec<u8>>,
     /// Argon2id memory cost in KiB.
     pub kdf_memory_kib: u32,
     /// Argon2id iteration count.
@@ -47,7 +49,6 @@ impl BootstrapDb {
                 salt            BLOB NOT NULL,
                 wrapped_dek     BLOB NOT NULL,
                 duress_hash     TEXT,
-                duress_salt     BLOB,
                 kdf_memory_kib  INTEGER NOT NULL,
                 kdf_iterations  INTEGER NOT NULL,
                 kdf_parallelism INTEGER NOT NULL
@@ -60,14 +61,13 @@ impl BootstrapDb {
     pub fn write_auth_params(&self, params: &AuthParams) -> Result<(), anyhow::Error> {
         self.conn.execute(
             "INSERT OR REPLACE INTO auth_params
-                (id, salt, wrapped_dek, duress_hash, duress_salt,
+                (id, salt, wrapped_dek, duress_hash,
                  kdf_memory_kib, kdf_iterations, kdf_parallelism)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 params.salt,
                 params.wrapped_dek,
                 params.duress_hash,
-                params.duress_salt,
                 params.kdf_memory_kib,
                 params.kdf_iterations,
                 params.kdf_parallelism,
@@ -79,7 +79,7 @@ impl BootstrapDb {
     /// Read the singleton auth params row. Returns `None` if not yet initialised.
     pub fn read_auth_params(&self) -> Result<Option<AuthParams>, anyhow::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT salt, wrapped_dek, duress_hash, duress_salt,
+            "SELECT salt, wrapped_dek, duress_hash,
                     kdf_memory_kib, kdf_iterations, kdf_parallelism
              FROM auth_params WHERE id = 1",
         )?;
@@ -88,10 +88,9 @@ impl BootstrapDb {
                 salt: row.get(0)?,
                 wrapped_dek: row.get(1)?,
                 duress_hash: row.get(2)?,
-                duress_salt: row.get(3)?,
-                kdf_memory_kib: row.get::<_, u32>(4)?,
-                kdf_iterations: row.get::<_, u32>(5)?,
-                kdf_parallelism: row.get::<_, u32>(6)?,
+                kdf_memory_kib: row.get::<_, u32>(3)?,
+                kdf_iterations: row.get::<_, u32>(4)?,
+                kdf_parallelism: row.get::<_, u32>(5)?,
             })
         });
         match result {

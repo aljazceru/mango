@@ -4319,7 +4319,6 @@ impl FfiApp {
                                     salt: salt.to_vec(),
                                     wrapped_dek,
                                     duress_hash,
-                                    duress_salt: None,
                                     kdf_memory_kib: crypto::key_derivation::DEFAULT_MEMORY_KIB,
                                     kdf_iterations: crypto::key_derivation::DEFAULT_ITERATIONS,
                                     kdf_parallelism: crypto::key_derivation::DEFAULT_PARALLELISM,
