@@ -4294,7 +4294,7 @@ impl FfiApp {
 
                             // ── Phase 28: Authentication actions ─────────────────────────
 
-                            AppAction::SetupPin { pin, duress_pin, enable_biometric: _ } => {
+                            AppAction::SetupPin { pin, duress_pin, enable_biometric } => {
                                 // Generate DEK, derive KEK from PIN, wrap DEK, write bootstrap DB.
                                 // Then migrate any existing plaintext DB to SQLCipher.
                                 // CR-03: wrap raw DEK bytes in Zeroizing so they are zeroed on drop.
@@ -4321,6 +4321,17 @@ impl FfiApp {
                                 let dek_hex: Zeroizing<String> = Zeroizing::new(
                                     dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                 );
+
+                                // Per D-05/D-06: cache DEK in platform keychain so biometric unlock
+                                // can retrieve it without PIN (ENC-04 gap closure).
+                                if enable_biometric {
+                                    actor_state.keychain.store(
+                                        "mango".to_string(),
+                                        "dek".to_string(),
+                                        (*dek_hex).clone(),
+                                    );
+                                    log::info!("[auth] SetupPin: DEK stored in platform keychain for biometric unlock");
+                                }
 
                                 let duress_hash = duress_pin.as_deref().map(|dp| {
                                     crypto::key_derivation::hash_pin(dp.as_bytes(), &salt)
