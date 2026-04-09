@@ -269,6 +269,10 @@ pub struct AppState {
     /// Whether biometric authentication is available and enrolled on this device (D-20, D-21).
     /// Set at actor startup by querying the BiometricProvider.
     pub biometric_available: bool,
+    /// True after a successful biometric prompt (CR-01 Phase 28 fix): signals the lock screen
+    /// UI to reveal the PIN input field so the user can complete the final unlock step.
+    /// Reset to false on lock, logout, or failed biometric attempt.
+    pub biometric_authenticated: bool,
     /// Lock timeout in seconds. Default: 300 (5 minutes). 0 = never lock (D-13).
     pub lock_timeout_seconds: i64,
     /// True once the user has set up a PIN (auth_params written to bootstrap DB) (D-14).
@@ -313,6 +317,7 @@ impl Default for AppState {
             memories_enabled: true,
             brave_api_key_validating: false,
             biometric_available: false,
+            biometric_authenticated: false,
             lock_timeout_seconds: 300,
             auth_initialized: false,
             encryption_enabled: false,
@@ -5497,12 +5502,15 @@ impl FfiApp {
 
                             llm::InternalEvent::BiometricResult { success } => {
                                 // Delivered from the spawn_blocking task started by AttemptBiometricUnlock.
-                                // For Phase 28: biometric success navigates to PIN entry to complete unlock.
+                                // For Phase 28: biometric success signals the UI to reveal the PIN input
+                                // on the lock screen so the user can complete the final unlock step.
                                 // In post-Phase 28 implementations, the DEK would be retrieved directly
                                 // from the Secure Enclave / Android Keystore and AppAction::UnlockWithDek
                                 // dispatched instead (per D-06).
                                 if success {
-                                    log::info!("[auth] Biometric authentication succeeded");
+                                    log::info!("[auth] Biometric authentication succeeded — prompting PIN");
+                                    // Remain on Screen::Locked; signal the UI to show the PIN input field.
+                                    actor_state.app_state.biometric_authenticated = true;
                                 } else {
                                     actor_state.app_state.toast =
                                         Some("Biometric authentication failed.".to_string());
