@@ -4325,6 +4325,10 @@ impl FfiApp {
                                 // Per D-05/D-06: cache DEK in platform keychain so biometric unlock
                                 // can retrieve it without PIN (ENC-04 gap closure).
                                 if enable_biometric {
+                                    // Note: (*dek_hex).clone() produces a plain String (not
+                                    // Zeroizing) because KeychainProvider::store takes String
+                                    // by value per the UniFFI ABI. The clone is unavoidable;
+                                    // the platform keychain is hardware-backed storage.
                                     actor_state.keychain.store(
                                         "mango".to_string(),
                                         "dek".to_string(),
@@ -5534,7 +5538,8 @@ impl FfiApp {
                                         "mango".to_string(),
                                         "dek".to_string(),
                                     );
-                                    if let Some(dek_hex) = maybe_dek_hex {
+                                    if let Some(raw_dek) = maybe_dek_hex {
+                                        let dek_hex = zeroize::Zeroizing::new(raw_dek);
                                         log::info!("[auth] Biometric unlock: DEK loaded from keychain — opening DB");
                                         if actor_state.db_path == ":memory:" {
                                             if let Ok(db) = persistence::Database::open(":memory:") {
