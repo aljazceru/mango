@@ -9,6 +9,10 @@ pub enum PersistenceError {
     MigrationFailed { version: i32, message: String },
     /// JSON serialization or deserialization error.
     SerializationError { message: String },
+    /// Decryption failed: wrong key or corrupted database.
+    DecryptionFailed { message: String },
+    /// I/O error (e.g. rename during migration).
+    IoError { message: String },
 }
 
 impl fmt::Display for PersistenceError {
@@ -23,6 +27,20 @@ impl fmt::Display for PersistenceError {
             PersistenceError::SerializationError { message } => {
                 write!(f, "Serialization error: {}", message)
             }
+            PersistenceError::DecryptionFailed { message } => {
+                write!(f, "Decryption failed: {}", message)
+            }
+            PersistenceError::IoError { message } => {
+                write!(f, "I/O error: {}", message)
+            }
+        }
+    }
+}
+
+impl From<std::io::Error> for PersistenceError {
+    fn from(e: std::io::Error) -> Self {
+        PersistenceError::IoError {
+            message: e.to_string(),
         }
     }
 }

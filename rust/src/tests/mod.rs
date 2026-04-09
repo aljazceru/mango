@@ -20,3 +20,5 @@ mod streaming;
 mod tee_policy;
 mod transport;
 mod live_brave;
+mod crypto;
+mod persistence_encrypted;
