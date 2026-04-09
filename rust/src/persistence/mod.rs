@@ -138,6 +138,18 @@ impl Database {
         // Validate dek_hex before embedding it in the ATTACH KEY string (WR-02).
         validate_dek_hex(dek_hex)?;
         let enc_path = format!("{}_enc_tmp", path);
+        // WR-01: Reject paths containing single-quote characters to prevent SQL injection
+        // in the ATTACH DATABASE statement. Single quotes are valid POSIX filename chars
+        // but would break or malform the SQL string.
+        if enc_path.contains('\'') {
+            return Err(PersistenceError::MigrationFailed {
+                version: 0,
+                message: format!(
+                    "database path contains invalid character (single quote): {:?}",
+                    enc_path
+                ),
+            });
+        }
         // Open plaintext DB and read its current user_version
         let conn = rusqlite::Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
