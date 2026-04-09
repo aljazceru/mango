@@ -4405,11 +4405,12 @@ impl FfiApp {
                                 let params = match actor_state.bootstrap.read_auth_params() {
                                     Ok(Some(p)) => p,
                                     Ok(None) => {
-                                        // No auth params → open plaintext DB (legacy path).
-                                        if let Ok(db) = persistence::Database::open(&actor_state.db_path) {
-                                            actor_state.db = Some(db);
-                                            load_post_unlock(&mut actor_state, core_tx_for_thread.clone(), true);
-                                        }
+                                        // CR-02: No auth params stored. This state is inconsistent —
+                                        // Screen::Locked should never be shown without auth configured
+                                        // (LockApp now guards against this). Reject the unlock attempt
+                                        // rather than silently bypassing PIN verification.
+                                        log::warn!("[auth] UnlockWithPin called but no auth params in bootstrap DB — rejecting to prevent auth bypass");
+                                        actor_state.app_state.toast = Some("No PIN configured. Please restart the app.".to_string());
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
@@ -4508,6 +4509,16 @@ impl FfiApp {
                             }
 
                             AppAction::LockApp => {
+                                // CR-02: Only lock if auth is configured. Locking without auth
+                                // creates a Screen::Locked that UnlockWithPin bypasses (no params
+                                // → plaintext open without PIN check). Skip the lock transition
+                                // entirely for unauthenticated installs to prevent that bypass.
+                                if !actor_state.app_state.auth_initialized {
+                                    log::debug!("[auth] LockApp skipped — auth not initialized (no PIN configured)");
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 // T-28-10: Clear sensitive state from AppState.
                                 let current_screen =
                                     actor_state.app_state.router.current_screen.clone();
