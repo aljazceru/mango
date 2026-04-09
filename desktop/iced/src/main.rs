@@ -10,6 +10,8 @@ use mango_core::{
 };
 use mango_core::embedding::desktop::DesktopEmbeddingProvider;
 
+mod lock_screen;
+mod pin_setup_screen;
 mod theme;
 mod views;
 mod widgets;
@@ -252,6 +254,12 @@ enum App {
         theme_override: ThemeOverride,
         // Agent task input text (local form state before dispatch)
         agent_task_input: String,
+        // Phase 28: lock screen PIN input (cleared after submit, T-28-23)
+        lock_pin_input: String,
+        // Phase 28: PIN setup screen inputs
+        setup_pin_input: String,
+        setup_confirm_input: String,
+        setup_duress_input: String,
     },
 }
 
@@ -357,6 +365,14 @@ enum Message {
     WindowCloseRequested,
     // OS dark/light theme change
     SystemThemeChanged(bool),
+    // Phase 28: lock screen PIN input
+    UnlockPinChanged(String),
+    UnlockSubmit,
+    // Phase 28: PIN setup screen inputs
+    PinSetupPinChanged(String),
+    PinSetupConfirmChanged(String),
+    PinSetupDuressChanged(String),
+    PinSetupSubmit,
 }
 
 impl App {
@@ -405,6 +421,10 @@ impl App {
                     cached_theme: theme::app_theme(initial_dark),
                     theme_override: prefs.theme_override,
                     agent_task_input: String::new(),
+                    lock_pin_input: String::new(),
+                    setup_pin_input: String::new(),
+                    setup_confirm_input: String::new(),
+                    setup_duress_input: String::new(),
                 }
             }
             Err(error) => Self::BootError { error },
@@ -481,6 +501,10 @@ impl App {
                 cached_theme,
                 theme_override,
                 agent_task_input,
+                lock_pin_input,
+                setup_pin_input,
+                setup_confirm_input,
+                setup_duress_input,
             } => {
                 match message {
                     Message::CoreUpdated => {
@@ -1007,6 +1031,46 @@ impl App {
                         }
                     }
 
+                    // Phase 28: lock screen PIN handlers
+                    Message::UnlockPinChanged(val) => {
+                        *lock_pin_input = val;
+                        // Clear any previous error toast when user starts typing again
+                        if state.toast.is_some() {
+                            manager.dispatch(AppAction::ClearToast);
+                        }
+                    }
+                    Message::UnlockSubmit => {
+                        let pin = lock_pin_input.trim().to_string();
+                        if !pin.is_empty() {
+                            manager.dispatch(AppAction::UnlockWithPin { pin });
+                            // Clear PIN from local state immediately after dispatch (T-28-23)
+                            *lock_pin_input = String::new();
+                        }
+                    }
+                    // Phase 28: PIN setup screen handlers
+                    Message::PinSetupPinChanged(val) => {
+                        *setup_pin_input = val;
+                    }
+                    Message::PinSetupConfirmChanged(val) => {
+                        *setup_confirm_input = val;
+                    }
+                    Message::PinSetupDuressChanged(val) => {
+                        *setup_duress_input = val;
+                    }
+                    Message::PinSetupSubmit => {
+                        if let Some(action) = pin_setup_screen::build_setup_pin_action(
+                            setup_pin_input,
+                            setup_confirm_input,
+                            setup_duress_input,
+                        ) {
+                            manager.dispatch(action);
+                            // Clear setup inputs after dispatch (T-28-23)
+                            *setup_pin_input = String::new();
+                            *setup_confirm_input = String::new();
+                            *setup_duress_input = String::new();
+                        }
+                    }
+
                     // D-12: On window close, checkpoint all running agent sessions to SQLite
                     Message::WindowCloseRequested => {
                         for session in &state.agent_sessions {
@@ -1067,8 +1131,33 @@ impl App {
                 cached_theme,
                 theme_override,
                 agent_task_input,
+                lock_pin_input,
+                setup_pin_input,
+                setup_confirm_input,
+                setup_duress_input,
                 ..
             } => {
+                // Phase 28: Lock screen -- shown on cold launch when auth is required.
+                // Must be checked before any other screen so no content leaks (T-28-23).
+                if matches!(&state.router.current_screen, Screen::Locked) {
+                    return lock_screen::view(
+                        lock_pin_input,
+                        state.toast.as_deref(),
+                        *is_dark,
+                    );
+                }
+
+                // Phase 28: PIN setup screen -- shown on first launch (no auth params yet, D-14).
+                if matches!(&state.router.current_screen, Screen::PinSetup) {
+                    return pin_setup_screen::view(
+                        setup_pin_input,
+                        setup_confirm_input,
+                        setup_duress_input,
+                        state.toast.as_deref(),
+                        *is_dark,
+                    );
+                }
+
                 // Onboarding screen: full-screen overlay (no sidebar)
                 if let Screen::Onboarding { step } = &state.router.current_screen {
                     return views::onboarding::view(
