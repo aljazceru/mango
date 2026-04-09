@@ -2712,11 +2712,12 @@ fn load_post_unlock(
                 step: OnboardingStep::Welcome,
             }
         } else if actor_state.bootstrap.has_auth_params() {
-            // Has completed onboarding but no auth yet set up? (backward compat)
-            // auth_initialized is false in this case, show Home normally.
+            // Onboarding done and PIN is configured — go to Home.
             Screen::Home
         } else {
-            Screen::Home
+            // WR-02: Legacy install — onboarding done but no PIN configured.
+            // Navigate to PinSetup to encourage encryption enrollment.
+            Screen::PinSetup
         }
     };
 
