@@ -11,6 +11,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullKeychainProvider),
         Box::new(crate::NullEmbeddingProvider),
         EmbeddingStatus::Active,
+    Box::new(crate::NullBiometricProvider),
     );
     // Phase 8: VectorIndex init + document list load adds overhead; 150ms is stable in parallel test load.
     std::thread::sleep(Duration::from_millis(150));

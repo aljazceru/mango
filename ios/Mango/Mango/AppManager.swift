@@ -81,7 +81,8 @@ final class AppManager: AppReconciler, ObservableObject {
             embedding = IOSEmbeddingProvider()
             embeddingStatus = .degraded
         }
-        let app = FfiApp(dataDir: dataDir, keychain: keychain, embeddingProvider: embedding, embeddingStatus: embeddingStatus)
+        let biometric = BiometricProviderImpl()
+        let app = FfiApp(dataDir: dataDir, keychain: keychain, embeddingProvider: embedding, embeddingStatus: embeddingStatus, biometricProvider: biometric)
         self.ffiApp = app
 
         let initial = app.state()

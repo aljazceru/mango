@@ -22,6 +22,7 @@ fn create_test_app() -> Arc<FfiApp> {
         Box::new(crate::NullKeychainProvider),
         Box::new(crate::NullEmbeddingProvider),
         EmbeddingStatus::Active,
+    Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(50));
     app

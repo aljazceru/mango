@@ -258,6 +258,20 @@ typedef void (*UniffiCallbackInterfaceAppReconcilerMethod0)(uint64_t, RustBuffer
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER_METHOD0
+typedef void (*UniffiCallbackInterfaceBiometricProviderMethod0)(uint64_t, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER_METHOD1
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER_METHOD1
+typedef void (*UniffiCallbackInterfaceBiometricProviderMethod1)(uint64_t, RustBuffer, int8_t* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_EMBEDDING_PROVIDER_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_EMBEDDING_PROVIDER_METHOD0
 typedef void (*UniffiCallbackInterfaceEmbeddingProviderMethod0)(uint64_t, RustBuffer, RustBuffer* _Nonnull, 
@@ -301,6 +315,15 @@ typedef struct UniffiVTableCallbackInterfaceAppReconciler {
 } UniffiVTableCallbackInterfaceAppReconciler;
 
 #endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER
+typedef struct UniffiVTableCallbackInterfaceBiometricProvider {
+    UniffiCallbackInterfaceBiometricProviderMethod0 _Nonnull biometricStatus;
+    UniffiCallbackInterfaceBiometricProviderMethod1 _Nonnull authenticate;
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+} UniffiVTableCallbackInterfaceBiometricProvider;
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EMBEDDING_PROVIDER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EMBEDDING_PROVIDER
 typedef struct UniffiVTableCallbackInterfaceEmbeddingProvider {
@@ -339,7 +362,7 @@ void uniffi_mango_core_fn_free_ffiapp(void*_Nonnull ptr, RustCallStatus *_Nonnul
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CONSTRUCTOR_FFIAPP_NEW
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CONSTRUCTOR_FFIAPP_NEW
-void*_Nonnull uniffi_mango_core_fn_constructor_ffiapp_new(RustBuffer data_dir, uint64_t keychain, uint64_t embedding_provider, RustBuffer embedding_status, RustCallStatus *_Nonnull out_status
+void*_Nonnull uniffi_mango_core_fn_constructor_ffiapp_new(RustBuffer data_dir, uint64_t keychain, uint64_t embedding_provider, RustBuffer embedding_status, uint64_t biometric_provider, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_DISPATCH
@@ -365,6 +388,11 @@ RustBuffer uniffi_mango_core_fn_method_ffiapp_state(void*_Nonnull ptr, RustCallS
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_APPRECONCILER
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_APPRECONCILER
 void uniffi_mango_core_fn_init_callback_vtable_appreconciler(const UniffiVTableCallbackInterfaceAppReconciler* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_BIOMETRICPROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_BIOMETRICPROVIDER
+void uniffi_mango_core_fn_init_callback_vtable_biometricprovider(const UniffiVTableCallbackInterfaceBiometricProvider* _Nonnull vtable
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_EMBEDDINGPROVIDER
@@ -707,6 +735,18 @@ uint16_t uniffi_mango_core_checksum_constructor_ffiapp_new(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_APPRECONCILER_RECONCILE
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_APPRECONCILER_RECONCILE
 uint16_t uniffi_mango_core_checksum_method_appreconciler_reconcile(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_BIOMETRICPROVIDER_BIOMETRIC_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_BIOMETRICPROVIDER_BIOMETRIC_STATUS
+uint16_t uniffi_mango_core_checksum_method_biometricprovider_biometric_status(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_BIOMETRICPROVIDER_AUTHENTICATE
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_BIOMETRICPROVIDER_AUTHENTICATE
+uint16_t uniffi_mango_core_checksum_method_biometricprovider_authenticate(void
     
 );
 #endif
