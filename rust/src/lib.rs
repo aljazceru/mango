@@ -2604,9 +2604,9 @@ impl FfiApp {
 
             // Phase 8: load or create the HNSW vector index from disk.
             // On first launch (or in-memory tests), VectorIndex::new creates an empty index.
-            let vector_index = rag::VectorIndex::new(&vector_data_dir).unwrap_or_else(|_e| {
+            let vector_index = rag::VectorIndex::new(&vector_data_dir, None).unwrap_or_else(|_e| {
                 // Fallback: create index with empty path (no persistence for this run).
-                rag::VectorIndex::new("").expect("fallback VectorIndex creation failed")
+                rag::VectorIndex::new("", None).expect("fallback VectorIndex creation failed")
             });
 
             // Phase 8: load documents from SQLite into initial AppState.
@@ -3821,7 +3821,7 @@ impl FfiApp {
                                     let _ = actor_state.vector_index.remove(*rowid as u64);
                                 }
                                 if !rowids.is_empty() {
-                                    let _ = actor_state.vector_index.save();
+                                    let _ = actor_state.vector_index.save(None);
                                 }
 
                                 // Delete document from SQLite (chunks already deleted above)
@@ -4022,7 +4022,7 @@ impl FfiApp {
 
                                 if let Some(key) = usearch_key {
                                     let _ = actor_state.vector_index.remove(key as u64);
-                                    let _ = actor_state.vector_index.save(); // CRITICAL: persist to disk (Pitfall 1)
+                                    let _ = actor_state.vector_index.save(None); // CRITICAL: persist to disk (Pitfall 1)
                                 }
                                 let _ = persistence::queries::delete_memory(actor_state.db.conn(), &memory_id);
                                 actor_state.app_state.memories.retain(|m| m.id != memory_id);
@@ -4783,7 +4783,7 @@ impl FfiApp {
                                     }
                                 }
                                 if !chunk_rowids.is_empty() {
-                                    let _ = actor_state.vector_index.save();
+                                    let _ = actor_state.vector_index.save(None);
                                 }
 
                                 // Clear ingestion progress and show success toast
@@ -4861,7 +4861,7 @@ impl FfiApp {
                                         }
                                     }
                                     if added_count > 0 {
-                                        let _ = actor_state.vector_index.save();
+                                        let _ = actor_state.vector_index.save(None);
                                     }
                                     log::info!(
                                         "[memory] extracted {} memories ({} embedded) from conv={}",
