@@ -48,6 +48,23 @@ pub(crate) fn action_btn<'a>(label: &'a str, msg: Message, enabled: bool, vc: cr
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
+/// Lock timeout options: (display label, seconds). -1 = Never.
+const LOCK_TIMEOUT_OPTIONS: &[(&str, i64)] = &[
+    ("Immediately", 0),
+    ("1 minute", 60),
+    ("5 minutes", 300),
+    ("15 minutes", 900),
+    ("Never", -1),
+];
+
+fn lock_timeout_label(seconds: i64) -> &'static str {
+    LOCK_TIMEOUT_OPTIONS
+        .iter()
+        .find(|&&(_, s)| s == seconds)
+        .map(|(label, _)| *label)
+        .unwrap_or("5 minutes")
+}
+
 pub fn view<'a>(
     state: &'a AppState,
     is_dark: bool,
@@ -382,6 +399,60 @@ pub fn view<'a>(
         .padding(Padding::from([0u16, 16]))
         .width(Length::Fill);
 
+    // ── Security Section (Lock Timeout) ──────────────────────────────────────
+    let current_label = lock_timeout_label(state.lock_timeout_seconds);
+
+    let lock_timeout_picker = pick_list(
+        LOCK_TIMEOUT_OPTIONS.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
+        Some(current_label),
+        |selected: &str| {
+            let seconds = LOCK_TIMEOUT_OPTIONS
+                .iter()
+                .find(|(label, _)| *label == selected)
+                .map(|(_, s)| *s)
+                .unwrap_or(300);
+            Message::DispatchAction(AppAction::SetLockTimeout { seconds })
+        },
+    )
+    .text_size(13)
+    .padding(Padding::from([7u16, 10]));
+
+    let never_warning: Element<'_, Message> = if state.lock_timeout_seconds == -1 {
+        text("Not recommended. App will only lock on restart.")
+            .size(11)
+            .color(Color { r: 0.9, g: 0.4, b: 0.1, a: 1.0 })
+            .into()
+    } else {
+        iced::widget::Space::new().height(0).into()
+    };
+
+    let security_body = container(
+        column![
+            row![
+                text("Lock Timeout").size(13).color(vc.text),
+                iced::widget::Space::new().width(Length::Fill),
+                lock_timeout_picker,
+            ]
+            .align_y(Alignment::Center),
+            text("How long the app can be in the background before it locks.")
+                .size(11)
+                .color(vc.muted),
+            never_warning,
+        ]
+        .spacing(6),
+    )
+    .padding(Padding::from([10u16, 16]))
+    .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(vc.card)),
+        border: Border { radius: 8.0.into(), color: vc.border, width: 1.0 },
+        ..Default::default()
+    });
+
+    let security_row = container(security_body)
+        .padding(Padding::from([0u16, 16]))
+        .width(Length::Fill);
+
     // ── Compose ───────────────────────────────────────────────────────────────
     let content = column![
         section_header("PROVIDERS", vc.muted),
@@ -391,6 +462,8 @@ pub fn view<'a>(
         section_header("MEMORY", vc.muted),
         memory_toggle_row,
         memory_row,
+        section_header("SECURITY", vc.muted),
+        security_row,
         section_header("TOOLS", vc.muted),
         tools_body,
         section_header("APPEARANCE", vc.muted),

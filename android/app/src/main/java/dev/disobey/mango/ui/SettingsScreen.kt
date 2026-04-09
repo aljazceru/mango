@@ -276,6 +276,26 @@ fun SettingsScreen(
                 }
             }
 
+            // ── Security (Lock Timeout) ───────────────────────────────────────
+            item {
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "SECURITY",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                )
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    LockTimeoutPicker(
+                        currentSeconds = appState.lockTimeoutSeconds,
+                        onDispatch = onDispatch,
+                    )
+                }
+            }
+
             // ── Tools ────────────────────────────────────────────────────────
             item {
                 Spacer(Modifier.height(16.dp))
@@ -586,6 +606,79 @@ fun SettingsScreen(
             }
 
             item { Spacer(Modifier.height(32.dp)) }
+        }
+    }
+}
+
+// ── Lock Timeout Picker ───────────────────────────────────────────────────────
+
+private data class LockTimeoutOption(val label: String, val seconds: Long)
+
+private val lockTimeoutOptions = listOf(
+    LockTimeoutOption("Immediately", 0L),
+    LockTimeoutOption("1 minute", 60L),
+    LockTimeoutOption("5 minutes", 300L),
+    LockTimeoutOption("15 minutes", 900L),
+    LockTimeoutOption("Never", -1L),
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LockTimeoutPicker(
+    currentSeconds: Long,
+    onDispatch: (AppAction) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val currentLabel = lockTimeoutOptions.firstOrNull { it.seconds == currentSeconds }?.label ?: "5 minutes"
+
+    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Lock Timeout", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+        Text(
+            "How long the app can be in the background before it locks.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            OutlinedTextField(
+                value = currentLabel,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Lock after") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.menuAnchor().fillMaxWidth()
+            )
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                lockTimeoutOptions.forEach { option ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = option.label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (option.seconds == currentSeconds) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        onClick = {
+                            onDispatch(AppAction.SetLockTimeout(seconds = option.seconds))
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+        if (currentSeconds == -1L) {
+            Text(
+                "Not recommended. App will only lock on restart.",
+                style = MaterialTheme.typography.labelSmall,
+                color = androidx.compose.ui.graphics.Color(0xFFE65100)
+            )
         }
     }
 }
