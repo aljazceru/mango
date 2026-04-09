@@ -356,7 +356,7 @@ fn test_dispatch_all_known_tools() {
     let tool_names = ["web_search", "fetch_url", "file", "calculate"];
     let tmp = tempfile::tempdir().unwrap();
     let db = crate::persistence::Database::open(":memory:").unwrap();
-    let index = crate::rag::VectorIndex::new(tmp.path().to_str().unwrap()).unwrap();
+    let index = crate::rag::VectorIndex::new(tmp.path().to_str().unwrap(), None).unwrap();
     let provider = NullEmbeddingProvider;
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -676,7 +676,7 @@ fn test_agent_network_timeout_marks_failed() {
 fn test_dispatch_tools_malformed_args_no_panic() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::open(":memory:").unwrap();
-    let index = VectorIndex::new(tmp.path().to_str().unwrap()).unwrap();
+    let index = VectorIndex::new(tmp.path().to_str().unwrap(), None).unwrap();
     let provider = NullEmbeddingProvider;
 
     let malformed_call = ChatCompletionMessageToolCall {
