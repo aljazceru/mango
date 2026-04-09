@@ -4029,7 +4029,7 @@ impl FfiApp {
                                     let _ = actor_state.vector_index.remove(*rowid as u64);
                                 }
                                 if !rowids.is_empty() {
-                                    let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| d.as_ref()));
+                                    let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| &**d));
                                 }
 
                                 // Delete document from SQLite (chunks already deleted above)
@@ -4230,7 +4230,7 @@ impl FfiApp {
 
                                 if let Some(key) = usearch_key {
                                     let _ = actor_state.vector_index.remove(key as u64);
-                                    let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| d.as_ref())); // Persist to disk, encrypted if DEK available
+                                    let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| &**d)); // Persist to disk, encrypted if DEK available
                                 }
                                 let _ = persistence::queries::delete_memory(actor_state.db.as_ref().expect("db unlocked").conn(), &memory_id);
                                 actor_state.app_state.memories.retain(|m| m.id != memory_id);
@@ -4401,7 +4401,7 @@ impl FfiApp {
                                     }
                                     // Phase 29 (D-01, D-04): Store DEK and open VectorIndex with real encryption key.
                                     actor_state.dek = Some(dek.clone());
-                                    let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| d.as_ref());
+                                    let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| &**d);
                                     actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                         .unwrap_or_else(|e| {
                                             log::warn!("[auth] SetupPin: VectorIndex open with DEK failed, using empty fallback: {e}");
@@ -4437,7 +4437,7 @@ impl FfiApp {
                                     if let Ok(dek_bytes_vec) = hex::decode(&*dek_hex) {
                                         if let Ok(dek_arr) = <[u8; 32]>::try_from(dek_bytes_vec.as_slice()) {
                                             actor_state.dek = Some(Zeroizing::new(dek_arr));
-                                            let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| d.as_ref());
+                                            let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| &**d);
                                             actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                                 .unwrap_or_else(|e| {
                                                     log::warn!("[auth] UnlockWithDek: VectorIndex open failed: {e}");
@@ -4556,7 +4556,7 @@ impl FfiApp {
                                 }
                                 // Phase 29 (D-01, D-04): Store DEK and open VectorIndex with encryption key.
                                 actor_state.dek = Some(dek.clone());
-                                let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| d.as_ref());
+                                let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| &**d);
                                 actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                     .unwrap_or_else(|e| {
                                         log::warn!("[auth] UnlockWithPin: VectorIndex open with DEK failed: {e}");
@@ -5317,7 +5317,7 @@ impl FfiApp {
                                     }
                                 }
                                 if !chunk_rowids.is_empty() {
-                                    let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| d.as_ref()));
+                                    let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| &**d));
                                 }
 
                                 // Clear ingestion progress and show success toast
@@ -5395,7 +5395,7 @@ impl FfiApp {
                                         }
                                     }
                                     if added_count > 0 {
-                                        let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| d.as_ref()));
+                                        let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| &**d));
                                     }
                                     log::info!(
                                         "[memory] extracted {} memories ({} embedded) from conv={}",
@@ -5612,7 +5612,7 @@ impl FfiApp {
                                             if let Ok(dek_bytes_vec) = hex::decode(dek_hex.as_str()) {
                                                 if let Ok(dek_arr) = <[u8; 32]>::try_from(dek_bytes_vec.as_slice()) {
                                                     actor_state.dek = Some(Zeroizing::new(dek_arr));
-                                                    let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| d.as_ref());
+                                                    let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| &**d);
                                                     actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                                         .unwrap_or_else(|e| {
                                                             log::warn!("[auth] BiometricResult: VectorIndex open failed: {e}");
