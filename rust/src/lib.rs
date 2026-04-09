@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod agent;
 mod attestation;
+pub mod crypto;
 pub mod embedding;
 mod llm;
 pub mod memory;

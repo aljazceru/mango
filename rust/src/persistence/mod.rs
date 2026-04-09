@@ -68,4 +68,92 @@ impl Database {
     pub fn conn(&self) -> &rusqlite::Connection {
         &self.conn
     }
+
+    /// Open a SQLCipher-encrypted database at `path` using a 64-char hex DEK.
+    ///
+    /// The key pragma is issued as the very first operation after open (per SQLCipher
+    /// requirement D-01). WAL mode and foreign keys are enabled after keying.
+    /// Runs all pending schema migrations.
+    ///
+    /// Returns `DecryptionFailed` if the key is wrong or the database is corrupted.
+    pub fn open_encrypted(path: &str, dek_hex: &str) -> Result<Self, PersistenceError> {
+        let conn = rusqlite::Connection::open(path)?;
+        // CRITICAL: key pragma MUST be first operation after open (per D-01)
+        conn.pragma_update(None, "key", &format!("x'{}'", dek_hex))?;
+        // Verify the key is correct by attempting a read. SQLCipher returns an error
+        // on the first real DB operation if the key is wrong.
+        conn.pragma_query_value::<i32, _>(None, "user_version", |r| r.get(0))
+            .map_err(|e| PersistenceError::DecryptionFailed {
+                message: format!("wrong key or corrupted database: {}", e),
+            })?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        let mut db = Self { conn };
+        db.run_migrations()?;
+        Ok(db)
+    }
+
+    /// Return `true` if the database file at `path` is SQLCipher-encrypted.
+    ///
+    /// Attempts to read `user_version` without a key. If that fails the DB is
+    /// encrypted; if it succeeds it is a plaintext SQLite file.
+    pub fn is_encrypted(path: &str) -> bool {
+        let Ok(conn) = rusqlite::Connection::open(path) else {
+            return false;
+        };
+        // If we can read user_version without a key, DB is plaintext.
+        conn.pragma_query_value::<i32, _>(None, "user_version", |r| r.get(0))
+            .is_err()
+    }
+
+    /// Migrate a plaintext SQLite database to SQLCipher in-place.
+    ///
+    /// Uses `sqlcipher_export` to copy the plaintext DB into a new encrypted file,
+    /// verifies the new file opens correctly, then replaces the original.
+    /// If any step fails the original plaintext file is left untouched.
+    ///
+    /// Note: `sqlcipher_export` does not copy `PRAGMA user_version`. The source
+    /// version is read before export and explicitly written to the encrypted copy
+    /// so that `open_encrypted` does not re-apply already-applied migrations.
+    pub fn migrate_to_encrypted(path: &str, dek_hex: &str) -> Result<(), PersistenceError> {
+        let enc_path = format!("{}_enc_tmp", path);
+        // Open plaintext DB and read its current user_version
+        let conn = rusqlite::Connection::open(path)?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        let src_version: i32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap_or(0);
+        // Export schema + data to encrypted copy
+        conn.execute_batch(&format!(
+            "ATTACH DATABASE '{}' AS encrypted KEY \"x'{}'\";\
+             SELECT sqlcipher_export('encrypted');\
+             DETACH DATABASE encrypted;",
+            enc_path, dek_hex
+        ))?;
+        drop(conn);
+        // sqlcipher_export does not transfer user_version — set it explicitly so
+        // run_migrations skips already-applied migrations.
+        {
+            let enc_conn = rusqlite::Connection::open(&enc_path)?;
+            enc_conn.pragma_update(None, "key", &format!("x'{}'", dek_hex))?;
+            enc_conn.pragma_update(None, "user_version", src_version)?;
+        }
+        // Verify the encrypted copy opens with correct key (and no extra migrations)
+        let verify = Self::open_encrypted(&enc_path, dek_hex);
+        if let Err(e) = verify {
+            // Clean up temp file on failure
+            let _ = std::fs::remove_file(&enc_path);
+            return Err(PersistenceError::MigrationFailed {
+                version: 0,
+                message: format!("encrypted DB verification failed: {}", e),
+            });
+        }
+        drop(verify);
+        // Atomically replace original with encrypted copy
+        std::fs::rename(&enc_path, path).map_err(|e| PersistenceError::MigrationFailed {
+            version: 0,
+            message: format!("rename after encryption: {}", e),
+        })?;
+        Ok(())
+    }
 }
