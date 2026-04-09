@@ -20,6 +20,27 @@ import dev.disobey.mango.ui.theme.AppTheme
 class MainActivity : AppCompatActivity() {
     private lateinit var manager: AppManager
 
+    /** Timestamp (millis) when the app last moved to background (D-10). 0 = not backgrounded. */
+    private var backgroundedAt: Long = 0
+
+    override fun onPause() {
+        super.onPause()
+        backgroundedAt = System.currentTimeMillis()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (backgroundedAt > 0) {
+            val elapsed = System.currentTimeMillis() - backgroundedAt
+            val timeoutSeconds = manager.state.lockTimeoutSeconds
+            // -1 = Never. 0 = Immediately (always lock). Any positive value: lock if exceeded.
+            if (timeoutSeconds >= 0 && elapsed >= timeoutSeconds * 1000L) {
+                manager.dispatch(AppAction.LockApp)
+            }
+            backgroundedAt = 0
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)

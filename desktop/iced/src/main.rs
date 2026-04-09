@@ -447,6 +447,10 @@ impl App {
                     .map(|_| Message::CoreUpdated);
 
                 // D-12: Listen for window close to checkpoint running agent sessions
+                // D-10 (desktop): iced has no background/foreground lifecycle API.
+                // Background lock timeout is not supported on desktop. The app locks on
+                // cold launch (Screen::Locked initial state) and never auto-locks during a
+                // running session. This is a documented desktop limitation per the plan.
                 let window_close = iced::event::listen_with(|event, _status, _id| {
                     if let iced::Event::Window(iced::window::Event::CloseRequested) = event {
                         Some(Message::WindowCloseRequested)
