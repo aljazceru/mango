@@ -7,6 +7,12 @@ struct ContentView: View {
     var body: some View {
         let screen = appManager.appState.router.currentScreen
         switch screen {
+        case .locked:
+            LockScreen()
+                .environmentObject(appManager)
+        case .pinSetup:
+            PinSetupScreen()
+                .environmentObject(appManager)
         case .onboarding(let step):
             OnboardingView(step: step)
                 .environmentObject(appManager)
