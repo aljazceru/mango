@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 use flume::{Receiver, Sender};
+use zeroize::Zeroizing;
 use tokio_util::sync::CancellationToken;
 
 pub mod agent;
@@ -4307,7 +4308,9 @@ impl FfiApp {
                                     }
                                 };
                                 let wrapped_dek = crypto::key_derivation::wrap_dek(&kek, &dek);
-                                let dek_hex: String = dek.iter().map(|b| format!("{:02x}", b)).collect();
+                                let dek_hex: Zeroizing<String> = Zeroizing::new(
+                                    dek.iter().map(|b| format!("{:02x}", b)).collect(),
+                                );
 
                                 let duress_hash = duress_pin.as_deref().map(|dp| {
                                     crypto::key_derivation::hash_pin(dp.as_bytes(), &salt)
@@ -4338,7 +4341,7 @@ impl FfiApp {
                                         actor_state.db = None;
                                         if let Err(e) = persistence::Database::migrate_to_encrypted(
                                             &actor_state.db_path,
-                                            &dek_hex,
+                                            &*dek_hex,
                                         ) {
                                             log::error!("[auth] migrate_to_encrypted failed: {e}");
                                             actor_state.app_state.toast = Some("PIN setup failed: DB migration error".to_string());
@@ -4348,7 +4351,7 @@ impl FfiApp {
                                         }
                                     }
                                     // Open the (now encrypted) DB.
-                                    match persistence::Database::open_encrypted(&actor_state.db_path, &dek_hex) {
+                                    match persistence::Database::open_encrypted(&actor_state.db_path, &*dek_hex) {
                                         Ok(db) => {
                                             actor_state.db = Some(db);
                                         }
@@ -4467,10 +4470,12 @@ impl FfiApp {
                                         continue;
                                     }
                                 };
-                                let dek_hex: String = dek.iter().map(|b| format!("{:02x}", b)).collect();
+                                let dek_hex: Zeroizing<String> = Zeroizing::new(
+                                    dek.iter().map(|b| format!("{:02x}", b)).collect(),
+                                );
 
                                 // Open encrypted DB.
-                                match persistence::Database::open_encrypted(&actor_state.db_path, &dek_hex) {
+                                match persistence::Database::open_encrypted(&actor_state.db_path, &*dek_hex) {
                                     Ok(db) => {
                                         actor_state.db = Some(db);
                                     }
