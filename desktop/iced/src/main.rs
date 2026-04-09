@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use mango_core::{
     AppAction, AppReconciler, AppState, AppUpdate, DesktopKeychainProvider, FfiApp,
-    NullEmbeddingProvider, OnboardingStep, Screen, TeeType,
+    NullBiometricProvider, NullEmbeddingProvider, OnboardingStep, Screen, TeeType,
 };
 use mango_core::embedding::desktop::DesktopEmbeddingProvider;
 
@@ -149,7 +149,7 @@ impl AppManager {
                 )
             }
         };
-        let ffi = FfiApp::new(data_dir, Box::new(DesktopKeychainProvider), embedding_provider, embedding_status);
+        let ffi = FfiApp::new(data_dir, Box::new(DesktopKeychainProvider), embedding_provider, embedding_status, Box::new(NullBiometricProvider));
         let (notify_tx, update_rx) = flume::unbounded();
         ffi.listen_for_updates(Box::new(DesktopReconciler { tx: notify_tx }));
 

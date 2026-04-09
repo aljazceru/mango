@@ -3,6 +3,7 @@ package dev.disobey.mango
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import androidx.fragment.app.FragmentActivity
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import androidx.compose.runtime.getValue
@@ -12,6 +13,7 @@ import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppReconciler
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.AppUpdate
+import dev.disobey.mango.rust.BiometricProvider
 import dev.disobey.mango.rust.BusyState
 import dev.disobey.mango.rust.EmbeddingProvider
 import dev.disobey.mango.rust.EmbeddingStatus
@@ -25,7 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-class AppManager private constructor(context: Context) : AppReconciler {
+class AppManager private constructor(context: Context, activity: FragmentActivity?) : AppReconciler {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val ffiApp: FfiApp
     private var lastRevApplied: ULong = 0UL
@@ -80,6 +82,10 @@ class AppManager private constructor(context: Context) : AppReconciler {
             braveApiKeySet = false,
             braveApiKeyValidating = false,
             memoriesEnabled = true,
+            biometricAvailable = false,
+            lockTimeoutSeconds = 300L,
+            authInitialized = false,
+            encryptionEnabled = false,
         ),
     )
         private set
@@ -127,7 +133,17 @@ class AppManager private constructor(context: Context) : AppReconciler {
         }
         val embedding = embeddingResult.first
         val embeddingStatus = embeddingResult.second
-        ffiApp = FfiApp(dataDir, keychain, embedding, embeddingStatus)
+        // Phase 28: inject BiometricProviderImpl when a FragmentActivity is available,
+        // fall back to a NullBiometricProvider (always returns false) in test/edge cases.
+        val biometric: BiometricProvider = if (activity != null) {
+            BiometricProviderImpl(activity)
+        } else {
+            object : BiometricProvider {
+                override fun biometricStatus(): String = "not_available"
+                override fun authenticate(reason: String): Boolean = false
+            }
+        }
+        ffiApp = FfiApp(dataDir, keychain, embedding, embeddingStatus, biometric)
         val initial = ffiApp.state()
         state = initial
         lastRevApplied = initial.rev
@@ -159,9 +175,9 @@ class AppManager private constructor(context: Context) : AppReconciler {
         @Volatile
         private var instance: AppManager? = null
 
-        fun getInstance(context: Context): AppManager =
+        fun getInstance(context: Context, activity: FragmentActivity? = null): AppManager =
             instance ?: synchronized(this) {
-                instance ?: AppManager(context.applicationContext).also { instance = it }
+                instance ?: AppManager(context.applicationContext, activity).also { instance = it }
             }
     }
 }

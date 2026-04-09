@@ -1,10 +1,10 @@
 package dev.disobey.mango
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import android.content.Intent
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import android.content.Intent
+import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import dev.disobey.mango.rust.AppAction
@@ -17,13 +17,13 @@ import androidx.compose.runtime.setValue
 import dev.disobey.mango.ui.MainApp
 import dev.disobey.mango.ui.theme.AppTheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     private lateinit var manager: AppManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        manager = AppManager.getInstance(applicationContext)
+        manager = AppManager.getInstance(applicationContext, this)
 
         lifecycle.addObserver(LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
