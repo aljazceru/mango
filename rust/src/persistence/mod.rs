@@ -18,6 +18,22 @@ pub use queries::{
     ConversationRow, DocumentRow, MessageRow,
 };
 
+/// Validate that `dek_hex` is exactly 64 lowercase hex characters (32 bytes / 256 bits).
+///
+/// This check must be performed before embedding the DEK hex in any SQL string or pragma
+/// value, to detect programming errors early and prevent malformed SQL (WR-02).
+fn validate_dek_hex(dek_hex: &str) -> Result<(), PersistenceError> {
+    if dek_hex.len() != 64 || !dek_hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(PersistenceError::DecryptionFailed {
+            message: format!(
+                "invalid DEK hex: expected 64 lowercase hex chars, got {} chars",
+                dek_hex.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// SQLite-backed application database.
 ///
 /// Opens a connection with WAL journal mode and foreign key enforcement.
@@ -77,6 +93,9 @@ impl Database {
     ///
     /// Returns `DecryptionFailed` if the key is wrong or the database is corrupted.
     pub fn open_encrypted(path: &str, dek_hex: &str) -> Result<Self, PersistenceError> {
+        // Validate dek_hex before embedding it in the key pragma string.
+        // A 256-bit key must be exactly 64 lowercase hex characters (WR-02).
+        validate_dek_hex(dek_hex)?;
         let conn = rusqlite::Connection::open(path)?;
         // CRITICAL: key pragma MUST be first operation after open (per D-01)
         conn.pragma_update(None, "key", &format!("x'{}'", dek_hex))?;
@@ -116,6 +135,8 @@ impl Database {
     /// version is read before export and explicitly written to the encrypted copy
     /// so that `open_encrypted` does not re-apply already-applied migrations.
     pub fn migrate_to_encrypted(path: &str, dek_hex: &str) -> Result<(), PersistenceError> {
+        // Validate dek_hex before embedding it in the ATTACH KEY string (WR-02).
+        validate_dek_hex(dek_hex)?;
         let enc_path = format!("{}_enc_tmp", path);
         // Open plaintext DB and read its current user_version
         let conn = rusqlite::Connection::open(path)?;
