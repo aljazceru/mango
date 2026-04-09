@@ -115,6 +115,19 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) }
             )
         }
+        // Phase 28: lock gate and PIN setup screens
+        is Screen.Locked -> {
+            LockScreen(
+                appState = state,
+                onDispatchAction = { action -> manager.dispatch(action) }
+            )
+        }
+        is Screen.PinSetup -> {
+            PinSetupScreen(
+                appState = state,
+                onDispatchAction = { action -> manager.dispatch(action) }
+            )
+        }
         else -> {}
     }
 }
