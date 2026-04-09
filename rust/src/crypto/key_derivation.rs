@@ -137,3 +137,84 @@ pub fn verify_pin_hash(pin: &[u8], hash: &str) -> bool {
     };
     Argon2::default().verify_password(pin, &parsed).is_ok()
 }
+
+/// Result of a successful PIN verification.
+pub struct PinVerifyResult {
+    /// Whether the entered PIN is the duress PIN (triggers data wipe, D-15).
+    pub is_duress: bool,
+}
+
+/// High-level helper: set up PIN auth for first time.
+///
+/// Generates a fresh DEK, derives KEK from `pin`, wraps the DEK, and writes
+/// auth params to the bootstrap DB. Optionally stores `duress_pin` hash (D-18).
+pub fn setup_pin_auth(
+    pin: &str,
+    duress_pin: Option<&str>,
+    bootstrap: &mut super::bootstrap_db::BootstrapDb,
+) -> Result<(), anyhow::Error> {
+    let salt = generate_salt();
+    let dek = generate_dek();
+    let kek = derive_kek(
+        pin.as_bytes(),
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )?;
+    let wrapped_dek = wrap_dek(&kek, &dek);
+
+    let (duress_hash, duress_salt) = if let Some(dp) = duress_pin {
+        let ds = generate_salt();
+        let h = hash_pin(dp.as_bytes(), &ds);
+        (Some(h), Some(ds.to_vec()))
+    } else {
+        (None, None)
+    };
+
+    bootstrap.write_auth_params(&super::bootstrap_db::AuthParams {
+        salt: salt.to_vec(),
+        wrapped_dek,
+        duress_hash,
+        duress_salt,
+        kdf_memory_kib: DEFAULT_MEMORY_KIB,
+        kdf_iterations: DEFAULT_ITERATIONS,
+        kdf_parallelism: DEFAULT_PARALLELISM,
+    })?;
+    Ok(())
+}
+
+/// High-level helper: verify PIN against stored auth params.
+///
+/// Returns `PinVerifyResult` on success. Checks duress PIN FIRST (T-28-11:
+/// duress detection before DEK unwrap prevents timing side-channels).
+pub fn verify_pin_auth(
+    pin: &str,
+    bootstrap: &super::bootstrap_db::BootstrapDb,
+) -> Result<PinVerifyResult, anyhow::Error> {
+    let params = bootstrap
+        .read_auth_params()?
+        .ok_or_else(|| anyhow::anyhow!("no auth params -- PIN not set up yet"))?;
+
+    // Check duress PIN first (D-19, T-28-11).
+    if let Some(ref duress_hash) = params.duress_hash {
+        if verify_pin_hash(pin.as_bytes(), duress_hash) {
+            return Ok(PinVerifyResult { is_duress: true });
+        }
+    }
+
+    // Derive KEK and try to unwrap DEK.
+    let salt: [u8; 32] = params.salt.as_slice().try_into()
+        .map_err(|_| anyhow::anyhow!("invalid salt length in bootstrap DB"))?;
+    let kek = derive_kek(
+        pin.as_bytes(),
+        &salt,
+        params.kdf_memory_kib,
+        params.kdf_iterations,
+        params.kdf_parallelism,
+    )?;
+    let _dek = unwrap_dek(&kek, &params.wrapped_dek)
+        .map_err(|_| anyhow::anyhow!("incorrect PIN"))?;
+
+    Ok(PinVerifyResult { is_duress: false })
+}
