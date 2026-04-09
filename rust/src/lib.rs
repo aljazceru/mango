@@ -4541,6 +4541,24 @@ impl FfiApp {
                                     dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                 );
 
+                                // Cache DEK in platform keychain for biometric unlock if biometrics
+                                // became available after initial PIN setup (e.g. user enrolled
+                                // fingerprint after creating PIN).
+                                if actor_state.app_state.biometric_available {
+                                    let existing = actor_state.keychain.load(
+                                        "mango".to_string(),
+                                        "dek".to_string(),
+                                    );
+                                    if existing.is_none() {
+                                        actor_state.keychain.store(
+                                            "mango".to_string(),
+                                            "dek".to_string(),
+                                            (*dek_hex).clone(),
+                                        );
+                                        log::info!("[auth] UnlockWithPin: DEK cached in keychain for biometric unlock");
+                                    }
+                                }
+
                                 // Open encrypted DB.
                                 match persistence::Database::open_encrypted(&actor_state.db_path, &*dek_hex) {
                                     Ok(db) => {
@@ -5576,6 +5594,12 @@ impl FfiApp {
                             llm::InternalEvent::BiometricResult { success } => {
                                 // Delivered from the spawn_blocking task started by AttemptBiometricUnlock.
                                 if success {
+                                    // Emit "Unlocking..." immediately so the user sees feedback
+                                    // while the heavy DB open + load_post_unlock runs.
+                                    actor_state.app_state.toast = Some("Unlocking...".to_string());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+
                                     // Per D-06 / ENC-09: biometric success loads DEK from keychain
                                     // and opens the encrypted DB without requiring PIN entry.
                                     let maybe_dek_hex = actor_state.keychain.load(

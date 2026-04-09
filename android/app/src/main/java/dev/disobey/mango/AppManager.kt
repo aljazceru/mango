@@ -83,6 +83,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             braveApiKeyValidating = false,
             memoriesEnabled = true,
             biometricAvailable = false,
+            biometricAuthenticated = false,
             lockTimeoutSeconds = 300L,
             authInitialized = false,
             encryptionEnabled = false,
@@ -159,7 +160,9 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         mainHandler.post {
             when (update) {
                 is AppUpdate.FullState -> {
-                    if (update.v1.rev <= lastRevApplied) return@post
+                    // Use strict < so the initial rev=0 emit is never skipped when
+                    // ffiApp.state() already captured the same rev (Case D race).
+                    if (update.v1.rev < lastRevApplied) return@post
                     lastRevApplied = update.v1.rev
                     state = update.v1
                     _stateFlow.value = update.v1
