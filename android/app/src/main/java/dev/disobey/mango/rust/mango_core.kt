@@ -657,6 +657,12 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 internal interface UniffiCallbackInterfaceAppReconcilerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`update`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
+internal interface UniffiCallbackInterfaceBiometricProviderMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceBiometricProviderMethod1 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`reason`: RustBuffer.ByValue,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfaceEmbeddingProviderMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`texts`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
@@ -684,6 +690,25 @@ internal open class UniffiVTableCallbackInterfaceAppReconciler(
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceAppReconciler) {
         `reconcile` = other.`reconcile`
+        `uniffiFree` = other.`uniffiFree`
+    }
+
+}
+@Structure.FieldOrder("biometricStatus", "authenticate", "uniffiFree")
+internal open class UniffiVTableCallbackInterfaceBiometricProvider(
+    @JvmField internal var `biometricStatus`: UniffiCallbackInterfaceBiometricProviderMethod0? = null,
+    @JvmField internal var `authenticate`: UniffiCallbackInterfaceBiometricProviderMethod1? = null,
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+) : Structure() {
+    class UniffiByValue(
+        `biometricStatus`: UniffiCallbackInterfaceBiometricProviderMethod0? = null,
+        `authenticate`: UniffiCallbackInterfaceBiometricProviderMethod1? = null,
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    ): UniffiVTableCallbackInterfaceBiometricProvider(`biometricStatus`,`authenticate`,`uniffiFree`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceBiometricProvider) {
+        `biometricStatus` = other.`biometricStatus`
+        `authenticate` = other.`authenticate`
         `uniffiFree` = other.`uniffiFree`
     }
 
@@ -824,6 +849,9 @@ internal open class UniffiVTableCallbackInterfaceKeychainProvider(
 
 
 
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -852,6 +880,10 @@ fun uniffi_mango_core_checksum_method_ffiapp_state(
 fun uniffi_mango_core_checksum_constructor_ffiapp_new(
 ): Short
 fun uniffi_mango_core_checksum_method_appreconciler_reconcile(
+): Short
+fun uniffi_mango_core_checksum_method_biometricprovider_biometric_status(
+): Short
+fun uniffi_mango_core_checksum_method_biometricprovider_authenticate(
 ): Short
 fun uniffi_mango_core_checksum_method_embeddingprovider_embed(
 ): Short
@@ -902,6 +934,7 @@ internal interface UniffiLib : Library {
             // No need to check the contract version and checksums, since 
             // we already did that with `IntegrityCheckingUniffiLib` above.
             uniffiCallbackInterfaceAppReconciler.register(lib)
+            uniffiCallbackInterfaceBiometricProvider.register(lib)
             uniffiCallbackInterfaceEmbeddingProvider.register(lib)
             uniffiCallbackInterfaceFilePickerProvider.register(lib)
             uniffiCallbackInterfaceKeychainProvider.register(lib)
@@ -920,7 +953,7 @@ internal interface UniffiLib : Library {
 ): Pointer
 fun uniffi_mango_core_fn_free_ffiapp(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`keychain`: Long,`embeddingProvider`: Long,`embeddingStatus`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`keychain`: Long,`embeddingProvider`: Long,`embeddingStatus`: RustBuffer.ByValue,`biometricProvider`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun uniffi_mango_core_fn_method_ffiapp_dispatch(`ptr`: Pointer,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -931,6 +964,8 @@ fun uniffi_mango_core_fn_method_ffiapp_listen_for_updates(`ptr`: Pointer,`reconc
 fun uniffi_mango_core_fn_method_ffiapp_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_mango_core_fn_init_callback_vtable_appreconciler(`vtable`: UniffiVTableCallbackInterfaceAppReconciler,
+): Unit
+fun uniffi_mango_core_fn_init_callback_vtable_biometricprovider(`vtable`: UniffiVTableCallbackInterfaceBiometricProvider,
 ): Unit
 fun uniffi_mango_core_fn_init_callback_vtable_embeddingprovider(`vtable`: UniffiVTableCallbackInterfaceEmbeddingProvider,
 ): Unit
@@ -1081,10 +1116,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_mango_core_checksum_method_ffiapp_state() != 64379.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_constructor_ffiapp_new() != 49469.toShort()) {
+    if (lib.uniffi_mango_core_checksum_constructor_ffiapp_new() != 30597.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_appreconciler_reconcile() != 36412.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_biometricprovider_biometric_status() != 51844.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_biometricprovider_authenticate() != 25231.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_embeddingprovider_embed() != 3552.toShort()) {
@@ -1647,11 +1688,11 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      * `embedding_status` reflects whether the real embedding provider loaded successfully
      * (`Active`) or fell back to `NullEmbeddingProvider` due to an init failure (`Degraded`).
      */
-    constructor(`dataDir`: kotlin.String, `keychain`: KeychainProvider, `embeddingProvider`: EmbeddingProvider, `embeddingStatus`: EmbeddingStatus) :
+    constructor(`dataDir`: kotlin.String, `keychain`: KeychainProvider, `embeddingProvider`: EmbeddingProvider, `embeddingStatus`: EmbeddingStatus, `biometricProvider`: BiometricProvider) :
         this(
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_mango_core_fn_constructor_ffiapp_new(
-        FfiConverterString.lower(`dataDir`),FfiConverterTypeKeychainProvider.lower(`keychain`),FfiConverterTypeEmbeddingProvider.lower(`embeddingProvider`),FfiConverterTypeEmbeddingStatus.lower(`embeddingStatus`),_status)
+        FfiConverterString.lower(`dataDir`),FfiConverterTypeKeychainProvider.lower(`keychain`),FfiConverterTypeEmbeddingProvider.lower(`embeddingProvider`),FfiConverterTypeEmbeddingStatus.lower(`embeddingStatus`),FfiConverterTypeBiometricProvider.lower(`biometricProvider`),_status)
 }
     )
 
@@ -2085,7 +2126,24 @@ data class AppState (
      * True while a ValidateBraveApiKey health-check is in flight.
      * Used by Settings UI to show a loading indicator on the Save button.
      */
-    var `braveApiKeyValidating`: kotlin.Boolean
+    var `braveApiKeyValidating`: kotlin.Boolean, 
+    /**
+     * Whether biometric authentication is available and enrolled on this device (D-20, D-21).
+     * Set at actor startup by querying the BiometricProvider.
+     */
+    var `biometricAvailable`: kotlin.Boolean, 
+    /**
+     * Lock timeout in seconds. Default: 300 (5 minutes). 0 = never lock (D-13).
+     */
+    var `lockTimeoutSeconds`: kotlin.Long, 
+    /**
+     * True once the user has set up a PIN (auth_params written to bootstrap DB) (D-14).
+     */
+    var `authInitialized`: kotlin.Boolean, 
+    /**
+     * True when the main DB was opened with SQLCipher encryption (D-01).
+     */
+    var `encryptionEnabled`: kotlin.Boolean
 ) {
     
     companion object
@@ -2126,6 +2184,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -2158,7 +2220,11 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterULong.allocationSize(value.`memoryCount`) +
             FfiConverterBoolean.allocationSize(value.`braveApiKeySet`) +
             FfiConverterBoolean.allocationSize(value.`memoriesEnabled`) +
-            FfiConverterBoolean.allocationSize(value.`braveApiKeyValidating`)
+            FfiConverterBoolean.allocationSize(value.`braveApiKeyValidating`) +
+            FfiConverterBoolean.allocationSize(value.`biometricAvailable`) +
+            FfiConverterLong.allocationSize(value.`lockTimeoutSeconds`) +
+            FfiConverterBoolean.allocationSize(value.`authInitialized`) +
+            FfiConverterBoolean.allocationSize(value.`encryptionEnabled`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -2191,6 +2257,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterBoolean.write(value.`braveApiKeySet`, buf)
             FfiConverterBoolean.write(value.`memoriesEnabled`, buf)
             FfiConverterBoolean.write(value.`braveApiKeyValidating`, buf)
+            FfiConverterBoolean.write(value.`biometricAvailable`, buf)
+            FfiConverterLong.write(value.`lockTimeoutSeconds`, buf)
+            FfiConverterBoolean.write(value.`authInitialized`, buf)
+            FfiConverterBoolean.write(value.`encryptionEnabled`, buf)
     }
 }
 
@@ -3307,6 +3377,56 @@ sealed class AppAction {
         companion object
     }
     
+    /**
+     * First-time PIN setup: derive KEK, wrap DEK, write bootstrap DB, migrate DB to SQLCipher (D-14).
+     * `duress_pin` is optional; if Some, its hash is stored in the bootstrap DB (D-18).
+     * `enable_biometric` determines whether biometric unlock is offered after setup (D-14).
+     */
+    data class SetupPin(
+        val `pin`: kotlin.String, 
+        val `duressPin`: kotlin.String?, 
+        val `enableBiometric`: kotlin.Boolean) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Unlock with an already-unwrapped DEK (hex string). Used internally after biometric unlock
+     * when the keychain provides the raw DEK (D-06).
+     */
+    data class UnlockWithDek(
+        val `dekHex`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Unlock with a PIN: reads auth params from bootstrap DB, derives KEK, unwraps DEK,
+     * detects duress PIN before attempting decryption (D-19, T-28-11), opens encrypted DB (D-07).
+     */
+    data class UnlockWithPin(
+        val `pin`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Lock the app: drop the DB handle, save pre-lock screen, clear sensitive AppState (D-12, T-28-10).
+     */
+    object LockApp : AppAction()
+    
+    
+    /**
+     * Attempt biometric authentication. On success, dispatches UnlockWithPin internally (D-11).
+     */
+    object AttemptBiometricUnlock : AppAction()
+    
+    
+    /**
+     * Set the lock timeout in seconds. 0 = never lock. Persisted to settings table (D-13).
+     */
+    data class SetLockTimeout(
+        val `seconds`: kotlin.Long) : AppAction() {
+        companion object
+    }
+    
 
     
     companion object
@@ -3463,6 +3583,22 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             52 -> AppAction.SetConversationToolsEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
+                )
+            53 -> AppAction.SetupPin(
+                FfiConverterString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            54 -> AppAction.UnlockWithDek(
+                FfiConverterString.read(buf),
+                )
+            55 -> AppAction.UnlockWithPin(
+                FfiConverterString.read(buf),
+                )
+            56 -> AppAction.LockApp
+            57 -> AppAction.AttemptBiometricUnlock
+            58 -> AppAction.SetLockTimeout(
+                FfiConverterLong.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
@@ -3836,6 +3972,48 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterBoolean.allocationSize(value.`enabled`)
             )
         }
+        is AppAction.SetupPin -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`pin`)
+                + FfiConverterOptionalString.allocationSize(value.`duressPin`)
+                + FfiConverterBoolean.allocationSize(value.`enableBiometric`)
+            )
+        }
+        is AppAction.UnlockWithDek -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`dekHex`)
+            )
+        }
+        is AppAction.UnlockWithPin -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`pin`)
+            )
+        }
+        is AppAction.LockApp -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.AttemptBiometricUnlock -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.SetLockTimeout -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterLong.allocationSize(value.`seconds`)
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -4101,6 +4279,36 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 buf.putInt(52)
                 FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
+                Unit
+            }
+            is AppAction.SetupPin -> {
+                buf.putInt(53)
+                FfiConverterString.write(value.`pin`, buf)
+                FfiConverterOptionalString.write(value.`duressPin`, buf)
+                FfiConverterBoolean.write(value.`enableBiometric`, buf)
+                Unit
+            }
+            is AppAction.UnlockWithDek -> {
+                buf.putInt(54)
+                FfiConverterString.write(value.`dekHex`, buf)
+                Unit
+            }
+            is AppAction.UnlockWithPin -> {
+                buf.putInt(55)
+                FfiConverterString.write(value.`pin`, buf)
+                Unit
+            }
+            is AppAction.LockApp -> {
+                buf.putInt(56)
+                Unit
+            }
+            is AppAction.AttemptBiometricUnlock -> {
+                buf.putInt(57)
+                Unit
+            }
+            is AppAction.SetLockTimeout -> {
+                buf.putInt(58)
+                FfiConverterLong.write(value.`seconds`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -4955,6 +5163,18 @@ sealed class Screen {
     object SettingsDefaults : Screen()
     
     
+    /**
+     * Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
+     */
+    object Locked : Screen()
+    
+    
+    /**
+     * PIN/password setup screen -- shown on first launch after onboarding (Phase 28, D-14).
+     */
+    object PinSetup : Screen()
+    
+    
 
     
     companion object
@@ -4979,6 +5199,8 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             7 -> Screen.Memories
             8 -> Screen.SettingsProviders
             9 -> Screen.SettingsDefaults
+            10 -> Screen.Locked
+            11 -> Screen.PinSetup
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -5040,6 +5262,18 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 4UL
             )
         }
+        is Screen.Locked -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is Screen.PinSetup -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
     }
 
     override fun write(value: Screen, buf: ByteBuffer) {
@@ -5080,6 +5314,14 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             }
             is Screen.SettingsDefaults -> {
                 buf.putInt(9)
+                Unit
+            }
+            is Screen.Locked -> {
+                buf.putInt(10)
+                Unit
+            }
+            is Screen.PinSetup -> {
+                buf.putInt(11)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -5175,6 +5417,92 @@ internal object uniffiCallbackInterfaceAppReconciler {
  * @suppress
  */
 public object FfiConverterTypeAppReconciler: FfiConverterCallbackInterface<AppReconciler>()
+
+
+
+
+
+/**
+ * Biometric authentication capability bridge. Implemented natively on each platform.
+ *
+ * Per D-11 / D-21: iOS uses LAContext, Android uses BiometricPrompt, Desktop has no
+ * standard biometric API. The Rust actor calls this to check availability and attempt
+ * authentication. The result crosses the UniFFI boundary as a blocking call (the native
+ * implementation uses a DispatchSemaphore / CountDownLatch to bridge the async callback).
+ *
+ * This is a UniFFI callback_interface so native layers (Swift, Kotlin) can inject
+ * their platform biometric implementation, following the same pattern as KeychainProvider.
+ */
+public interface BiometricProvider {
+    
+    /**
+     * Check whether biometric authentication is available and enrolled.
+     * Returns one of: "available", "not_enrolled", "not_available".
+     */
+    fun `biometricStatus`(): kotlin.String
+    
+    /**
+     * Attempt biometric authentication with the given localized reason string.
+     * Blocks until the platform callback fires. Returns true on success, false on failure/cancel.
+     */
+    fun `authenticate`(`reason`: kotlin.String): kotlin.Boolean
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceBiometricProvider {
+    internal object `biometricStatus`: UniffiCallbackInterfaceBiometricProviderMethod0 {
+        override fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeBiometricProvider.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`biometricStatus`(
+                )
+            }
+            val writeReturn = { value: kotlin.String -> uniffiOutReturn.setValue(FfiConverterString.lower(value)) }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+    internal object `authenticate`: UniffiCallbackInterfaceBiometricProviderMethod1 {
+        override fun callback(`uniffiHandle`: Long,`reason`: RustBuffer.ByValue,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeBiometricProvider.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`authenticate`(
+                    FfiConverterString.lift(`reason`),
+                )
+            }
+            val writeReturn = { value: kotlin.Boolean -> uniffiOutReturn.setValue(FfiConverterBoolean.lower(value)) }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeBiometricProvider.handleMap.remove(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceBiometricProvider.UniffiByValue(
+        `biometricStatus`,
+        `authenticate`,
+        uniffiFree,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_mango_core_fn_init_callback_vtable_biometricprovider(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeBiometricProvider: FfiConverterCallbackInterface<BiometricProvider>()
 
 
 

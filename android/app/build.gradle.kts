@@ -79,6 +79,12 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
 
+    // Biometric authentication (Phase 28, D-22)
+    implementation("androidx.biometric:biometric:1.2.0-alpha05")
+
+    // AppCompat (Phase 28): required for FragmentActivity base class used by BiometricPrompt
+    implementation("androidx.appcompat:appcompat:1.7.0")
+
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
