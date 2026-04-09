@@ -818,7 +818,9 @@ struct ActorState {
     /// Bootstrap DB (always-open, unencrypted) holding auth params (D-08).
     bootstrap: crypto::bootstrap_db::BootstrapDb,
     /// Platform biometric provider injected via FfiApp::new (D-11, D-21).
-    biometric_provider: Box<dyn BiometricProvider>,
+    /// Stored as Arc so it can be cloned into spawn_blocking tasks without blocking
+    /// the actor loop during biometric authentication (CR-03).
+    biometric_provider: Arc<dyn BiometricProvider>,
     /// Screen to restore after successful unlock (D-12). Set by LockApp handler.
     pre_lock_screen: Option<Screen>,
     /// On-disk path to mango.db, used to open encrypted DB after PIN unlock (Phase 28).
@@ -2947,7 +2949,7 @@ impl FfiApp {
                 data_dir: vector_data_dir.clone(),
                 current_conv_tools_enabled: false,
                 bootstrap,
-                biometric_provider,
+                biometric_provider: Arc::from(biometric_provider),
                 pre_lock_screen: None,
                 db_path: db_path.clone(),
             };
@@ -4515,27 +4517,18 @@ impl FfiApp {
                             }
 
                             AppAction::AttemptBiometricUnlock => {
-                                // Call platform biometric provider (blocks until auth completes).
-                                let success = actor_state
-                                    .biometric_provider
-                                    .authenticate("Unlock Mango".to_string());
-                                if success {
-                                    // Biometric succeeded: read DEK from bootstrap DB and unlock.
-                                    // For now we use the same UnlockWithPin pathway via a synthetic
-                                    // re-dispatch — biometric verifies identity, then we still need
-                                    // the PIN to unwrap the DEK. In a full implementation, the DEK
-                                    // would be stored directly in the biometric-gated keychain entry
-                                    // (per D-06). For Phase 28, biometric success navigates to the
-                                    // PIN entry to complete the final unlock.
-                                    //
-                                    // Platforms that store the DEK in the Secure Enclave gated by
-                                    // biometrics dispatch AppAction::UnlockWithDek directly after
-                                    // a successful LAContext/BiometricPrompt evaluation.
-                                    log::info!("[auth] Biometric authentication succeeded");
-                                } else {
-                                    actor_state.app_state.toast =
-                                        Some("Biometric authentication failed.".to_string());
-                                }
+                                // Dispatch biometric authentication to a blocking thread so the
+                                // actor loop remains responsive during the platform prompt (CR-03).
+                                // The result is delivered back as InternalEvent::BiometricResult.
+                                let provider = Arc::clone(&actor_state.biometric_provider);
+                                let tx = core_tx_for_thread.clone();
+                                actor_state.runtime.spawn_blocking(move || {
+                                    let success = provider.authenticate("Unlock Mango".to_string());
+                                    let _ = tx.send(CoreMsg::InternalEvent(Box::new(
+                                        llm::InternalEvent::BiometricResult { success },
+                                    )));
+                                });
+                                // Actor loop continues processing messages immediately.
                             }
 
                             AppAction::SetLockTimeout { seconds } => {
@@ -5487,6 +5480,22 @@ impl FfiApp {
                                         // Network error — key saved but couldn't verify
                                         actor_state.app_state.toast = Some("API key saved. Could not verify — check your connection.".to_string());
                                     }
+                                }
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
+                            llm::InternalEvent::BiometricResult { success } => {
+                                // Delivered from the spawn_blocking task started by AttemptBiometricUnlock.
+                                // For Phase 28: biometric success navigates to PIN entry to complete unlock.
+                                // In post-Phase 28 implementations, the DEK would be retrieved directly
+                                // from the Secure Enclave / Android Keystore and AppAction::UnlockWithDek
+                                // dispatched instead (per D-06).
+                                if success {
+                                    log::info!("[auth] Biometric authentication succeeded");
+                                } else {
+                                    actor_state.app_state.toast =
+                                        Some("Biometric authentication failed.".to_string());
                                 }
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
