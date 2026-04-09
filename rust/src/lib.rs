@@ -5527,15 +5527,54 @@ impl FfiApp {
 
                             llm::InternalEvent::BiometricResult { success } => {
                                 // Delivered from the spawn_blocking task started by AttemptBiometricUnlock.
-                                // For Phase 28: biometric success signals the UI to reveal the PIN input
-                                // on the lock screen so the user can complete the final unlock step.
-                                // In post-Phase 28 implementations, the DEK would be retrieved directly
-                                // from the Secure Enclave / Android Keystore and AppAction::UnlockWithDek
-                                // dispatched instead (per D-06).
                                 if success {
-                                    log::info!("[auth] Biometric authentication succeeded — prompting PIN");
-                                    // Remain on Screen::Locked; signal the UI to show the PIN input field.
-                                    actor_state.app_state.biometric_authenticated = true;
+                                    // Per D-06 / ENC-09: biometric success loads DEK from keychain
+                                    // and opens the encrypted DB without requiring PIN entry.
+                                    let maybe_dek_hex = actor_state.keychain.load(
+                                        "mango".to_string(),
+                                        "dek".to_string(),
+                                    );
+                                    if let Some(dek_hex) = maybe_dek_hex {
+                                        log::info!("[auth] Biometric unlock: DEK loaded from keychain — opening DB");
+                                        if actor_state.db_path == ":memory:" {
+                                            if let Ok(db) = persistence::Database::open(":memory:") {
+                                                actor_state.db = Some(db);
+                                            }
+                                        } else {
+                                            match persistence::Database::open_encrypted(
+                                                &actor_state.db_path,
+                                                &dek_hex,
+                                            ) {
+                                                Ok(db) => {
+                                                    actor_state.db = Some(db);
+                                                }
+                                                Err(e) => {
+                                                    log::error!("[auth] Biometric unlock: open_encrypted failed: {e}");
+                                                    actor_state.app_state.toast = Some(
+                                                        "Biometric unlock failed: database error. Try PIN.".to_string(),
+                                                    );
+                                                    actor_state.app_state.biometric_authenticated = true;
+                                                    actor_state.app_state.rev += 1;
+                                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        actor_state.app_state.encryption_enabled =
+                                            actor_state.db_path != ":memory:";
+                                        load_post_unlock(
+                                            &mut actor_state,
+                                            core_tx_for_thread.clone(),
+                                            true,
+                                        );
+                                        // load_post_unlock already calls emit, so skip the emit below.
+                                        continue;
+                                    } else {
+                                        // No DEK in keychain (biometric was not enabled during setup,
+                                        // or keychain was cleared). Fall back to PIN input.
+                                        log::info!("[auth] Biometric succeeded but no DEK in keychain — falling back to PIN");
+                                        actor_state.app_state.biometric_authenticated = true;
+                                    }
                                 } else {
                                     actor_state.app_state.toast =
                                         Some("Biometric authentication failed.".to_string());
