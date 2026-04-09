@@ -4296,9 +4296,11 @@ impl FfiApp {
                             AppAction::SetupPin { pin, duress_pin, enable_biometric: _ } => {
                                 // Generate DEK, derive KEK from PIN, wrap DEK, write bootstrap DB.
                                 // Then migrate any existing plaintext DB to SQLCipher.
-                                let dek = crypto::key_derivation::generate_dek();
+                                // CR-03: wrap raw DEK bytes in Zeroizing so they are zeroed on drop.
+                                let dek: Zeroizing<[u8; 32]> = Zeroizing::new(crypto::key_derivation::generate_dek());
                                 let salt = crypto::key_derivation::generate_salt();
-                                let kek = match crypto::key_derivation::derive_kek(
+                                // CR-03: derive_kek now returns Zeroizing<[u8; 32]>.
+                                let kek: Zeroizing<[u8; 32]> = match crypto::key_derivation::derive_kek(
                                     pin.as_bytes(),
                                     &salt,
                                     crypto::key_derivation::DEFAULT_MEMORY_KIB,
@@ -4314,7 +4316,7 @@ impl FfiApp {
                                         continue;
                                     }
                                 };
-                                let wrapped_dek = crypto::key_derivation::wrap_dek(&kek, &dek);
+                                let wrapped_dek = crypto::key_derivation::wrap_dek(&*kek, &*dek);
                                 let dek_hex: Zeroizing<String> = Zeroizing::new(
                                     dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                 );
@@ -4458,8 +4460,8 @@ impl FfiApp {
                                     }
                                 }
 
-                                // Derive KEK from the PIN.
-                                let kek = match crypto::key_derivation::derive_kek(
+                                // Derive KEK from the PIN. CR-03: kek is Zeroizing<[u8; 32]>.
+                                let kek: Zeroizing<[u8; 32]> = match crypto::key_derivation::derive_kek(
                                     pin.as_bytes(),
                                     &params.salt,
                                     params.kdf_memory_kib,
@@ -4476,9 +4478,9 @@ impl FfiApp {
                                     }
                                 };
 
-                                // Unwrap DEK.
-                                let dek = match crypto::key_derivation::unwrap_dek(&kek, &params.wrapped_dek) {
-                                    Ok(d) => d,
+                                // Unwrap DEK. CR-03: wrap in Zeroizing so raw bytes are zeroed on drop.
+                                let dek: Zeroizing<[u8; 32]> = match crypto::key_derivation::unwrap_dek(&*kek, &params.wrapped_dek) {
+                                    Ok(d) => Zeroizing::new(d),
                                     Err(_) => {
                                         // Wrong PIN (AES-GCM tag mismatch).
                                         actor_state.app_state.toast = Some("Incorrect PIN. Please try again.".to_string());

@@ -12,7 +12,7 @@ use argon2::{
     Argon2, Params, Version,
 };
 use rand::RngCore;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Default Argon2id memory cost (64 MiB) per D-08.
 pub const DEFAULT_MEMORY_KIB: u32 = 65536;
@@ -45,7 +45,7 @@ pub fn derive_kek(
     memory_kib: u32,
     iterations: u32,
     parallelism: u32,
-) -> Result<[u8; 32], anyhow::Error> {
+) -> Result<Zeroizing<[u8; 32]>, anyhow::Error> {
     let params = Params::new(memory_kib, iterations, parallelism, Some(32))
         .map_err(|e| anyhow::anyhow!("Argon2 params invalid: {}", e))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
@@ -55,7 +55,7 @@ pub fn derive_kek(
         .hash_password_into(pin, salt, kek.as_mut())
         .map_err(|e| anyhow::anyhow!("Argon2id key derivation failed: {}", e))?;
 
-    Ok(*kek)
+    Ok(kek) // Return the Zeroizing wrapper, not a plain copy (CR-03)
 }
 
 /// Wrap (encrypt) `dek` with `kek` using AES-256-GCM.
@@ -97,11 +97,13 @@ pub fn unwrap_dek(kek: &[u8; 32], wrapped: &[u8]) -> Result<[u8; 32], anyhow::Er
         Aes256Gcm::new_from_slice(&*kek_z).expect("32-byte key is always valid for AES-256");
     let nonce = Nonce::from(nonce_bytes);
 
-    let plaintext = cipher
+    let mut plaintext = cipher
         .decrypt(&nonce, ciphertext)
         .map_err(|_| anyhow::anyhow!("DEK unwrap failed: wrong KEK or corrupted data"))?;
 
     if plaintext.len() != 32 {
+        // Zeroize before early return to avoid leaving key material on the heap.
+        plaintext.zeroize();
         anyhow::bail!(
             "unwrapped DEK has unexpected length: {} (expected 32)",
             plaintext.len()
@@ -110,6 +112,7 @@ pub fn unwrap_dek(kek: &[u8; 32], wrapped: &[u8]) -> Result<[u8; 32], anyhow::Er
 
     let mut dek = [0u8; 32];
     dek.copy_from_slice(&plaintext);
+    plaintext.zeroize(); // Zero the heap-allocated intermediate before it drops (CR-03).
     Ok(dek)
 }
 
@@ -154,15 +157,16 @@ pub fn setup_pin_auth(
     bootstrap: &mut super::bootstrap_db::BootstrapDb,
 ) -> Result<(), anyhow::Error> {
     let salt = generate_salt();
-    let dek = generate_dek();
-    let kek = derive_kek(
+    // CR-03: wrap raw bytes in Zeroizing so they are zeroed on drop.
+    let dek: Zeroizing<[u8; 32]> = Zeroizing::new(generate_dek());
+    let kek: Zeroizing<[u8; 32]> = derive_kek(
         pin.as_bytes(),
         &salt,
         DEFAULT_MEMORY_KIB,
         DEFAULT_ITERATIONS,
         DEFAULT_PARALLELISM,
     )?;
-    let wrapped_dek = wrap_dek(&kek, &dek);
+    let wrapped_dek = wrap_dek(&*kek, &*dek);
 
     // hash_pin generates and embeds its own random salt in the PHC string;
     // no separate duress_salt field is needed.
@@ -201,18 +205,20 @@ pub fn verify_pin_auth(
         }
     }
 
-    // Derive KEK and try to unwrap DEK.
+    // Derive KEK and try to unwrap DEK. CR-03: both are Zeroizing.
     let salt: [u8; 32] = params.salt.as_slice().try_into()
         .map_err(|_| anyhow::anyhow!("invalid salt length in bootstrap DB"))?;
-    let kek = derive_kek(
+    let kek: Zeroizing<[u8; 32]> = derive_kek(
         pin.as_bytes(),
         &salt,
         params.kdf_memory_kib,
         params.kdf_iterations,
         params.kdf_parallelism,
     )?;
-    let _dek = unwrap_dek(&kek, &params.wrapped_dek)
-        .map_err(|_| anyhow::anyhow!("incorrect PIN"))?;
+    let _dek: Zeroizing<[u8; 32]> = Zeroizing::new(
+        unwrap_dek(&*kek, &params.wrapped_dek)
+            .map_err(|_| anyhow::anyhow!("incorrect PIN"))?,
+    );
 
     Ok(PinVerifyResult { is_duress: false })
 }
