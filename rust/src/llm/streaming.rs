@@ -103,6 +103,14 @@ pub enum InternalEvent {
         /// Human-readable error detail when success=false.
         error_message: Option<String>,
     },
+    /// Result of a biometric authentication attempt dispatched via spawn_blocking.
+    ///
+    /// Sent by the AttemptBiometricUnlock handler after the platform biometric
+    /// prompt resolves. Processed in the InternalEvent branch so the actor loop
+    /// is not blocked while the system biometric UI is displayed (CR-03).
+    BiometricResult {
+        success: bool,
+    },
 }
 
 /// Spawn an async-openai streaming task on the given Tokio runtime.
