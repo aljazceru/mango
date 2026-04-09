@@ -5,7 +5,7 @@
 - ✅ **v1.0 MVP** - Phases 1-10 (shipped 2026-03-27)
 - ✅ **v1.1 Mobile Embeddings** - Phase 11 (shipped 2026-03-27)
 - ✅ **v1.2 Hardening & Test Coverage** - Phases 12-19 (shipped 2026-03-29)
-- 🚧 **v2.0 Memory & Agents** - Phases 20-23 (in progress)
+- 🚧 **v2.0 Memory & Agents** - Phases 20-30 (in progress)
 
 ## Phases
 
@@ -128,6 +128,8 @@ Phases execute in numeric order: 20 → 21 → 22 → 23
 | 21. Memory Retrieval & Injection | v2.0 | 1/1 | Complete    | 2026-04-04 |
 | 22. Agent Tools Expansion | v2.0 | 2/2 | Complete    | 2026-04-04 |
 | 23. Memory Management UI + Agent UI | v2.0 | 3/3 | Complete    | 2026-04-04 |
+| 29. Wire VectorIndex DEK End-to-End | v2.0 | 0/1 | Planned | — |
+| 30. Milestone Verification & Requirements Sync | v2.0 | 0/0 | Pending | — |
 
 ### Phase 24: Redesign Settings UX — move memories into settings, redesign layout with grouped sections, add tool configuration for agents and chats
 
@@ -139,7 +141,7 @@ Phases execute in numeric order: 20 → 21 → 22 → 23
 Plans:
 - [x] 24-00-PLAN.md — Wave 0: unit test stubs for SET-04 (brave_api_key persistence) and SET-06 (memory_count)
 - [x] 24-01-PLAN.md — Rust core: memory_count + brave_api_key_set in AppState, SetBraveApiKey action, memory_count updates in handlers
-- [ ] 24-02-PLAN.md — Add MEMORY + TOOLS sections to Settings on all 3 platforms, remove Memories from home toolbars
+- [x] 24-02-PLAN.md — Add MEMORY + TOOLS sections to Settings on all 3 platforms, remove Memories from home toolbars
 **UI hint**: yes
 
 ### Phase 25: disable/enable making memories in the app
@@ -186,14 +188,35 @@ Plans:
 **Goal:** All local data (SQLite database, usearch vector indices, cached documents) is encrypted at rest using platform hardware capabilities. Users authenticate via biometrics or PIN/password to unlock. Duress PIN triggers full data wipe. Graceful degradation on devices without biometric hardware. All three platforms: iOS, Android, Desktop.
 **Requirements**: ENC-01, ENC-02, ENC-03, ENC-04, ENC-05, ENC-06, ENC-07, ENC-08, ENC-09, ENC-10, ENC-11, ENC-12, ENC-13, ENC-14
 **Depends on:** Phase 27
-**Plans:** 7 plans
+**Plans:** 8/8 plans complete
 
 Plans:
-- [ ] 28-01-PLAN.md — Crypto foundation: SQLCipher, AES-256-GCM file encryption, Argon2id key derivation, bootstrap DB
-- [ ] 28-02-PLAN.md — Actor restructure: Screen::Locked, BiometricProvider, deferred DB open, auth AppActions
-- [ ] 28-03-PLAN.md — Encrypted VectorIndex save/load with DEK
-- [ ] 28-04-PLAN.md — iOS: UniFFI bindings, BiometricProviderImpl, LockScreen, PinSetupScreen
-- [ ] 28-05-PLAN.md — Android: BiometricProviderImpl (BiometricPrompt+CountDownLatch), LockScreen, PinSetupScreen
-- [ ] 28-06-PLAN.md — Desktop: PIN-only LockScreen, PinSetupScreen
-- [ ] 28-07-PLAN.md — Background lock timeout on all platforms, lock timeout Settings picker
+- [x] 28-01-PLAN.md — Crypto foundation: SQLCipher, AES-256-GCM file encryption, Argon2id key derivation, bootstrap DB
+- [x] 28-02-PLAN.md — Actor restructure: Screen::Locked, BiometricProvider, deferred DB open, auth AppActions
+- [x] 28-03-PLAN.md — Encrypted VectorIndex save/load with DEK
+- [x] 28-04-PLAN.md — iOS: UniFFI bindings, BiometricProviderImpl, LockScreen, PinSetupScreen
+- [x] 28-05-PLAN.md — Android: BiometricProviderImpl (BiometricPrompt+CountDownLatch), LockScreen, PinSetupScreen
+- [x] 28-06-PLAN.md — Desktop: PIN-only LockScreen, PinSetupScreen
+- [x] 28-07-PLAN.md — Background lock timeout on all platforms, lock timeout Settings picker
 **UI hint**: yes
+
+### Phase 29: Wire VectorIndex DEK End-to-End
+
+**Goal:** Wire the Data Encryption Key (DEK) from authentication handlers through ActorState to all VectorIndex call sites, so usearch vector index files are actually encrypted at rest — closing the gap between the AES-256-GCM capability built in Phase 28-03 and its runtime invocation
+**Requirements**: ENC-02
+**Depends on:** Phase 28
+**Gap Closure:** Closes ENC-02 partial, VectorIndex DEK integration gap, encryption E2E flow gap from v2.0 milestone audit
+**Plans:** 1 plan
+
+Plans:
+- [ ] 29-01-PLAN.md — DEK field in ActorState, auth handler wiring, save call site plumbing
+
+### Phase 30: Milestone Verification & Requirements Sync
+
+**Goal:** Close the MEM-03 orphan by verifying Phase 21, regenerate UniFFI bindings for biometric_authenticated field, and sync all stale REQUIREMENTS.md checkboxes and traceability entries to reflect verified implementation status
+**Requirements**: MEM-03 (verification), ENC-09 (UX bindings)
+**Depends on:** Phase 29
+**Gap Closure:** Closes MEM-03 orphan, ENC-09 UX gap, stale documentation from v2.0 milestone audit
+
+Plans:
+- (none yet — run `/gsd-plan-phase 30`)
