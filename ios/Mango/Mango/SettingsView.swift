@@ -27,6 +27,7 @@ struct SettingsView: View {
                 defaultsSection
                 memorySection
                 toolsSection
+                securitySection
                 appearanceSection
                 advancedSection
             }
@@ -173,6 +174,45 @@ struct SettingsView: View {
                     appManager.dispatch(.clearToast)
                 }
             }
+        }
+    }
+
+    // MARK: - Security (Lock Timeout)
+
+    /// Lock timeout options: (label, seconds). -1 = Never.
+    private let lockTimeoutOptions: [(String, Int64)] = [
+        ("Immediately", 0),
+        ("1 minute", 60),
+        ("5 minutes", 300),
+        ("15 minutes", 900),
+        ("Never", -1),
+    ]
+
+    private var securitySection: some View {
+        Section("Security") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Lock Timeout")
+                    .font(.subheadline).fontWeight(.medium)
+                Text("How long the app can be in the background before it locks.")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                Picker("Lock Timeout", selection: Binding(
+                    get: { appState.lockTimeoutSeconds },
+                    set: { appManager.dispatch(.setLockTimeout(seconds: $0)) }
+                )) {
+                    ForEach(lockTimeoutOptions, id: \.1) { label, seconds in
+                        Text(label).tag(seconds)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                if appState.lockTimeoutSeconds == -1 {
+                    Text("Not recommended. App will only lock on restart.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(.vertical, 4)
         }
     }
 
