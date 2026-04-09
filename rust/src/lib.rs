@@ -4426,9 +4426,19 @@ impl FfiApp {
                                         let _ = actor_state.bootstrap.delete_all();
                                         let _ = std::fs::remove_file(&actor_state.db_path);
                                         // Delete vector index files in data_dir.
-                                        if !actor_state.data_dir.is_empty() {
+                                        // Safety check: only wipe if data_dir is non-empty and its
+                                        // path contains "mango", confirming it points to the app
+                                        // sandbox rather than an arbitrary directory (WR-03).
+                                        let data_dir_path = std::path::Path::new(&actor_state.data_dir);
+                                        let wipe_allowed = !actor_state.data_dir.is_empty()
+                                            && data_dir_path.components().any(|c| {
+                                                c.as_os_str() == "mango"
+                                            });
+                                        if wipe_allowed {
                                             let _ = std::fs::remove_dir_all(&actor_state.data_dir);
                                             let _ = std::fs::create_dir_all(&actor_state.data_dir);
+                                        } else {
+                                            log::warn!("[auth] Duress wipe: skipping remove_dir_all — data_dir does not look like app sandbox: {:?}", actor_state.data_dir);
                                         }
                                         actor_state.db = None;
                                         actor_state.app_state = AppState::default();
