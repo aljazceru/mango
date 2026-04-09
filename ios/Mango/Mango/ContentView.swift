@@ -80,7 +80,15 @@ struct ContentView: View {
                     }
                 }
                 backgroundedAt = nil
-            default:
+            case .inactive:
+                // backgroundedAt intentionally not reset here (WR-04).
+                // iOS guarantees the .background phase is always reached before .active
+                // whenever the app is truly backgrounded, so the elapsed-time check in
+                // .active is always measured from the correct .background timestamp.
+                // Transient .inactive entries (phone call overlay, Control Centre, app
+                // switcher) do not affect the lock timeout calculation.
+                break
+            @unknown default:
                 break
             }
         }
