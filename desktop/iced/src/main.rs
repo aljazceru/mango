@@ -124,12 +124,36 @@ impl Hash for AppManager {
     }
 }
 
+/// Return the platform-appropriate application data directory.
+///
+/// On macOS: `~/Library/Application Support/mango`
+/// On Linux: `$XDG_DATA_HOME/mango` → `~/.local/share/mango` → `/tmp/mango` (fallback)
+///
+/// Using a user-owned directory rather than `/tmp` avoids world-readable exposure of
+/// the bootstrap DB (which contains the wrapped DEK) on multi-user Linux systems (WR-01).
+fn app_data_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var("HOME")
+            .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/mango"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("mango"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::env::var("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+                    .unwrap_or_else(|_| std::env::temp_dir())
+            })
+            .join("mango")
+    }
+}
+
 impl AppManager {
     fn new() -> Result<Self, String> {
-        let data_dir = std::env::temp_dir()
-            .join("mango")
-            .to_string_lossy()
-            .to_string();
+        let data_dir = app_data_dir().to_string_lossy().to_string();
         let _ = std::fs::create_dir_all(&data_dir);
 
         // Phase 8: use DesktopEmbeddingProvider (fastembed) with NullEmbeddingProvider fallback
