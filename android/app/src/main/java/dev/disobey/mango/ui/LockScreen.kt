@@ -35,7 +35,7 @@ import dev.disobey.mango.rust.AppState
 /**
  * Lock gate screen shown on cold launch and after background timeout (Phase 28, D-09, D-11).
  *
- * If biometric authentication is available, AttemptBiometricUnlock is dispatched automatically
+ * If biometric login is enabled, AttemptBiometricUnlock is dispatched automatically
  * on screen entry so users with fingerprint/face unlock never need to type a PIN for the
  * common case.
  *
@@ -50,9 +50,9 @@ fun LockScreen(
 ) {
     var pin by remember { mutableStateOf("") }
 
-    // Auto-dispatch biometric unlock on screen entry if biometrics are enrolled (D-11).
+    // Auto-dispatch biometric unlock on screen entry if biometric login is enabled.
     LaunchedEffect(Unit) {
-        if (appState.biometricAvailable) {
+        if (appState.biometricLoginEnabled) {
             onDispatchAction(AppAction.AttemptBiometricUnlock)
         }
     }
@@ -126,7 +126,7 @@ fun LockScreen(
             Text("Unlock")
         }
 
-        if (appState.biometricAvailable) {
+        if (appState.biometricLoginEnabled) {
             Spacer(modifier = Modifier.height(12.dp))
             TextButton(
                 onClick = { onDispatchAction(AppAction.AttemptBiometricUnlock) },

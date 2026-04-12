@@ -1,6 +1,9 @@
 import SwiftUI
 import BackgroundTasks
 import UserNotifications
+import os
+
+private let logger = Logger(subsystem: "dev.disobey.mango", category: "BGTask")
 
 @main
 struct MangoApp: App {
@@ -108,7 +111,7 @@ struct MangoApp: App {
             try BGTaskScheduler.shared.submit(request)
         } catch {
             // Scheduling can fail in simulator or when app is foregrounded; not critical
-            print("[BGTask] scheduleAgentProcessingTask failed: \(error)")
+            logger.warning("scheduleAgentProcessingTask failed: \(error.localizedDescription)")
         }
     }
 
@@ -129,7 +132,7 @@ struct MangoApp: App {
         )
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                print("[Notification] Failed to post agent completion notification: \(error)")
+                logger.error("Failed to post agent completion notification: \(error.localizedDescription)")
             }
         }
     }

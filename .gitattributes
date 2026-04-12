@@ -1,0 +1,15 @@
+# Auto-detect text files and normalise line endings
+* text=auto
+
+# Binary assets
+*.png binary
+*.onnx binary
+*.jar binary
+*.so binary
+*.dylib binary
+*.a binary
+*.xcframework binary
+
+# Linguist overrides (generated code)
+android/app/src/main/java/dev/disobey/mango/rust/mango_core.kt linguist-generated=true
+ios/Bindings/mango_core.swift linguist-generated=true

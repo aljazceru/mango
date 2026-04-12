@@ -5,6 +5,11 @@ struct SettingsProvidersView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var presetKeys: [String: String] = [:]
+    @State private var addName: String = ""
+    @State private var addUrl: String = ""
+    @State private var addApiKey: String = ""
+    @State private var addTeeType: String = "IntelTdx"
+    @State private var attestationIntervalInput: String = ""
 
     var appState: AppState { appManager.appState }
 
@@ -12,6 +17,8 @@ struct SettingsProvidersView: View {
         NavigationStack {
             List {
                 providersSection
+                providerDefaultsSection
+                customProviderSection
             }
             .navigationTitle("Providers")
             .navigationBarTitleDisplayMode(.inline)
@@ -23,10 +30,8 @@ struct SettingsProvidersView: View {
         }
     }
 
-    // MARK: - Providers
-
     private var providersSection: some View {
-        Section {
+        Section("Providers") {
             let presets = knownProviderPresets()
             ForEach(presets, id: \.id) { preset in
                 let isEnabled = appState.backends.contains(where: { $0.id == preset.id && $0.hasApiKey })
@@ -36,8 +41,82 @@ struct SettingsProvidersView: View {
                     disabledRow(preset)
                 }
             }
-        } header: {
-            Text("Providers")
+        }
+    }
+
+    private var providerDefaultsSection: some View {
+        Section("Provider Defaults") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Re-attestation Interval")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Text("How often the active provider is automatically re-attested. Set 0 to disable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                let current = appState.attestationIntervalMinutes
+                Stepper(
+                    "Every \(attestationIntervalInput.isEmpty ? "\(current)" : attestationIntervalInput) min",
+                    onIncrement: {
+                        let base = Int(attestationIntervalInput) ?? Int(current)
+                        let next = max(0, base + 1)
+                        attestationIntervalInput = "\(next)"
+                        appManager.dispatch(.setAttestationInterval(minutes: UInt32(next)))
+                    },
+                    onDecrement: {
+                        let base = Int(attestationIntervalInput) ?? Int(current)
+                        let next = max(0, base - 1)
+                        attestationIntervalInput = "\(next)"
+                        appManager.dispatch(.setAttestationInterval(minutes: UInt32(next)))
+                    }
+                )
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var customProviderSection: some View {
+        Section("Custom Provider") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("For self-hosted or experimental confidential inference endpoints.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextField("Name", text: $addName)
+                    .autocorrectionDisabled()
+                TextField("Base URL", text: $addUrl)
+                    .keyboardType(.URL)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                SecureField("API Key", text: $addApiKey)
+                Picker("TEE Type", selection: $addTeeType) {
+                    Text("Intel TDX").tag("IntelTdx")
+                    Text("NVIDIA H100 CC").tag("NvidiaH100Cc")
+                    Text("AMD SEV-SNP").tag("AmdSevSnp")
+                    Text("Unknown").tag("Unknown")
+                }
+
+                Button("Add Provider") {
+                    appManager.dispatch(.addBackend(
+                        name: addName,
+                        baseUrl: addUrl,
+                        apiKey: addApiKey,
+                        teeType: parseTeeType(addTeeType),
+                        models: []
+                    ))
+                    addName = ""
+                    addUrl = ""
+                    addApiKey = ""
+                    addTeeType = "IntelTdx"
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    addName.trimmingCharacters(in: .whitespaces).isEmpty
+                    || addUrl.trimmingCharacters(in: .whitespaces).isEmpty
+                    || addApiKey.isEmpty
+                )
+            }
+            .padding(.vertical, 4)
         }
     }
 
@@ -60,7 +139,7 @@ struct SettingsProvidersView: View {
                     .clipShape(Capsule())
             }
 
-            if let backend = backend {
+            if let backend {
                 HStack(spacing: 6) {
                     Text(healthLabel(backend.healthStatus))
                         .font(.caption2).fontWeight(.medium)
@@ -79,29 +158,32 @@ struct SettingsProvidersView: View {
 
                 if !backend.models.isEmpty {
                     Text(backend.models.prefix(3).joined(separator: " · "))
-                        .font(.caption2).foregroundStyle(.tertiary)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
-            }
 
-            HStack(spacing: 8) {
-                if let backend = backend {
+                HStack(spacing: 8) {
                     if backend.isActive {
                         Label("Default", systemImage: "checkmark.seal.fill")
-                            .font(.caption2).fontWeight(.medium)
+                            .font(.caption2)
+                            .fontWeight(.medium)
                             .foregroundStyle(AppColors.healthSuccess(colorScheme))
                     } else {
                         Button("Set Default") {
                             appManager.dispatch(.setDefaultBackend(backendId: preset.id))
                         }
-                        .buttonStyle(.bordered).controlSize(.mini)
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
                     }
+                    Spacer()
+                    Button("Remove") {
+                        appManager.dispatch(.removeBackend(backendId: preset.id))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .tint(.red)
                 }
-                Spacer()
-                Button("Remove") {
-                    appManager.dispatch(.removeBackend(backendId: preset.id))
-                }
-                .buttonStyle(.bordered).controlSize(.mini).tint(.red)
             }
         }
         .padding(.vertical, 6)
@@ -115,6 +197,7 @@ struct SettingsProvidersView: View {
                 Text(preset.description).font(.caption).foregroundStyle(.secondary)
                 Text(teeTypeLabel(preset.teeType)).font(.caption2).foregroundStyle(.tertiary)
             }
+
             SecureField("API Key", text: Binding(
                 get: { presetKeys[preset.id] ?? "" },
                 set: { presetKeys[preset.id] = $0 }
@@ -129,14 +212,13 @@ struct SettingsProvidersView: View {
                 appManager.dispatch(.addBackendFromPreset(presetId: preset.id, apiKey: key))
                 presetKeys[preset.id] = ""
             }
-            .buttonStyle(.borderedProminent).controlSize(.small)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
             .tint(AppColors.healthSuccess(colorScheme))
             .disabled((presetKeys[preset.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .padding(.vertical, 4)
     }
-
-    // MARK: - Helpers
 
     private func healthLabel(_ s: HealthStatus) -> String {
         switch s {
@@ -171,6 +253,15 @@ struct SettingsProvidersView: View {
         case .nvidiaH100Cc: return "NVIDIA H100 CC"
         case .amdSevSnp:    return "AMD SEV-SNP"
         case .unknown:      return "Unknown"
+        }
+    }
+
+    private func parseTeeType(_ s: String) -> TeeType {
+        switch s {
+        case "NvidiaH100Cc": return .nvidiaH100Cc
+        case "AmdSevSnp": return .amdSevSnp
+        case "Unknown": return .unknown
+        default: return .intelTdx
         }
     }
 }
