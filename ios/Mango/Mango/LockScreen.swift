@@ -3,7 +3,7 @@ import SwiftUI
 /// iOS lock gate screen (Phase 28, D-09, D-11, D-24).
 ///
 /// Shown on every cold launch and after background timeout (D-10).
-/// Presents biometric prompt automatically on appear if Face ID/Touch ID is available (D-11).
+/// Presents biometric prompt automatically on appear if biometric login is enabled (D-11).
 /// Falls back to PIN/password entry (mandatory per D-24 — biometrics are additive, not required).
 ///
 /// Security (T-28-18): PIN input uses SecureField (masked). The entered string is dispatched
@@ -42,8 +42,8 @@ struct LockScreen: View {
         }
         .background(Color(.systemBackground))
         .onAppear {
-            // D-11: auto-prompt biometrics on appear if available and enrolled.
-            if appState.biometricAvailable {
+            // D-11: auto-prompt biometrics on appear if biometric login is enabled.
+            if appState.biometricLoginEnabled {
                 attemptBiometricUnlock()
             }
         }
@@ -88,8 +88,8 @@ struct LockScreen: View {
             .disabled(enteredPin.isEmpty)
             .padding(.horizontal, 32)
 
-            // Biometric button (only shown if available)
-            if appState.biometricAvailable {
+            // Biometric button (only shown if enabled)
+            if appState.biometricLoginEnabled {
                 Button(action: attemptBiometricUnlock) {
                     Label("Use Face ID / Touch ID", systemImage: "faceid")
                         .font(.callout)

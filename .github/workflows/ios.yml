@@ -1,0 +1,61 @@
+name: iOS
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build iOS
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Build host library (for uniffi-bindgen)
+        run: cargo build -p mango_core --release
+
+      - name: Generate Swift bindings
+        run: |
+          cargo run --bin uniffi-bindgen -- generate \
+            --library target/release/libmango_core.dylib \
+            --language swift \
+            --out-dir ios/Bindings \
+            --config rust/uniffi.toml
+
+      - name: Cross-compile Rust for iOS (device + simulator)
+        run: just build-ios
+
+      - name: Package xcframework
+        run: just ios-xcframework
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios/Mango
+        run: xcodegen generate
+
+      - name: Build for simulator
+        working-directory: ios/Mango
+        run: |
+          xcodebuild build \
+            -project Mango.xcodeproj \
+            -scheme Mango \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO

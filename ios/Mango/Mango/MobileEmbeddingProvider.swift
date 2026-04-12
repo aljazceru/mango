@@ -1,5 +1,8 @@
 import Foundation
 import onnxruntime_objc
+import os
+
+private let logger = Logger(subsystem: "dev.disobey.mango", category: "Embedding")
 
 // MARK: - MobileEmbeddingProvider
 
@@ -53,7 +56,7 @@ class MobileEmbeddingProvider: EmbeddingProvider {
         // Create the ONNX Runtime session
         self.session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
 
-        print("[MobileEmbeddingProvider] Loaded ONNX model with CoreML EP")
+        logger.info("Loaded ONNX model with CoreML EP")
     }
 
     // MARK: - EmbeddingProvider Conformance
@@ -109,7 +112,7 @@ class MobileEmbeddingProvider: EmbeddingProvider {
             // Apply mean pooling masked by attention_mask, then L2 normalize
             return try meanPoolAndNormalize(outputTensor, attentionMask: tokens.attentionMask)
         } catch {
-            print("[MobileEmbeddingProvider] embed error: \(error)")
+            logger.error("embed error: \(error.localizedDescription)")
             return zeros
         }
     }

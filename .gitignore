@@ -50,3 +50,20 @@ to-delete/
 # Note: flake.lock is intentionally NOT ignored -- it pins exact dependency versions
 SECURITY_REVIEW.md
 local.properties
+
+# Secrets and credentials
+*.env
+.env*
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.credential*
+brave.txt
+
+# Database and log files
+*.db
+*.sqlite
+*.log

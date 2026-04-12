@@ -1,6 +1,9 @@
 import Foundation
 import Observation
 import Security
+import os
+
+private let logger = Logger(subsystem: "dev.disobey.mango", category: "AppManager")
 
 // MARK: - KeychainProvider
 
@@ -77,7 +80,7 @@ final class AppManager: AppReconciler, ObservableObject {
             embedding = try MobileEmbeddingProvider()
             embeddingStatus = .active
         } catch {
-            print("[AppManager] MobileEmbeddingProvider init failed: \(error), falling back to null")
+            logger.warning("MobileEmbeddingProvider init failed: \(error.localizedDescription), falling back to null")
             embedding = IOSEmbeddingProvider()
             embeddingStatus = .degraded
         }

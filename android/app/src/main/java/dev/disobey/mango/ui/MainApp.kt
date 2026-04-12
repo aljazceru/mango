@@ -115,6 +115,34 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) }
             )
         }
+        is Screen.SettingsMemory -> {
+            SettingsMemoryScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
+        is Screen.SettingsAppearance -> {
+            SettingsAppearanceScreen(
+                themeMode = themeMode,
+                onBack = { manager.dispatch(AppAction.PopScreen) },
+                onThemeModeChanged = onThemeModeChanged,
+            )
+        }
+        is Screen.SettingsSecurity -> {
+            SettingsSecurityScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
+        is Screen.SettingsTools -> {
+            SettingsToolsScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
         // Phase 28: lock gate and PIN setup screens
         is Screen.Locked -> {
             LockScreen(
