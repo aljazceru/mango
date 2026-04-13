@@ -22,7 +22,7 @@ fn create_test_app() -> Arc<FfiApp> {
         Box::new(crate::NullKeychainProvider),
         Box::new(crate::NullEmbeddingProvider),
         EmbeddingStatus::Active,
-    Box::new(crate::NullBiometricProvider),
+        Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(50));
     app
@@ -400,7 +400,13 @@ fn test_provider_fallback() {
             String,
             Vec<u8>,
         >::new()));
-        crate::attestation::spawn_attestation_task(&runtime, &backend, tx, vcek_cache, crate::attestation::TeePolicy::default());
+        crate::attestation::spawn_attestation_task(
+            &runtime,
+            &backend,
+            tx,
+            vcek_cache,
+            crate::attestation::TeePolicy::default(),
+        );
 
         // Poll for up to 10 seconds for the task result
         let deadline = std::time::Instant::now() + Duration::from_secs(10);

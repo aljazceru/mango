@@ -45,7 +45,11 @@ fn test_decrypt_truncated_data_fails() {
 fn test_encrypt_prepends_mgo1_magic() {
     let dek: [u8; 32] = generate_dek();
     let ciphertext = encrypt_file(&dek, b"test");
-    assert_eq!(&ciphertext[..4], b"MGO1", "ciphertext must start with MGO1 magic");
+    assert_eq!(
+        &ciphertext[..4],
+        b"MGO1",
+        "ciphertext must start with MGO1 magic"
+    );
 }
 
 #[test]
@@ -71,20 +75,44 @@ fn test_generate_dek_produces_32_nonzero_bytes() {
 fn test_derive_kek_deterministic_with_same_pin_and_salt() {
     let pin = b"my_secure_pin_1234";
     let salt = generate_salt();
-    let kek1 = derive_kek(pin, &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .expect("derive_kek should succeed");
-    let kek2 = derive_kek(pin, &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .expect("derive_kek should succeed");
+    let kek1 = derive_kek(
+        pin,
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek should succeed");
+    let kek2 = derive_kek(
+        pin,
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek should succeed");
     assert_eq!(kek1, kek2, "same PIN + salt must produce same KEK");
 }
 
 #[test]
 fn test_derive_kek_different_pin_produces_different_kek() {
     let salt = generate_salt();
-    let kek1 = derive_kek(b"pin_a", &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .expect("derive_kek pin_a");
-    let kek2 = derive_kek(b"pin_b", &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .expect("derive_kek pin_b");
+    let kek1 = derive_kek(
+        b"pin_a",
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek pin_a");
+    let kek2 = derive_kek(
+        b"pin_b",
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek pin_b");
     assert_ne!(kek1, kek2, "different PINs must produce different KEKs");
 }
 
@@ -92,8 +120,14 @@ fn test_derive_kek_different_pin_produces_different_kek() {
 fn test_wrap_then_unwrap_dek_round_trips() {
     let pin = b"test_pin";
     let salt = generate_salt();
-    let kek = derive_kek(pin, &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .expect("derive_kek");
+    let kek = derive_kek(
+        pin,
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek");
     let dek = generate_dek();
     let wrapped = wrap_dek(&kek, &dek);
     let unwrapped = unwrap_dek(&kek, &wrapped).expect("unwrap_dek should succeed");
@@ -103,10 +137,22 @@ fn test_wrap_then_unwrap_dek_round_trips() {
 #[test]
 fn test_unwrap_dek_with_wrong_kek_fails() {
     let salt = generate_salt();
-    let kek = derive_kek(b"correct_pin", &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .expect("derive_kek correct");
-    let wrong_kek = derive_kek(b"wrong_pin", &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .expect("derive_kek wrong");
+    let kek = derive_kek(
+        b"correct_pin",
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek correct");
+    let wrong_kek = derive_kek(
+        b"wrong_pin",
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek wrong");
     let dek = generate_dek();
     let wrapped = wrap_dek(&kek, &dek);
     let result = unwrap_dek(&wrong_kek, &wrapped);
@@ -139,7 +185,11 @@ fn test_verify_pin_hash_fails_for_wrong_pin() {
 
 fn temp_bootstrap_path(tag: &str) -> String {
     std::env::temp_dir()
-        .join(format!("mango_bootstrap_test_{}_{}.db", tag, uuid::Uuid::new_v4()))
+        .join(format!(
+            "mango_bootstrap_test_{}_{}.db",
+            tag,
+            uuid::Uuid::new_v4()
+        ))
         .to_str()
         .unwrap()
         .to_string()
@@ -150,7 +200,10 @@ fn test_bootstrap_db_init_creates_table() {
     let path = temp_bootstrap_path("init");
     let db = BootstrapDb::open(&path).expect("BootstrapDb::open should succeed");
     // After init, has_auth_params should be false (empty table)
-    assert!(!db.has_auth_params(), "new bootstrap DB should have no auth params");
+    assert!(
+        !db.has_auth_params(),
+        "new bootstrap DB should have no auth params"
+    );
 }
 
 #[test]
@@ -160,8 +213,14 @@ fn test_bootstrap_db_write_read_round_trips() {
 
     let dek = generate_dek();
     let salt = generate_salt();
-    let kek = derive_kek(b"test_pin", &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .expect("derive_kek");
+    let kek = derive_kek(
+        b"test_pin",
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek");
     let wrapped = wrap_dek(&kek, &dek);
     // hash_pin embeds its own random salt in the PHC string; no separate duress_salt needed.
     let dummy_salt = generate_salt();
@@ -178,14 +237,20 @@ fn test_bootstrap_db_write_read_round_trips() {
 
     db.write_auth_params(&params).expect("write_auth_params");
 
-    let read_back = db.read_auth_params().expect("read_auth_params").expect("should be Some");
+    let read_back = db
+        .read_auth_params()
+        .expect("read_auth_params")
+        .expect("should be Some");
     assert_eq!(read_back.salt, params.salt);
     assert_eq!(read_back.wrapped_dek, params.wrapped_dek);
     assert_eq!(read_back.duress_hash, params.duress_hash);
     assert_eq!(read_back.kdf_memory_kib, DEFAULT_MEMORY_KIB);
     assert_eq!(read_back.kdf_iterations, DEFAULT_ITERATIONS);
     assert_eq!(read_back.kdf_parallelism, DEFAULT_PARALLELISM);
-    assert!(db.has_auth_params(), "has_auth_params should be true after write");
+    assert!(
+        db.has_auth_params(),
+        "has_auth_params should be true after write"
+    );
 }
 
 #[test]
@@ -195,8 +260,14 @@ fn test_bootstrap_db_delete_all_clears_params() {
 
     let salt = generate_salt();
     let dek = generate_dek();
-    let kek = derive_kek(b"pin", &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .expect("derive_kek");
+    let kek = derive_kek(
+        b"pin",
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek");
     let params = AuthParams {
         salt: salt.to_vec(),
         wrapped_dek: wrap_dek(&kek, &dek),
@@ -210,7 +281,13 @@ fn test_bootstrap_db_delete_all_clears_params() {
     assert!(db.has_auth_params());
 
     db.delete_all().expect("delete_all");
-    assert!(!db.has_auth_params(), "has_auth_params should be false after delete_all");
+    assert!(
+        !db.has_auth_params(),
+        "has_auth_params should be false after delete_all"
+    );
     let read_back = db.read_auth_params().expect("read_auth_params");
-    assert!(read_back.is_none(), "read_auth_params should return None after delete_all");
+    assert!(
+        read_back.is_none(),
+        "read_auth_params should return None after delete_all"
+    );
 }

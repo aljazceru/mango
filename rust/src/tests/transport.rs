@@ -33,7 +33,10 @@ fn test_standard_backends_use_openai_transport() {
 fn test_tinfoil_base_url_selects_secure_transport() {
     let tinfoil = backend("tinfoil", "https://inference.tinfoil.sh/v1/");
 
-    assert_eq!(tinfoil.transport_kind(), ProviderTransportKind::TinfoilSecure);
+    assert_eq!(
+        tinfoil.transport_kind(),
+        ProviderTransportKind::TinfoilSecure
+    );
 }
 
 #[test]
@@ -64,7 +67,9 @@ fn test_secure_transports_return_explicit_error() {
         .openai_api_base(&tinfoil)
         .expect_err("secure transport should not pretend to be plain OpenAI transport");
     assert!(
-        tinfoil_error.to_string().contains("Tinfoil secure transport"),
+        tinfoil_error
+            .to_string()
+            .contains("Tinfoil secure transport"),
         "unexpected error: {}",
         tinfoil_error
     );

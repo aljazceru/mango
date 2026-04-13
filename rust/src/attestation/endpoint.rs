@@ -353,11 +353,12 @@ fn verify_tdx_policy(
     xfam: &[u8; 8],
     policy: &TdxPolicy,
 ) -> Result<(), AttestationError> {
-    let minimum_svn = policy.minimum_tee_tcb_svn_bytes().map_err(|e| {
-        AttestationError::QuoteVerification {
-            reason: format!("Invalid TDX TCB SVN hex in policy: {e}"),
-        }
-    })?;
+    let minimum_svn =
+        policy
+            .minimum_tee_tcb_svn_bytes()
+            .map_err(|e| AttestationError::QuoteVerification {
+                reason: format!("Invalid TDX TCB SVN hex in policy: {e}"),
+            })?;
     if !tee_tcb_svn
         .iter()
         .zip(minimum_svn.iter())
@@ -464,7 +465,10 @@ fn verify_snp_signature_with_vcek(
 // Clippy correctly flags `u8 < 0` as always-false; the check is retained
 // for future minimum bumps without code changes.
 #[allow(clippy::absurd_extreme_comparisons)]
-fn verify_snp_policy(report: &AttestationReport, policy: &SnpPolicy) -> Result<(), AttestationError> {
+fn verify_snp_policy(
+    report: &AttestationReport,
+    policy: &SnpPolicy,
+) -> Result<(), AttestationError> {
     let guest_policy = report.policy;
     if !guest_policy.smt_allowed() {
         return Err(AttestationError::QuoteVerification {

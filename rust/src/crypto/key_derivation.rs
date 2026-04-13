@@ -63,8 +63,7 @@ pub fn derive_kek(
 /// Output format: `[12-byte nonce][ciphertext + 16-byte tag]` (no MGO1 header --
 /// this is a key blob, not a file on disk).
 pub fn wrap_dek(kek: &[u8; 32], dek: &[u8; 32]) -> Vec<u8> {
-    let cipher =
-        Aes256Gcm::new_from_slice(kek).expect("32-byte key is always valid for AES-256");
+    let cipher = Aes256Gcm::new_from_slice(kek).expect("32-byte key is always valid for AES-256");
 
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
@@ -206,7 +205,10 @@ pub fn verify_pin_auth(
     }
 
     // Derive KEK and try to unwrap DEK. CR-03: both are Zeroizing.
-    let salt: [u8; 32] = params.salt.as_slice().try_into()
+    let salt: [u8; 32] = params
+        .salt
+        .as_slice()
+        .try_into()
         .map_err(|_| anyhow::anyhow!("invalid salt length in bootstrap DB"))?;
     let kek: Zeroizing<[u8; 32]> = derive_kek(
         pin.as_bytes(),
@@ -216,8 +218,7 @@ pub fn verify_pin_auth(
         params.kdf_parallelism,
     )?;
     let _dek: Zeroizing<[u8; 32]> = Zeroizing::new(
-        unwrap_dek(&*kek, &params.wrapped_dek)
-            .map_err(|_| anyhow::anyhow!("incorrect PIN"))?,
+        unwrap_dek(&*kek, &params.wrapped_dek).map_err(|_| anyhow::anyhow!("incorrect PIN"))?,
     );
 
     Ok(PinVerifyResult { is_duress: false })

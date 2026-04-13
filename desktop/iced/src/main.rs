@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use mango_core::embedding::desktop::DesktopEmbeddingProvider;
 use mango_core::{
     AppAction, AppReconciler, AppState, AppUpdate, DesktopKeychainProvider, FfiApp,
     NullBiometricProvider, NullEmbeddingProvider, OnboardingStep, Screen, TeeType,
 };
-use mango_core::embedding::desktop::DesktopEmbeddingProvider;
 
 mod lock_screen;
 mod pin_setup_screen;
@@ -52,7 +52,9 @@ struct Preferences {
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { theme_override: ThemeOverride::FollowSystem }
+        Self {
+            theme_override: ThemeOverride::FollowSystem,
+        }
     }
 }
 
@@ -170,12 +172,19 @@ impl AppManager {
             Err(e) => {
                 eprintln!("[documents] DesktopEmbeddingProvider init failed: {e}; falling back to NullEmbeddingProvider");
                 (
-                    Box::new(NullEmbeddingProvider) as Box<dyn mango_core::embedding::EmbeddingProvider>,
+                    Box::new(NullEmbeddingProvider)
+                        as Box<dyn mango_core::embedding::EmbeddingProvider>,
                     mango_core::EmbeddingStatus::Degraded,
                 )
             }
         };
-        let ffi = FfiApp::new(data_dir, Box::new(DesktopKeychainProvider), embedding_provider, embedding_status, Box::new(NullBiometricProvider));
+        let ffi = FfiApp::new(
+            data_dir,
+            Box::new(DesktopKeychainProvider),
+            embedding_provider,
+            embedding_status,
+            Box::new(NullBiometricProvider),
+        );
         let (notify_tx, update_rx) = flume::unbounded();
         ffi.listen_for_updates(Box::new(DesktopReconciler { tx: notify_tx }));
 
@@ -326,11 +335,21 @@ enum Message {
     SettingsAddKeyChanged(String),
     SettingsAddTeeChanged(String),
     SettingsDefaultModelChanged(String),
-    SettingsSubmitAddBackend { name: String, url: String, key: String, tee: TeeType },
+    SettingsSubmitAddBackend {
+        name: String,
+        url: String,
+        key: String,
+        tee: TeeType,
+    },
     // Simple "enable provider" flow: per-preset API key field changes
-    SettingsPresetKeyChanged { preset_id: String, key: String },
+    SettingsPresetKeyChanged {
+        preset_id: String,
+        key: String,
+    },
     // Submit the simple "enable provider" flow for a preset
-    SettingsEnablePreset { preset_id: String },
+    SettingsEnablePreset {
+        preset_id: String,
+    },
     // Toggle the Advanced custom provider section
     SettingsToggleAdvanced,
     // Re-attestation interval field changed
@@ -370,11 +389,11 @@ enum Message {
     // Memory screen messages (Phase 23, MEM-04/05/06)
     #[allow(dead_code)]
     OpenMemories,
-    MemoryStartEdit(String, String),  // (memory_id, full_content)
+    MemoryStartEdit(String, String), // (memory_id, full_content)
     MemoryEditChanged(String),
     MemorySaveEdit,
     MemoryCancelEdit,
-    MemoryConfirmDelete(String),  // memory_id
+    MemoryConfirmDelete(String), // memory_id
     // Agent screen messages
     OpenAgents,
     AgentTaskInputChanged(String),
@@ -541,7 +560,8 @@ impl App {
                             // Parse new completed assistant messages for markdown rendering
                             // (per iced docs: store Vec<markdown::Item> in app state)
                             for msg in &latest.messages {
-                                if msg.role == "assistant" && !parsed_messages.contains_key(&msg.id) {
+                                if msg.role == "assistant" && !parsed_messages.contains_key(&msg.id)
+                                {
                                     let items: Vec<iced::widget::markdown::Item> =
                                         iced::widget::markdown::parse(&msg.content).collect();
                                     parsed_messages.insert(msg.id.clone(), items);
@@ -558,16 +578,14 @@ impl App {
                                         *prev_streaming_len = new_len;
                                     } else if new_len <= *prev_streaming_len {
                                         // Unexpected reset or restart: full re-parse
-                                        *streaming_content =
-                                            iced::widget::markdown::Content::new();
+                                        *streaming_content = iced::widget::markdown::Content::new();
                                         streaming_content.push_str(new_text);
                                         *prev_streaming_len = new_len;
                                     }
                                 }
                                 (None, Some(_)) => {
                                     // StreamDone: reset streaming content
-                                    *streaming_content =
-                                        iced::widget::markdown::Content::new();
+                                    *streaming_content = iced::widget::markdown::Content::new();
                                     *prev_streaming_len = 0;
                                 }
                                 (None, None) => {}
@@ -627,10 +645,8 @@ impl App {
                         if let Some((id, title)) = rename_state.take() {
                             let trimmed = title.trim().to_string();
                             if !trimmed.is_empty() {
-                                manager.dispatch(AppAction::RenameConversation {
-                                    id,
-                                    title: trimmed,
-                                });
+                                manager
+                                    .dispatch(AppAction::RenameConversation { id, title: trimmed });
                             }
                         }
                     }
@@ -698,7 +714,8 @@ impl App {
                                     }
                                     Err(_) => {
                                         manager_clone.dispatch(AppAction::ShowToast {
-                                            message: "This file type cannot be read as text.".to_string(),
+                                            message: "This file type cannot be read as text."
+                                                .to_string(),
                                         });
                                     }
                                 }
@@ -774,7 +791,12 @@ impl App {
                         *settings_default_model = val.clone();
                         manager.dispatch(AppAction::SetDefaultModel { model_id: val });
                     }
-                    Message::SettingsSubmitAddBackend { name, url, key, tee } => {
+                    Message::SettingsSubmitAddBackend {
+                        name,
+                        url,
+                        key,
+                        tee,
+                    } => {
                         manager.dispatch(AppAction::AddBackend {
                             name,
                             base_url: url,
@@ -793,7 +815,10 @@ impl App {
                     }
 
                     Message::SettingsEnablePreset { preset_id } => {
-                        let api_key = settings_preset_keys.get(&preset_id).cloned().unwrap_or_default();
+                        let api_key = settings_preset_keys
+                            .get(&preset_id)
+                            .cloned()
+                            .unwrap_or_default();
                         if !api_key.trim().is_empty() {
                             manager.dispatch(AppAction::AddBackendFromPreset {
                                 preset_id: preset_id.clone(),
@@ -864,7 +889,9 @@ impl App {
                                 api_key: api_key.clone(),
                             });
                             // Then trigger the health-check / attestation flow.
-                            manager.dispatch(AppAction::ValidateApiKey { backend_id: preset_id });
+                            manager.dispatch(AppAction::ValidateApiKey {
+                                backend_id: preset_id,
+                            });
                         }
                     }
                     Message::OnboardingNext => {
@@ -878,7 +905,9 @@ impl App {
                     }
                     Message::OnboardingRetryAttestation => {
                         let preset_id = onboarding_selected_backend.clone();
-                        manager.dispatch(AppAction::ValidateApiKey { backend_id: preset_id });
+                        manager.dispatch(AppAction::ValidateApiKey {
+                            backend_id: preset_id,
+                        });
                     }
                     Message::OnboardingToggleLearnMore => {
                         *onboarding_show_learn_more = !*onboarding_show_learn_more;
@@ -921,7 +950,8 @@ impl App {
                                     }
                                     Err(_) => {
                                         manager_clone.dispatch(AppAction::ShowToast {
-                                            message: "Failed to read the selected file.".to_string(),
+                                            message: "Failed to read the selected file."
+                                                .to_string(),
                                         });
                                     }
                                 }
@@ -1042,13 +1072,17 @@ impl App {
                                 // no immediate change needed (current is_dark stays until OS notifies)
                             }
                         }
-                        save_preferences(&Preferences { theme_override: new_override });
+                        save_preferences(&Preferences {
+                            theme_override: new_override,
+                        });
                     }
 
                     // Phase 27: Toggle tools enabled for the current conversation (CHAT-TOOL-07)
                     Message::ToggleConvToolsEnabled => {
                         if let Some(conv_id) = state.current_conversation_id.clone() {
-                            let current = state.conversations.iter()
+                            let current = state
+                                .conversations
+                                .iter()
                                 .find(|c| c.id == conv_id)
                                 .map(|c| c.tools_enabled)
                                 .unwrap_or(false);
@@ -1119,11 +1153,7 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         match self {
             App::BootError { error } => center(
-                column![
-                    text("Mango").size(24),
-                    text(format!("Error: {error}")),
-                ]
-                .spacing(12),
+                column![text("Mango").size(24), text(format!("Error: {error}")),].spacing(12),
             )
             .into(),
 
@@ -1168,11 +1198,7 @@ impl App {
                 // Phase 28: Lock screen -- shown on cold launch when auth is required.
                 // Must be checked before any other screen so no content leaks (T-28-23).
                 if matches!(&state.router.current_screen, Screen::Locked) {
-                    return lock_screen::view(
-                        lock_pin_input,
-                        state.toast.as_deref(),
-                        *is_dark,
-                    );
+                    return lock_screen::view(lock_pin_input, state.toast.as_deref(), *is_dark);
                 }
 
                 // Phase 28: PIN setup screen -- shown on first launch (no auth params yet, D-14).

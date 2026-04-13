@@ -1,7 +1,9 @@
 //! Unit tests for attestation types and errors.
 //! Covers ATST-05 (status enum).
 
-use crate::attestation::{AttestationError, AttestationEvent, AttestationRecord, AttestationStatus};
+use crate::attestation::{
+    AttestationError, AttestationEvent, AttestationRecord, AttestationStatus,
+};
 
 #[test]
 fn test_attestation_status_variants() {

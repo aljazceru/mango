@@ -5,7 +5,11 @@ use crate::persistence::Database;
 
 fn temp_db_path(tag: &str) -> String {
     std::env::temp_dir()
-        .join(format!("mango_enc_test_{}_{}.db", tag, uuid::Uuid::new_v4()))
+        .join(format!(
+            "mango_enc_test_{}_{}.db",
+            tag,
+            uuid::Uuid::new_v4()
+        ))
         .to_str()
         .unwrap()
         .to_string()
@@ -79,7 +83,10 @@ fn test_migrate_to_encrypted_converts_plaintext_db() {
             .ok(); // OK if settings table doesn't exist yet, migration may handle it
     }
 
-    assert!(!Database::is_encrypted(&path), "DB should start as plaintext");
+    assert!(
+        !Database::is_encrypted(&path),
+        "DB should start as plaintext"
+    );
 
     // Migrate to encrypted
     Database::migrate_to_encrypted(&path, TEST_KEY_HEX)

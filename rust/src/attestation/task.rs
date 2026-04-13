@@ -65,12 +65,8 @@ async fn run_attestation(
             if backend.transport_kind() == crate::llm::ProviderTransportKind::PpqPrivateE2ee {
                 crate::llm::ppq_private::verify_backend_attestation(&backend, &policy.snp).await?
             } else {
-                super::endpoint::verify_attestation_endpoint(
-                    &backend,
-                    certificate_cache,
-                    &policy,
-                )
-                .await?
+                super::endpoint::verify_attestation_endpoint(&backend, certificate_cache, &policy)
+                    .await?
             }
         }
     };
