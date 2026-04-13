@@ -1,18 +1,18 @@
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
 
-use mango_core::{AppAction, AppState, AgentSessionSummary, AgentStepSummary};
+use mango_core::{AgentSessionSummary, AgentStepSummary, AppAction, AppState};
 
 use crate::Message;
 
 fn status_color(status: &str, vc: &crate::theme::ViewColors) -> Color {
     match status {
-        "running"   => vc.status_running,
-        "paused"    => vc.status_paused,
+        "running" => vc.status_running,
+        "paused" => vc.status_paused,
         "completed" => vc.status_completed,
-        "failed"    => vc.status_failed,
+        "failed" => vc.status_failed,
         "cancelled" => vc.status_cancelled,
-        _           => vc.muted,
+        _ => vc.muted,
     }
 }
 
@@ -63,12 +63,9 @@ pub fn agent_list_view<'a>(
 
     let secondary_surface = vc.secondary_surface;
     let header = container(
-        row![
-            back_btn,
-            text("Agent Sessions").size(22),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
+        row![back_btn, text("Agent Sessions").size(22),]
+            .spacing(12)
+            .align_y(Alignment::Center),
     )
     .padding(Padding::from([10u16, 16]))
     .width(Length::Fill)
@@ -98,12 +95,9 @@ pub fn agent_list_view<'a>(
 
     let border_color = vc.border;
     let launch_row = container(
-        row![
-            container(task_input).width(Length::Fill),
-            launch_btn,
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+        row![container(task_input).width(Length::Fill), launch_btn,]
+            .spacing(8)
+            .align_y(Alignment::Center),
     )
     .padding(Padding::from([10u16, 16]))
     .width(Length::Fill)
@@ -146,7 +140,10 @@ pub fn agent_list_view<'a>(
             .spacing(8)
             .padding(Padding::from([8u16, 16]));
 
-        scrollable(list).height(Length::Fill).width(Length::Fill).into()
+        scrollable(list)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into()
     };
 
     let page = column![header, launch_row, content]
@@ -165,21 +162,27 @@ pub fn agent_list_view<'a>(
         .into()
 }
 
-fn build_session_row<'a>(session: &'a AgentSessionSummary, vc: crate::theme::ViewColors) -> Element<'a, Message> {
+fn build_session_row<'a>(
+    session: &'a AgentSessionSummary,
+    vc: crate::theme::ViewColors,
+) -> Element<'a, Message> {
     let status_col = status_color(&session.status, &vc);
-    let status_badge = container(
-        text(&session.status).size(11).color(status_col),
-    )
-    .padding(Padding::from([2u16, 6]))
-    .style(move |_theme| container::Style {
-        background: Some(Background::Color(Color { r: status_col.r, g: status_col.g, b: status_col.b, a: 0.15 })),
-        border: Border {
-            color: status_col,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..Default::default()
-    });
+    let status_badge = container(text(&session.status).size(11).color(status_col))
+        .padding(Padding::from([2u16, 6]))
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(Color {
+                r: status_col.r,
+                g: status_col.g,
+                b: status_col.b,
+                a: 0.15,
+            })),
+            border: Border {
+                color: status_col,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        });
 
     let elapsed_text = format_elapsed(session.elapsed_secs);
     let steps_text = format!("{} steps", session.step_count);
@@ -194,11 +197,7 @@ fn build_session_row<'a>(session: &'a AgentSessionSummary, vc: crate::theme::Vie
     .spacing(8)
     .align_y(Alignment::Center);
 
-    let info_col = column![
-        text(&session.title).size(15),
-        meta_row,
-    ]
-    .spacing(4);
+    let info_col = column![text(&session.title).size(15), meta_row,].spacing(4);
 
     let session_id = session.id.clone();
     let secondary_surface = vc.secondary_surface;
@@ -255,29 +254,28 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
     };
 
     let status_col = status_color(status_str, &vc);
-    let status_badge = container(
-        text(status_str).size(12).color(status_col),
-    )
-    .padding(Padding::from([2u16, 8]))
-    .style(move |_theme| container::Style {
-        background: Some(Background::Color(Color { r: status_col.r, g: status_col.g, b: status_col.b, a: 0.15 })),
-        border: Border {
-            color: status_col,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..Default::default()
-    });
+    let status_badge = container(text(status_str).size(12).color(status_col))
+        .padding(Padding::from([2u16, 8]))
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(Color {
+                r: status_col.r,
+                g: status_col.g,
+                b: status_col.b,
+                a: 0.15,
+            })),
+            border: Border {
+                color: status_col,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        });
 
     let secondary_surface = vc.secondary_surface;
     let header = container(
-        row![
-            back_btn,
-            text(title_str).size(18),
-            status_badge,
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
+        row![back_btn, text(title_str).size(18), status_badge,]
+            .spacing(12)
+            .align_y(Alignment::Center),
     )
     .padding(Padding::from([10u16, 16]))
     .width(Length::Fill)
@@ -295,7 +293,12 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
         if session.status == "running" {
             let sid = session_id.clone();
             let status_paused = vc.status_paused;
-            let warning_bg = Color { r: vc.warning.r, g: vc.warning.g, b: vc.warning.b, a: 0.15 };
+            let warning_bg = Color {
+                r: vc.warning.r,
+                g: vc.warning.g,
+                b: vc.warning.b,
+                a: 0.15,
+            };
             action_btns.push(
                 button(text("Pause").size(13))
                     .on_press(Message::DispatchAction(AppAction::PauseAgentSession {
@@ -318,7 +321,12 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
         if session.status == "paused" {
             let sid = session_id.clone();
             let status_running = vc.status_running;
-            let success_bg = Color { r: vc.success.r, g: vc.success.g, b: vc.success.b, a: 0.15 };
+            let success_bg = Color {
+                r: vc.success.r,
+                g: vc.success.g,
+                b: vc.success.b,
+                a: 0.15,
+            };
             action_btns.push(
                 button(text("Resume").size(13))
                     .on_press(Message::DispatchAction(AppAction::ResumeAgentSession {
@@ -340,7 +348,12 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
 
         if session.status == "running" || session.status == "paused" {
             let destructive = vc.destructive;
-            let destructive_bg = Color { r: destructive.r, g: destructive.g, b: destructive.b, a: 0.15 };
+            let destructive_bg = Color {
+                r: destructive.r,
+                g: destructive.g,
+                b: destructive.b,
+                a: 0.15,
+            };
             action_btns.push(
                 button(text("Cancel").size(13))
                     .on_press(Message::DispatchAction(AppAction::CancelAgentSession {
@@ -367,16 +380,14 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
             .height(Length::Fixed(0.0))
             .into()
     } else {
-        container(
-            row(action_btns).spacing(8),
-        )
-        .padding(Padding::from([8u16, 16]))
-        .width(Length::Fill)
-        .style(move |_theme| container::Style {
-            background: Some(Background::Color(card_color)),
-            ..Default::default()
-        })
-        .into()
+        container(row(action_btns).spacing(8))
+            .padding(Padding::from([8u16, 16]))
+            .width(Length::Fill)
+            .style(move |_theme| container::Style {
+                background: Some(Background::Color(card_color)),
+                ..Default::default()
+            })
+            .into()
     };
 
     // ── Step list ─────────────────────────────────────────────────────────────
@@ -407,7 +418,10 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
             .spacing(6)
             .padding(Padding::from([8u16, 16]));
 
-        scrollable(list).height(Length::Fill).width(Length::Fill).into()
+        scrollable(list)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into()
     };
 
     let page = column![header, action_section, step_content]
@@ -426,7 +440,10 @@ pub fn agent_detail_view(state: &AppState, is_dark: bool) -> Element<'_, Message
         .into()
 }
 
-fn build_step_row<'a>(step: &'a AgentStepSummary, vc: crate::theme::ViewColors) -> Element<'a, Message> {
+fn build_step_row<'a>(
+    step: &'a AgentStepSummary,
+    vc: crate::theme::ViewColors,
+) -> Element<'a, Message> {
     let muted = vc.muted;
     let secondary_surface = vc.secondary_surface;
 
@@ -437,20 +454,18 @@ fn build_step_row<'a>(step: &'a AgentStepSummary, vc: crate::theme::ViewColors) 
             text("Final Answer").size(12).color(vc.accent).into(),
             text(answer_text).size(14).into(),
         ];
-        return container(
-            column(col_children).spacing(6),
-        )
-        .padding(Padding::from([8u16, 12]))
-        .width(Length::Fill)
-        .style(move |_theme| container::Style {
-            background: Some(Background::Color(secondary_surface)),
-            border: Border {
-                radius: 5.0.into(),
+        return container(column(col_children).spacing(6))
+            .padding(Padding::from([8u16, 12]))
+            .width(Length::Fill)
+            .style(move |_theme| container::Style {
+                background: Some(Background::Color(secondary_surface)),
+                border: Border {
+                    radius: 5.0.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into();
+            })
+            .into();
     }
 
     let step_label = format!("#{}", step.step_number);
@@ -482,12 +497,12 @@ fn build_step_row<'a>(step: &'a AgentStepSummary, vc: crate::theme::ViewColors) 
         });
 
     let text_dim = vc.text_dim;
-    let mut header_row = row![step_num, type_badge].spacing(6).align_y(Alignment::Center);
+    let mut header_row = row![step_num, type_badge]
+        .spacing(6)
+        .align_y(Alignment::Center);
 
     if let Some(tool_name) = &step.tool_name {
-        header_row = header_row.push(
-            text(tool_name).size(13).color(text_dim),
-        );
+        header_row = header_row.push(text(tool_name).size(13).color(text_dim));
     }
 
     let destructive = vc.destructive;
@@ -497,11 +512,8 @@ fn build_step_row<'a>(step: &'a AgentStepSummary, vc: crate::theme::ViewColors) 
         text("ok").size(11).color(muted)
     };
 
-    let header_with_status = row![
-        container(header_row).width(Length::Fill),
-        status_indicator,
-    ]
-    .align_y(Alignment::Center);
+    let header_with_status = row![container(header_row).width(Length::Fill), status_indicator,]
+        .align_y(Alignment::Center);
 
     let mut col_children: Vec<Element<'_, Message>> = vec![header_with_status.into()];
 
@@ -513,9 +525,7 @@ fn build_step_row<'a>(step: &'a AgentStepSummary, vc: crate::theme::ViewColors) 
             } else {
                 tool_input.clone()
             };
-            col_children.push(
-                text(display).size(12).color(muted).into(),
-            );
+            col_children.push(text(display).size(12).color(muted).into());
         }
     }
 
@@ -527,24 +537,20 @@ fn build_step_row<'a>(step: &'a AgentStepSummary, vc: crate::theme::ViewColors) 
             } else {
                 snippet.clone()
             };
-            col_children.push(
-                text(display).size(12).color(muted).into(),
-            );
+            col_children.push(text(display).size(12).color(muted).into());
         }
     }
 
-    container(
-        column(col_children).spacing(4),
-    )
-    .padding(Padding::from([8u16, 12]))
-    .width(Length::Fill)
-    .style(move |_theme| container::Style {
-        background: Some(Background::Color(secondary_surface)),
-        border: Border {
-            radius: 5.0.into(),
+    container(column(col_children).spacing(4))
+        .padding(Padding::from([8u16, 12]))
+        .width(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(secondary_surface)),
+            border: Border {
+                radius: 5.0.into(),
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    })
-    .into()
+        })
+        .into()
 }

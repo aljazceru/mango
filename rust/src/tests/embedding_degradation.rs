@@ -1,5 +1,5 @@
-use std::time::Duration;
 use crate::{AppAction, EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider};
+use std::time::Duration;
 
 #[test]
 fn test_degraded_status_propagates_to_app_state() {

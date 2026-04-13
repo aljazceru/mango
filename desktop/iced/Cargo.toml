@@ -3,6 +3,9 @@ name = "mango-desktop"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "Desktop UI for Mango (iced)"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 mango_core = { path = "../../rust" }

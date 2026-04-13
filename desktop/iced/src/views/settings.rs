@@ -1,4 +1,6 @@
-use iced::widget::{button, column, container, pick_list, row, rule, scrollable, text, text_input, toggler};
+use iced::widget::{
+    button, column, container, pick_list, row, rule, scrollable, text, text_input, toggler,
+};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
 
 use mango_core::{AppAction, AppState, Screen};
@@ -8,11 +10,14 @@ use crate::Message;
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
 pub(crate) fn section_header<'a>(label: &'a str, muted: Color) -> Element<'a, Message> {
-    container(
-        text(label).size(11).color(muted),
-    )
-    .padding(Padding { top: 20.0, bottom: 6.0, left: 16.0, right: 16.0 })
-    .into()
+    container(text(label).size(11).color(muted))
+        .padding(Padding {
+            top: 20.0,
+            bottom: 6.0,
+            left: 16.0,
+            right: 16.0,
+        })
+        .into()
 }
 
 pub(crate) fn divider() -> Element<'static, Message> {
@@ -21,7 +26,12 @@ pub(crate) fn divider() -> Element<'static, Message> {
         .into()
 }
 
-pub(crate) fn action_btn<'a>(label: &'a str, msg: Message, enabled: bool, vc: crate::theme::ViewColors) -> Element<'a, Message> {
+pub(crate) fn action_btn<'a>(
+    label: &'a str,
+    msg: Message,
+    enabled: bool,
+    vc: crate::theme::ViewColors,
+) -> Element<'a, Message> {
     let (bg_color, muted, border) = (vc.bg, vc.muted, vc.border);
     let (accent_color, accent_text) = (vc.accent, bg_color);
     if enabled {
@@ -30,7 +40,10 @@ pub(crate) fn action_btn<'a>(label: &'a str, msg: Message, enabled: bool, vc: cr
             .padding(Padding::from([6u16, 16]))
             .style(move |_, _| button::Style {
                 background: Some(Background::Color(accent_color)),
-                border: Border { radius: 6.0.into(), ..Default::default() },
+                border: Border {
+                    radius: 6.0.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             })
             .into()
@@ -39,7 +52,11 @@ pub(crate) fn action_btn<'a>(label: &'a str, msg: Message, enabled: bool, vc: cr
             .padding(Padding::from([6u16, 16]))
             .style(move |_, _| button::Style {
                 background: Some(Background::Color(vc.ghost_overlay)),
-                border: Border { radius: 6.0.into(), color: border, width: 1.0 },
+                border: Border {
+                    radius: 6.0.into(),
+                    color: border,
+                    width: 1.0,
+                },
                 ..Default::default()
             })
             .into()
@@ -84,7 +101,11 @@ pub fn view<'a>(
                 .padding(Padding::from([4u16, 10]))
                 .style(move |_, _| button::Style {
                     background: Some(Background::Color(vc.ghost_overlay)),
-                    border: Border { radius: 5.0.into(), color: vc.border, width: 1.0 },
+                    border: Border {
+                        radius: 5.0.into(),
+                        color: vc.border,
+                        width: 1.0
+                    },
                     ..Default::default()
                 }),
             text("Settings").size(17).color(vc.text),
@@ -116,7 +137,9 @@ pub fn view<'a>(
             row![
                 text("Providers").size(14).color(vc.text),
                 iced::widget::Space::new().width(Length::Fill),
-                text(format!("{} enabled", enabled_count)).size(12).color(vc.muted),
+                text(format!("{} enabled", enabled_count))
+                    .size(12)
+                    .color(vc.muted),
                 text(">").size(12).color(vc.muted),
             ]
             .align_y(Alignment::Center)
@@ -129,7 +152,11 @@ pub fn view<'a>(
         .width(Length::Fill)
         .style(move |_, _| button::Style {
             background: Some(Background::Color(vc.card)),
-            border: Border { radius: 8.0.into(), color: vc.border, width: 1.0 },
+            border: Border {
+                radius: 8.0.into(),
+                color: vc.border,
+                width: 1.0,
+            },
             ..Default::default()
         }),
     )
@@ -137,7 +164,9 @@ pub fn view<'a>(
     .padding(Padding::from([0u16, 16]));
 
     // ── Defaults summary row ──────────────────────────────────────────────────
-    let active_model = state.backends.iter()
+    let active_model = state
+        .backends
+        .iter()
         .find(|b| b.is_active)
         .and_then(|b| b.models.first())
         .map(|m| m.as_str())
@@ -160,7 +189,11 @@ pub fn view<'a>(
         .width(Length::Fill)
         .style(move |_, _| button::Style {
             background: Some(Background::Color(vc.card)),
-            border: Border { radius: 8.0.into(), color: vc.border, width: 1.0 },
+            border: Border {
+                radius: 8.0.into(),
+                color: vc.border,
+                width: 1.0,
+            },
             ..Default::default()
         }),
     )
@@ -188,25 +221,34 @@ pub fn view<'a>(
     .width(Length::Fill);
 
     // ── Advanced Settings (toggle) ────────────────────────────────────────────
-    let adv_toggle_lbl = if show_advanced { "Advanced Settings  ▲" } else { "Advanced Settings  ▼" };
-    let adv_toggle = button(
-        text(adv_toggle_lbl).size(13).color(vc.accent),
-    )
-    .on_press(Message::SettingsToggleAdvanced)
-    .padding(Padding::from([6u16, 0]))
-    .style(|_, _| button::Style {
-        background: None,
-        ..Default::default()
-    });
+    let adv_toggle_lbl = if show_advanced {
+        "Advanced Settings  ▲"
+    } else {
+        "Advanced Settings  ▼"
+    };
+    let adv_toggle = button(text(adv_toggle_lbl).size(13).color(vc.accent))
+        .on_press(Message::SettingsToggleAdvanced)
+        .padding(Padding::from([6u16, 0]))
+        .style(|_, _| button::Style {
+            background: None,
+            ..Default::default()
+        });
 
     let adv_toggle_row = container(
         column![
             adv_toggle,
             text("Custom providers, re-attestation interval, and other developer settings.")
-                .size(11).color(vc.muted),
-        ].spacing(3),
+                .size(11)
+                .color(vc.muted),
+        ]
+        .spacing(3),
     )
-    .padding(Padding { top: 8.0, bottom: 4.0, left: 16.0, right: 16.0 });
+    .padding(Padding {
+        top: 8.0,
+        bottom: 4.0,
+        left: 16.0,
+        right: 16.0,
+    });
 
     let advanced_body: Element<'_, Message> = if show_advanced {
         // ── Re-attestation interval ──────────────────────────────────────────
@@ -225,8 +267,17 @@ pub fn view<'a>(
             .on_press(Message::SettingsApplyAttestationInterval)
             .padding(Padding::from([7u16, 14]))
             .style(move |_, _| button::Style {
-                background: Some(Background::Color(Color { r: vc.accent.r, g: vc.accent.g, b: vc.accent.b, a: 0.12 })),
-                border: Border { radius: 6.0.into(), color: vc.accent_dim, width: 1.0 },
+                background: Some(Background::Color(Color {
+                    r: vc.accent.r,
+                    g: vc.accent.g,
+                    b: vc.accent.b,
+                    a: 0.12,
+                })),
+                border: Border {
+                    radius: 6.0.into(),
+                    color: vc.accent_dim,
+                    width: 1.0,
+                },
                 ..Default::default()
             });
 
@@ -246,11 +297,9 @@ pub fn view<'a>(
             ..Default::default()
         });
 
-        container(
-            column![interval_block].spacing(6),
-        )
-        .padding(Padding::from([0u16, 16]))
-        .into()
+        container(column![interval_block].spacing(6))
+            .padding(Padding::from([0u16, 16]))
+            .into()
     } else {
         iced::widget::Space::new().height(0).into()
     };
@@ -284,7 +333,10 @@ pub fn view<'a>(
         .width(Length::Fill);
 
     let memory_count_el: Element<'_, Message> = if state.memory_count > 0 {
-        text(format!("{}", state.memory_count)).size(12).color(vc.muted).into()
+        text(format!("{}", state.memory_count))
+            .size(12)
+            .color(vc.muted)
+            .into()
     } else {
         iced::widget::Space::new().width(0).into()
     };
@@ -328,7 +380,15 @@ pub fn view<'a>(
     let configured_label: Element<'_, Message> = if state.brave_api_key_validating {
         text("Verifying…").size(11).color(vc.muted).into()
     } else if state.brave_api_key_set {
-        text("Configured ✓").size(11).color(Color { r: 0.3, g: 0.75, b: 0.4, a: 1.0 }).into()
+        text("Configured ✓")
+            .size(11)
+            .color(Color {
+                r: 0.3,
+                g: 0.75,
+                b: 0.4,
+                a: 1.0,
+            })
+            .into()
     } else {
         iced::widget::Space::new().width(0).into()
     };
@@ -346,7 +406,11 @@ pub fn view<'a>(
             .padding(Padding::from([7u16, 10]))
     };
 
-    let save_btn_label = if state.brave_api_key_validating { "Verifying…" } else { "Save API Key" };
+    let save_btn_label = if state.brave_api_key_validating {
+        "Verifying…"
+    } else {
+        "Save API Key"
+    };
     let brave_save_btn = action_btn(
         save_btn_label,
         Message::SettingsSaveBraveApiKey,
@@ -356,9 +420,19 @@ pub fn view<'a>(
 
     let feedback_el: Element<'_, Message> = if let Some(msg) = brave_api_key_message {
         let color = if msg.contains("saved") {
-            Color { r: 0.3, g: 0.75, b: 0.4, a: 1.0 }
+            Color {
+                r: 0.3,
+                g: 0.75,
+                b: 0.4,
+                a: 1.0,
+            }
         } else {
-            Color { r: 0.85, g: 0.25, b: 0.25, a: 1.0 }
+            Color {
+                r: 0.85,
+                g: 0.25,
+                b: 0.25,
+                a: 1.0,
+            }
         };
         text(msg).size(11).color(color).into()
     } else {
@@ -403,7 +477,10 @@ pub fn view<'a>(
     let current_label = lock_timeout_label(state.lock_timeout_seconds);
 
     let lock_timeout_picker = pick_list(
-        LOCK_TIMEOUT_OPTIONS.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
+        LOCK_TIMEOUT_OPTIONS
+            .iter()
+            .map(|(label, _)| *label)
+            .collect::<Vec<_>>(),
         Some(current_label),
         |selected: &str| {
             let seconds = LOCK_TIMEOUT_OPTIONS
@@ -420,7 +497,12 @@ pub fn view<'a>(
     let never_warning: Element<'_, Message> = if state.lock_timeout_seconds == -1 {
         text("Not recommended. App will only lock on restart.")
             .size(11)
-            .color(Color { r: 0.9, g: 0.4, b: 0.1, a: 1.0 })
+            .color(Color {
+                r: 0.9,
+                g: 0.4,
+                b: 0.1,
+                a: 1.0,
+            })
             .into()
     } else {
         iced::widget::Space::new().height(0).into()
@@ -445,7 +527,11 @@ pub fn view<'a>(
     .width(Length::Fill)
     .style(move |_| container::Style {
         background: Some(Background::Color(vc.card)),
-        border: Border { radius: 8.0.into(), color: vc.border, width: 1.0 },
+        border: Border {
+            radius: 8.0.into(),
+            color: vc.border,
+            width: 1.0,
+        },
         ..Default::default()
     });
 
@@ -492,5 +578,3 @@ pub fn view<'a>(
         })
         .into()
 }
-
-

@@ -4,8 +4,9 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 use flume::{Receiver, Sender};
-use zeroize::Zeroizing;
+use rand::seq::SliceRandom;
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
 
 pub mod agent;
 mod attestation;
@@ -269,10 +270,15 @@ pub struct AppState {
     /// Whether biometric authentication is available and enrolled on this device (D-20, D-21).
     /// Set at actor startup by querying the BiometricProvider.
     pub biometric_available: bool,
+    /// Whether biometric login is enabled for this install.
+    /// Derived from the presence of the cached DEK in platform keychain storage.
+    pub biometric_login_enabled: bool,
     /// True after a successful biometric prompt (CR-01 Phase 28 fix): signals the lock screen
     /// UI to reveal the PIN input field so the user can complete the final unlock step.
     /// Reset to false on lock, logout, or failed biometric attempt.
     pub biometric_authenticated: bool,
+    /// Whether a duress PIN is currently configured in the bootstrap DB.
+    pub duress_pin_configured: bool,
     /// Lock timeout in seconds. Default: 300 (5 minutes). 0 = never lock (D-13).
     pub lock_timeout_seconds: i64,
     /// True once the user has set up a PIN (auth_params written to bootstrap DB) (D-14).
@@ -317,7 +323,9 @@ impl Default for AppState {
             memories_enabled: true,
             brave_api_key_validating: false,
             biometric_available: false,
+            biometric_login_enabled: false,
             biometric_authenticated: false,
+            duress_pin_configured: false,
             lock_timeout_seconds: 300,
             auth_initialized: false,
             encryption_enabled: false,
@@ -392,6 +400,14 @@ pub enum Screen {
     SettingsProviders,
     /// Defaults sub-screen (model picker + default instructions) -- pushed from Settings (Phase 26).
     SettingsDefaults,
+    /// Memory settings sub-screen (Phase 30).
+    SettingsMemory,
+    /// Appearance settings sub-screen.
+    SettingsAppearance,
+    /// Security settings sub-screen (Phase 30).
+    SettingsSecurity,
+    /// Tools settings sub-screen (Phase 30).
+    SettingsTools,
     /// Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
     Locked,
     /// PIN/password setup screen -- shown on first launch after onboarding (Phase 28, D-14).
@@ -439,6 +455,10 @@ pub enum AppAction {
     RenameConversation { id: String, title: String },
     /// Delete a conversation and all its messages (per D-13)
     DeleteConversation { id: String },
+    /// Delete all conversations and messages.
+    DeleteAllConversations,
+    /// Delete all locally stored app data and return to clean-install state.
+    DeleteAllData,
     /// Retry: delete last assistant message and re-send the last user message (per D-07)
     RetryLastMessage,
     /// Edit a prior message: truncate history after it and re-submit (per D-08)
@@ -572,7 +592,10 @@ pub enum AppAction {
     SetMemoriesEnabled { enabled: bool },
     /// Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
     /// Persisted in conversations.tools_enabled column via update_conversation_tools_enabled.
-    SetConversationToolsEnabled { conversation_id: String, enabled: bool },
+    SetConversationToolsEnabled {
+        conversation_id: String,
+        enabled: bool,
+    },
     // Phase 28 additions: authentication and lock actions
     /// First-time PIN setup: derive KEK, wrap DEK, write bootstrap DB, migrate DB to SQLCipher (D-14).
     /// `duress_pin` is optional; if Some, its hash is stored in the bootstrap DB (D-18).
@@ -582,6 +605,8 @@ pub enum AppAction {
         duress_pin: Option<String>,
         enable_biometric: bool,
     },
+    /// Update or clear the duress PIN while the app is unlocked.
+    SetDuressPin { pin: Option<String> },
     /// Unlock with an already-unwrapped DEK (hex string). Used internally after biometric unlock
     /// when the keychain provides the raw DEK (D-06).
     UnlockWithDek { dek_hex: String },
@@ -592,6 +617,8 @@ pub enum AppAction {
     LockApp,
     /// Attempt biometric authentication. On success, dispatches UnlockWithPin internally (D-11).
     AttemptBiometricUnlock,
+    /// Enable or disable biometric login while the app is unlocked.
+    SetBiometricLoginEnabled { enabled: bool },
     /// Set the lock timeout in seconds. 0 = never lock. Persisted to settings table (D-13).
     SetLockTimeout { seconds: i64 },
 }
@@ -822,6 +849,8 @@ struct ActorState {
     // Phase 28 additions:
     /// Bootstrap DB (always-open, unencrypted) holding auth params (D-08).
     bootstrap: crypto::bootstrap_db::BootstrapDb,
+    /// On-disk path to the bootstrap auth DB.
+    bootstrap_path: String,
     /// Platform biometric provider injected via FfiApp::new (D-11, D-21).
     /// Stored as Arc so it can be cloned into spawn_blocking tasks without blocking
     /// the actor loop during biometric authentication (CR-03).
@@ -848,6 +877,129 @@ fn parse_tee_type(s: &str) -> llm::TeeType {
         "AmdSevSnp" => llm::TeeType::AmdSevSnp,
         _ => llm::TeeType::Unknown,
     }
+}
+
+fn remove_file_if_exists(path: &str) {
+    if path.is_empty() || path == ":memory:" {
+        return;
+    }
+    if let Err(e) = std::fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            log::warn!("[reset] failed to remove file {}: {}", path, e);
+        }
+    }
+}
+
+fn remove_sqlite_files(base_path: &str) {
+    remove_file_if_exists(base_path);
+    remove_file_if_exists(&format!("{base_path}-wal"));
+    remove_file_if_exists(&format!("{base_path}-shm"));
+}
+
+fn collect_keychain_secret_ids(actor_state: &ActorState) -> Vec<String> {
+    let mut ids: Vec<String> = actor_state.backends.iter().map(|b| b.id.clone()).collect();
+    ids.extend(actor_state.app_state.backends.iter().map(|b| b.id.clone()));
+    if let Some(db) = actor_state.db.as_ref() {
+        ids.extend(
+            persistence::queries::list_backends(db.conn())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|row| row.id),
+        );
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn wipe_local_install(
+    actor_state: &mut ActorState,
+    core_tx: flume::Sender<CoreMsg>,
+    seed_duress_decoys: bool,
+) -> Result<(), String> {
+    if let Some(token) = actor_state.active_stream_token.take() {
+        token.cancel();
+    }
+    if let Some(token) = actor_state.attestation_timer_token.take() {
+        token.cancel();
+    }
+
+    for backend_id in collect_keychain_secret_ids(actor_state) {
+        actor_state.keychain.delete("mango".to_string(), backend_id);
+    }
+    actor_state
+        .keychain
+        .delete("mango".to_string(), "dek".to_string());
+
+    actor_state.db = None;
+    actor_state.dek = None;
+    actor_state.pre_lock_screen = None;
+    actor_state.pending_attachment = None;
+    actor_state.active_agent_sessions.clear();
+    actor_state.current_streaming_backend_id = None;
+    actor_state.failover_exclude.clear();
+    actor_state.current_conv_tools_enabled = false;
+    actor_state.attested_tls_public_keys.clear();
+
+    let preserved_rev = actor_state.app_state.rev;
+    let biometric_available = actor_state.biometric_provider.biometric_status() == "available";
+
+    if actor_state.db_path == ":memory:" {
+        let bootstrap = crypto::bootstrap_db::BootstrapDb::open(":memory:")
+            .map_err(|e| format!("failed to reset auth storage: {e}"))?;
+        actor_state.bootstrap = bootstrap;
+        actor_state.db = Some(
+            persistence::Database::open(":memory:")
+                .map_err(|e| format!("failed to reset database: {e}"))?,
+        );
+    } else {
+        let data_dir_path = std::path::Path::new(&actor_state.data_dir);
+        let wipe_allowed = !actor_state.data_dir.is_empty()
+            && data_dir_path.components().any(|c| c.as_os_str() == "mango");
+        if !wipe_allowed {
+            return Err(format!(
+                "refusing to wipe unexpected data directory: {}",
+                actor_state.data_dir
+            ));
+        }
+
+        let _ = actor_state.bootstrap.delete_all();
+        let _ = std::fs::remove_dir_all(&actor_state.data_dir);
+        std::fs::create_dir_all(&actor_state.data_dir)
+            .map_err(|e| format!("failed to recreate app data directory: {e}"))?;
+        remove_sqlite_files(&actor_state.db_path);
+        remove_sqlite_files(&actor_state.bootstrap_path);
+
+        actor_state.bootstrap =
+            crypto::bootstrap_db::BootstrapDb::open(&actor_state.bootstrap_path)
+                .map_err(|e| format!("failed to reopen auth storage: {e}"))?;
+        actor_state.db = Some(
+            persistence::Database::open(&actor_state.db_path)
+                .map_err(|e| format!("failed to recreate database: {e}"))?,
+        );
+    }
+
+    actor_state.vector_index =
+        rag::VectorIndex::new(&actor_state.data_dir, None).unwrap_or_else(|e| {
+            log::warn!("[reset] vector index re-init failed, using empty fallback: {e}");
+            rag::VectorIndex::new("", None).expect("empty fallback VectorIndex")
+        });
+
+    if seed_duress_decoys {
+        if let Some(db) = actor_state.db.as_ref() {
+            seed_duress_decoy_data(db.conn());
+        }
+    }
+
+    actor_state.app_state = AppState::default();
+    actor_state.app_state.rev = preserved_rev;
+    actor_state.app_state.biometric_available = biometric_available;
+    load_post_unlock(actor_state, core_tx, false);
+    if seed_duress_decoys {
+        actor_state.app_state.router.current_screen = Screen::Home;
+    }
+
+    Ok(())
 }
 
 /// Return the current time as Unix milliseconds (i64).
@@ -893,7 +1045,10 @@ fn truncate_title(s: &str, max_chars: usize) -> String {
 
 /// Refresh the conversations list in AppState from SQLite.
 fn refresh_conversations(actor_state: &mut ActorState) {
-    let rows = persistence::queries::list_conversations(actor_state.db.as_ref().expect("db unlocked").conn()).unwrap_or_default();
+    let rows = persistence::queries::list_conversations(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+    )
+    .unwrap_or_default();
     actor_state.app_state.conversations = rows
         .iter()
         .map(|row| ConversationSummary {
@@ -910,8 +1065,11 @@ fn refresh_conversations(actor_state: &mut ActorState) {
 
 /// Refresh app_state.messages from the DB for the given conversation_id.
 fn refresh_messages(actor_state: &mut ActorState, conversation_id: &str) {
-    let rows = persistence::queries::list_messages(actor_state.db.as_ref().expect("db unlocked").conn(), conversation_id)
-        .unwrap_or_default();
+    let rows = persistence::queries::list_messages(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+        conversation_id,
+    )
+    .unwrap_or_default();
     actor_state.app_state.messages = rows
         .iter()
         .map(|row| UiMessage {
@@ -948,7 +1106,9 @@ fn refresh_backend_summaries(actor_state: &mut ActorState) {
 /// Called after any AddBackend/RemoveBackend/ReorderBackend operation so the in-memory
 /// list stays consistent with the database.
 fn reload_backends(actor_state: &mut ActorState) {
-    let rows = persistence::queries::list_backends(actor_state.db.as_ref().expect("db unlocked").conn()).unwrap_or_default();
+    let rows =
+        persistence::queries::list_backends(actor_state.db.as_ref().expect("db unlocked").conn())
+            .unwrap_or_default();
     actor_state.backends = rows
         .iter()
         .map(|row| {
@@ -976,10 +1136,9 @@ fn reload_backends(actor_state: &mut ActorState) {
     // Rebuild concurrency semaphores after config reload. Old Arc is dropped from the
     // HashMap; in-flight tasks retain their OwnedSemaphorePermit until completion.
     for backend in &actor_state.backends {
-        actor_state.router.init_semaphore(
-            &backend.id,
-            backend.max_concurrent_requests as usize,
-        );
+        actor_state
+            .router
+            .init_semaphore(&backend.id, backend.max_concurrent_requests as usize);
     }
 }
 
@@ -1004,14 +1163,19 @@ fn filter_models_for_backend(backend_id: &str, models: Vec<String>) -> Vec<Strin
 fn build_chat_messages(actor_state: &ActorState) -> Vec<llm::streaming::ChatMessage> {
     let mut msgs = Vec::new();
     if let Some(conv_id) = &actor_state.app_state.current_conversation_id {
-        let conv_system_prompt = persistence::queries::list_conversations(actor_state.db.as_ref().expect("db unlocked").conn())
-            .unwrap_or_default()
-            .into_iter()
-            .find(|c| &c.id == conv_id)
-            .and_then(|c| c.system_prompt);
+        let conv_system_prompt = persistence::queries::list_conversations(
+            actor_state.db.as_ref().expect("db unlocked").conn(),
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .find(|c| &c.id == conv_id)
+        .and_then(|c| c.system_prompt);
         let system_prompt = conv_system_prompt.or_else(|| {
-            persistence::queries::get_setting(actor_state.db.as_ref().expect("db unlocked").conn(), "global_system_prompt")
-                .unwrap_or(None)
+            persistence::queries::get_setting(
+                actor_state.db.as_ref().expect("db unlocked").conn(),
+                "global_system_prompt",
+            )
+            .unwrap_or(None)
         });
         if let Some(sp) = system_prompt {
             if !sp.is_empty() {
@@ -1324,7 +1488,10 @@ fn spawn_brave_api_key_validation(
                         llm::InternalEvent::BraveApiKeyValidationResult {
                             api_key,
                             success: false,
-                            error_message: Some("Invalid API key — check your Brave Search subscription.".to_string()),
+                            error_message: Some(
+                                "Invalid API key — check your Brave Search subscription."
+                                    .to_string(),
+                            ),
                         },
                     )));
                 } else if status.as_u16() == 429 {
@@ -1341,7 +1508,10 @@ fn spawn_brave_api_key_validation(
                         llm::InternalEvent::BraveApiKeyValidationResult {
                             api_key,
                             success: false,
-                            error_message: Some(format!("Brave API returned HTTP {}", status.as_u16())),
+                            error_message: Some(format!(
+                                "Brave API returned HTTP {}",
+                                status.as_u16()
+                            )),
                         },
                     )));
                 }
@@ -1488,7 +1658,10 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         created_at: now,
         token_count: None,
     };
-    let _ = persistence::queries::insert_message(actor_state.db.as_ref().expect("db unlocked").conn(), &user_row);
+    let _ = persistence::queries::insert_message(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+        &user_row,
+    );
 
     // Build the UiMessage and append to app_state.messages
     let user_ui_msg = UiMessage {
@@ -1503,23 +1676,31 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     actor_state.app_state.messages.push(user_ui_msg);
 
     // Update conversation updated_at
-    let _ =
-        persistence::queries::update_conversation_updated_at(actor_state.db.as_ref().expect("db unlocked").conn(), &conv_id, now);
+    let _ = persistence::queries::update_conversation_updated_at(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+        &conv_id,
+        now,
+    );
     refresh_conversations(actor_state);
 
     // Build full message history for the LLM (system prompt + all messages)
     let mut chat_messages: Vec<llm::streaming::ChatMessage> = Vec::new();
 
     // Resolve system prompt: per-conversation first, then global default
-    let conv_system_prompt = persistence::queries::list_conversations(actor_state.db.as_ref().expect("db unlocked").conn())
-        .unwrap_or_default()
-        .into_iter()
-        .find(|c| c.id == conv_id)
-        .and_then(|c| c.system_prompt);
+    let conv_system_prompt = persistence::queries::list_conversations(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .find(|c| c.id == conv_id)
+    .and_then(|c| c.system_prompt);
     let base_system_prompt = conv_system_prompt
         .or_else(|| {
-            persistence::queries::get_setting(actor_state.db.as_ref().expect("db unlocked").conn(), "global_system_prompt")
-                .unwrap_or(None)
+            persistence::queries::get_setting(
+                actor_state.db.as_ref().expect("db unlocked").conn(),
+                "global_system_prompt",
+            )
+            .unwrap_or(None)
         })
         .unwrap_or_default();
 
@@ -1601,10 +1782,12 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                     let mem_results: Vec<memory::retrieve::MemoryResult> = memory_hits
                         .into_iter()
                         .zip(results.iter())
-                        .map(|((_, content), (_, score))| memory::retrieve::MemoryResult {
-                            content,
-                            score: *score,
-                        })
+                        .map(
+                            |((_, content), (_, score))| memory::retrieve::MemoryResult {
+                                content,
+                                score: *score,
+                            },
+                        )
                         .collect();
                     memory::retrieve::build_system_with_memories(
                         &system_prompt_after_rag,
@@ -1649,10 +1832,17 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     // run a non-streaming first round to detect tool calls before streaming the answer.
     if actor_state.current_conv_tools_enabled && backend.supports_tool_use {
         let brave_key_set = persistence::queries::get_setting(
-            actor_state.db.as_ref().expect("db unlocked").conn(), "brave_api_key"
-        ).unwrap_or(None).map(|k: String| !k.is_empty()).unwrap_or(false);
+            actor_state.db.as_ref().expect("db unlocked").conn(),
+            "brave_api_key",
+        )
+        .unwrap_or(None)
+        .map(|k: String| !k.is_empty())
+        .unwrap_or(false);
 
-        let has_docs = !actor_state.app_state.current_conversation_attached_docs.is_empty();
+        let has_docs = !actor_state
+            .app_state
+            .current_conversation_attached_docs
+            .is_empty();
 
         let tools = agent::build_chat_tools(has_docs, brave_key_set);
 
@@ -1660,10 +1850,8 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
             // Convert ChatMessage vec to ChatCompletionRequestMessage vec
             // for run_agent_step_for_backend (which requires API message types).
             use async_openai::types::chat::{
-                ChatCompletionRequestMessage,
-                ChatCompletionRequestSystemMessageArgs,
-                ChatCompletionRequestUserMessageArgs,
-                ChatCompletionRequestAssistantMessageArgs,
+                ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+                ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
             };
 
             let mut api_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
@@ -1759,9 +1947,8 @@ fn spawn_chat_tool_round(
     let backend = backend.clone();
     let model = model.to_string();
     runtime.spawn(async move {
-        let result = agent::run_agent_step_for_backend(
-            &backend, &model, messages.clone(), tools,
-        ).await;
+        let result =
+            agent::run_agent_step_for_backend(&backend, &model, messages.clone(), tools).await;
         match result {
             Ok(agent::AgentStepResult::ToolCalls(calls)) => {
                 let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
@@ -1771,21 +1958,18 @@ fn spawn_chat_tool_round(
                         pre_tool_messages: messages,
                         backend_id: backend.id.clone(),
                         model,
-                    }
+                    },
                 )));
             }
             Ok(agent::AgentStepResult::FinalAnswer(text))
             | Ok(agent::AgentStepResult::FinishTool(text)) => {
                 let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
-                    llm::InternalEvent::ChatToolNone {
-                        conv_id,
-                        text,
-                    }
+                    llm::InternalEvent::ChatToolNone { conv_id, text },
                 )));
             }
             Err(e) => {
                 let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
-                    llm::InternalEvent::StreamError { error: e }
+                    llm::InternalEvent::StreamError { error: e },
                 )));
             }
         }
@@ -1796,12 +1980,18 @@ fn spawn_chat_tool_round(
 
 /// Refresh app_state.agent_sessions from SQLite (mirrors refresh_conversations).
 fn refresh_agent_sessions(actor_state: &mut ActorState) {
-    let rows = persistence::queries::list_agent_sessions(actor_state.db.as_ref().expect("db unlocked").conn()).unwrap_or_default();
+    let rows = persistence::queries::list_agent_sessions(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+    )
+    .unwrap_or_default();
     actor_state.app_state.agent_sessions = rows
         .iter()
         .map(|row| {
-            let step_count = persistence::queries::count_agent_steps(actor_state.db.as_ref().expect("db unlocked").conn(), &row.id)
-                .unwrap_or(0) as u32;
+            let step_count = persistence::queries::count_agent_steps(
+                actor_state.db.as_ref().expect("db unlocked").conn(),
+                &row.id,
+            )
+            .unwrap_or(0) as u32;
             AgentSessionSummary {
                 id: row.id.clone(),
                 title: row.title.clone(),
@@ -1869,8 +2059,10 @@ fn handle_launch_agent_session(
         created_at: now,
         updated_at: now,
     };
-    if let Err(e) = persistence::queries::insert_agent_session(actor_state.db.as_ref().expect("db unlocked").conn(), &session_row)
-    {
+    if let Err(e) = persistence::queries::insert_agent_session(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+        &session_row,
+    ) {
         actor_state.app_state.toast = Some(format!("Failed to create agent session: {}", e));
         return;
     }
@@ -1928,7 +2120,8 @@ fn handle_launch_agent_session(
     let core_tx_clone = core_tx.clone();
 
     actor_state.runtime.spawn(async move {
-        let result = agent::run_agent_step_for_backend(&backend_for_client, &model, messages, tools).await;
+        let result =
+            agent::run_agent_step_for_backend(&backend_for_client, &model, messages, tools).await;
         let _ = core_tx_clone.send(CoreMsg::InternalEvent(Box::new(
             llm::InternalEvent::AgentStepComplete {
                 session_id: sid,
@@ -1991,12 +2184,17 @@ fn handle_agent_step_complete(
                 status: "completed".to_string(),
                 created_at: now,
             };
-            let _ = persistence::queries::insert_agent_step(actor_state.db.as_ref().expect("db unlocked").conn(), &step_row);
+            let _ = persistence::queries::insert_agent_step(
+                actor_state.db.as_ref().expect("db unlocked").conn(),
+                &step_row,
+            );
 
             // Check step limit (max 20 steps per D-02)
-            let current_count =
-                persistence::queries::count_agent_steps(actor_state.db.as_ref().expect("db unlocked").conn(), &session_id)
-                    .unwrap_or(0);
+            let current_count = persistence::queries::count_agent_steps(
+                actor_state.db.as_ref().expect("db unlocked").conn(),
+                &session_id,
+            )
+            .unwrap_or(0);
             if current_count >= 20 {
                 // Step limit reached
                 let _ = persistence::queries::update_agent_session_status(
@@ -2152,7 +2350,10 @@ fn handle_agent_step_complete(
                 status: "completed".to_string(),
                 created_at: now,
             };
-            let _ = persistence::queries::insert_agent_step(actor_state.db.as_ref().expect("db unlocked").conn(), &step_row);
+            let _ = persistence::queries::insert_agent_step(
+                actor_state.db.as_ref().expect("db unlocked").conn(),
+                &step_row,
+            );
             let _ = persistence::queries::update_agent_session_status(
                 actor_state.db.as_ref().expect("db unlocked").conn(),
                 &session_id,
@@ -2223,18 +2424,23 @@ fn handle_resume_agent_session(
     let now = now_secs();
 
     // Load session from SQLite
-    let session_row = persistence::queries::list_agent_sessions(actor_state.db.as_ref().expect("db unlocked").conn())
-        .unwrap_or_default()
-        .into_iter()
-        .find(|r| r.id == session_id);
+    let session_row = persistence::queries::list_agent_sessions(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .find(|r| r.id == session_id);
     let session_row = match session_row {
         Some(r) => r,
         None => return,
     };
 
     // Load steps
-    let steps = persistence::queries::list_agent_steps(actor_state.db.as_ref().expect("db unlocked").conn(), &session_id)
-        .unwrap_or_default();
+    let steps = persistence::queries::list_agent_steps(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+        &session_id,
+    )
+    .unwrap_or_default();
 
     // Rebuild message history
     let mut messages: Vec<ChatCompletionRequestMessage> = Vec::new();
@@ -2351,7 +2557,8 @@ fn handle_resume_agent_session(
     let core_tx_clone = core_tx.clone();
 
     actor_state.runtime.spawn(async move {
-        let result = agent::run_agent_step_for_backend(&backend_for_client, &model, messages, tools).await;
+        let result =
+            agent::run_agent_step_for_backend(&backend_for_client, &model, messages, tools).await;
         let _ = core_tx_clone.send(CoreMsg::InternalEvent(Box::new(
             llm::InternalEvent::AgentStepComplete {
                 session_id: sid,
@@ -2383,8 +2590,11 @@ fn handle_cancel_agent_session(actor_state: &mut ActorState, session_id: String)
 
 /// Load agent steps for a session into AppState for UI display.
 fn handle_load_agent_session(actor_state: &mut ActorState, session_id: &str) {
-    let steps = persistence::queries::list_agent_steps(actor_state.db.as_ref().expect("db unlocked").conn(), session_id)
-        .unwrap_or_default();
+    let steps = persistence::queries::list_agent_steps(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+        session_id,
+    )
+    .unwrap_or_default();
 
     actor_state.app_state.current_agent_steps = steps
         .iter()
@@ -2435,7 +2645,9 @@ fn handle_load_agent_session(actor_state: &mut ActorState, session_id: &str) {
 /// Used by both PushScreen::Memories and ListMemories handlers to avoid
 /// duplicating the mapping logic.
 fn load_memory_summaries(actor_state: &ActorState) -> Vec<MemorySummary> {
-    let rows = persistence::queries::list_memories(actor_state.db.as_ref().expect("db unlocked").conn()).unwrap_or_default();
+    let rows =
+        persistence::queries::list_memories(actor_state.db.as_ref().expect("db unlocked").conn())
+            .unwrap_or_default();
     rows.into_iter()
         .map(|row| {
             let preview: String = row.content.chars().take(100).collect();
@@ -2470,6 +2682,422 @@ fn emit_state(state: &AppState, shared: &Arc<RwLock<AppState>>, tx: &flume::Send
     let _ = tx.send(AppUpdate::FullState(snapshot));
 }
 
+fn pin_matches_primary_pin(
+    params: &crypto::bootstrap_db::AuthParams,
+    current_dek: Option<&Zeroizing<[u8; 32]>>,
+    candidate_pin: &str,
+) -> bool {
+    let Some(current_dek) = current_dek else {
+        return false;
+    };
+
+    let Ok(kek) = crypto::key_derivation::derive_kek(
+        candidate_pin.as_bytes(),
+        &params.salt,
+        params.kdf_memory_kib,
+        params.kdf_iterations,
+        params.kdf_parallelism,
+    ) else {
+        return false;
+    };
+
+    match crypto::key_derivation::unwrap_dek(&*kek, &params.wrapped_dek) {
+        Ok(unwrapped) => unwrapped == **current_dek,
+        Err(_) => false,
+    }
+}
+
+fn seed_duress_decoy_data(conn: &rusqlite::Connection) {
+    let _ = persistence::queries::set_setting(conn, "has_completed_onboarding", "true");
+    let _ = persistence::queries::set_setting(conn, "duress_decoy_mode", "true");
+
+    let backend_rows = persistence::queries::list_backends(conn).unwrap_or_default();
+    let Some(default_backend) = backend_rows.first() else {
+        return;
+    };
+
+    let _ = persistence::queries::set_setting(conn, "default_backend_id", &default_backend.id);
+
+    let decoys: [(&str, [(&str, &str); 3]); 19] = [
+        (
+            "Weekend trip ideas",
+            [
+                (
+                    "Can you sketch a three-day train trip in northern Italy with quiet hotels?",
+                    "Sure. I suggested Verona for the first night, Bolzano for the second, and a slower return through Trento with walkable hotels near the stations.",
+                ),
+                (
+                    "Keep it under 900 euro for two people.",
+                    "I revised the plan with mid-range stays, regional trains, and one nicer dinner while staying inside that budget.",
+                ),
+                (
+                    "Save the shorter version for later.",
+                    "Done. I condensed it into a simple day-by-day outline with transit times and rough costs.",
+                ),
+            ],
+        ),
+        (
+            "Team retro notes",
+            [
+                (
+                    "Summarize the main issues from this week: flaky CI, slow reviews, and unclear ownership.",
+                    "I grouped the retro into delivery friction, review latency, and ownership gaps, then suggested one concrete action for each.",
+                ),
+                (
+                    "Turn that into a calmer message for Slack.",
+                    "I rewrote it as a short update focused on fixes, not blame, with bullet points for next steps.",
+                ),
+                (
+                    "Add a one-line ask for volunteers on CI cleanup.",
+                    "Added. The message now closes with a request for two volunteers to rotate through CI stabilization next sprint.",
+                ),
+            ],
+        ),
+        (
+            "Meal prep checklist",
+            [
+                (
+                    "Help me turn chicken, rice, cucumbers, and yogurt into lunches for four days.",
+                    "I suggested lemon herb chicken bowls with rice, chopped cucumber salad, and a yogurt sauce that holds well in the fridge.",
+                ),
+                (
+                    "Give me the shopping gaps too.",
+                    "I added garlic, dill, parsley, lemons, and olive oil as the only missing items.",
+                ),
+                (
+                    "Make the prep fit into 45 minutes.",
+                    "I reordered the steps so the rice cooks first, chicken roasts while vegetables are chopped, and the sauce comes together last.",
+                ),
+            ],
+        ),
+        (
+            "Running plan",
+            [
+                (
+                    "Build me a four-week running plan to get back to 5k shape without overdoing it.",
+                    "I mapped out three runs per week with easy intervals, one longer easy run, and two rest days after harder efforts.",
+                ),
+                (
+                    "I had calf tightness last month.",
+                    "I reduced the intensity in week one and added warm-up drills plus a short mobility sequence after each run.",
+                ),
+                (
+                    "What pace should the easy runs be?",
+                    "Easy pace should stay conversational, roughly one to one and a half minutes slower than your old 5k pace.",
+                ),
+            ],
+        ),
+        (
+            "Apartment search",
+            [
+                (
+                    "Make a shortlist of questions to ask when touring a small apartment.",
+                    "I grouped them into noise, heating, water pressure, storage, and lease terms so nothing obvious gets missed.",
+                ),
+                (
+                    "Add the red flags for older buildings.",
+                    "I added signs to watch for around damp corners, uneven floors, window seals, and radiator noise.",
+                ),
+                (
+                    "Condense it into a phone note checklist.",
+                    "I turned it into a compact checklist with yes or no prompts you can use during the visit.",
+                ),
+            ],
+        ),
+        (
+            "Garden starter plan",
+            [
+                (
+                    "I only have a small balcony. What herbs are easiest to keep alive?",
+                    "I suggested basil, mint, chives, and rosemary, with mint in its own pot so it does not take over the others.",
+                ),
+                (
+                    "The balcony gets direct sun after lunch.",
+                    "That light works well for rosemary and basil. I suggested watering in the morning and rotating the pots once a week.",
+                ),
+                (
+                    "Make me a shopping list under 50 euro.",
+                    "I narrowed it to four pots, one bag of potting mix, saucers, and starter herbs with a little room left for fertilizer.",
+                ),
+            ],
+        ),
+        (
+            "Quarterly planning draft",
+            [
+                (
+                    "Turn my rough notes into three quarterly goals: stability, docs, and onboarding.",
+                    "I reframed them as reliability targets, developer enablement, and activation improvements with one sentence each.",
+                ),
+                (
+                    "Can you make the docs goal more measurable?",
+                    "I changed it to publishing a setup guide, API examples, and an internal troubleshooting page before the mid-quarter review.",
+                ),
+                (
+                    "Rewrite the whole thing so it sounds less corporate.",
+                    "I made it shorter and more direct, with plain language and fewer abstractions.",
+                ),
+            ],
+        ),
+        (
+            "Gift list",
+            [
+                (
+                    "I need birthday gift ideas for someone into ceramics, tea, and sketching.",
+                    "I suggested a handmade mug, a small tea sampler, and a pocket watercolor sketch kit.",
+                ),
+                (
+                    "Budget is around 60.",
+                    "I narrowed it to combinations that stay under budget, with one slightly nicer option if shipping is low.",
+                ),
+                (
+                    "Which one feels the least generic?",
+                    "The handmade mug plus tea pairing felt the most personal because it ties two interests together without being too obvious.",
+                ),
+            ],
+        ),
+        (
+            "Home office notes",
+            [
+                (
+                    "My desk setup is noisy and cluttered. What should I change first?",
+                    "I recommended fixing lighting and cable clutter first, then adding a monitor riser and a simple under-desk tray.",
+                ),
+                (
+                    "I do calls all afternoon.",
+                    "That made the case for a directional microphone and a soft lamp behind the monitor so video looks cleaner.",
+                ),
+                (
+                    "Can you make it a phased upgrade plan?",
+                    "I split it into immediate fixes, one-month upgrades, and optional extras so the first pass stays inexpensive.",
+                ),
+            ],
+        ),
+        (
+            "Reading queue",
+            [
+                (
+                    "Build me a short reading list mixing one novel, one history book, and one essay collection.",
+                    "I suggested a quiet contemporary novel, a readable medieval history, and an essay collection with shorter chapters.",
+                ),
+                (
+                    "Nothing too heavy right now.",
+                    "I swapped the denser history book for one with stronger narrative pacing and lighter footnotes.",
+                ),
+                (
+                    "Order them for a month of reading.",
+                    "I put the novel first, essays second, and history last so the pace ramps up gradually.",
+                ),
+            ],
+        ),
+        (
+            "Packing list",
+            [
+                (
+                    "Make a carry-on-only packing list for six days in mixed weather.",
+                    "I suggested a small capsule: two trousers, four tops, one light sweater, one packable rain shell, and shoes you can walk in all day.",
+                ),
+                (
+                    "I have one nice dinner planned.",
+                    "I added one versatile shirt and a slightly smarter shoe option instead of a full extra outfit.",
+                ),
+                (
+                    "Give me the laundry assumptions too.",
+                    "I assumed one sink wash mid-trip and listed fabrics that dry overnight.",
+                ),
+            ],
+        ),
+        (
+            "Kitchen reorg",
+            [
+                (
+                    "Help me reorganize a tiny kitchen with too many duplicates.",
+                    "I suggested grouping by daily use, moving backup items high, and limiting open-counter storage to the three things used every day.",
+                ),
+                (
+                    "I keep losing spices.",
+                    "I recommended one narrow spice bin by cuisine and one overflow box, both labeled so nothing disappears at the back.",
+                ),
+                (
+                    "Can you make me a discard checklist?",
+                    "I turned it into a fast pass: duplicates, broken tools, expired packets, and anything not used in a year.",
+                ),
+            ],
+        ),
+        (
+            "Interview prep",
+            [
+                (
+                    "I have a product interview next week. What stories should I prepare?",
+                    "I suggested one launch story, one failure story, one conflict story, and one prioritization story with crisp outcomes.",
+                ),
+                (
+                    "I ramble when I talk about failures.",
+                    "I tightened the structure to context, mistake, correction, and what changed after that.",
+                ),
+                (
+                    "Now give me a five-minute warm-up routine before the call.",
+                    "I suggested one rehearsal answer, one breathing reset, and one short scan of the job description for vocabulary alignment.",
+                ),
+            ],
+        ),
+        (
+            "Budget cleanup",
+            [
+                (
+                    "My monthly spending feels fuzzy. Can you group these categories into something simpler?",
+                    "I collapsed them into fixed bills, groceries, transport, subscriptions, and flexible spending.",
+                ),
+                (
+                    "Subscriptions are the category I keep ignoring.",
+                    "I suggested a separate review list with renewal dates and a hard monthly cap so they are easier to prune.",
+                ),
+                (
+                    "What should I look at first if I want to save 150 a month?",
+                    "I pointed to subscriptions, takeout drift, and one negotiable utility before touching groceries or transit.",
+                ),
+            ],
+        ),
+        (
+            "Dog routine",
+            [
+                (
+                    "Can you help me build a calmer morning routine for a young dog?",
+                    "I suggested a short sniff walk, a puzzle feeder, and one simple settle exercise before work starts.",
+                ),
+                (
+                    "The problem is barking after breakfast.",
+                    "I recommended moving the highest-energy play later and using a chew or mat routine right after breakfast.",
+                ),
+                (
+                    "Make it realistic for weekdays.",
+                    "I trimmed it to twenty minutes total with one fallback option for rushed mornings.",
+                ),
+            ],
+        ),
+        (
+            "Wedding logistics",
+            [
+                (
+                    "Make a checklist for a small wedding with 35 guests.",
+                    "I grouped it into venue, guest communication, food, music, photos, and backup weather plans.",
+                ),
+                (
+                    "We want it simple, no elaborate decor.",
+                    "I stripped the list down to tables, candles, printed menus, and one floral focal point.",
+                ),
+                (
+                    "What can wait until the final two weeks?",
+                    "I moved seating, printed materials, and final weather calls into the last stretch while keeping contracts and food decisions earlier.",
+                ),
+            ],
+        ),
+        (
+            "Workshop outline",
+            [
+                (
+                    "Draft a 45-minute workshop on giving better code review feedback.",
+                    "I outlined it as examples of weak comments, rewritten stronger comments, and a short practice section at the end.",
+                ),
+                (
+                    "I want it to feel practical, not preachy.",
+                    "I made the framing about reducing rework and ambiguity instead of teaching etiquette.",
+                ),
+                (
+                    "Can you add one exercise with pairs?",
+                    "I added a short rewrite exercise where each pair turns vague feedback into something actionable and specific.",
+                ),
+            ],
+        ),
+        (
+            "Phone upgrade notes",
+            [
+                (
+                    "I might replace my phone later this year. What specs matter most for longevity?",
+                    "I focused on battery health, software support window, repairability, and storage headroom instead of chasing peak camera features.",
+                ),
+                (
+                    "I mostly care about maps, photos, and messaging.",
+                    "That pushed the recommendation toward battery life and storage, with camera quality as a secondary filter.",
+                ),
+                (
+                    "Give me a short checklist for comparing two options in a store.",
+                    "I turned it into five checks: brightness, hand feel, camera switching delay, speaker quality, and estimated support length.",
+                ),
+            ],
+        ),
+        (
+            "Volunteer rota",
+            [
+                (
+                    "Help me make a simple volunteer rota for four Saturday events.",
+                    "I suggested one lead, one backup, and one floating role per event so absences are easier to absorb.",
+                ),
+                (
+                    "Some people can only do mornings.",
+                    "I split each event into setup and main coverage so limited availability still fits cleanly.",
+                ),
+                (
+                    "Now draft the message asking people to confirm.",
+                    "I wrote a short message with one clear ask, dates inline, and a deadline for replies.",
+                ),
+            ],
+        ),
+    ];
+
+    let mut shuffled = decoys.to_vec();
+    shuffled.shuffle(&mut rand::thread_rng());
+    let day_ms = 86_400_000i64;
+    let hour_ms = 3_600_000i64;
+    let minute_ms = 60_000i64;
+    let start_time = now_secs() - (34 * day_ms);
+
+    for (index, (title, turns)) in shuffled.into_iter().enumerate() {
+        let conversation_id = new_uuid();
+        let created_at =
+            start_time + (index as i64 * 2 * day_ms) + ((index % 4) as i64 * 4 * hour_ms);
+        let updated_at = created_at + (turns.len() as i64 * 18 * minute_ms);
+        let conversation = persistence::ConversationRow {
+            id: conversation_id.clone(),
+            title: title.to_string(),
+            model_id: String::new(),
+            backend_id: default_backend.id.clone(),
+            system_prompt: None,
+            created_at,
+            updated_at,
+            tools_enabled: false,
+        };
+        let _ = persistence::queries::insert_conversation(conn, &conversation);
+
+        let mut message_time = created_at;
+        for (user_text, assistant_text) in turns {
+            let _ = persistence::queries::insert_message(
+                conn,
+                &persistence::MessageRow {
+                    id: new_uuid(),
+                    conversation_id: conversation_id.clone(),
+                    role: "user".to_string(),
+                    content: user_text.to_string(),
+                    created_at: message_time,
+                    token_count: None,
+                },
+            );
+            message_time += 9 * minute_ms;
+            let _ = persistence::queries::insert_message(
+                conn,
+                &persistence::MessageRow {
+                    id: new_uuid(),
+                    conversation_id: conversation_id.clone(),
+                    role: "assistant".to_string(),
+                    content: assistant_text.to_string(),
+                    created_at: message_time,
+                    token_count: None,
+                },
+            );
+            message_time += 9 * minute_ms;
+        }
+    }
+}
+
 /// Load all DB-dependent state after the main database has been opened.
 ///
 /// Called either:
@@ -2487,7 +3115,10 @@ fn load_post_unlock(
     core_tx: flume::Sender<CoreMsg>,
     is_post_unlock: bool,
 ) {
-    let db = actor_state.db.as_ref().expect("db must be open before load_post_unlock");
+    let db = actor_state
+        .db
+        .as_ref()
+        .expect("db must be open before load_post_unlock");
 
     // Load backends (seeded in migration v1).
     let backend_rows = persistence::queries::list_backends(db.conn()).unwrap_or_default();
@@ -2500,8 +3131,7 @@ fn load_post_unlock(
                 .keychain
                 .load("mango".to_string(), row.id.clone())
                 .unwrap_or_default();
-            let raw_models: Vec<String> =
-                serde_json::from_str(&row.model_list).unwrap_or_default();
+            let raw_models: Vec<String> = serde_json::from_str(&row.model_list).unwrap_or_default();
             let models = filter_models_for_backend(&row.id, raw_models);
             llm::BackendConfig {
                 id: row.id.clone(),
@@ -2517,8 +3147,7 @@ fn load_post_unlock(
         .collect();
 
     // Load conversations.
-    let conversation_rows =
-        persistence::queries::list_conversations(db.conn()).unwrap_or_default();
+    let conversation_rows = persistence::queries::list_conversations(db.conn()).unwrap_or_default();
     let conversations: Vec<ConversationSummary> = conversation_rows
         .iter()
         .map(|row| ConversationSummary {
@@ -2578,10 +3207,9 @@ fn load_post_unlock(
     }
 
     // Determine active backend (settings default > active_id).
-    let settings_default_bid =
-        persistence::queries::get_setting(db.conn(), "default_backend_id")
-            .ok()
-            .flatten();
+    let settings_default_bid = persistence::queries::get_setting(db.conn(), "default_backend_id")
+        .ok()
+        .flatten();
     let final_active_id = settings_default_bid
         .filter(|id| backends.iter().any(|b| &b.id == id))
         .or(active_id);
@@ -2662,11 +3290,10 @@ fn load_post_unlock(
             .flatten()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(15);
-    let global_system_prompt =
-        persistence::queries::get_setting(db.conn(), "global_system_prompt")
-            .ok()
-            .flatten()
-            .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
+    let global_system_prompt = persistence::queries::get_setting(db.conn(), "global_system_prompt")
+        .ok()
+        .flatten()
+        .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
     let memory_count: u64 = db
         .conn()
         .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0))
@@ -2687,9 +3314,30 @@ fn load_post_unlock(
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(300);
+    let biometric_login_enabled = if actor_state.app_state.biometric_available {
+        actor_state
+            .keychain
+            .load("mango".to_string(), "dek".to_string())
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let duress_pin_configured = actor_state
+        .bootstrap
+        .read_auth_params()
+        .ok()
+        .flatten()
+        .and_then(|params| params.duress_hash)
+        .is_some();
 
     // Has the user completed onboarding?
     let has_completed = persistence::queries::get_setting(db.conn(), "has_completed_onboarding")
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let duress_decoy_mode = persistence::queries::get_setting(db.conn(), "duress_decoy_mode")
         .ok()
         .flatten()
         .map(|v| v == "true")
@@ -2714,6 +3362,8 @@ fn load_post_unlock(
             Screen::Onboarding {
                 step: OnboardingStep::Welcome,
             }
+        } else if duress_decoy_mode {
+            Screen::Home
         } else if actor_state.bootstrap.has_auth_params() {
             // Onboarding done and PIN is configured — go to Home.
             Screen::Home
@@ -2736,6 +3386,8 @@ fn load_post_unlock(
     actor_state.app_state.brave_api_key_set = brave_api_key_set;
     actor_state.app_state.memories_enabled = memories_enabled;
     actor_state.app_state.lock_timeout_seconds = lock_timeout_seconds;
+    actor_state.app_state.biometric_login_enabled = biometric_login_enabled;
+    actor_state.app_state.duress_pin_configured = duress_pin_configured;
     actor_state.app_state.router.current_screen = post_screen;
     actor_state.backends = backends;
     actor_state.attested_tls_public_keys = cached_attested_tls_public_keys;
@@ -2753,11 +3405,7 @@ fn load_post_unlock(
     if let Some(active_id) = &final_active_id {
         if let Some(backend) = actor_state.backends.iter().find(|b| b.id == *active_id) {
             let tee_policy = crate::persistence::queries::get_tee_policy(
-                actor_state
-                    .db
-                    .as_ref()
-                    .expect("db unlocked")
-                    .conn(),
+                actor_state.db.as_ref().expect("db unlocked").conn(),
             )
             .unwrap_or_else(|e| {
                 log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
@@ -2777,11 +3425,8 @@ fn load_post_unlock(
     if let Some(token) = actor_state.attestation_timer_token.take() {
         token.cancel();
     }
-    actor_state.attestation_timer_token = spawn_attestation_timer(
-        &actor_state.runtime,
-        attestation_interval_minutes,
-        core_tx,
-    );
+    actor_state.attestation_timer_token =
+        spawn_attestation_timer(&actor_state.runtime, attestation_interval_minutes, core_tx);
 }
 
 // ── FFI entry point ──────────────────────────────────────────────────────────
@@ -2882,6 +3527,20 @@ impl FfiApp {
             // Phase 28: Check biometric availability at startup (D-20).
             let biometric_status = biometric_provider.biometric_status();
             let biometric_available = biometric_status == "available";
+            let biometric_login_enabled = if biometric_available {
+                keychain
+                    .load("mango".to_string(), "dek".to_string())
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            let duress_pin_configured = bootstrap
+                .read_auth_params()
+                .ok()
+                .flatten()
+                .and_then(|params| params.duress_hash)
+                .is_some();
 
             // Phase 28: Determine whether to auto-open the main DB or defer to unlock.
             //
@@ -2902,7 +3561,8 @@ impl FfiApp {
                 (Some(db), false, false)
             } else if !has_auth {
                 // Case B/C: no auth params → open plaintext (or create new plaintext)
-                let db = persistence::Database::open(&db_path).expect("database open and migration");
+                let db =
+                    persistence::Database::open(&db_path).expect("database open and migration");
                 (Some(db), false, false)
             } else {
                 // Case D: auth params exist → deferred open, show lock screen
@@ -2931,8 +3591,10 @@ impl FfiApp {
             let mut initial_state = AppState {
                 embedding_status,
                 biometric_available,
+                biometric_login_enabled,
                 auth_initialized,
                 encryption_enabled,
+                duress_pin_configured,
                 ..AppState::default()
             };
 
@@ -2966,6 +3628,7 @@ impl FfiApp {
                 data_dir: vector_data_dir.clone(),
                 current_conv_tools_enabled: false,
                 bootstrap,
+                bootstrap_path: bootstrap_path.clone(),
                 biometric_provider: Arc::from(biometric_provider),
                 pre_lock_screen: None,
                 db_path: db_path.clone(),
@@ -3003,7 +3666,8 @@ impl FfiApp {
                                     .push(screen.clone());
                                 // Auto-load memories when navigating to the Memories screen (per Pitfall 4)
                                 if screen == Screen::Memories {
-                                    actor_state.app_state.memories = load_memory_summaries(&actor_state);
+                                    actor_state.app_state.memories =
+                                        load_memory_summaries(&actor_state);
                                 }
                                 actor_state.app_state.router.current_screen = screen;
                             }
@@ -3187,7 +3851,10 @@ impl FfiApp {
                                 actor_state.app_state.current_conversation_attached_docs =
                                     attached_docs;
                                 // Phase 27: load tools_enabled for this conversation.
-                                actor_state.current_conv_tools_enabled = persistence::queries::list_conversations(actor_state.db.as_ref().expect("db unlocked").conn())
+                                actor_state.current_conv_tools_enabled =
+                                    persistence::queries::list_conversations(
+                                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    )
                                     .unwrap_or_default()
                                     .iter()
                                     .find(|r| r.id == conversation_id)
@@ -3222,6 +3889,42 @@ impl FfiApp {
                                     actor_state.app_state.router.current_screen = Screen::Home;
                                 }
                             }
+
+                            AppAction::DeleteAllConversations => {
+                                let ids: Vec<String> = actor_state
+                                    .app_state
+                                    .conversations
+                                    .iter()
+                                    .map(|c| c.id.clone())
+                                    .collect();
+                                for id in ids {
+                                    let _ = persistence::queries::delete_conversation(
+                                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                                        &id,
+                                    );
+                                }
+                                actor_state.app_state.conversations = vec![];
+                                actor_state.app_state.current_conversation_id = None;
+                                actor_state.app_state.messages = vec![];
+                                actor_state.app_state.current_conversation_attached_docs = vec![];
+                                actor_state.app_state.router.current_screen = Screen::Home;
+                            }
+
+                            AppAction::DeleteAllData => match wipe_local_install(
+                                &mut actor_state,
+                                core_tx_for_thread.clone(),
+                                false,
+                            ) {
+                                Ok(()) => {
+                                    actor_state.app_state.toast =
+                                        Some("All local app data was deleted.".to_string());
+                                }
+                                Err(e) => {
+                                    log::error!("[reset] DeleteAllData failed: {e}");
+                                    actor_state.app_state.toast =
+                                        Some(format!("Delete all data failed: {}", e));
+                                }
+                            },
 
                             AppAction::RetryLastMessage => {
                                 let conv_id = match actor_state
@@ -3505,7 +4208,11 @@ impl FfiApp {
                                     match replacement_id {
                                         Some(ref repl_id) => {
                                             let _ = persistence::queries::set_setting(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
                                                 "default_backend_id",
                                                 repl_id,
                                             );
@@ -3515,7 +4222,11 @@ impl FfiApp {
                                         None => {
                                             // No backends remain -- clear active and default
                                             let _ = persistence::queries::set_setting(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
                                                 "default_backend_id",
                                                 "",
                                             );
@@ -4029,7 +4740,9 @@ impl FfiApp {
                                     let _ = actor_state.vector_index.remove(*rowid as u64);
                                 }
                                 if !rowids.is_empty() {
-                                    let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| &**d));
+                                    let _ = actor_state
+                                        .vector_index
+                                        .save(actor_state.dek.as_ref().map(|d| &**d));
                                 }
 
                                 // Delete document from SQLite (chunks already deleted above)
@@ -4062,7 +4775,11 @@ impl FfiApp {
                                         current_docs.retain(|id| id != &document_id);
                                         let _ =
                                             persistence::queries::update_conversation_attached_docs(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
                                                 &conv_id,
                                                 &current_docs,
                                             );
@@ -4218,32 +4935,57 @@ impl FfiApp {
 
                             // Phase 23 additions: memory management handlers
                             AppAction::ListMemories => {
-                                actor_state.app_state.memories = load_memory_summaries(&actor_state);
+                                actor_state.app_state.memories =
+                                    load_memory_summaries(&actor_state);
                             }
 
                             AppAction::DeleteMemory { memory_id } => {
                                 // Look up usearch_key from already-loaded AppState (no extra DB query)
-                                let usearch_key = actor_state.app_state.memories
+                                let usearch_key = actor_state
+                                    .app_state
+                                    .memories
                                     .iter()
                                     .find(|m| m.id == memory_id)
                                     .map(|m| m.usearch_key);
 
                                 if let Some(key) = usearch_key {
                                     let _ = actor_state.vector_index.remove(key as u64);
-                                    let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| &**d)); // Persist to disk, encrypted if DEK available
+                                    let _ = actor_state
+                                        .vector_index
+                                        .save(actor_state.dek.as_ref().map(|d| &**d));
+                                    // Persist to disk, encrypted if DEK available
                                 }
-                                let _ = persistence::queries::delete_memory(actor_state.db.as_ref().expect("db unlocked").conn(), &memory_id);
+                                let _ = persistence::queries::delete_memory(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    &memory_id,
+                                );
                                 actor_state.app_state.memories.retain(|m| m.id != memory_id);
                                 // Re-query count (per D-04 -- simpler than decrement, avoids off-by-one)
-                                actor_state.app_state.memory_count = actor_state.db.as_ref().expect("db unlocked").conn()
-                                    .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0))
-                                    .unwrap_or(0) as u64;
+                                actor_state.app_state.memory_count = actor_state
+                                    .db
+                                    .as_ref()
+                                    .expect("db unlocked")
+                                    .conn()
+                                    .query_row("SELECT COUNT(*) FROM memories", [], |r| {
+                                        r.get::<_, i64>(0)
+                                    })
+                                    .unwrap_or(0)
+                                    as u64;
                             }
 
                             AppAction::UpdateMemory { memory_id, content } => {
-                                let _ = persistence::queries::update_memory(actor_state.db.as_ref().expect("db unlocked").conn(), &memory_id, &content);
+                                let _ = persistence::queries::update_memory(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    &memory_id,
+                                    &content,
+                                );
                                 // Update in-place in AppState
-                                if let Some(mem) = actor_state.app_state.memories.iter_mut().find(|m| m.id == memory_id) {
+                                if let Some(mem) = actor_state
+                                    .app_state
+                                    .memories
+                                    .iter_mut()
+                                    .find(|m| m.id == memory_id)
+                                {
                                     mem.content = content.clone();
                                     mem.content_preview = content.chars().take(100).collect();
                                 }
@@ -4289,7 +5031,10 @@ impl FfiApp {
                                 actor_state.app_state.memories_enabled = enabled;
                             }
 
-                            AppAction::SetConversationToolsEnabled { conversation_id, enabled } => {
+                            AppAction::SetConversationToolsEnabled {
+                                conversation_id,
+                                enabled,
+                            } => {
                                 let now = now_secs();
                                 let _ = persistence::queries::update_conversation_tools_enabled(
                                     actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -4298,37 +5043,60 @@ impl FfiApp {
                                     now,
                                 );
                                 // Update in-memory tracking if this is the active conversation.
-                                if actor_state.app_state.current_conversation_id.as_deref() == Some(&conversation_id) {
+                                if actor_state.app_state.current_conversation_id.as_deref()
+                                    == Some(&conversation_id)
+                                {
                                     actor_state.current_conv_tools_enabled = enabled;
                                 }
                                 refresh_conversations(&mut actor_state);
                             }
 
                             // ── Phase 28: Authentication actions ─────────────────────────
-
-                            AppAction::SetupPin { pin, duress_pin, enable_biometric } => {
+                            AppAction::SetupPin {
+                                pin,
+                                duress_pin,
+                                enable_biometric,
+                            } => {
+                                if actor_state.db.is_some() {
+                                    let _ = persistence::queries::set_setting(
+                                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                                        "duress_decoy_mode",
+                                        "false",
+                                    );
+                                }
                                 // Generate DEK, derive KEK from PIN, wrap DEK, write bootstrap DB.
                                 // Then migrate any existing plaintext DB to SQLCipher.
                                 // CR-03: wrap raw DEK bytes in Zeroizing so they are zeroed on drop.
-                                let dek: Zeroizing<[u8; 32]> = Zeroizing::new(crypto::key_derivation::generate_dek());
+                                let dek: Zeroizing<[u8; 32]> =
+                                    Zeroizing::new(crypto::key_derivation::generate_dek());
                                 let salt = crypto::key_derivation::generate_salt();
                                 // CR-03: derive_kek now returns Zeroizing<[u8; 32]>.
-                                let kek: Zeroizing<[u8; 32]> = match crypto::key_derivation::derive_kek(
-                                    pin.as_bytes(),
-                                    &salt,
-                                    crypto::key_derivation::DEFAULT_MEMORY_KIB,
-                                    crypto::key_derivation::DEFAULT_ITERATIONS,
-                                    crypto::key_derivation::DEFAULT_PARALLELISM,
-                                ) {
-                                    Ok(k) => k,
-                                    Err(e) => {
-                                        log::error!("[auth] SetupPin: KEK derivation failed: {e}");
-                                        actor_state.app_state.toast = Some("PIN setup failed: key derivation error".to_string());
-                                        actor_state.app_state.rev += 1;
-                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                                        continue;
-                                    }
-                                };
+                                let kek: Zeroizing<[u8; 32]> =
+                                    match crypto::key_derivation::derive_kek(
+                                        pin.as_bytes(),
+                                        &salt,
+                                        crypto::key_derivation::DEFAULT_MEMORY_KIB,
+                                        crypto::key_derivation::DEFAULT_ITERATIONS,
+                                        crypto::key_derivation::DEFAULT_PARALLELISM,
+                                    ) {
+                                        Ok(k) => k,
+                                        Err(e) => {
+                                            log::error!(
+                                                "[auth] SetupPin: KEK derivation failed: {e}"
+                                            );
+                                            actor_state.app_state.toast = Some(
+                                                "PIN setup failed: key derivation error"
+                                                    .to_string(),
+                                            );
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            continue;
+                                        }
+                                    };
                                 let wrapped_dek = crypto::key_derivation::wrap_dek(&*kek, &*dek);
                                 let dek_hex: Zeroizing<String> = Zeroizing::new(
                                     dek.iter().map(|b| format!("{:02x}", b)).collect(),
@@ -4336,7 +5104,7 @@ impl FfiApp {
 
                                 // Per D-05/D-06: cache DEK in platform keychain so biometric unlock
                                 // can retrieve it without PIN (ENC-04 gap closure).
-                                if enable_biometric {
+                                if enable_biometric && actor_state.app_state.biometric_available {
                                     // Note: (*dek_hex).clone() produces a plain String (not
                                     // Zeroizing) because KeychainProvider::store takes String
                                     // by value per the UniFFI ABI. The clone is unavoidable;
@@ -4360,9 +5128,12 @@ impl FfiApp {
                                     kdf_iterations: crypto::key_derivation::DEFAULT_ITERATIONS,
                                     kdf_parallelism: crypto::key_derivation::DEFAULT_PARALLELISM,
                                 };
-                                if let Err(e) = actor_state.bootstrap.write_auth_params(&auth_params) {
+                                if let Err(e) =
+                                    actor_state.bootstrap.write_auth_params(&auth_params)
+                                {
                                     log::error!("[auth] SetupPin: write_auth_params failed: {e}");
-                                    actor_state.app_state.toast = Some("PIN setup failed: storage error".to_string());
+                                    actor_state.app_state.toast =
+                                        Some("PIN setup failed: storage error".to_string());
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
@@ -4371,7 +5142,9 @@ impl FfiApp {
                                 // Migrate plaintext DB to SQLCipher if it exists and is not already encrypted.
                                 if actor_state.db_path != ":memory:" {
                                     if actor_state.db.is_some()
-                                        && !persistence::Database::is_encrypted(&actor_state.db_path)
+                                        && !persistence::Database::is_encrypted(
+                                            &actor_state.db_path,
+                                        )
                                     {
                                         // Drop DB handle before migration (can't migrate an open connection).
                                         actor_state.db = None;
@@ -4380,28 +5153,45 @@ impl FfiApp {
                                             &*dek_hex,
                                         ) {
                                             log::error!("[auth] migrate_to_encrypted failed: {e}");
-                                            actor_state.app_state.toast = Some("PIN setup failed: DB migration error".to_string());
+                                            actor_state.app_state.toast = Some(
+                                                "PIN setup failed: DB migration error".to_string(),
+                                            );
                                             actor_state.app_state.rev += 1;
-                                            emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
                                             continue;
                                         }
                                     }
                                     // Open the (now encrypted) DB.
-                                    match persistence::Database::open_encrypted(&actor_state.db_path, &*dek_hex) {
+                                    match persistence::Database::open_encrypted(
+                                        &actor_state.db_path,
+                                        &*dek_hex,
+                                    ) {
                                         Ok(db) => {
                                             actor_state.db = Some(db);
                                         }
                                         Err(e) => {
-                                            log::error!("[auth] SetupPin: open_encrypted failed: {e}");
-                                            actor_state.app_state.toast = Some("PIN setup failed: DB open error".to_string());
+                                            log::error!(
+                                                "[auth] SetupPin: open_encrypted failed: {e}"
+                                            );
+                                            actor_state.app_state.toast =
+                                                Some("PIN setup failed: DB open error".to_string());
                                             actor_state.app_state.rev += 1;
-                                            emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
                                             continue;
                                         }
                                     }
                                     // Phase 29 (D-01, D-04): Store DEK and open VectorIndex with real encryption key.
                                     actor_state.dek = Some(dek.clone());
-                                    let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| &**d);
+                                    let dek_ref: Option<&[u8; 32]> =
+                                        actor_state.dek.as_ref().map(|d| &**d);
                                     actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                         .unwrap_or_else(|e| {
                                             log::warn!("[auth] SetupPin: VectorIndex open with DEK failed, using empty fallback: {e}");
@@ -4409,8 +5199,92 @@ impl FfiApp {
                                         });
                                 }
                                 actor_state.app_state.auth_initialized = true;
-                                actor_state.app_state.encryption_enabled = actor_state.db_path != ":memory:";
-                                load_post_unlock(&mut actor_state, core_tx_for_thread.clone(), false);
+                                actor_state.app_state.encryption_enabled =
+                                    actor_state.db_path != ":memory:";
+                                actor_state.app_state.biometric_login_enabled =
+                                    enable_biometric && actor_state.app_state.biometric_available;
+                                actor_state.app_state.duress_pin_configured = duress_pin.is_some();
+                                load_post_unlock(
+                                    &mut actor_state,
+                                    core_tx_for_thread.clone(),
+                                    false,
+                                );
+                            }
+
+                            AppAction::SetDuressPin { pin } => {
+                                let params = match actor_state.bootstrap.read_auth_params() {
+                                    Ok(Some(params)) => params,
+                                    Ok(None) => {
+                                        actor_state.app_state.toast = Some(
+                                            "Set a main PIN before configuring a duress PIN."
+                                                .to_string(),
+                                        );
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "[auth] SetDuressPin: read_auth_params failed: {e}"
+                                        );
+                                        actor_state.app_state.toast =
+                                            Some("Could not update duress PIN.".to_string());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                };
+
+                                let trimmed = pin.as_deref().map(str::trim).unwrap_or("");
+                                if !trimmed.is_empty()
+                                    && pin_matches_primary_pin(
+                                        &params,
+                                        actor_state.dek.as_ref(),
+                                        trimmed,
+                                    )
+                                {
+                                    actor_state.app_state.toast = Some(
+                                        "Duress PIN must be different from your main PIN."
+                                            .to_string(),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                let updated_params = crypto::bootstrap_db::AuthParams {
+                                    duress_hash: if trimmed.is_empty() {
+                                        None
+                                    } else {
+                                        Some(crypto::key_derivation::hash_pin(
+                                            trimmed.as_bytes(),
+                                            &params.salt,
+                                        ))
+                                    },
+                                    ..params
+                                };
+
+                                if let Err(e) =
+                                    actor_state.bootstrap.write_auth_params(&updated_params)
+                                {
+                                    log::error!(
+                                        "[auth] SetDuressPin: write_auth_params failed: {e}"
+                                    );
+                                    actor_state.app_state.toast =
+                                        Some("Could not update duress PIN.".to_string());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                actor_state.app_state.duress_pin_configured =
+                                    updated_params.duress_hash.is_some();
+                                actor_state.app_state.toast =
+                                    Some(if actor_state.app_state.duress_pin_configured {
+                                        "Duress PIN updated.".to_string()
+                                    } else {
+                                        "Duress PIN removed.".to_string()
+                                    });
                             }
 
                             AppAction::UnlockWithDek { dek_hex } => {
@@ -4421,23 +5295,34 @@ impl FfiApp {
                                         actor_state.db = Some(db);
                                     }
                                 } else {
-                                    match persistence::Database::open_encrypted(&actor_state.db_path, &dek_hex) {
+                                    match persistence::Database::open_encrypted(
+                                        &actor_state.db_path,
+                                        &dek_hex,
+                                    ) {
                                         Ok(db) => {
                                             actor_state.db = Some(db);
                                         }
                                         Err(e) => {
                                             log::error!("[auth] UnlockWithDek failed: {e}");
-                                            actor_state.app_state.toast = Some("Unlock failed: incorrect key".to_string());
+                                            actor_state.app_state.toast =
+                                                Some("Unlock failed: incorrect key".to_string());
                                             actor_state.app_state.rev += 1;
-                                            emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
                                             continue;
                                         }
                                     }
                                     // Phase 29 (D-01, D-04): Store DEK from hex and open VectorIndex.
                                     if let Ok(dek_bytes_vec) = hex::decode(&*dek_hex) {
-                                        if let Ok(dek_arr) = <[u8; 32]>::try_from(dek_bytes_vec.as_slice()) {
+                                        if let Ok(dek_arr) =
+                                            <[u8; 32]>::try_from(dek_bytes_vec.as_slice())
+                                        {
                                             actor_state.dek = Some(Zeroizing::new(dek_arr));
-                                            let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| &**d);
+                                            let dek_ref: Option<&[u8; 32]> =
+                                                actor_state.dek.as_ref().map(|d| &**d);
                                             actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                                 .unwrap_or_else(|e| {
                                                     log::warn!("[auth] UnlockWithDek: VectorIndex open failed: {e}");
@@ -4446,8 +5331,13 @@ impl FfiApp {
                                         }
                                     }
                                 }
-                                actor_state.app_state.encryption_enabled = actor_state.db_path != ":memory:";
-                                load_post_unlock(&mut actor_state, core_tx_for_thread.clone(), true);
+                                actor_state.app_state.encryption_enabled =
+                                    actor_state.db_path != ":memory:";
+                                load_post_unlock(
+                                    &mut actor_state,
+                                    core_tx_for_thread.clone(),
+                                    true,
+                                );
                             }
 
                             AppAction::UnlockWithPin { pin } => {
@@ -4460,14 +5350,19 @@ impl FfiApp {
                                         // (LockApp now guards against this). Reject the unlock attempt
                                         // rather than silently bypassing PIN verification.
                                         log::warn!("[auth] UnlockWithPin called but no auth params in bootstrap DB — rejecting to prevent auth bypass");
-                                        actor_state.app_state.toast = Some("No PIN configured. Please restart the app.".to_string());
+                                        actor_state.app_state.toast = Some(
+                                            "No PIN configured. Please restart the app."
+                                                .to_string(),
+                                        );
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
                                     }
                                     Err(e) => {
                                         log::error!("[auth] read_auth_params failed: {e}");
-                                        actor_state.app_state.toast = Some("Unlock failed: could not read auth data".to_string());
+                                        actor_state.app_state.toast = Some(
+                                            "Unlock failed: could not read auth data".to_string(),
+                                        );
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
@@ -4476,32 +5371,32 @@ impl FfiApp {
 
                                 // T-28-11: Check duress PIN BEFORE attempting DEK unwrap.
                                 if let Some(ref duress_hash) = params.duress_hash {
-                                    if crypto::key_derivation::verify_pin_hash(pin.as_bytes(), duress_hash) {
+                                    if crypto::key_derivation::verify_pin_hash(
+                                        pin.as_bytes(),
+                                        duress_hash,
+                                    ) {
                                         // Duress PIN entered: wipe all data (D-15, D-16).
                                         log::warn!("[auth] Duress PIN detected — wiping all data");
-                                        let _ = actor_state.bootstrap.delete_all();
-                                        let _ = std::fs::remove_file(&actor_state.db_path);
-                                        // Delete vector index files in data_dir.
-                                        // Safety check: only wipe if data_dir is non-empty and its
-                                        // path contains "mango", confirming it points to the app
-                                        // sandbox rather than an arbitrary directory (WR-03).
-                                        let data_dir_path = std::path::Path::new(&actor_state.data_dir);
-                                        let wipe_allowed = !actor_state.data_dir.is_empty()
-                                            && data_dir_path.components().any(|c| {
-                                                c.as_os_str() == "mango"
-                                            });
-                                        if wipe_allowed {
-                                            let _ = std::fs::remove_dir_all(&actor_state.data_dir);
-                                            let _ = std::fs::create_dir_all(&actor_state.data_dir);
-                                        } else {
-                                            log::warn!("[auth] Duress wipe: skipping remove_dir_all — data_dir does not look like app sandbox: {:?}", actor_state.data_dir);
+                                        if let Err(e) = wipe_local_install(
+                                            &mut actor_state,
+                                            core_tx_for_thread.clone(),
+                                            true,
+                                        ) {
+                                            log::error!(
+                                                "[auth] Duress wipe: failed to reset install: {e}"
+                                            );
+                                            actor_state.app_state.toast = Some(
+                                                "All data erased, but setup could not restart."
+                                                    .to_string(),
+                                            );
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            continue;
                                         }
-                                        actor_state.db = None;
-                                        actor_state.app_state = AppState::default();
-                                        actor_state.app_state.router.current_screen = Screen::Onboarding {
-                                            step: OnboardingStep::Welcome,
-                                        };
-                                        actor_state.app_state.toast = Some("All data erased.".to_string());
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
@@ -4509,64 +5404,71 @@ impl FfiApp {
                                 }
 
                                 // Derive KEK from the PIN. CR-03: kek is Zeroizing<[u8; 32]>.
-                                let kek: Zeroizing<[u8; 32]> = match crypto::key_derivation::derive_kek(
-                                    pin.as_bytes(),
-                                    &params.salt,
-                                    params.kdf_memory_kib,
-                                    params.kdf_iterations,
-                                    params.kdf_parallelism,
-                                ) {
-                                    Ok(k) => k,
-                                    Err(e) => {
-                                        log::error!("[auth] UnlockWithPin KEK derivation failed: {e}");
-                                        actor_state.app_state.toast = Some("Unlock failed: key derivation error".to_string());
-                                        actor_state.app_state.rev += 1;
-                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                                        continue;
-                                    }
-                                };
+                                let kek: Zeroizing<[u8; 32]> =
+                                    match crypto::key_derivation::derive_kek(
+                                        pin.as_bytes(),
+                                        &params.salt,
+                                        params.kdf_memory_kib,
+                                        params.kdf_iterations,
+                                        params.kdf_parallelism,
+                                    ) {
+                                        Ok(k) => k,
+                                        Err(e) => {
+                                            log::error!(
+                                                "[auth] UnlockWithPin KEK derivation failed: {e}"
+                                            );
+                                            actor_state.app_state.toast = Some(
+                                                "Unlock failed: key derivation error".to_string(),
+                                            );
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            continue;
+                                        }
+                                    };
 
                                 // Unwrap DEK. CR-03: wrap in Zeroizing so raw bytes are zeroed on drop.
-                                let dek: Zeroizing<[u8; 32]> = match crypto::key_derivation::unwrap_dek(&*kek, &params.wrapped_dek) {
-                                    Ok(d) => Zeroizing::new(d),
-                                    Err(_) => {
-                                        // Wrong PIN (AES-GCM tag mismatch).
-                                        actor_state.app_state.toast = Some("Incorrect PIN. Please try again.".to_string());
-                                        actor_state.app_state.rev += 1;
-                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                                        continue;
-                                    }
-                                };
+                                let dek: Zeroizing<[u8; 32]> =
+                                    match crypto::key_derivation::unwrap_dek(
+                                        &*kek,
+                                        &params.wrapped_dek,
+                                    ) {
+                                        Ok(d) => Zeroizing::new(d),
+                                        Err(_) => {
+                                            // Wrong PIN (AES-GCM tag mismatch).
+                                            actor_state.app_state.toast = Some(
+                                                "Incorrect PIN. Please try again.".to_string(),
+                                            );
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            continue;
+                                        }
+                                    };
                                 let dek_hex: Zeroizing<String> = Zeroizing::new(
                                     dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                 );
 
-                                // Cache DEK in platform keychain for biometric unlock if biometrics
-                                // became available after initial PIN setup (e.g. user enrolled
-                                // fingerprint after creating PIN).
-                                if actor_state.app_state.biometric_available {
-                                    let existing = actor_state.keychain.load(
-                                        "mango".to_string(),
-                                        "dek".to_string(),
-                                    );
-                                    if existing.is_none() {
-                                        actor_state.keychain.store(
-                                            "mango".to_string(),
-                                            "dek".to_string(),
-                                            (*dek_hex).clone(),
-                                        );
-                                        log::info!("[auth] UnlockWithPin: DEK cached in keychain for biometric unlock");
-                                    }
-                                }
-
                                 // Open encrypted DB.
-                                match persistence::Database::open_encrypted(&actor_state.db_path, &*dek_hex) {
+                                match persistence::Database::open_encrypted(
+                                    &actor_state.db_path,
+                                    &*dek_hex,
+                                ) {
                                     Ok(db) => {
                                         actor_state.db = Some(db);
                                     }
                                     Err(e) => {
-                                        log::error!("[auth] UnlockWithPin open_encrypted failed: {e}");
-                                        actor_state.app_state.toast = Some("Unlock failed: database error".to_string());
+                                        log::error!(
+                                            "[auth] UnlockWithPin open_encrypted failed: {e}"
+                                        );
+                                        actor_state.app_state.toast =
+                                            Some("Unlock failed: database error".to_string());
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
@@ -4574,14 +5476,19 @@ impl FfiApp {
                                 }
                                 // Phase 29 (D-01, D-04): Store DEK and open VectorIndex with encryption key.
                                 actor_state.dek = Some(dek.clone());
-                                let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| &**d);
+                                let dek_ref: Option<&[u8; 32]> =
+                                    actor_state.dek.as_ref().map(|d| &**d);
                                 actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                     .unwrap_or_else(|e| {
                                         log::warn!("[auth] UnlockWithPin: VectorIndex open with DEK failed: {e}");
                                         rag::VectorIndex::new("", None).expect("empty fallback")
                                     });
                                 actor_state.app_state.encryption_enabled = true;
-                                load_post_unlock(&mut actor_state, core_tx_for_thread.clone(), true);
+                                load_post_unlock(
+                                    &mut actor_state,
+                                    core_tx_for_thread.clone(),
+                                    true,
+                                );
                             }
 
                             AppAction::LockApp => {
@@ -4602,19 +5509,28 @@ impl FfiApp {
                                 // Drop the DB handle — data is inaccessible until re-unlock.
                                 actor_state.db = None;
                                 actor_state.dek = None; // Phase 29 (D-02): Zeroizing zeros DEK bytes on drop
-                                // Reset VectorIndex to empty fallback — no stale encrypted data accessible while locked.
+                                                        // Reset VectorIndex to empty fallback — no stale encrypted data accessible while locked.
                                 actor_state.vector_index = rag::VectorIndex::new("", None)
                                     .expect("empty fallback VectorIndex");
                                 // Preserve only non-sensitive fields; reset to locked state.
                                 let biometric_available = actor_state.app_state.biometric_available;
+                                let biometric_login_enabled =
+                                    actor_state.app_state.biometric_login_enabled;
                                 let auth_initialized = actor_state.app_state.auth_initialized;
                                 let encryption_enabled = actor_state.app_state.encryption_enabled;
+                                let duress_pin_configured =
+                                    actor_state.app_state.duress_pin_configured;
                                 let lock_timeout = actor_state.app_state.lock_timeout_seconds;
+                                let preserved_rev = actor_state.app_state.rev;
                                 actor_state.app_state = AppState::default();
+                                actor_state.app_state.rev = preserved_rev;
                                 actor_state.app_state.router.current_screen = Screen::Locked;
                                 actor_state.app_state.biometric_available = biometric_available;
+                                actor_state.app_state.biometric_login_enabled =
+                                    biometric_login_enabled;
                                 actor_state.app_state.auth_initialized = auth_initialized;
                                 actor_state.app_state.encryption_enabled = encryption_enabled;
+                                actor_state.app_state.duress_pin_configured = duress_pin_configured;
                                 actor_state.app_state.lock_timeout_seconds = lock_timeout;
                                 // Cancel any active streams.
                                 if let Some(token) = actor_state.active_stream_token.take() {
@@ -4623,6 +5539,15 @@ impl FfiApp {
                             }
 
                             AppAction::AttemptBiometricUnlock => {
+                                if !actor_state.app_state.biometric_available
+                                    || !actor_state.app_state.biometric_login_enabled
+                                {
+                                    actor_state.app_state.toast =
+                                        Some("Biometric login is not enabled.".to_string());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 // Dispatch biometric authentication to a blocking thread so the
                                 // actor loop remains responsive during the platform prompt (CR-03).
                                 // The result is delivered back as InternalEvent::BiometricResult.
@@ -4635,6 +5560,49 @@ impl FfiApp {
                                     )));
                                 });
                                 // Actor loop continues processing messages immediately.
+                            }
+
+                            AppAction::SetBiometricLoginEnabled { enabled } => {
+                                if enabled {
+                                    if !actor_state.app_state.biometric_available {
+                                        actor_state.app_state.toast = Some(
+                                            "Biometrics are not available on this device."
+                                                .to_string(),
+                                        );
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+
+                                    let Some(dek) = actor_state.dek.as_ref() else {
+                                        actor_state.app_state.toast = Some(
+                                            "Unlock the app before enabling biometric login."
+                                                .to_string(),
+                                        );
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    };
+
+                                    let dek_hex: String =
+                                        dek.iter().map(|b| format!("{:02x}", b)).collect();
+                                    actor_state.keychain.store(
+                                        "mango".to_string(),
+                                        "dek".to_string(),
+                                        dek_hex,
+                                    );
+                                } else {
+                                    actor_state
+                                        .keychain
+                                        .delete("mango".to_string(), "dek".to_string());
+                                }
+
+                                actor_state.app_state.biometric_login_enabled = enabled;
+                                actor_state.app_state.toast = Some(if enabled {
+                                    "Biometric login enabled.".to_string()
+                                } else {
+                                    "Biometric login disabled.".to_string()
+                                });
                             }
 
                             AppAction::SetLockTimeout { seconds } => {
@@ -4728,7 +5696,11 @@ impl FfiApp {
                                         {
                                             let new_title = truncate_title(&first_user_text, 50);
                                             let _ = persistence::queries::rename_conversation(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
                                                 &conv_id,
                                                 &new_title,
                                                 now,
@@ -4805,8 +5777,7 @@ impl FfiApp {
                                                             .cloned()
                                                             .unwrap_or_default()
                                                     });
-                                                let core_tx_clone =
-                                                    core_tx_for_thread.clone();
+                                                let core_tx_clone = core_tx_for_thread.clone();
 
                                                 actor_state.runtime.spawn(async move {
                                                     let memories =
@@ -4845,7 +5816,9 @@ impl FfiApp {
                                     llm::LlmError::ApiError { status_code, .. } => {
                                         *status_code == 0 || *status_code >= 500
                                     }
-                                    llm::LlmError::RateLimited { retry_after_secs, .. } => {
+                                    llm::LlmError::RateLimited {
+                                        retry_after_secs, ..
+                                    } => {
                                         // Mark 429-specific backoff (shorter curve than general failure)
                                         if let Some(failed_id) =
                                             &actor_state.current_streaming_backend_id
@@ -4982,9 +5955,7 @@ impl FfiApp {
                                                     &next_backend.id,
                                                 ),
                                                 core_tx_for_thread.clone(),
-                                                actor_state
-                                                    .router
-                                                    .get_semaphore(&next_backend.id),
+                                                actor_state.router.get_semaphore(&next_backend.id),
                                             );
                                             actor_state.active_stream_token = Some(token);
                                             refresh_backend_summaries(&mut actor_state);
@@ -5335,7 +6306,9 @@ impl FfiApp {
                                     }
                                 }
                                 if !chunk_rowids.is_empty() {
-                                    let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| &**d));
+                                    let _ = actor_state
+                                        .vector_index
+                                        .save(actor_state.dek.as_ref().map(|d| &**d));
                                 }
 
                                 // Clear ingestion progress and show success toast
@@ -5381,8 +6354,7 @@ impl FfiApp {
                                     let mut added_count = 0u32;
                                     for content in &memories {
                                         let id = new_uuid();
-                                        let usearch_key =
-                                            uuid::Uuid::new_v4().as_u128() as i64;
+                                        let usearch_key = uuid::Uuid::new_v4().as_u128() as i64;
 
                                         let row = persistence::queries::MemoryRow {
                                             id,
@@ -5401,19 +6373,18 @@ impl FfiApp {
                                             let embedding = actor_state
                                                 .embedding_provider
                                                 .embed(vec![content.clone()]);
-                                            if embedding.len()
-                                                == crate::embedding::EMBEDDING_DIM
-                                            {
-                                                let _ = actor_state.vector_index.add(
-                                                    usearch_key as u64,
-                                                    &embedding,
-                                                );
+                                            if embedding.len() == crate::embedding::EMBEDDING_DIM {
+                                                let _ = actor_state
+                                                    .vector_index
+                                                    .add(usearch_key as u64, &embedding);
                                                 added_count += 1;
                                             }
                                         }
                                     }
                                     if added_count > 0 {
-                                        let _ = actor_state.vector_index.save(actor_state.dek.as_ref().map(|d| &**d));
+                                        let _ = actor_state
+                                            .vector_index
+                                            .save(actor_state.dek.as_ref().map(|d| &**d));
                                     }
                                     log::info!(
                                         "[memory] extracted {} memories ({} embedded) from conv={}",
@@ -5422,9 +6393,16 @@ impl FfiApp {
                                         conversation_id
                                     );
                                     // Re-query memory count (per D-04)
-                                    actor_state.app_state.memory_count = actor_state.db.as_ref().expect("db unlocked").conn()
-                                        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0))
-                                        .unwrap_or(0) as u64;
+                                    actor_state.app_state.memory_count = actor_state
+                                        .db
+                                        .as_ref()
+                                        .expect("db unlocked")
+                                        .conn()
+                                        .query_row("SELECT COUNT(*) FROM memories", [], |r| {
+                                            r.get::<_, i64>(0)
+                                        })
+                                        .unwrap_or(0)
+                                        as u64;
                                 }
                                 // No AppState rev increment -- memories are invisible in Phase 20 UI
                                 continue;
@@ -5439,7 +6417,9 @@ impl FfiApp {
                             } => {
                                 // RACE GUARD: if user switched conversations during the async tool
                                 // detection round, drop the stale event.
-                                if actor_state.app_state.current_conversation_id.as_deref() != Some(&conv_id) {
+                                if actor_state.app_state.current_conversation_id.as_deref()
+                                    != Some(&conv_id)
+                                {
                                     log::warn!(
                                         "ChatToolCallsReady for conv {} but current is {:?}, dropping",
                                         conv_id, actor_state.app_state.current_conversation_id
@@ -5461,8 +6441,11 @@ impl FfiApp {
                                 // dispatch_tools uses runtime.block_on() for async network calls,
                                 // which would panic if called from inside a Tokio task.
                                 let brave_api_key = persistence::queries::get_setting(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(), "brave_api_key"
-                                ).unwrap_or(None).unwrap_or_default();
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    "brave_api_key",
+                                )
+                                .unwrap_or(None)
+                                .unwrap_or_default();
 
                                 let tool_results = agent::dispatch_tools(
                                     &tool_calls,
@@ -5480,10 +6463,13 @@ impl FfiApp {
 
                                 // Wrap tool calls in ChatCompletionMessageToolCalls::Function
                                 // as required by the assistant message builder.
-                                let assistant_tool_calls: Vec<ChatCompletionMessageToolCalls> = tool_calls
-                                    .iter()
-                                    .map(|c| ChatCompletionMessageToolCalls::Function(c.clone()))
-                                    .collect();
+                                let assistant_tool_calls: Vec<ChatCompletionMessageToolCalls> =
+                                    tool_calls
+                                        .iter()
+                                        .map(|c| {
+                                            ChatCompletionMessageToolCalls::Function(c.clone())
+                                        })
+                                        .collect();
 
                                 // Append assistant message with the tool_calls field set.
                                 if let Ok(assistant_msg) =
@@ -5509,12 +6495,17 @@ impl FfiApp {
                                 }
 
                                 // Look up the backend for the streaming follow-up.
-                                let backend = actor_state.backends.iter().find(|b| b.id == backend_id).cloned();
+                                let backend = actor_state
+                                    .backends
+                                    .iter()
+                                    .find(|b| b.id == backend_id)
+                                    .cloned();
                                 let backend = match backend {
                                     Some(b) => b,
                                     None => {
                                         actor_state.app_state.busy_state = BusyState::Idle;
-                                        actor_state.app_state.last_error = Some("Backend not found for tool follow-up".into());
+                                        actor_state.app_state.last_error =
+                                            Some("Backend not found for tool follow-up".into());
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
@@ -5523,14 +6514,22 @@ impl FfiApp {
 
                                 // Resolve API key (keychain or inline).
                                 let api_key = if backend.api_key.is_empty() {
-                                    actor_state.keychain.load("mango".to_string(), backend_id.clone()).unwrap_or_default()
+                                    actor_state
+                                        .keychain
+                                        .load("mango".to_string(), backend_id.clone())
+                                        .unwrap_or_default()
                                 } else {
                                     backend.api_key.clone()
                                 };
-                                let backend_for_stream = llm::BackendConfig { api_key, ..backend.clone() };
+                                let backend_for_stream = llm::BackendConfig {
+                                    api_key,
+                                    ..backend.clone()
+                                };
 
                                 // Transition to streaming state.
-                                actor_state.app_state.busy_state = BusyState::Streaming { model: model.clone() };
+                                actor_state.app_state.busy_state = BusyState::Streaming {
+                                    model: model.clone(),
+                                };
 
                                 // Spawn the follow-up streaming request with full API message history.
                                 // Using spawn_streaming_task_from_api_messages avoids lossy conversion
@@ -5558,20 +6557,26 @@ impl FfiApp {
                                     st.push_str(&text);
                                 }
                                 let _ = core_tx_for_thread.send(CoreMsg::InternalEvent(Box::new(
-                                    llm::InternalEvent::StreamDone
+                                    llm::InternalEvent::StreamDone,
                                 )));
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
-                            llm::InternalEvent::BraveApiKeyValidationResult { api_key: _, success, error_message } => {
+                            llm::InternalEvent::BraveApiKeyValidationResult {
+                                api_key: _,
+                                success,
+                                error_message,
+                            } => {
                                 actor_state.app_state.brave_api_key_validating = false;
                                 if success {
-                                    actor_state.app_state.toast = Some("API key saved and verified.".to_string());
+                                    actor_state.app_state.toast =
+                                        Some("API key saved and verified.".to_string());
                                 } else {
                                     // Key is already saved optimistically. Show a softer message
                                     // for network errors vs actual invalid key errors.
-                                    let msg = error_message.unwrap_or_else(|| "Could not verify API key.".to_string());
+                                    let msg = error_message
+                                        .unwrap_or_else(|| "Could not verify API key.".to_string());
                                     let is_invalid_key = msg.contains("Invalid API key");
                                     if is_invalid_key {
                                         // Actually invalid — remove the saved key
@@ -5602,15 +6607,15 @@ impl FfiApp {
 
                                     // Per D-06 / ENC-09: biometric success loads DEK from keychain
                                     // and opens the encrypted DB without requiring PIN entry.
-                                    let maybe_dek_hex = actor_state.keychain.load(
-                                        "mango".to_string(),
-                                        "dek".to_string(),
-                                    );
+                                    let maybe_dek_hex = actor_state
+                                        .keychain
+                                        .load("mango".to_string(), "dek".to_string());
                                     if let Some(raw_dek) = maybe_dek_hex {
                                         let dek_hex = zeroize::Zeroizing::new(raw_dek);
                                         log::info!("[auth] Biometric unlock: DEK loaded from keychain — opening DB");
                                         if actor_state.db_path == ":memory:" {
-                                            if let Ok(db) = persistence::Database::open(":memory:") {
+                                            if let Ok(db) = persistence::Database::open(":memory:")
+                                            {
                                                 actor_state.db = Some(db);
                                             }
                                         } else {
@@ -5626,17 +6631,26 @@ impl FfiApp {
                                                     actor_state.app_state.toast = Some(
                                                         "Biometric unlock failed: database error. Try PIN.".to_string(),
                                                     );
-                                                    actor_state.app_state.biometric_authenticated = true;
+                                                    actor_state.app_state.biometric_authenticated =
+                                                        true;
                                                     actor_state.app_state.rev += 1;
-                                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                                    emit(
+                                                        &actor_state.app_state,
+                                                        &shared_for_core,
+                                                        &update_tx,
+                                                    );
                                                     continue;
                                                 }
                                             }
                                             // Phase 29 (D-01, D-04): Decode hex DEK from keychain and store + open VectorIndex.
-                                            if let Ok(dek_bytes_vec) = hex::decode(dek_hex.as_str()) {
-                                                if let Ok(dek_arr) = <[u8; 32]>::try_from(dek_bytes_vec.as_slice()) {
+                                            if let Ok(dek_bytes_vec) = hex::decode(dek_hex.as_str())
+                                            {
+                                                if let Ok(dek_arr) =
+                                                    <[u8; 32]>::try_from(dek_bytes_vec.as_slice())
+                                                {
                                                     actor_state.dek = Some(Zeroizing::new(dek_arr));
-                                                    let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_ref().map(|d| &**d);
+                                                    let dek_ref: Option<&[u8; 32]> =
+                                                        actor_state.dek.as_ref().map(|d| &**d);
                                                     actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                                         .unwrap_or_else(|e| {
                                                             log::warn!("[auth] BiometricResult: VectorIndex open failed: {e}");

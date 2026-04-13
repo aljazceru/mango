@@ -35,11 +35,7 @@ impl ValidationError {
 /// Validate the PIN setup form fields.
 ///
 /// Returns `Ok(duress_pin_option)` on success, or `Err(ValidationError)` describing the problem.
-fn validate(
-    pin: &str,
-    confirm: &str,
-    duress: &str,
-) -> Result<Option<String>, ValidationError> {
+fn validate(pin: &str, confirm: &str, duress: &str) -> Result<Option<String>, ValidationError> {
     if pin.len() < 4 {
         return Err(ValidationError::TooShort);
     }
@@ -65,17 +61,13 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let vc = crate::theme::view_colors(is_dark);
 
-    let title = text("Set Your PIN")
-        .size(24)
-        .color(vc.text);
+    let title = text("Set Your PIN").size(24).color(vc.text);
 
     let subtitle = text("Protect your conversations with a PIN.")
         .size(14)
         .color(vc.text_dim);
 
-    let pin_label = text("PIN (min 4 characters)")
-        .size(12)
-        .color(vc.muted);
+    let pin_label = text("PIN (min 4 characters)").size(12).color(vc.muted);
 
     let pin_field = text_input("Enter PIN", pin_input)
         .secure(true)
@@ -95,9 +87,7 @@ pub fn view<'a>(
             selection: vc.accent_dim,
         });
 
-    let confirm_label = text("Confirm PIN")
-        .size(12)
-        .color(vc.muted);
+    let confirm_label = text("Confirm PIN").size(12).color(vc.muted);
 
     let confirm_field = text_input("Confirm PIN", confirm_input)
         .secure(true)
@@ -208,9 +198,7 @@ pub fn view<'a>(
 
     if let Some(err) = inline_err {
         // Use owned String so the widget doesn't borrow from a local variable.
-        let err_text = text(err)
-            .size(13)
-            .color(vc.destructive);
+        let err_text = text(err).size(13).color(vc.destructive);
         content_col = content_col.push(err_text);
     }
 

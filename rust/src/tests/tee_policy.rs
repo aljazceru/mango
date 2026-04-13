@@ -12,7 +12,10 @@ fn test_migration_v14_seeds_tdx_minimum_tee_tcb_svn() {
         .unwrap()
         .expect("tee_policy_tdx should be seeded by MIGRATION_V14");
     let policy: TdxPolicy = serde_json::from_str(&json).unwrap();
-    assert_eq!(policy.minimum_tee_tcb_svn, "03010200000000000000000000000000");
+    assert_eq!(
+        policy.minimum_tee_tcb_svn,
+        "03010200000000000000000000000000"
+    );
 }
 
 /// MIGRATION_V14 should seed `tee_policy_tdx` with 4 accepted MR_SEAM entries.
@@ -72,7 +75,8 @@ fn test_get_tee_policy_returns_correct_snp_defaults() {
 #[test]
 fn test_get_tee_policy_reflects_runtime_change() {
     let db = Database::open(":memory:").unwrap();
-    let updated_json = r#"{"minimum_bootloader":9,"minimum_tee":1,"minimum_snp":20,"minimum_microcode":100}"#;
+    let updated_json =
+        r#"{"minimum_bootloader":9,"minimum_tee":1,"minimum_snp":20,"minimum_microcode":100}"#;
     queries::set_setting(db.conn(), "tee_policy_snp", updated_json).unwrap();
 
     let policy = queries::get_tee_policy(db.conn()).unwrap();
@@ -88,7 +92,10 @@ fn test_tdx_policy_default_matches_hardcoded_constants() {
     let policy = TdxPolicy::default();
     // The prior compile-time constant TDX_MINIMUM_TEE_TCB_SVN was
     // [0x03, 0x01, 0x02, 0x00, 0x00, ...] which hex-encodes to this string.
-    assert_eq!(policy.minimum_tee_tcb_svn, "03010200000000000000000000000000");
+    assert_eq!(
+        policy.minimum_tee_tcb_svn,
+        "03010200000000000000000000000000"
+    );
 
     // Prior TDX_ACCEPTED_MR_SEAMS had exactly 4 entries.
     assert_eq!(policy.accepted_mr_seams.len(), 4);

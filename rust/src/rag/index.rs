@@ -102,11 +102,7 @@ impl VectorIndex {
     /// Distance is cosine distance (0.0 = identical, 2.0 = opposite).
     pub fn search(&self, query: &[f32], top_k: usize) -> anyhow::Result<Vec<(u64, f32)>> {
         let results = self.inner.search(query, top_k)?;
-        let pairs = results
-            .keys
-            .into_iter()
-            .zip(results.distances)
-            .collect();
+        let pairs = results.keys.into_iter().zip(results.distances).collect();
         Ok(pairs)
     }
 
@@ -134,10 +130,8 @@ impl VectorIndex {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &tmp_path,
-                        std::fs::Permissions::from_mode(0o600),
-                    );
+                    let _ =
+                        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
                 }
                 let plaintext = std::fs::read(&tmp_path);
                 let _ = std::fs::remove_file(&tmp_path);
@@ -171,8 +165,8 @@ impl VectorIndex {
 fn write_restricted(path: &str, data: &[u8]) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
         use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -307,7 +301,11 @@ mod tests {
 
         {
             let index = VectorIndex::new(&dir, Some(&dek)).expect("Should load encrypted index");
-            assert_eq!(index.size(), 2, "Loaded encrypted index should have 2 vectors");
+            assert_eq!(
+                index.size(),
+                2,
+                "Loaded encrypted index should have 2 vectors"
+            );
 
             let results = index.search(&make_direction_vec(10), 1).unwrap();
             assert_eq!(results.len(), 1);
@@ -350,11 +348,16 @@ mod tests {
         // Verify no MGO1 header
         let file_path = format!("{}/{}", dir, INDEX_FILENAME);
         let file_bytes = std::fs::read(&file_path).unwrap();
-        assert_ne!(&file_bytes[..4], MAGIC, "Legacy file should not have MGO1 header");
+        assert_ne!(
+            &file_bytes[..4],
+            MAGIC,
+            "Legacy file should not have MGO1 header"
+        );
 
         // Load with a DEK -- should detect legacy format and load transparently
         let dek = test_dek();
-        let index = VectorIndex::new(&dir, Some(&dek)).expect("Legacy file should load transparently");
+        let index =
+            VectorIndex::new(&dir, Some(&dek)).expect("Legacy file should load transparently");
         assert_eq!(index.size(), 1, "Legacy index should load with 1 vector");
     }
 
@@ -371,7 +374,10 @@ mod tests {
         }
 
         let result = VectorIndex::new(&dir, None);
-        assert!(result.is_err(), "Encrypted file with no DEK should return error");
+        assert!(
+            result.is_err(),
+            "Encrypted file with no DEK should return error"
+        );
     }
 
     fn tempdir() -> String {

@@ -119,7 +119,12 @@ pub fn view(state: &AppState, is_dark: bool) -> Element<'_, Message> {
             .padding(Padding::from([8u16, 16]))
             .width(Length::Fill)
             .style(move |_theme| container::Style {
-                background: Some(Background::Color(Color { r: accent_color.r, g: accent_color.g, b: accent_color.b, a: 0.1 })),
+                background: Some(Background::Color(Color {
+                    r: accent_color.r,
+                    g: accent_color.g,
+                    b: accent_color.b,
+                    a: 0.1,
+                })),
                 border: Border {
                     color: accent_color,
                     width: 1.0,
@@ -131,38 +136,40 @@ pub fn view(state: &AppState, is_dark: bool) -> Element<'_, Message> {
         });
 
     // ── Document list ────────────────────────────────────────────────────────
-    let content_section: Element<'_, Message> = if state.documents.is_empty()
-        && state.ingestion_progress.is_none()
-    {
-        // Empty state
-        container(
-            column![
-                text("No documents ingested yet.").size(16),
-                text("Add a document to get started.")
-                    .size(14)
-                    .color(muted_color),
-            ]
-            .spacing(8)
-            .align_x(Alignment::Center),
-        )
-        .padding(48)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(Alignment::Center)
-        .into()
-    } else {
-        let doc_rows: Vec<Element<'_, Message>> = state
-            .documents
-            .iter()
-            .map(|doc| build_document_row(doc, vc))
-            .collect();
+    let content_section: Element<'_, Message> =
+        if state.documents.is_empty() && state.ingestion_progress.is_none() {
+            // Empty state
+            container(
+                column![
+                    text("No documents ingested yet.").size(16),
+                    text("Add a document to get started.")
+                        .size(14)
+                        .color(muted_color),
+                ]
+                .spacing(8)
+                .align_x(Alignment::Center),
+            )
+            .padding(48)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .into()
+        } else {
+            let doc_rows: Vec<Element<'_, Message>> = state
+                .documents
+                .iter()
+                .map(|doc| build_document_row(doc, vc))
+                .collect();
 
-        let list = column(doc_rows)
-            .spacing(8)
-            .padding(Padding::from([8u16, 16]));
+            let list = column(doc_rows)
+                .spacing(8)
+                .padding(Padding::from([8u16, 16]));
 
-        scrollable(list).height(Length::Fill).width(Length::Fill).into()
-    };
+            scrollable(list)
+                .height(Length::Fill)
+                .width(Length::Fill)
+                .into()
+        };
 
     // ── Compose full layout ───────────────────────────────────────────────────
     let mut page_children: Vec<Element<'_, Message>> = vec![header.into()];
@@ -188,7 +195,10 @@ pub fn view(state: &AppState, is_dark: bool) -> Element<'_, Message> {
         .into()
 }
 
-fn build_document_row<'a>(doc: &'a DocumentSummary, vc: crate::theme::ViewColors) -> Element<'a, Message> {
+fn build_document_row<'a>(
+    doc: &'a DocumentSummary,
+    vc: crate::theme::ViewColors,
+) -> Element<'a, Message> {
     let badge_text = format_badge(&doc.format);
     let size_text = format_size(doc.size_bytes);
     let date_text = format_date(doc.ingestion_date);
@@ -197,26 +207,21 @@ fn build_document_row<'a>(doc: &'a DocumentSummary, vc: crate::theme::ViewColors
     // Format badge pill
     let surface = vc.surface;
     let border = vc.border;
-    let badge = container(
-        text(badge_text).size(11),
-    )
-    .padding(Padding::from([2u16, 6]))
-    .style(move |_theme| container::Style {
-        background: Some(Background::Color(surface)),
-        border: Border {
-            radius: 4.0.into(),
-            color: border,
-            width: 1.0,
-        },
-        ..Default::default()
-    });
+    let badge = container(text(badge_text).size(11))
+        .padding(Padding::from([2u16, 6]))
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(surface)),
+            border: Border {
+                radius: 4.0.into(),
+                color: border,
+                width: 1.0,
+            },
+            ..Default::default()
+        });
 
-    let name_row = row![
-        text(&doc.name).size(15),
-        badge,
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
+    let name_row = row![text(&doc.name).size(15), badge,]
+        .spacing(8)
+        .align_y(Alignment::Center);
 
     let muted = vc.muted;
     let meta_row = row![
@@ -231,7 +236,12 @@ fn build_document_row<'a>(doc: &'a DocumentSummary, vc: crate::theme::ViewColors
     let doc_info = column![name_row, meta_row].spacing(4);
 
     let destructive = vc.destructive;
-    let destructive_bg = Color { r: destructive.r, g: destructive.g, b: destructive.b, a: 0.15 };
+    let destructive_bg = Color {
+        r: destructive.r,
+        g: destructive.g,
+        b: destructive.b,
+        a: 0.15,
+    };
     let delete_btn = button(text("Delete").size(12))
         .on_press(Message::DeleteDocument(doc.id.clone()))
         .padding(Padding::from([4u16, 10]))
@@ -248,12 +258,9 @@ fn build_document_row<'a>(doc: &'a DocumentSummary, vc: crate::theme::ViewColors
 
     let secondary_surface = vc.secondary_surface;
     container(
-        row![
-            container(doc_info).width(Length::Fill),
-            delete_btn,
-        ]
-        .align_y(Alignment::Center)
-        .spacing(12),
+        row![container(doc_info).width(Length::Fill), delete_btn,]
+            .align_y(Alignment::Center)
+            .spacing(12),
     )
     .padding(Padding::from([10u16, 14]))
     .width(Length::Fill)

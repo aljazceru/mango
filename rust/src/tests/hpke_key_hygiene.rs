@@ -34,7 +34,10 @@ fn test_hpke_key_zeroed_on_drop() {
     // a deterministic, observable result without relying on memory layout after
     // the value is freed (which would be UB).
     att.zeroize();
-    assert_eq!(att.hpke_public_key, [0u8; 32], "hpke_public_key must be zeroed by Zeroize::zeroize()");
+    assert_eq!(
+        att.hpke_public_key, [0u8; 32],
+        "hpke_public_key must be zeroed by Zeroize::zeroize()"
+    );
 }
 
 /// Verify that a cloned struct independently zeroes its own copy of hpke_public_key.
@@ -51,14 +54,23 @@ fn test_cloned_struct_also_zeroes_on_drop() {
     let mut cloned = att.clone();
 
     // Original key is intact.
-    assert_eq!(att.hpke_public_key, [0xCD; 32], "original key must be intact before zeroing clone");
+    assert_eq!(
+        att.hpke_public_key, [0xCD; 32],
+        "original key must be intact before zeroing clone"
+    );
 
     // Zeroize the clone — simulates ZeroizeOnDrop.
     cloned.zeroize();
-    assert_eq!(cloned.hpke_public_key, [0u8; 32], "cloned hpke_public_key must be zeroed after zeroize()");
+    assert_eq!(
+        cloned.hpke_public_key, [0u8; 32],
+        "cloned hpke_public_key must be zeroed after zeroize()"
+    );
 
     // Original still has its key intact (independent zeroing).
-    assert_eq!(att.hpke_public_key, [0xCD; 32], "original key must be intact after zeroing clone");
+    assert_eq!(
+        att.hpke_public_key, [0xCD; 32],
+        "original key must be intact after zeroing clone"
+    );
 }
 
 /// Verify that #[zeroize(skip)] fields are NOT modified by zeroize().
@@ -76,12 +88,25 @@ fn test_skipped_fields_not_zeroed() {
     att_mut.zeroize();
 
     // hpke_public_key should be zeroed.
-    assert_eq!(att_mut.hpke_public_key, [0u8; 32], "hpke_public_key zeroed by zeroize()");
+    assert_eq!(
+        att_mut.hpke_public_key, [0u8; 32],
+        "hpke_public_key zeroed by zeroize()"
+    );
 
     // Skipped fields should retain their values.
-    assert_eq!(att_mut.expires_at, 42, "expires_at should be unchanged (zeroize skip)");
-    assert_eq!(att_mut.report_blob, vec![0xDE, 0xAD, 0xBE, 0xEF], "report_blob should be unchanged (zeroize skip)");
-    assert_eq!(att_mut.label, "persistent", "label should be unchanged (zeroize skip)");
+    assert_eq!(
+        att_mut.expires_at, 42,
+        "expires_at should be unchanged (zeroize skip)"
+    );
+    assert_eq!(
+        att_mut.report_blob,
+        vec![0xDE, 0xAD, 0xBE, 0xEF],
+        "report_blob should be unchanged (zeroize skip)"
+    );
+    assert_eq!(
+        att_mut.label, "persistent",
+        "label should be unchanged (zeroize skip)"
+    );
 }
 
 /// Compile-time proof that zeroize is available in the crate dependency graph.

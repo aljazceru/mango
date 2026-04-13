@@ -1,13 +1,15 @@
 use std::time::Duration;
 
+use crate::memory::extract::should_extract;
+use crate::memory::retrieve::{build_system_with_memories, MemoryResult, DEFAULT_MEMORY_TOP_K};
+use crate::persistence::queries::get_memory_content_by_usearch_keys;
 use crate::persistence::{
     queries::{delete_memory, insert_memory, list_memories, update_memory, MemoryRow},
     Database,
 };
-use crate::memory::extract::should_extract;
-use crate::memory::retrieve::{build_system_with_memories, MemoryResult, DEFAULT_MEMORY_TOP_K};
-use crate::persistence::queries::get_memory_content_by_usearch_keys;
-use crate::{AppAction, EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider, Screen};
+use crate::{
+    AppAction, EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider, Screen,
+};
 
 // ── Actor integration helpers (duplicated from agent.rs for independence) ─────
 
@@ -17,7 +19,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
-    Box::new(crate::NullBiometricProvider),
+        Box::new(crate::NullBiometricProvider),
     );
     // Allow actor thread to initialize
     std::thread::sleep(Duration::from_millis(150));
@@ -129,8 +131,14 @@ fn test_should_extract_short_messages() {
 #[test]
 fn test_should_extract_sufficient_messages() {
     let msgs = vec![
-        ("user".to_string(), "My name is Alex and I work at Acme Corporation as a senior engineer".to_string()),
-        ("assistant".to_string(), "Nice to meet you Alex! That sounds like a great position at Acme.".to_string()),
+        (
+            "user".to_string(),
+            "My name is Alex and I work at Acme Corporation as a senior engineer".to_string(),
+        ),
+        (
+            "assistant".to_string(),
+            "Nice to meet you Alex! That sounds like a great position at Acme.".to_string(),
+        ),
     ];
     assert!(should_extract(&msgs));
 }
@@ -172,9 +180,15 @@ fn test_build_system_with_memories_single() {
         score: 0.1,
     }];
     let result = build_system_with_memories("base prompt", &memories);
-    assert!(result.starts_with("<memories>"), "Should start with <memories>");
+    assert!(
+        result.starts_with("<memories>"),
+        "Should start with <memories>"
+    );
     assert!(result.contains("[1] "), "Should contain [1] numbering");
-    assert!(result.ends_with("base prompt"), "Should end with base prompt");
+    assert!(
+        result.ends_with("base prompt"),
+        "Should end with base prompt"
+    );
 }
 
 #[test]
@@ -197,7 +211,10 @@ fn test_build_system_with_memories_multiple_numbered() {
 #[test]
 fn test_build_system_with_memories_no_empty_tag() {
     let result = build_system_with_memories("base prompt", &[]);
-    assert!(!result.contains("<memories>"), "Empty memories should produce no <memories> tag");
+    assert!(
+        !result.contains("<memories>"),
+        "Empty memories should produce no <memories> tag"
+    );
 }
 
 #[test]
@@ -279,8 +296,14 @@ fn test_update_memory() {
     update_memory(db.conn(), "mem-upd", "Updated fact text").unwrap();
     let memories = list_memories(db.conn()).unwrap();
     assert_eq!(memories.len(), 1);
-    assert_eq!(memories[0].content, "Updated fact text", "Content should be updated");
-    assert_eq!(memories[0].id, "mem-upd", "ID should be unchanged after update");
+    assert_eq!(
+        memories[0].content, "Updated fact text",
+        "Content should be updated"
+    );
+    assert_eq!(
+        memories[0].id, "mem-upd",
+        "ID should be unchanged after update"
+    );
 }
 
 /// Verify ListMemories actor handler populates AppState.memories without panic (MEM-04).
@@ -288,7 +311,10 @@ fn test_update_memory() {
 fn test_list_memories_action() {
     let app = make_app();
     // Initial state: memories field is accessible and empty
-    assert!(app.state().memories.is_empty(), "memories should start empty");
+    assert!(
+        app.state().memories.is_empty(),
+        "memories should start empty"
+    );
     app.dispatch(AppAction::ListMemories);
     wait();
     let state = app.state();
@@ -301,7 +327,9 @@ fn test_list_memories_action() {
 #[test]
 fn test_delete_memory_action() {
     let app = make_app();
-    app.dispatch(AppAction::DeleteMemory { memory_id: "nonexistent".to_string() });
+    app.dispatch(AppAction::DeleteMemory {
+        memory_id: "nonexistent".to_string(),
+    });
     wait();
     let state = app.state();
     assert!(
@@ -331,7 +359,9 @@ fn test_update_memory_action() {
 #[test]
 fn test_memories_screen_navigation() {
     let app = make_app();
-    app.dispatch(AppAction::PushScreen { screen: Screen::Memories });
+    app.dispatch(AppAction::PushScreen {
+        screen: Screen::Memories,
+    });
     wait();
     // The screen navigation and auto-load of memories should complete without panic
     let state = app.state();

@@ -2,6 +2,9 @@
 name = "mango_core"
 version = "0.1.0"
 edition = "2021"
+description = "Confidential AI inference engine with TEE attestation and local RAG"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]

@@ -5,7 +5,12 @@ use mango_core::{AppAction, AppState};
 
 use crate::Message;
 
-fn action_btn<'a>(label: &'a str, msg: Message, enabled: bool, vc: crate::theme::ViewColors) -> Element<'a, Message> {
+fn action_btn<'a>(
+    label: &'a str,
+    msg: Message,
+    enabled: bool,
+    vc: crate::theme::ViewColors,
+) -> Element<'a, Message> {
     let (bg_color, muted, border) = (vc.bg, vc.muted, vc.border);
     let (accent_color, accent_text) = (vc.accent, bg_color);
     if enabled {
@@ -14,7 +19,10 @@ fn action_btn<'a>(label: &'a str, msg: Message, enabled: bool, vc: crate::theme:
             .padding(Padding::from([6u16, 16]))
             .style(move |_, _| button::Style {
                 background: Some(Background::Color(accent_color)),
-                border: Border { radius: 6.0.into(), ..Default::default() },
+                border: Border {
+                    radius: 6.0.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             })
             .into()
@@ -23,7 +31,11 @@ fn action_btn<'a>(label: &'a str, msg: Message, enabled: bool, vc: crate::theme:
             .padding(Padding::from([6u16, 16]))
             .style(move |_, _| button::Style {
                 background: Some(Background::Color(vc.ghost_overlay)),
-                border: Border { radius: 6.0.into(), color: border, width: 1.0 },
+                border: Border {
+                    radius: 6.0.into(),
+                    color: border,
+                    width: 1.0,
+                },
                 ..Default::default()
             })
             .into()
@@ -31,11 +43,14 @@ fn action_btn<'a>(label: &'a str, msg: Message, enabled: bool, vc: crate::theme:
 }
 
 fn section_header<'a>(label: &'a str, muted: iced::Color) -> Element<'a, Message> {
-    container(
-        text(label).size(11).color(muted),
-    )
-    .padding(Padding { top: 20.0, bottom: 6.0, left: 16.0, right: 16.0 })
-    .into()
+    container(text(label).size(11).color(muted))
+        .padding(Padding {
+            top: 20.0,
+            bottom: 6.0,
+            left: 16.0,
+            right: 16.0,
+        })
+        .into()
 }
 
 pub fn view<'a>(
@@ -54,7 +69,11 @@ pub fn view<'a>(
                 .padding(Padding::from([4u16, 10]))
                 .style(move |_, _| button::Style {
                     background: Some(Background::Color(vc.ghost_overlay)),
-                    border: Border { radius: 5.0.into(), color: vc.border, width: 1.0 },
+                    border: Border {
+                        radius: 5.0.into(),
+                        color: vc.border,
+                        width: 1.0
+                    },
                     ..Default::default()
                 }),
             text("Defaults").size(17).color(vc.text),
@@ -81,8 +100,11 @@ pub fn view<'a>(
 
     // ── Default Model ─────────────────────────────────────────────────────────
     let all_models: Vec<String> = {
-        let mut m: Vec<String> = state.backends.iter()
-            .flat_map(|b| b.models.iter().cloned()).collect();
+        let mut m: Vec<String> = state
+            .backends
+            .iter()
+            .flat_map(|b| b.models.iter().cloned())
+            .collect();
         m.dedup();
         m
     };
@@ -90,7 +112,8 @@ pub fn view<'a>(
     let model_picker_el: Element<'_, Message> = if all_models.is_empty() {
         container(
             text("Enable a provider to select a default model.")
-                .size(13).color(vc.muted),
+                .size(13)
+                .color(vc.muted),
         )
         .padding(Padding::from([4u16, 0]))
         .into()
@@ -107,7 +130,9 @@ pub fn view<'a>(
         let save_el: Element<'_, Message> = if !default_model_input.is_empty() {
             action_btn(
                 "Save",
-                Message::DispatchAction(AppAction::SetDefaultModel { model_id: default_model_input.to_string() }),
+                Message::DispatchAction(AppAction::SetDefaultModel {
+                    model_id: default_model_input.to_string(),
+                }),
                 true,
                 vc,
             )
@@ -122,26 +147,22 @@ pub fn view<'a>(
     };
 
     // ── Default Instructions ──────────────────────────────────────────────────
-    let instructions_input = text_input(
-        "e.g. You are a helpful assistant...",
-        default_instructions,
-    )
-    .on_input(Message::SettingsDefaultInstructionsChanged)
-    .size(13)
-    .padding(Padding::from([7u16, 10]));
+    let instructions_input =
+        text_input("e.g. You are a helpful assistant...", default_instructions)
+            .on_input(Message::SettingsDefaultInstructionsChanged)
+            .size(13)
+            .padding(Padding::from([7u16, 10]));
 
-    let instructions_save = action_btn(
-        "Save",
-        Message::SettingsSaveDefaultInstructions,
-        true,
-        vc,
-    );
+    let instructions_save = action_btn("Save", Message::SettingsSaveDefaultInstructions, true, vc);
 
     let instructions_block = column![
         text("Default Instructions").size(13).color(vc.text),
         text("Fallback system prompt for conversations without custom instructions.")
-            .size(11).color(vc.muted),
-        row![instructions_input, instructions_save].spacing(8).align_y(Alignment::Center),
+            .size(11)
+            .color(vc.muted),
+        row![instructions_input, instructions_save]
+            .spacing(8)
+            .align_y(Alignment::Center),
     ]
     .spacing(6);
 
@@ -150,7 +171,8 @@ pub fn view<'a>(
             column![
                 text("Default Model").size(13).color(vc.text),
                 model_picker_el,
-            ].spacing(4),
+            ]
+            .spacing(4),
             instructions_block,
         ]
         .spacing(14),

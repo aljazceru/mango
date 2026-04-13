@@ -1,12 +1,16 @@
 use iced::widget::{button, center, column, container, row, text, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
 
-use mango_core::{AppState, AttestationStatus, OnboardingStep, known_provider_presets}; // AppAction and Screen used via fully-qualified path below
+use mango_core::{known_provider_presets, AppState, AttestationStatus, OnboardingStep}; // AppAction and Screen used via fully-qualified path below
 
 use crate::Message;
 
 // Progress dot indicator: 4 dots, current step highlighted
-fn progress_dots(current_step: &OnboardingStep, accent: Color, muted: Color) -> Element<'static, Message> {
+fn progress_dots(
+    current_step: &OnboardingStep,
+    accent: Color,
+    muted: Color,
+) -> Element<'static, Message> {
     let step_idx = match current_step {
         OnboardingStep::Welcome => 0,
         OnboardingStep::BackendSetup => 1,
@@ -21,7 +25,15 @@ fn progress_dots(current_step: &OnboardingStep, accent: Color, muted: Color) -> 
             } else if i < step_idx {
                 (10.0_f32, muted)
             } else {
-                (10.0_f32, Color { r: muted.r, g: muted.g, b: muted.b, a: 0.5 })
+                (
+                    10.0_f32,
+                    Color {
+                        r: muted.r,
+                        g: muted.g,
+                        b: muted.b,
+                        a: 0.5,
+                    },
+                )
             };
 
             container(iced::widget::Space::new().width(size).height(size))
@@ -59,12 +71,15 @@ pub fn view<'a>(
         OnboardingStep::ReadyToChat => ready_to_chat_step(vc),
     };
 
-    let dots_row = container(
-        row![dots].align_y(Alignment::Center),
-    )
-    .padding(Padding { top: 0.0, bottom: 16.0, left: 0.0, right: 0.0 })
-    .width(Length::Fill)
-    .align_x(iced::alignment::Horizontal::Center);
+    let dots_row = container(row![dots].align_y(Alignment::Center))
+        .padding(Padding {
+            top: 0.0,
+            bottom: 16.0,
+            left: 0.0,
+            right: 0.0,
+        })
+        .width(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Center);
 
     let card = container(
         column![dots_row, step_content]
@@ -97,9 +112,7 @@ pub fn view<'a>(
 // ── Step 1: Welcome ───────────────────────────────────────────────────────────
 
 fn welcome_step<'a>(vc: crate::theme::ViewColors) -> Element<'a, Message> {
-    let title = text("Mango")
-        .size(32)
-        .color(vc.text);
+    let title = text("Mango").size(32).color(vc.text);
 
     let tagline = text("Your conversations, provably private.")
         .size(18)
@@ -114,37 +127,38 @@ fn welcome_step<'a>(vc: crate::theme::ViewColors) -> Element<'a, Message> {
 
     let accent_color = vc.accent;
     let text_color = vc.bg;
-    let get_started_btn = button(
-        text("Get Started").size(16).color(text_color),
-    )
-    .on_press(Message::OnboardingNext)
-    .padding(Padding::from([10u16, 32]))
-    .style(move |_theme, _status| button::Style {
-        background: Some(Background::Color(accent_color)),
-        border: Border {
-            radius: 8.0.into(),
+    let get_started_btn = button(text("Get Started").size(16).color(text_color))
+        .on_press(Message::OnboardingNext)
+        .padding(Padding::from([10u16, 32]))
+        .style(move |_theme, _status| button::Style {
+            background: Some(Background::Color(accent_color)),
+            border: Border {
+                radius: 8.0.into(),
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    });
+        });
 
     let muted_color = vc.muted;
-    let skip_btn = button(
-        text("Skip setup").size(13).color(muted_color),
-    )
-    .on_press(Message::OnboardingSkip)
-    .padding(Padding::from([4u16, 0]))
-    .style(|_theme, _status| button::Style {
-        background: None,
-        ..Default::default()
-    });
+    let skip_btn = button(text("Skip setup").size(13).color(muted_color))
+        .on_press(Message::OnboardingSkip)
+        .padding(Padding::from([4u16, 0]))
+        .style(|_theme, _status| button::Style {
+            background: None,
+            ..Default::default()
+        });
 
     column![
         title,
         tagline,
         description,
         container(get_started_btn)
-            .padding(Padding { top: 16.0, bottom: 0.0, left: 0.0, right: 0.0 })
+            .padding(Padding {
+                top: 16.0,
+                bottom: 0.0,
+                left: 0.0,
+                right: 0.0
+            })
             .width(Length::Fill)
             .align_x(iced::alignment::Horizontal::Center),
         container(skip_btn)
@@ -166,11 +180,9 @@ fn backend_setup_step<'a>(
 ) -> Element<'a, Message> {
     let heading = text("Choose your provider").size(24).color(vc.text);
 
-    let subtitle = text(
-        "Select a confidential inference provider and enter your API key.",
-    )
-    .size(14)
-    .color(vc.muted);
+    let subtitle = text("Select a confidential inference provider and enter your API key.")
+        .size(14)
+        .color(vc.muted);
 
     // Collect preset data as owned values to avoid borrowing across closures.
     struct PresetData {
@@ -179,12 +191,15 @@ fn backend_setup_step<'a>(
         description: String,
         tee_type: mango_core::TeeType,
     }
-    let preset_data: Vec<PresetData> = known_provider_presets().into_iter().map(|p| PresetData {
-        id: p.id,
-        name: p.name,
-        description: p.description,
-        tee_type: p.tee_type,
-    }).collect();
+    let preset_data: Vec<PresetData> = known_provider_presets()
+        .into_iter()
+        .map(|p| PresetData {
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            tee_type: p.tee_type,
+        })
+        .collect();
 
     let accent_color = vc.accent;
     let muted_color = vc.muted;
@@ -211,15 +226,15 @@ fn backend_setup_step<'a>(
             let row_content = row![
                 column![
                     text(preset.name).size(15).color(vc.text),
-                    text(preset.description)
-                        .size(12)
-                        .color(muted_color),
+                    text(preset.description).size(12).color(muted_color),
                 ]
                 .spacing(2),
                 iced::widget::Space::new().width(Length::Fill),
-                text(tee_str)
-                    .size(12)
-                    .color(if is_selected { accent_color } else { muted_color }),
+                text(tee_str).size(12).color(if is_selected {
+                    accent_color
+                } else {
+                    muted_color
+                }),
             ]
             .align_y(Alignment::Center)
             .spacing(8);
@@ -253,10 +268,7 @@ fn backend_setup_step<'a>(
 
     // Validation state
     let validate_area: Element<'_, Message> = if _state.onboarding.validating_api_key {
-        row![
-            text("Validating...").size(14).color(muted_color),
-        ]
-        .into()
+        row![text("Validating...").size(14).color(muted_color),].into()
     } else {
         let can_validate = !selected_preset.is_empty() && !api_key.trim().is_empty();
         let validate_btn: Element<'_, Message> = if can_validate {
@@ -290,10 +302,7 @@ fn backend_setup_step<'a>(
     };
 
     let error_area: Element<'_, Message> = if let Some(err) = &_state.onboarding.api_key_error {
-        text(err.as_str())
-            .size(13)
-            .color(vc.destructive)
-            .into()
+        text(err.as_str()).size(13).color(vc.destructive).into()
     } else {
         iced::widget::Space::new().into()
     };
@@ -314,8 +323,12 @@ fn backend_setup_step<'a>(
             ..Default::default()
         });
 
-    let nav_row = row![back_btn, iced::widget::Space::new().width(Length::Fill), skip_btn]
-        .align_y(Alignment::Center);
+    let nav_row = row![
+        back_btn,
+        iced::widget::Space::new().width(Length::Fill),
+        skip_btn
+    ]
+    .align_y(Alignment::Center);
 
     column![
         heading,
@@ -332,13 +345,18 @@ fn backend_setup_step<'a>(
 
 // ── Step 3: Attestation Demo ──────────────────────────────────────────────────
 
-fn attestation_demo_step<'a>(state: &'a AppState, show_learn_more: bool, vc: crate::theme::ViewColors) -> Element<'a, Message> {
+fn attestation_demo_step<'a>(
+    state: &'a AppState,
+    show_learn_more: bool,
+    vc: crate::theme::ViewColors,
+) -> Element<'a, Message> {
     let heading = text("Verifying your backend").size(24).color(vc.text);
 
     let accent_color = vc.accent;
     let muted_color = vc.muted;
     // Stage indicator: show animated progress if attestation stage is set
-    let stage_area: Element<'_, Message> = if let Some(stage) = &state.onboarding.attestation_stage {
+    let stage_area: Element<'_, Message> = if let Some(stage) = &state.onboarding.attestation_stage
+    {
         row![
             text(stage.as_str()).size(14).color(accent_color),
             text("...").size(14).color(muted_color),
@@ -350,16 +368,22 @@ fn attestation_demo_step<'a>(state: &'a AppState, show_learn_more: bool, vc: cra
     };
 
     // Result area
-    let result_area: Element<'_, Message> = if let Some(result) = &state.onboarding.attestation_result {
+    let result_area: Element<'_, Message> = if let Some(result) =
+        &state.onboarding.attestation_result
+    {
         match result {
             AttestationStatus::Verified => {
-                let tee_label = state.onboarding.attestation_tee_label
+                let tee_label = state
+                    .onboarding
+                    .attestation_tee_label
                     .as_deref()
                     .unwrap_or("TEE Verified");
 
                 let shield_row = row![
                     text("VERIFIED").size(14).color(vc.success),
-                    text(format!(" -- {}", tee_label)).size(14).color(muted_color),
+                    text(format!(" -- {}", tee_label))
+                        .size(14)
+                        .color(muted_color),
                 ]
                 .spacing(4)
                 .align_y(Alignment::Center);
@@ -376,9 +400,13 @@ fn attestation_demo_step<'a>(state: &'a AppState, show_learn_more: bool, vc: cra
 
                 // Learn More expandable section
                 let learn_more_toggle = button(
-                    text(if show_learn_more { "Learn More (hide)" } else { "Learn More" })
-                        .size(13)
-                        .color(accent_color),
+                    text(if show_learn_more {
+                        "Learn More (hide)"
+                    } else {
+                        "Learn More"
+                    })
+                    .size(13)
+                    .color(accent_color),
                 )
                 .on_press(Message::OnboardingToggleLearnMore)
                 .padding(Padding::from([2u16, 0]))
@@ -465,7 +493,12 @@ fn attestation_demo_step<'a>(state: &'a AppState, show_learn_more: bool, vc: cra
                     .on_press(Message::OnboardingRetryAttestation)
                     .padding(Padding::from([8u16, 20]))
                     .style(move |_theme, _status| button::Style {
-                        background: Some(Background::Color(Color { r: destructive.r, g: destructive.g, b: destructive.b, a: 0.2 })),
+                        background: Some(Background::Color(Color {
+                            r: destructive.r,
+                            g: destructive.g,
+                            b: destructive.b,
+                            a: 0.2,
+                        })),
                         border: Border {
                             radius: 6.0.into(),
                             color: destructive,
@@ -474,15 +507,13 @@ fn attestation_demo_step<'a>(state: &'a AppState, show_learn_more: bool, vc: cra
                         ..Default::default()
                     });
 
-                let continue_anyway = button(
-                    text("Continue anyway").size(13).color(muted_color),
-                )
-                .on_press(Message::OnboardingNext)
-                .padding(Padding::from([4u16, 0]))
-                .style(|_theme, _status| button::Style {
-                    background: None,
-                    ..Default::default()
-                });
+                let continue_anyway = button(text("Continue anyway").size(13).color(muted_color))
+                    .on_press(Message::OnboardingNext)
+                    .padding(Padding::from([4u16, 0]))
+                    .style(|_theme, _status| button::Style {
+                        background: None,
+                        ..Default::default()
+                    });
 
                 let back_btn = button(text("Back").size(13).color(muted_color))
                     .on_press(Message::OnboardingBack)
@@ -492,14 +523,9 @@ fn attestation_demo_step<'a>(state: &'a AppState, show_learn_more: bool, vc: cra
                         ..Default::default()
                     });
 
-                column![
-                    error_text,
-                    retry_btn,
-                    continue_anyway,
-                    back_btn,
-                ]
-                .spacing(8)
-                .into()
+                column![error_text, retry_btn, continue_anyway, back_btn,]
+                    .spacing(8)
+                    .into()
             }
             _ => {
                 // Unverified / Expired -- treat as pending
@@ -515,16 +541,12 @@ fn attestation_demo_step<'a>(state: &'a AppState, show_learn_more: bool, vc: cra
                         ..Default::default()
                     });
 
-                column![waiting_text, back_btn]
-                    .spacing(8)
-                    .into()
+                column![waiting_text, back_btn].spacing(8).into()
             }
         }
     } else {
         // No result yet -- show waiting / stage indicator
-        let waiting_text = text("Starting verification...")
-            .size(14)
-            .color(muted_color);
+        let waiting_text = text("Starting verification...").size(14).color(muted_color);
 
         let back_btn = button(text("Back").size(13).color(muted_color))
             .on_press(Message::OnboardingBack)
@@ -534,18 +556,12 @@ fn attestation_demo_step<'a>(state: &'a AppState, show_learn_more: bool, vc: cra
                 ..Default::default()
             });
 
-        column![waiting_text, back_btn]
-            .spacing(8)
-            .into()
+        column![waiting_text, back_btn].spacing(8).into()
     };
 
-    column![
-        heading,
-        stage_area,
-        result_area,
-    ]
-    .spacing(10)
-    .into()
+    column![heading, stage_area, result_area,]
+        .spacing(10)
+        .into()
 }
 
 // ── Step 4: Ready to Chat ─────────────────────────────────────────────────────
@@ -559,19 +575,17 @@ fn ready_to_chat_step<'a>(vc: crate::theme::ViewColors) -> Element<'a, Message> 
 
     let accent_color = vc.accent;
     let bg_color = vc.bg;
-    let start_btn = button(
-        text("Start Chatting").size(16).color(bg_color),
-    )
-    .on_press(Message::OnboardingComplete)
-    .padding(Padding::from([12u16, 40]))
-    .style(move |_theme, _status| button::Style {
-        background: Some(Background::Color(accent_color)),
-        border: Border {
-            radius: 8.0.into(),
+    let start_btn = button(text("Start Chatting").size(16).color(bg_color))
+        .on_press(Message::OnboardingComplete)
+        .padding(Padding::from([12u16, 40]))
+        .style(move |_theme, _status| button::Style {
+            background: Some(Background::Color(accent_color)),
+            border: Border {
+                radius: 8.0.into(),
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    });
+        });
 
     let muted_color = vc.muted;
     let back_btn = button(text("Back").size(13).color(muted_color))
@@ -586,7 +600,12 @@ fn ready_to_chat_step<'a>(vc: crate::theme::ViewColors) -> Element<'a, Message> 
         heading,
         body,
         container(start_btn)
-            .padding(Padding { top: 16.0, bottom: 0.0, left: 0.0, right: 0.0 })
+            .padding(Padding {
+                top: 16.0,
+                bottom: 0.0,
+                left: 0.0,
+                right: 0.0
+            })
             .width(Length::Fill)
             .align_x(iced::alignment::Horizontal::Center),
         back_btn,

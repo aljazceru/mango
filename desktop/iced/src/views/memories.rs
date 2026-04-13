@@ -98,7 +98,10 @@ pub fn view<'a>(
             .spacing(8)
             .padding(Padding::from([8u16, 16]));
 
-        scrollable(list).height(Length::Fill).width(Length::Fill).into()
+        scrollable(list)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into()
     };
 
     // ── Compose full layout ───────────────────────────────────────────────────
@@ -181,20 +184,18 @@ fn build_memory_row<'a>(
 
         let btn_row = row![save_btn, cancel_btn].spacing(8);
 
-        container(
-            column![input, btn_row].spacing(8),
-        )
-        .padding(Padding::from([10u16, 14]))
-        .width(Length::Fill)
-        .style(move |_theme| container::Style {
-            background: Some(Background::Color(secondary_surface)),
-            border: Border {
-                radius: 6.0.into(),
+        container(column![input, btn_row].spacing(8))
+            .padding(Padding::from([10u16, 14]))
+            .width(Length::Fill)
+            .style(move |_theme| container::Style {
+                background: Some(Background::Color(secondary_surface)),
+                border: Border {
+                    radius: 6.0.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
+            })
+            .into()
     } else {
         let memory_id = memory.id.clone();
         let memory_content = memory.content.clone();

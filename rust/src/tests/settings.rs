@@ -13,7 +13,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
-    Box::new(crate::NullBiometricProvider),
+        Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(150));
     app
@@ -152,21 +152,34 @@ fn test_brave_api_key_persists() {
 
     // Initially brave_api_key_set should be false (no key set)
     let initial_state = app.state();
-    assert!(!initial_state.brave_api_key_set, "brave_api_key_set should start false");
+    assert!(
+        !initial_state.brave_api_key_set,
+        "brave_api_key_set should start false"
+    );
 
     // Set a Brave API key
-    app.dispatch(AppAction::SetBraveApiKey { api_key: "test-brave-key-abc123".to_string() });
+    app.dispatch(AppAction::SetBraveApiKey {
+        api_key: "test-brave-key-abc123".to_string(),
+    });
     wait();
 
     let state = app.state();
-    assert!(state.brave_api_key_set, "brave_api_key_set should be true after setting key");
+    assert!(
+        state.brave_api_key_set,
+        "brave_api_key_set should be true after setting key"
+    );
 
     // Clear the key with empty string
-    app.dispatch(AppAction::SetBraveApiKey { api_key: "".to_string() });
+    app.dispatch(AppAction::SetBraveApiKey {
+        api_key: "".to_string(),
+    });
     wait();
 
     let state = app.state();
-    assert!(!state.brave_api_key_set, "brave_api_key_set should be false after clearing key");
+    assert!(
+        !state.brave_api_key_set,
+        "brave_api_key_set should be false after clearing key"
+    );
 }
 
 /// Verify SetMemoriesEnabled action persists toggle and updates AppState (Phase 25).
@@ -176,17 +189,26 @@ fn test_memories_enabled_toggle() {
 
     // Default: memories_enabled = true
     let state = app.state();
-    assert!(state.memories_enabled, "memories_enabled should default to true");
+    assert!(
+        state.memories_enabled,
+        "memories_enabled should default to true"
+    );
 
     // Disable
     app.dispatch(AppAction::SetMemoriesEnabled { enabled: false });
     wait();
-    assert!(!app.state().memories_enabled, "should be false after disable");
+    assert!(
+        !app.state().memories_enabled,
+        "should be false after disable"
+    );
 
     // Re-enable
     app.dispatch(AppAction::SetMemoriesEnabled { enabled: true });
     wait();
-    assert!(app.state().memories_enabled, "should be true after re-enable");
+    assert!(
+        app.state().memories_enabled,
+        "should be true after re-enable"
+    );
 }
 
 /// Verify memory_count field in AppState tracks memory count correctly (Phase 24, D-03/D-04).
@@ -196,12 +218,20 @@ fn test_memory_count() {
 
     // Initially memory_count should be 0
     let initial_state = app.state();
-    assert_eq!(initial_state.memory_count, 0, "memory_count should start at 0");
+    assert_eq!(
+        initial_state.memory_count, 0,
+        "memory_count should start at 0"
+    );
 
     // Delete a nonexistent memory (should update count, still 0)
-    app.dispatch(AppAction::DeleteMemory { memory_id: "nonexistent".to_string() });
+    app.dispatch(AppAction::DeleteMemory {
+        memory_id: "nonexistent".to_string(),
+    });
     wait();
 
     let state = app.state();
-    assert_eq!(state.memory_count, 0, "memory_count should remain 0 after deleting nonexistent");
+    assert_eq!(
+        state.memory_count, 0,
+        "memory_count should remain 0 after deleting nonexistent"
+    );
 }

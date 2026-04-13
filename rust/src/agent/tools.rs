@@ -472,10 +472,7 @@ fn format_brave_results(json: &serde_json::Value) -> String {
 }
 
 /// Dispatch URL fetching. Returns plain text extracted from the body element.
-pub(crate) fn dispatch_fetch_url(
-    args_str: &str,
-    runtime: &tokio::runtime::Runtime,
-) -> String {
+pub(crate) fn dispatch_fetch_url(args_str: &str, runtime: &tokio::runtime::Runtime) -> String {
     let args: serde_json::Value = match serde_json::from_str(args_str) {
         Ok(v) => v,
         Err(e) => return format!("Error: failed to parse fetch_url args: {}", e),
@@ -635,11 +632,7 @@ pub(crate) fn dispatch_file(args_str: &str, data_dir: &str) -> String {
                     return format!("Error: failed to create parent directories: {}", e);
                 }
             }
-            let mut file = match OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&resolved)
-            {
+            let mut file = match OpenOptions::new().append(true).create(true).open(&resolved) {
                 Ok(f) => f,
                 Err(e) => return format!("Error: failed to open '{}' for append: {}", path, e),
             };

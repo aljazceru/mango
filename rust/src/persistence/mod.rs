@@ -23,7 +23,11 @@ pub use queries::{
 /// This check must be performed before embedding the DEK hex in any SQL string or pragma
 /// value, to detect programming errors early and prevent malformed SQL (WR-02).
 fn validate_dek_hex(dek_hex: &str) -> Result<(), PersistenceError> {
-    if dek_hex.len() != 64 || !dek_hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+    if dek_hex.len() != 64
+        || !dek_hex
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
         return Err(PersistenceError::DecryptionFailed {
             message: format!(
                 "invalid DEK hex: expected 64 lowercase hex chars, got {} chars",

@@ -69,7 +69,12 @@ pub fn sidebar_view<'a>(
         // Empty state
         let empty = column![
             container(new_conv_btn)
-                .padding(Padding { top: 16.0, right: 16.0, bottom: 8.0, left: 16.0 })
+                .padding(Padding {
+                    top: 16.0,
+                    right: 16.0,
+                    bottom: 8.0,
+                    left: 16.0
+                })
                 .width(Length::Fill),
             container(
                 column![
@@ -106,66 +111,80 @@ pub fn sidebar_view<'a>(
         })
         .collect();
 
-    let conv_list = column(conv_rows).spacing(2).padding(Padding::from([4u16, 8]));
+    let conv_list = column(conv_rows)
+        .spacing(2)
+        .padding(Padding::from([4u16, 8]));
     let list_scroll = scrollable(conv_list).height(Length::Fill);
 
-    let agents_btn = button(
-        container(text("Agents").size(13))
-            .padding(Padding::from([4u16, 12])),
-    )
-    .on_press(Message::OpenAgents)
-    .padding(0)
-    .width(Length::Fill)
-    .style(move |_theme, _status| button::Style {
-        background: None,
-        text_color: vc.text_dim,
-        ..Default::default()
-    });
+    let agents_btn = button(container(text("Agents").size(13)).padding(Padding::from([4u16, 12])))
+        .on_press(Message::OpenAgents)
+        .padding(0)
+        .width(Length::Fill)
+        .style(move |_theme, _status| button::Style {
+            background: None,
+            text_color: vc.text_dim,
+            ..Default::default()
+        });
 
-    let docs_btn = button(
-        container(text("Documents").size(13))
-            .padding(Padding::from([4u16, 12])),
-    )
-    .on_press(Message::OpenDocuments)
-    .padding(0)
-    .width(Length::Fill)
-    .style(move |_theme, _status| button::Style {
-        background: None,
-        text_color: vc.text_dim,
-        ..Default::default()
-    });
+    let docs_btn = button(container(text("Documents").size(13)).padding(Padding::from([4u16, 12])))
+        .on_press(Message::OpenDocuments)
+        .padding(0)
+        .width(Length::Fill)
+        .style(move |_theme, _status| button::Style {
+            background: None,
+            text_color: vc.text_dim,
+            ..Default::default()
+        });
 
-    let settings_btn = button(
-        container(text("Settings").size(13))
-            .padding(Padding::from([4u16, 12])),
-    )
-    .on_press(Message::DispatchAction(AppAction::PushScreen {
-        screen: Screen::Settings,
-    }))
-    .padding(0)
-    .width(Length::Fill)
-    .style(move |_theme, _status| button::Style {
-        background: None,
-        text_color: vc.text_dim,
-        ..Default::default()
-    });
+    let settings_btn =
+        button(container(text("Settings").size(13)).padding(Padding::from([4u16, 12])))
+            .on_press(Message::DispatchAction(AppAction::PushScreen {
+                screen: Screen::Settings,
+            }))
+            .padding(0)
+            .width(Length::Fill)
+            .style(move |_theme, _status| button::Style {
+                background: None,
+                text_color: vc.text_dim,
+                ..Default::default()
+            });
 
     let bottom_nav = column![
         container(agents_btn)
-            .padding(Padding { top: 0.0, right: 8.0, bottom: 4.0, left: 8.0 })
+            .padding(Padding {
+                top: 0.0,
+                right: 8.0,
+                bottom: 4.0,
+                left: 8.0
+            })
             .width(Length::Fill),
         container(docs_btn)
-            .padding(Padding { top: 0.0, right: 8.0, bottom: 4.0, left: 8.0 })
+            .padding(Padding {
+                top: 0.0,
+                right: 8.0,
+                bottom: 4.0,
+                left: 8.0
+            })
             .width(Length::Fill),
         container(settings_btn)
-            .padding(Padding { top: 0.0, right: 8.0, bottom: 8.0, left: 8.0 })
+            .padding(Padding {
+                top: 0.0,
+                right: 8.0,
+                bottom: 8.0,
+                left: 8.0
+            })
             .width(Length::Fill),
     ]
     .spacing(0);
 
     let sidebar_content = column![
         container(new_conv_btn)
-            .padding(Padding { top: 16.0, right: 8.0, bottom: 8.0, left: 8.0 })
+            .padding(Padding {
+                top: 16.0,
+                right: 8.0,
+                bottom: 8.0,
+                left: 8.0
+            })
             .width(Length::Fill),
         list_scroll,
         bottom_nav,
@@ -271,40 +290,45 @@ fn build_conversation_row<'a>(
 
     let surface_color = vc.surface;
     let accent_color = vc.accent;
-    let row_btn = button(container(row_content).padding(Padding::from([6u16, 8])).width(Length::Fill))
-        .on_press(Message::OpenConversation(id.clone()))
-        .padding(0)
-        .width(Length::Fill)
-        .style(move |_theme, _status| {
-            if is_selected {
-                button::Style {
-                    background: Some(Background::Color(surface_color)),
-                    border: Border {
-                        radius: 4.0.into(),
-                        ..Default::default()
-                    },
+    let row_btn = button(
+        container(row_content)
+            .padding(Padding::from([6u16, 8]))
+            .width(Length::Fill),
+    )
+    .on_press(Message::OpenConversation(id.clone()))
+    .padding(0)
+    .width(Length::Fill)
+    .style(move |_theme, _status| {
+        if is_selected {
+            button::Style {
+                background: Some(Background::Color(surface_color)),
+                border: Border {
+                    radius: 4.0.into(),
                     ..Default::default()
-                }
-            } else {
-                button::Style {
-                    background: None,
-                    border: Border {
-                        radius: 4.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
+                },
+                ..Default::default()
             }
-        });
+        } else {
+            button::Style {
+                background: None,
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }
+    });
 
     if is_selected {
         // Accent left border strip for selected conversation
         row![
-            container(iced::widget::Space::new().width(2.0).height(Length::Fill))
-                .style(move |_theme| container::Style {
+            container(iced::widget::Space::new().width(2.0).height(Length::Fill)).style(
+                move |_theme| container::Style {
                     background: Some(Background::Color(accent_color)),
                     ..Default::default()
-                }),
+                }
+            ),
             row_btn,
         ]
         .into()

@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
+use iced::widget::markdown;
 use iced::widget::{
     button, center, column, container, pick_list, row, scrollable, text, text_input,
 };
-use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
-use iced::widget::markdown;
 use iced::Theme;
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
 
 use mango_core::{AppAction, AppState, BusyState, UiMessage};
 
@@ -81,13 +81,18 @@ pub fn chat_view<'a>(
     let attest_status = state
         .active_backend_id
         .as_deref()
-        .and_then(|id| state.attestation_statuses.iter().find(|e| e.backend_id == id))
+        .and_then(|id| {
+            state
+                .attestation_statuses
+                .iter()
+                .find(|e| e.backend_id == id)
+        })
         .map(|e| &e.status);
     let attest_dot: Option<Element<'_, Message>> = attest_status.and_then(|s| {
         use mango_core::AttestationStatus;
         let dot_color = match s {
-            AttestationStatus::Verified  => Some(Color::from_rgb(0.20, 0.75, 0.30)),
-            AttestationStatus::Expired   => Some(Color::from_rgb(0.98, 0.75, 0.14)),
+            AttestationStatus::Verified => Some(Color::from_rgb(0.20, 0.75, 0.30)),
+            AttestationStatus::Expired => Some(Color::from_rgb(0.98, 0.75, 0.14)),
             AttestationStatus::Failed { .. } => Some(Color::from_rgb(0.90, 0.24, 0.24)),
             AttestationStatus::Unverified => None,
         };
@@ -95,7 +100,10 @@ pub fn chat_view<'a>(
             container(iced::widget::Space::new().width(7).height(7))
                 .style(move |_| container::Style {
                     background: Some(Background::Color(c)),
-                    border: Border { radius: 4.0.into(), ..Default::default() },
+                    border: Border {
+                        radius: 4.0.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 })
                 .into()
@@ -163,20 +171,30 @@ pub fn chat_view<'a>(
                 } else {
                     docs_inactive_bg
                 })),
-                border: Border { radius: 4.0.into(), ..Default::default() },
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
                 text_color: vc.text_dim,
                 ..Default::default()
             });
 
         // ── Tools row: button opens sub-panel ──
         let tools_label = if tools_enabled { "Tools: On" } else { "Tools" };
-        let tools_panel_bg = if show_tools_panel { vc.accent_dim } else { vc.surface };
+        let tools_panel_bg = if show_tools_panel {
+            vc.accent_dim
+        } else {
+            vc.surface
+        };
         let tools_btn = button(text(tools_label).size(13))
             .on_press(Message::ToggleToolsPanel)
             .padding(Padding::from([4u16, 8]))
             .style(move |_theme, _status| button::Style {
                 background: Some(Background::Color(tools_panel_bg)),
-                border: Border { radius: 4.0.into(), ..Default::default() },
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
                 text_color: vc.text_dim,
                 ..Default::default()
             });
@@ -185,26 +203,41 @@ pub fn chat_view<'a>(
         let brave_key_set = state.brave_api_key_set;
         let tools_sub_panel: Option<Element<'_, Message>> = if show_tools_panel {
             // Brave Search toggle row
-            let brave_label = if tools_enabled { "Brave Search: On" } else { "Brave Search: Off" };
+            let brave_label = if tools_enabled {
+                "Brave Search: On"
+            } else {
+                "Brave Search: Off"
+            };
             let brave_note = if !brave_key_set {
                 Some(
                     text("API key not configured — set in Settings")
                         .size(11)
                         .color(vc.muted)
-                        .into()
+                        .into(),
                 )
             } else {
                 None
             };
-            let brave_toggle_color = if tools_enabled && brave_key_set { vc.accent } else { vc.surface };
-            let brave_text_color = if tools_enabled && brave_key_set { Color::WHITE } else { vc.text_dim };
+            let brave_toggle_color = if tools_enabled && brave_key_set {
+                vc.accent
+            } else {
+                vc.surface
+            };
+            let brave_text_color = if tools_enabled && brave_key_set {
+                Color::WHITE
+            } else {
+                vc.text_dim
+            };
             let brave_btn: Element<'_, Message> = if brave_key_set {
                 button(text(brave_label).size(12).color(brave_text_color))
                     .on_press(Message::ToggleConvToolsEnabled)
                     .padding(Padding::from([3u16, 8]))
                     .style(move |_theme, _status| button::Style {
                         background: Some(Background::Color(brave_toggle_color)),
-                        border: Border { radius: 4.0.into(), ..Default::default() },
+                        border: Border {
+                            radius: 4.0.into(),
+                            ..Default::default()
+                        },
                         text_color: brave_text_color,
                         ..Default::default()
                     })
@@ -221,20 +254,18 @@ pub fn chat_view<'a>(
             let secondary_surface = vc.secondary_surface;
             let accent = vc.accent;
             Some(
-                container(
-                    column(brave_col).spacing(4)
-                )
-                .padding(Padding::from([6u16, 12]))
-                .style(move |_theme| container::Style {
-                    background: Some(Background::Color(secondary_surface)),
-                    border: Border {
-                        color: accent,
-                        width: 1.0,
-                        radius: 4.0.into(),
-                    },
-                    ..Default::default()
-                })
-                .into()
+                container(column(brave_col).spacing(4))
+                    .padding(Padding::from([6u16, 12]))
+                    .style(move |_theme| container::Style {
+                        background: Some(Background::Color(secondary_surface)),
+                        border: Border {
+                            color: accent,
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    })
+                    .into(),
             )
         } else {
             None
@@ -334,7 +365,16 @@ pub fn chat_view<'a>(
         .enumerate()
         .map(|(i, msg)| {
             let is_last = i == messages_count.saturating_sub(1);
-            render_message(msg, is_last, is_streaming, streaming_content, edit_state, parsed_messages, theme, vc)
+            render_message(
+                msg,
+                is_last,
+                is_streaming,
+                streaming_content,
+                edit_state,
+                parsed_messages,
+                theme,
+                vc,
+            )
         })
         .collect();
 
@@ -391,13 +431,15 @@ pub fn chat_view<'a>(
                 .documents
                 .iter()
                 .map(|doc| {
-                    let is_attached = state
-                        .current_conversation_attached_docs
-                        .contains(&doc.id);
+                    let is_attached = state.current_conversation_attached_docs.contains(&doc.id);
                     let check_label = if is_attached { "[x]" } else { "[ ]" };
                     button(
                         row![
-                            text(check_label).size(12).color(if is_attached { accent } else { muted_color }),
+                            text(check_label).size(12).color(if is_attached {
+                                accent
+                            } else {
+                                muted_color
+                            }),
                             text(&doc.name).size(13),
                         ]
                         .spacing(6)
@@ -444,15 +486,13 @@ pub fn chat_view<'a>(
 
     // ── Full layout ──────────────────────────────────────────────────────────
     let secondary_surface = vc.secondary_surface;
-    let mut col_children: Vec<Element<'_, Message>> = vec![
-        container(header_row)
-            .width(Length::Fill)
-            .style(move |_theme| container::Style {
-                background: Some(Background::Color(secondary_surface)),
-                ..Default::default()
-            })
-            .into(),
-    ];
+    let mut col_children: Vec<Element<'_, Message>> = vec![container(header_row)
+        .width(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(secondary_surface)),
+            ..Default::default()
+        })
+        .into()];
     if let Some(overlay) = docs_overlay {
         col_children.push(overlay);
     }
@@ -498,7 +538,15 @@ fn render_message<'a>(
         "assistant" => {
             // If this is the last assistant message AND currently streaming, show streaming content
             let show_streaming = is_last && is_streaming;
-            render_assistant_message(msg, is_last, show_streaming, streaming_content, parsed_messages, theme, vc)
+            render_assistant_message(
+                msg,
+                is_last,
+                show_streaming,
+                streaming_content,
+                parsed_messages,
+                theme,
+                vc,
+            )
         }
         _ => {
             // System messages: simple display
@@ -511,7 +559,10 @@ fn render_message<'a>(
     }
 }
 
-fn render_user_message<'a>(msg: &'a UiMessage, vc: crate::theme::ViewColors) -> Element<'a, Message> {
+fn render_user_message<'a>(
+    msg: &'a UiMessage,
+    vc: crate::theme::ViewColors,
+) -> Element<'a, Message> {
     let user_bubble = vc.user_bubble;
     let text_dim = vc.text_dim;
     let surface = vc.surface;
@@ -630,19 +681,18 @@ fn render_assistant_message<'a>(
 
     // RAG context indicator (D-07): show subtle label when RAG contributed context
     let muted = vc.muted;
-    let rag_indicator: Option<Element<'_, Message>> =
-        msg.rag_context_count.and_then(|n| {
-            if n > 0 {
-                Some(
-                    text(format!("[context from {} doc(s)]", n))
-                        .size(11)
-                        .color(muted)
-                        .into(),
-                )
-            } else {
-                None
-            }
-        });
+    let rag_indicator: Option<Element<'_, Message>> = msg.rag_context_count.and_then(|n| {
+        if n > 0 {
+            Some(
+                text(format!("[context from {} doc(s)]", n))
+                    .size(11)
+                    .color(muted)
+                    .into(),
+            )
+        } else {
+            None
+        }
+    });
 
     let mut bubble_col_children: Vec<Element<'_, Message>> = vec![msg_bubble.into()];
     if let Some(rag_elem) = rag_indicator {
@@ -749,7 +799,12 @@ fn render_edit_mode<'a>(edit_text: &'a str, vc: crate::theme::ViewColors) -> Ele
 
 fn build_error_bubble<'a>(error: &'a str, vc: crate::theme::ViewColors) -> Element<'a, Message> {
     let destructive = vc.destructive;
-    let error_bg = Color { r: destructive.r, g: destructive.g, b: destructive.b, a: 0.15 };
+    let error_bg = Color {
+        r: destructive.r,
+        g: destructive.g,
+        b: destructive.b,
+        a: 0.15,
+    };
     container(
         row![
             text("!").size(14).color(destructive),
@@ -781,26 +836,27 @@ fn build_compose_bar<'a>(
     // Pending attachment indicator above the input
     let text_dim = vc.text_dim;
     let destructive = vc.destructive;
-    let attachment_row: Option<Element<'_, Message>> = state.pending_attachment.as_ref().map(|att| {
-        let filename = att.filename.clone();
-        let size_display = att.size_display.clone();
-        row![
-            text(format!("{} ({})", filename, size_display))
-                .size(13)
-                .color(text_dim),
-            button(text("X").size(12))
-                .on_press(Message::ClearAttachment)
-                .padding(Padding::from([1u16, 4]))
-                .style(move |_theme, _status| button::Style {
-                    background: None,
-                    text_color: destructive,
-                    ..Default::default()
-                }),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .into()
-    });
+    let attachment_row: Option<Element<'_, Message>> =
+        state.pending_attachment.as_ref().map(|att| {
+            let filename = att.filename.clone();
+            let size_display = att.size_display.clone();
+            row![
+                text(format!("{} ({})", filename, size_display))
+                    .size(13)
+                    .color(text_dim),
+                button(text("X").size(12))
+                    .on_press(Message::ClearAttachment)
+                    .padding(Padding::from([1u16, 4]))
+                    .style(move |_theme, _status| button::Style {
+                        background: None,
+                        text_color: destructive,
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into()
+        });
 
     // Attach button
     let surface = vc.surface;
@@ -897,7 +953,12 @@ fn build_compose_bar<'a>(
         .into()
 }
 
-fn action_btn_style(_theme: &iced::Theme, _status: button::Status, bg: Color, text_color: Color) -> button::Style {
+fn action_btn_style(
+    _theme: &iced::Theme,
+    _status: button::Status,
+    bg: Color,
+    text_color: Color,
+) -> button::Style {
     button::Style {
         background: Some(Background::Color(bg)),
         border: Border {

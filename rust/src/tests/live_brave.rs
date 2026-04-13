@@ -5,8 +5,7 @@ use crate::agent::tools::dispatch_web_search;
 #[test]
 #[ignore]
 fn live_brave_web_search() {
-    let key = std::env::var("BRAVE_API_KEY")
-        .expect("Set BRAVE_API_KEY env var to run this test");
+    let key = std::env::var("BRAVE_API_KEY").expect("Set BRAVE_API_KEY env var to run this test");
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

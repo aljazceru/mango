@@ -35,9 +35,7 @@ fn detail_text(status: &AttestationStatus) -> &'static str {
             "This conversation is routed to a Trusted Execution Environment. \
              The TEE attestation report has been independently verified by this app."
         }
-        AttestationStatus::Unverified => {
-            "Attestation has not been checked for this backend yet."
-        }
+        AttestationStatus::Unverified => "Attestation has not been checked for this backend yet.",
         AttestationStatus::Expired => {
             "The attestation result has expired. Re-verification is pending."
         }
@@ -48,16 +46,17 @@ fn detail_text(status: &AttestationStatus) -> &'static str {
     }
 }
 
-pub fn view<'a>(
-    state: &'a AppState,
-    show_detail: bool,
-    is_dark: bool,
-) -> Element<'a, Message> {
+pub fn view<'a>(state: &'a AppState, show_detail: bool, is_dark: bool) -> Element<'a, Message> {
     // Find attestation status for the active backend
     let attest_status = state
         .active_backend_id
         .as_deref()
-        .and_then(|id| state.attestation_statuses.iter().find(|e| e.backend_id == id))
+        .and_then(|id| {
+            state
+                .attestation_statuses
+                .iter()
+                .find(|e| e.backend_id == id)
+        })
         .map(|e| &e.status);
 
     let (label, style) = if let Some(status) = attest_status {
@@ -103,14 +102,19 @@ pub fn view<'a>(
             "Attestation has not been checked for this backend yet."
         };
 
-        let detail_content = column![
-            text("Trust Status").size(14),
-            text(detail).size(12),
-        ]
-        .spacing(4);
+        let detail_content =
+            column![text("Trust Status").size(14), text(detail).size(12),].spacing(4);
 
-        let detail_bg = if is_dark { Color::from_rgb(0.18, 0.18, 0.18) } else { Color::from_rgb(0.95, 0.95, 0.95) };
-        let detail_border = if is_dark { Color::from_rgb(0.3, 0.3, 0.3) } else { Color::from_rgb(0.8, 0.8, 0.8) };
+        let detail_bg = if is_dark {
+            Color::from_rgb(0.18, 0.18, 0.18)
+        } else {
+            Color::from_rgb(0.95, 0.95, 0.95)
+        };
+        let detail_border = if is_dark {
+            Color::from_rgb(0.3, 0.3, 0.3)
+        } else {
+            Color::from_rgb(0.8, 0.8, 0.8)
+        };
 
         let detail_box = container(detail_content)
             .padding(10)

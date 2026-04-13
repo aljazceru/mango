@@ -1,7 +1,9 @@
 pub mod r#loop;
 pub mod tools;
 
-pub use r#loop::{run_agent_step, run_agent_step_for_backend, AgentExecutionState, AgentStepResult};
+pub use r#loop::{
+    run_agent_step, run_agent_step_for_backend, AgentExecutionState, AgentStepResult,
+};
 pub use tools::{build_agent_tools, build_chat_tools, dispatch_tools};
 
 // Re-export ChatCompletionMessageToolCall for use in actor loop

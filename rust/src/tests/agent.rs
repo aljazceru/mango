@@ -54,7 +54,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
-    Box::new(crate::NullBiometricProvider),
+        Box::new(crate::NullBiometricProvider),
     );
     // Allow actor thread to initialize
     std::thread::sleep(Duration::from_millis(150));
@@ -222,7 +222,11 @@ fn test_update_agent_step_status() {
 #[test]
 fn test_agent_tools_build() {
     let tools = build_agent_tools();
-    assert_eq!(tools.len(), 7, "Should have exactly 7 agent tools (3 existing + 4 new)");
+    assert_eq!(
+        tools.len(),
+        7,
+        "Should have exactly 7 agent tools (3 existing + 4 new)"
+    );
 
     let names: Vec<&str> = tools
         .iter()
@@ -243,63 +247,109 @@ fn test_agent_tools_build() {
         "Tools should include read_document"
     );
     assert!(names.contains(&"finish"), "Tools should include finish");
-    assert!(names.contains(&"web_search"), "Tools should include web_search");
-    assert!(names.contains(&"fetch_url"), "Tools should include fetch_url");
+    assert!(
+        names.contains(&"web_search"),
+        "Tools should include web_search"
+    );
+    assert!(
+        names.contains(&"fetch_url"),
+        "Tools should include fetch_url"
+    );
     assert!(names.contains(&"file"), "Tools should include file");
-    assert!(names.contains(&"calculate"), "Tools should include calculate");
+    assert!(
+        names.contains(&"calculate"),
+        "Tools should include calculate"
+    );
 }
 
 #[test]
 fn test_agent_tools_count_seven() {
     let tools = build_agent_tools();
-    assert_eq!(tools.len(), 7, "Should have exactly 7 agent tools (3 existing + 4 new)");
+    assert_eq!(
+        tools.len(),
+        7,
+        "Should have exactly 7 agent tools (3 existing + 4 new)"
+    );
 }
 
 #[test]
 fn test_agent_tools_include_web_search() {
     let tools = build_agent_tools();
-    let names: Vec<&str> = tools.iter().filter_map(|t| match t {
-        async_openai::types::chat::ChatCompletionTools::Function(f) => Some(f.function.name.as_str()),
-        _ => None,
-    }).collect();
-    assert!(names.contains(&"web_search"), "Tools should include web_search");
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| match t {
+            async_openai::types::chat::ChatCompletionTools::Function(f) => {
+                Some(f.function.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        names.contains(&"web_search"),
+        "Tools should include web_search"
+    );
 }
 
 #[test]
 fn test_agent_tools_include_fetch_url() {
     let tools = build_agent_tools();
-    let names: Vec<&str> = tools.iter().filter_map(|t| match t {
-        async_openai::types::chat::ChatCompletionTools::Function(f) => Some(f.function.name.as_str()),
-        _ => None,
-    }).collect();
-    assert!(names.contains(&"fetch_url"), "Tools should include fetch_url");
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| match t {
+            async_openai::types::chat::ChatCompletionTools::Function(f) => {
+                Some(f.function.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        names.contains(&"fetch_url"),
+        "Tools should include fetch_url"
+    );
 }
 
 #[test]
 fn test_agent_tools_include_file() {
     let tools = build_agent_tools();
-    let names: Vec<&str> = tools.iter().filter_map(|t| match t {
-        async_openai::types::chat::ChatCompletionTools::Function(f) => Some(f.function.name.as_str()),
-        _ => None,
-    }).collect();
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| match t {
+            async_openai::types::chat::ChatCompletionTools::Function(f) => {
+                Some(f.function.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
     assert!(names.contains(&"file"), "Tools should include file");
 }
 
 #[test]
 fn test_agent_tools_include_calculate() {
     let tools = build_agent_tools();
-    let names: Vec<&str> = tools.iter().filter_map(|t| match t {
-        async_openai::types::chat::ChatCompletionTools::Function(f) => Some(f.function.name.as_str()),
-        _ => None,
-    }).collect();
-    assert!(names.contains(&"calculate"), "Tools should include calculate");
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| match t {
+            async_openai::types::chat::ChatCompletionTools::Function(f) => {
+                Some(f.function.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        names.contains(&"calculate"),
+        "Tools should include calculate"
+    );
 }
 
 #[test]
 fn test_web_search_no_api_key_returns_error() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = crate::agent::tools::dispatch_web_search(r#"{"query":"test"}"#, &rt, "");
-    assert!(result.starts_with("Error:"), "Empty API key should return error; got: {}", result);
+    assert!(
+        result.starts_with("Error:"),
+        "Empty API key should return error; got: {}",
+        result
+    );
     assert!(result.contains("not configured"));
 }
 
@@ -308,7 +358,11 @@ fn test_fetch_url_unreachable_returns_error() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     // RFC 5737 TEST-NET address -- guaranteed unreachable
     let result = crate::agent::tools::dispatch_fetch_url(r#"{"url":"http://192.0.2.1:1"}"#, &rt);
-    assert!(result.starts_with("Error:"), "Unreachable URL should return error; got: {}", result);
+    assert!(
+        result.starts_with("Error:"),
+        "Unreachable URL should return error; got: {}",
+        result
+    );
 }
 
 #[test]
@@ -319,11 +373,13 @@ fn test_file_write_read_roundtrip() {
         r#"{"operation":"write","path":"test.txt","content":"hello world"}"#,
         data_dir,
     );
-    assert!(write_result.contains("Wrote"), "Write should succeed; got: {}", write_result);
-    let read_result = crate::agent::tools::dispatch_file(
-        r#"{"operation":"read","path":"test.txt"}"#,
-        data_dir,
+    assert!(
+        write_result.contains("Wrote"),
+        "Write should succeed; got: {}",
+        write_result
     );
+    let read_result =
+        crate::agent::tools::dispatch_file(r#"{"operation":"read","path":"test.txt"}"#, data_dir);
     assert_eq!(read_result, "hello world");
 }
 
@@ -335,20 +391,32 @@ fn test_file_path_traversal_rejected() {
         r#"{"operation":"read","path":"../etc/passwd"}"#,
         data_dir,
     );
-    assert!(result.starts_with("Error:"), "Path traversal should be rejected; got: {}", result);
+    assert!(
+        result.starts_with("Error:"),
+        "Path traversal should be rejected; got: {}",
+        result
+    );
     assert!(result.contains(".."));
 }
 
 #[test]
 fn test_calculate_basic() {
     let result = crate::agent::tools::dispatch_calculate(r#"{"expression":"2 + 3 * 4"}"#);
-    assert!(result.contains("14"), "2 + 3 * 4 should be 14; got: {}", result);
+    assert!(
+        result.contains("14"),
+        "2 + 3 * 4 should be 14; got: {}",
+        result
+    );
 }
 
 #[test]
 fn test_calculate_invalid_no_panic() {
     let result = crate::agent::tools::dispatch_calculate(r#"{"expression":"+++invalid"}"#);
-    assert!(result.starts_with("Error:"), "Invalid expression should return error; got: {}", result);
+    assert!(
+        result.starts_with("Error:"),
+        "Invalid expression should return error; got: {}",
+        result
+    );
 }
 
 #[test]
@@ -372,8 +440,12 @@ fn test_dispatch_all_known_tools() {
         let results = dispatch_tools(&[call], db.conn(), &index, &provider, &rt, "", "");
         assert_eq!(results.len(), 1);
         // Should NOT contain "unknown tool"
-        assert!(!results[0].1.contains("unknown tool"),
-            "Tool '{}' should be dispatched, not unknown; got: {}", name, results[0].1);
+        assert!(
+            !results[0].1.contains("unknown tool"),
+            "Tool '{}' should be dispatched, not unknown; got: {}",
+            name,
+            results[0].1
+        );
     }
 }
 
@@ -692,7 +764,11 @@ fn test_dispatch_tools_malformed_args_no_panic() {
     // Must not panic -- malformed JSON must produce an error string
     let results = dispatch_tools(&[malformed_call], db.conn(), &index, &provider, &rt, "", "");
 
-    assert_eq!(results.len(), 1, "Should return one result for one tool call");
+    assert_eq!(
+        results.len(),
+        1,
+        "Should return one result for one tool call"
+    );
     assert!(
         results[0].1.starts_with("Error:"),
         "Malformed args must produce an error string starting with 'Error:'; got: {}",
@@ -764,7 +840,8 @@ fn test_agent_step_tool_input() {
                 assert!(
                     step.tool_input.is_none(),
                     "tool_input should be None for non-tool_call step {}, action_type={}",
-                    step.id, step.action_type
+                    step.id,
+                    step.action_type
                 );
             }
         }

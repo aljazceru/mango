@@ -88,10 +88,7 @@ pub enum InternalEvent {
     },
     /// Non-streaming tool round returned a final answer (no tools called) (Phase 27).
     /// Actor emits the text as StreamChunk + StreamDone.
-    ChatToolNone {
-        conv_id: String,
-        text: String,
-    },
+    ChatToolNone { conv_id: String, text: String },
     /// Result of a background Brave Search API key validation call.
     ///
     /// Sent by spawn_brave_api_key_validation back to the actor loop.
@@ -108,9 +105,7 @@ pub enum InternalEvent {
     /// Sent by the AttemptBiometricUnlock handler after the platform biometric
     /// prompt resolves. Processed in the InternalEvent branch so the actor loop
     /// is not blocked while the system biometric UI is displayed (CR-03).
-    BiometricResult {
-        success: bool,
-    },
+    BiometricResult { success: bool },
 }
 
 /// Spawn an async-openai streaming task on the given Tokio runtime.

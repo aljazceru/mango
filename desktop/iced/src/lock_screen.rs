@@ -21,13 +21,9 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let vc = crate::theme::view_colors(is_dark);
 
-    let logo = text("Mango")
-        .size(32)
-        .color(vc.text);
+    let logo = text("Mango").size(32).color(vc.text);
 
-    let tagline = text("Enter your PIN to unlock")
-        .size(14)
-        .color(vc.text_dim);
+    let tagline = text("Enter your PIN to unlock").size(14).color(vc.text_dim);
 
     // Secure text input — PIN is masked (T-28-23).
     let pin_field = text_input("PIN", pin_input)
@@ -74,9 +70,7 @@ pub fn view<'a>(
 
     // Show error text if unlock failed (e.g. wrong PIN).
     if let Some(err) = error_message {
-        let err_text = text(err)
-            .size(13)
-            .color(vc.destructive);
+        let err_text = text(err).size(13).color(vc.destructive);
         content_col = content_col.push(err_text);
     }
 

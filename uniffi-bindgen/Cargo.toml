@@ -3,6 +3,9 @@ name = "uniffi-bindgen"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "UniFFI binding generator for mango_core"
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "uniffi-bindgen"

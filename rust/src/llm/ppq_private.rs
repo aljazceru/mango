@@ -6,17 +6,18 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionTools, CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs, CreateChatCompletionResponse, CreateChatCompletionStreamResponse,
+    CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
+    CreateChatCompletionStreamResponse,
 };
 use base64::Engine;
 use flate2::read::GzDecoder;
 use futures::StreamExt;
 use hkdf::Hkdf;
+use hpke::rand_core::TryRngCore;
 use hpke::{
     aead::AesGcm256, kdf::HkdfSha256, kem::X25519HkdfSha256, setup_sender, Deserializable,
     Kem as KemTrait, OpModeS, Serializable,
 };
-use hpke::rand_core::TryRngCore;
 use once_cell::sync::Lazy;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::Client;
@@ -174,16 +175,20 @@ pub async fn run_streaming_chat_completion(
     let mut openai_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
     for msg in &messages {
         let result: Result<ChatCompletionRequestMessage, String> = match msg.role {
-            crate::llm::streaming::ChatRole::System => ChatCompletionRequestSystemMessageArgs::default()
-                .content(msg.content.clone())
-                .build()
-                .map(ChatCompletionRequestMessage::from)
-                .map_err(|e| e.to_string()),
-            crate::llm::streaming::ChatRole::User => ChatCompletionRequestUserMessageArgs::default()
-                .content(msg.content.clone())
-                .build()
-                .map(ChatCompletionRequestMessage::from)
-                .map_err(|e| e.to_string()),
+            crate::llm::streaming::ChatRole::System => {
+                ChatCompletionRequestSystemMessageArgs::default()
+                    .content(msg.content.clone())
+                    .build()
+                    .map(ChatCompletionRequestMessage::from)
+                    .map_err(|e| e.to_string())
+            }
+            crate::llm::streaming::ChatRole::User => {
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(msg.content.clone())
+                    .build()
+                    .map(ChatCompletionRequestMessage::from)
+                    .map_err(|e| e.to_string())
+            }
             crate::llm::streaming::ChatRole::Assistant => {
                 ChatCompletionRequestAssistantMessageArgs::default()
                     .content(msg.content.clone())
@@ -234,16 +239,16 @@ pub async fn run_streaming_chat_completion(
         }
     };
 
-    let response = match send_private_request(&backend, "/chat/completions", &model, body, true).await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                crate::llm::streaming::InternalEvent::StreamError { error },
-            )));
-            return;
-        }
-    };
+    let response =
+        match send_private_request(&backend, "/chat/completions", &model, body, true).await {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                    crate::llm::streaming::InternalEvent::StreamError { error },
+                )));
+                return;
+            }
+        };
 
     if let Err(error) = stream_decrypted_sse(response, cancel_token, &core_tx).await {
         let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
@@ -393,7 +398,8 @@ async fn send_private_request(
     // The attestation task will have already run with the loaded policy (and
     // populated the cache). If the cache is cold here we fall back to defaults,
     // which match the previously hardcoded constants.
-    let verified = ensure_verified_attestation(backend, &crate::attestation::SnpPolicy::default()).await?;
+    let verified =
+        ensure_verified_attestation(backend, &crate::attestation::SnpPolicy::default()).await?;
     let encrypted = encrypt_request_body(&verified.hpke_public_key, &body)?;
     let client = build_http_client(Duration::from_secs(90))?;
 
@@ -473,8 +479,11 @@ async fn send_private_request(
     let response_nonce = hex::decode(response_nonce).map_err(|error| LlmError::NetworkError {
         reason: format!("Invalid PPQ private response nonce: {error}"),
     })?;
-    let key_material =
-        derive_response_key_material(&encrypted.exported_secret, &encrypted.request_enc, &response_nonce)?;
+    let key_material = derive_response_key_material(
+        &encrypted.exported_secret,
+        &encrypted.request_enc,
+        &response_nonce,
+    )?;
 
     Ok(EncryptedResponse {
         response,
@@ -482,22 +491,34 @@ async fn send_private_request(
     })
 }
 
-async fn parse_problem_response(response: reqwest::Response) -> (u16, String, Option<ProblemDetails>) {
+async fn parse_problem_response(
+    response: reqwest::Response,
+) -> (u16, String, Option<ProblemDetails>) {
     let status = response.status().as_u16();
     let body_text = response.text().await.unwrap_or_default();
     let problem = serde_json::from_str::<ProblemDetails>(&body_text).ok();
     (status, body_text, problem)
 }
 
-fn map_plain_error_body(status: u16, body_text: &str, problem: Option<&ProblemDetails>) -> LlmError {
+fn map_plain_error_body(
+    status: u16,
+    body_text: &str,
+    problem: Option<&ProblemDetails>,
+) -> LlmError {
     let parsed = serde_json::from_str::<Value>(body_text).ok();
     let message = parsed
         .as_ref()
         .and_then(|value| value.get("error"))
         .and_then(|error| error.get("message"))
         .and_then(|value| value.as_str())
-        .or_else(|| problem.and_then(|problem| (!problem.title.is_empty()).then_some(problem.title.as_str())))
-        .or_else(|| problem.and_then(|problem| (!problem.detail.is_empty()).then_some(problem.detail.as_str())))
+        .or_else(|| {
+            problem
+                .and_then(|problem| (!problem.title.is_empty()).then_some(problem.title.as_str()))
+        })
+        .or_else(|| {
+            problem
+                .and_then(|problem| (!problem.detail.is_empty()).then_some(problem.detail.as_str()))
+        })
         .unwrap_or_else(|| body_text.trim());
     match status {
         401 | 403 => LlmError::AuthError {
@@ -535,28 +556,33 @@ struct EncryptedRequest {
     exported_secret: [u8; EXPORT_LEN],
 }
 
-fn encrypt_request_body(server_public_key: &[u8; 32], body: &[u8]) -> Result<EncryptedRequest, LlmError> {
+fn encrypt_request_body(
+    server_public_key: &[u8; 32],
+    body: &[u8],
+) -> Result<EncryptedRequest, LlmError> {
     type Kem = X25519HkdfSha256;
     type Kdf = HkdfSha256;
     type Aead = AesGcm256;
 
-    let public_key = <Kem as KemTrait>::PublicKey::from_bytes(server_public_key).map_err(|error| {
-        LlmError::NetworkError {
-            reason: format!("Invalid attested HPKE public key: {error}"),
-        }
-    })?;
+    let public_key =
+        <Kem as KemTrait>::PublicKey::from_bytes(server_public_key).map_err(|error| {
+            LlmError::NetworkError {
+                reason: format!("Invalid attested HPKE public key: {error}"),
+            }
+        })?;
 
     let mut rng = hpke::rand_core::OsRng.unwrap_err();
     let (encapped_key, mut ctx) =
-        setup_sender::<Aead, Kdf, Kem, _>(&OpModeS::Base, &public_key, REQUEST_INFO, &mut rng).map_err(
-            |error| LlmError::NetworkError {
+        setup_sender::<Aead, Kdf, Kem, _>(&OpModeS::Base, &public_key, REQUEST_INFO, &mut rng)
+            .map_err(|error| LlmError::NetworkError {
                 reason: format!("Failed to initialize HPKE sender context: {error}"),
-            },
-        )?;
+            })?;
 
-    let ciphertext = ctx.seal(body, &[]).map_err(|error| LlmError::NetworkError {
-        reason: format!("Failed to encrypt PPQ private request body: {error}"),
-    })?;
+    let ciphertext = ctx
+        .seal(body, &[])
+        .map_err(|error| LlmError::NetworkError {
+            reason: format!("Failed to encrypt PPQ private request body: {error}"),
+        })?;
 
     let mut exported_secret = [0u8; EXPORT_LEN];
     ctx.export(EXPORT_LABEL, &mut exported_secret)
@@ -617,9 +643,10 @@ fn decrypt_chunk(
     seq: u64,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, LlmError> {
-    let cipher = Aes256Gcm::new_from_slice(&key_material.key).map_err(|error| LlmError::NetworkError {
-        reason: error.to_string(),
-    })?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key_material.key).map_err(|error| LlmError::NetworkError {
+            reason: error.to_string(),
+        })?;
     let nonce = compute_chunk_nonce(&key_material.nonce_base, seq);
     let nonce = Nonce::from(nonce);
     cipher
@@ -674,10 +701,15 @@ fn build_private_chat_body(
     let mut value = serde_json::to_value(request).map_err(|error| LlmError::NetworkError {
         reason: error.to_string(),
     })?;
-    let object = value.as_object_mut().ok_or_else(|| LlmError::NetworkError {
-        reason: "Invalid chat completion request shape".to_string(),
-    })?;
-    object.insert("model".to_string(), Value::String(internal_model.to_string()));
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| LlmError::NetworkError {
+            reason: "Invalid chat completion request shape".to_string(),
+        })?;
+    object.insert(
+        "model".to_string(),
+        Value::String(internal_model.to_string()),
+    );
     serde_json::to_vec(&value).map_err(|error| LlmError::NetworkError {
         reason: error.to_string(),
     })
@@ -822,26 +854,38 @@ fn verify_sev_attestation_bundle(
         });
     }
 
-    let report = sev::firmware::guest::AttestationReport::from_bytes(report_blob).map_err(|error| {
-        LlmError::NetworkError {
-            reason: format!("Invalid SEV-SNP report: {error}"),
-        }
-    })?;
-    let generation = match (report.cpuid_fam_id, report.cpuid_mod_id) {
-        (Some(family), Some(model)) => sev::Generation::identify_cpu(family, model).map_err(|error| {
+    let report =
+        sev::firmware::guest::AttestationReport::from_bytes(report_blob).map_err(|error| {
             LlmError::NetworkError {
-                reason: format!(
-                    "Unknown AMD generation family={family:#x} model={model:#x}: {error}"
-                ),
+                reason: format!("Invalid SEV-SNP report: {error}"),
             }
-        })?,
+        })?;
+    let generation = match (report.cpuid_fam_id, report.cpuid_mod_id) {
+        (Some(family), Some(model)) => {
+            sev::Generation::identify_cpu(family, model).map_err(|error| {
+                LlmError::NetworkError {
+                    reason: format!(
+                        "Unknown AMD generation family={family:#x} model={model:#x}: {error}"
+                    ),
+                }
+            })?
+        }
         _ => sev::Generation::Genoa,
     };
 
     let (ark_pem, ask_pem): (&[u8], &[u8]) = match generation {
-        sev::Generation::Milan => (sev::certs::snp::builtin::milan::ARK, sev::certs::snp::builtin::milan::ASK),
-        sev::Generation::Genoa => (sev::certs::snp::builtin::genoa::ARK, sev::certs::snp::builtin::genoa::ASK),
-        sev::Generation::Turin => (sev::certs::snp::builtin::turin::ARK, sev::certs::snp::builtin::turin::ASK),
+        sev::Generation::Milan => (
+            sev::certs::snp::builtin::milan::ARK,
+            sev::certs::snp::builtin::milan::ASK,
+        ),
+        sev::Generation::Genoa => (
+            sev::certs::snp::builtin::genoa::ARK,
+            sev::certs::snp::builtin::genoa::ASK,
+        ),
+        sev::Generation::Turin => (
+            sev::certs::snp::builtin::turin::ARK,
+            sev::certs::snp::builtin::turin::ASK,
+        ),
     };
     let ca_chain = sev::certs::snp::ca::Chain::from_pem(ark_pem, ask_pem).map_err(|error| {
         LlmError::NetworkError {
@@ -871,8 +915,10 @@ fn verify_snp_signature_with_vcek(
     report: &sev::firmware::guest::AttestationReport,
     vcek_der: &[u8],
 ) -> Result<(), LlmError> {
-    let vcek = sev::certs::snp::Certificate::from_der(vcek_der).map_err(|error| LlmError::NetworkError {
-        reason: format!("Invalid VCEK certificate: {error}"),
+    let vcek = sev::certs::snp::Certificate::from_der(vcek_der).map_err(|error| {
+        LlmError::NetworkError {
+            reason: format!("Invalid VCEK certificate: {error}"),
+        }
     })?;
     let chain = sev::certs::snp::Chain {
         ca: ca_chain.clone(),
@@ -946,9 +992,10 @@ fn verify_certificate_binding(
     let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).map_err(|error| LlmError::NetworkError {
         reason: format!("Failed to parse enclave certificate PEM: {error}"),
     })?;
-    let (_, cert) = X509Certificate::from_der(&pem.contents).map_err(|error| LlmError::NetworkError {
-        reason: format!("Failed to parse enclave certificate DER: {error}"),
-    })?;
+    let (_, cert) =
+        X509Certificate::from_der(&pem.contents).map_err(|error| LlmError::NetworkError {
+            reason: format!("Failed to parse enclave certificate DER: {error}"),
+        })?;
 
     let sans = extract_dns_sans(&cert)?;
     if !domain_matches_sans(&sans, expected_domain) {
@@ -968,18 +1015,18 @@ fn verify_certificate_binding(
     }
 
     let attestation_hash_bytes = decode_prefixed_san_data(&sans, "hatt")?;
-    let attestation_hash = String::from_utf8(attestation_hash_bytes).map_err(|error| {
-        LlmError::NetworkError {
+    let attestation_hash =
+        String::from_utf8(attestation_hash_bytes).map_err(|error| LlmError::NetworkError {
             reason: format!("Invalid attestation hash encoding in certificate SAN: {error}"),
-        }
-    })?;
+        })?;
     let expected_hash = hex::encode(Sha256::digest(format!(
         "{}{}",
         attestation_doc.format, attestation_doc.body
     )));
     if attestation_hash != expected_hash {
         return Err(LlmError::NetworkError {
-            reason: "Attestation hash mismatch between certificate and attestation bundle".to_string(),
+            reason: "Attestation hash mismatch between certificate and attestation bundle"
+                .to_string(),
         });
     }
 
@@ -1015,13 +1062,17 @@ async fn verify_hpke_key_endpoint(
             ),
         });
     }
-    let bytes = response.bytes().await.map_err(|error| LlmError::NetworkError {
-        reason: error.to_string(),
-    })?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| LlmError::NetworkError {
+            reason: error.to_string(),
+        })?;
     let parsed_key = parse_ohttp_public_key(&bytes)?;
     if &parsed_key != expected_hpke_key {
         return Err(LlmError::NetworkError {
-            reason: "HPKE key endpoint returned a different public key than the attested key".to_string(),
+            reason: "HPKE key endpoint returned a different public key than the attested key"
+                .to_string(),
         });
     }
     Ok(())
@@ -1060,7 +1111,8 @@ fn extract_dns_sans(cert: &X509Certificate<'_>) -> Result<Vec<String>, LlmError>
     }
     if sans.is_empty() {
         return Err(LlmError::NetworkError {
-            reason: "Enclave certificate does not contain DNS Subject Alternative Names".to_string(),
+            reason: "Enclave certificate does not contain DNS Subject Alternative Names"
+                .to_string(),
         });
     }
     Ok(sans)
@@ -1070,7 +1122,9 @@ fn domain_matches_sans(sans: &[String], expected_domain: &str) -> bool {
     let parent = parent_domain(expected_domain);
     sans.iter().any(|san| {
         san == expected_domain
-            || (san.starts_with("*.") && san.trim_start_matches("*.") == parent && expected_domain != parent)
+            || (san.starts_with("*.")
+                && san.trim_start_matches("*.") == parent
+                && expected_domain != parent)
     })
 }
 
@@ -1087,7 +1141,11 @@ fn decode_prefixed_san_data(sans: &[String], prefix: &str) -> Result<Vec<u8>, Ll
         .iter()
         .filter(|san| san.contains(&marker))
         .collect::<Vec<_>>();
-    chunks.sort_by_key(|san| san.get(..2).and_then(|idx| idx.parse::<u8>().ok()).unwrap_or(0));
+    chunks.sort_by_key(|san| {
+        san.get(..2)
+            .and_then(|idx| idx.parse::<u8>().ok())
+            .unwrap_or(0)
+    });
     let joined = chunks
         .into_iter()
         .filter_map(|san| san.split('.').next())
@@ -1110,7 +1168,10 @@ fn decode_base32_upper(input: &str) -> Result<Vec<u8>, LlmError> {
         let byte = byte.to_ascii_uppercase();
         let Some(index) = alphabet.iter().position(|candidate| *candidate == byte) else {
             return Err(LlmError::NetworkError {
-                reason: format!("Invalid base32 character in certificate SAN data: {}", byte as char),
+                reason: format!(
+                    "Invalid base32 character in certificate SAN data: {}",
+                    byte as char
+                ),
             });
         };
         value = (value << 5) | index as u32;
@@ -1139,10 +1200,13 @@ fn decode_attestation_body(body: &str) -> Result<Vec<u8>, LlmError> {
 
 fn llm_to_attestation_error(error: LlmError) -> AttestationError {
     match error {
-        LlmError::NetworkError { reason }
-        | LlmError::AuthError { reason } => AttestationError::NetworkError { reason },
+        LlmError::NetworkError { reason } | LlmError::AuthError { reason } => {
+            AttestationError::NetworkError { reason }
+        }
         LlmError::RateLimited { reason, .. } => AttestationError::NetworkError { reason },
-        LlmError::ModelNotFound { model_id } => AttestationError::Unsupported.with_context(&model_id),
+        LlmError::ModelNotFound { model_id } => {
+            AttestationError::Unsupported.with_context(&model_id)
+        }
         LlmError::ApiError { reason, .. } => AttestationError::QuoteVerification { reason },
     }
 }
