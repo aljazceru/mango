@@ -91,16 +91,21 @@ ios-full: bindings-swift build-ios ios-xcframework
 # ── Android ───────────────────────────────────────────────────────────────────
 
 # Cross-compile Rust for Android ABIs via cargo-ndk
-# Note: armv7/x86_64 dropped — ort (ONNX Runtime) has no prebuilt binaries for those targets
+# Note: only arm64-v8a — ort (ONNX Runtime) has no prebuilt binaries for x86_64/armv7
 build-android:
   #!/usr/bin/env bash
   set -e
+  # Clean stale artifacts before rebuild
+  rm -rf android/app/src/main/jniLibs
   cargo ndk -o android/app/src/main/jniLibs -P 28 \
     -t arm64-v8a \
     build -p {{CORE_CRATE}} --release
   # Bundle libc++_shared.so required by ONNX Runtime
   NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_HOME:-${HOME}/Android/Sdk}/ndk/28.2.13676358}"
-  cp "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+  PREBUILT="$NDK_HOME/toolchains/llvm/prebuilt"
+  HOST_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+  SYSROOT="$PREBUILT/$HOST_TAG/sysroot/usr/lib"
+  cp "$SYSROOT/aarch64-linux-android/libc++_shared.so" \
     android/app/src/main/jniLibs/arm64-v8a/
 
 # Full Android pipeline: bindings -> cross-compile -> assemble

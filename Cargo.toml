@@ -5,3 +5,9 @@ resolver = "2"
 [workspace.package]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/aljazceru/mango"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+opt-level = "z"
