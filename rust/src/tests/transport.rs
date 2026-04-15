@@ -96,3 +96,36 @@ fn test_private_transport_probes_public_model_endpoint() {
 
     assert_eq!(url, "https://api.ppq.ai/v1/models");
 }
+
+#[test]
+fn test_openai_transport_without_pin_builds_standard_client() {
+    let custom = backend("custom", "https://example.com/v1/");
+    let (_client, used_pin) = custom
+        .transport_kind()
+        .build_reqwest_client(&custom, None, std::time::Duration::from_secs(1))
+        .expect("standard client should build successfully");
+
+    assert!(
+        !used_pin,
+        "transport should report pinning disabled when no pin is requested"
+    );
+}
+
+#[test]
+fn test_openai_transport_fails_closed_when_pinned_client_cannot_be_built() {
+    let custom = backend("custom", "https://example.com/v1/");
+    let error = custom
+        .transport_kind()
+        .build_reqwest_client(
+            &custom,
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+            std::time::Duration::from_secs(1),
+        )
+        .expect_err("pinning errors must fail closed");
+
+    assert!(
+        error.to_string().contains("requires pinned TLS"),
+        "transport must surface a pinning error instead of falling back: {}",
+        error
+    );
+}

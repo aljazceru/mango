@@ -1263,37 +1263,6 @@ fn spawn_health_check(
                 .await
             {
                 Ok(resp) => (Ok(resp), used_pin),
-                Err(error) if used_pin => {
-                    log::warn!(
-                        target: "health_check",
-                        "[health_check] backend={} pinned probe failed, retrying unpinned: {}",
-                        backend_id,
-                        error
-                    );
-                    match transport.build_reqwest_client(&backend, None, std::time::Duration::from_secs(5)) {
-                        Ok((retry_client, _)) => (
-                            retry_client
-                                .get(&url)
-                                .bearer_auth(&backend.api_key)
-                                .timeout(std::time::Duration::from_secs(5))
-                                .send()
-                                .await,
-                            false,
-                        ),
-                        Err(error) => {
-                            log::warn!(
-                                target: "health_check",
-                                "[health_check] backend={} failed to build fallback client: {}",
-                                backend_id,
-                                error
-                            );
-                            let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
-                                llm::InternalEvent::HealthCheckResult { backend_id, success: false, models: vec![] },
-                            )));
-                            return;
-                        }
-                    }
-                }
                 Err(error) => (Err(error), used_pin),
             },
             Err(error) => {
@@ -1517,11 +1486,8 @@ fn spawn_brave_api_key_validation(
                 }
             }
             Err(e) => {
-                let msg = if e.is_timeout() {
-                    "Could not reach Brave API — check your internet connection.".to_string()
-                } else {
-                    "Could not reach Brave API — check your internet connection.".to_string()
-                };
+                let _timed_out = e.is_timeout();
+                let msg = "Could not reach Brave API — check your internet connection.".to_string();
                 let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
                     llm::InternalEvent::BraveApiKeyValidationResult {
                         api_key,
@@ -2701,7 +2667,7 @@ fn pin_matches_primary_pin(
         return false;
     };
 
-    match crypto::key_derivation::unwrap_dek(&*kek, &params.wrapped_dek) {
+    match crypto::key_derivation::unwrap_dek(&kek, &params.wrapped_dek) {
         Ok(unwrapped) => unwrapped == **current_dek,
         Err(_) => false,
     }
@@ -4740,9 +4706,8 @@ impl FfiApp {
                                     let _ = actor_state.vector_index.remove(*rowid as u64);
                                 }
                                 if !rowids.is_empty() {
-                                    let _ = actor_state
-                                        .vector_index
-                                        .save(actor_state.dek.as_ref().map(|d| &**d));
+                                    let _ =
+                                        actor_state.vector_index.save(actor_state.dek.as_deref());
                                 }
 
                                 // Delete document from SQLite (chunks already deleted above)
@@ -4950,9 +4915,8 @@ impl FfiApp {
 
                                 if let Some(key) = usearch_key {
                                     let _ = actor_state.vector_index.remove(key as u64);
-                                    let _ = actor_state
-                                        .vector_index
-                                        .save(actor_state.dek.as_ref().map(|d| &**d));
+                                    let _ =
+                                        actor_state.vector_index.save(actor_state.dek.as_deref());
                                     // Persist to disk, encrypted if DEK available
                                 }
                                 let _ = persistence::queries::delete_memory(
@@ -5057,9 +5021,9 @@ impl FfiApp {
                                 duress_pin,
                                 enable_biometric,
                             } => {
-                                if actor_state.db.is_some() {
+                                if let Some(db) = actor_state.db.as_ref() {
                                     let _ = persistence::queries::set_setting(
-                                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                                        db.conn(),
                                         "duress_decoy_mode",
                                         "false",
                                     );
@@ -5097,7 +5061,7 @@ impl FfiApp {
                                             continue;
                                         }
                                     };
-                                let wrapped_dek = crypto::key_derivation::wrap_dek(&*kek, &*dek);
+                                let wrapped_dek = crypto::key_derivation::wrap_dek(&kek, &dek);
                                 let dek_hex: Zeroizing<String> = Zeroizing::new(
                                     dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                 );
@@ -5150,7 +5114,7 @@ impl FfiApp {
                                         actor_state.db = None;
                                         if let Err(e) = persistence::Database::migrate_to_encrypted(
                                             &actor_state.db_path,
-                                            &*dek_hex,
+                                            &dek_hex,
                                         ) {
                                             log::error!("[auth] migrate_to_encrypted failed: {e}");
                                             actor_state.app_state.toast = Some(
@@ -5168,7 +5132,7 @@ impl FfiApp {
                                     // Open the (now encrypted) DB.
                                     match persistence::Database::open_encrypted(
                                         &actor_state.db_path,
-                                        &*dek_hex,
+                                        &dek_hex,
                                     ) {
                                         Ok(db) => {
                                             actor_state.db = Some(db);
@@ -5190,8 +5154,7 @@ impl FfiApp {
                                     }
                                     // Phase 29 (D-01, D-04): Store DEK and open VectorIndex with real encryption key.
                                     actor_state.dek = Some(dek.clone());
-                                    let dek_ref: Option<&[u8; 32]> =
-                                        actor_state.dek.as_ref().map(|d| &**d);
+                                    let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_deref();
                                     actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                         .unwrap_or_else(|e| {
                                             log::warn!("[auth] SetupPin: VectorIndex open with DEK failed, using empty fallback: {e}");
@@ -5322,7 +5285,7 @@ impl FfiApp {
                                         {
                                             actor_state.dek = Some(Zeroizing::new(dek_arr));
                                             let dek_ref: Option<&[u8; 32]> =
-                                                actor_state.dek.as_ref().map(|d| &**d);
+                                                actor_state.dek.as_deref();
                                             actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                                 .unwrap_or_else(|e| {
                                                     log::warn!("[auth] UnlockWithDek: VectorIndex open failed: {e}");
@@ -5433,7 +5396,7 @@ impl FfiApp {
                                 // Unwrap DEK. CR-03: wrap in Zeroizing so raw bytes are zeroed on drop.
                                 let dek: Zeroizing<[u8; 32]> =
                                     match crypto::key_derivation::unwrap_dek(
-                                        &*kek,
+                                        &kek,
                                         &params.wrapped_dek,
                                     ) {
                                         Ok(d) => Zeroizing::new(d),
@@ -5458,7 +5421,7 @@ impl FfiApp {
                                 // Open encrypted DB.
                                 match persistence::Database::open_encrypted(
                                     &actor_state.db_path,
-                                    &*dek_hex,
+                                    &dek_hex,
                                 ) {
                                     Ok(db) => {
                                         actor_state.db = Some(db);
@@ -5476,8 +5439,7 @@ impl FfiApp {
                                 }
                                 // Phase 29 (D-01, D-04): Store DEK and open VectorIndex with encryption key.
                                 actor_state.dek = Some(dek.clone());
-                                let dek_ref: Option<&[u8; 32]> =
-                                    actor_state.dek.as_ref().map(|d| &**d);
+                                let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_deref();
                                 actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                     .unwrap_or_else(|e| {
                                         log::warn!("[auth] UnlockWithPin: VectorIndex open with DEK failed: {e}");
@@ -5607,9 +5569,9 @@ impl FfiApp {
 
                             AppAction::SetLockTimeout { seconds } => {
                                 actor_state.app_state.lock_timeout_seconds = seconds;
-                                if actor_state.db.is_some() {
+                                if let Some(db) = actor_state.db.as_ref() {
                                     let _ = persistence::queries::set_setting(
-                                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                                        db.conn(),
                                         "lock_timeout_seconds",
                                         &seconds.to_string(),
                                     );
@@ -6306,9 +6268,8 @@ impl FfiApp {
                                     }
                                 }
                                 if !chunk_rowids.is_empty() {
-                                    let _ = actor_state
-                                        .vector_index
-                                        .save(actor_state.dek.as_ref().map(|d| &**d));
+                                    let _ =
+                                        actor_state.vector_index.save(actor_state.dek.as_deref());
                                 }
 
                                 // Clear ingestion progress and show success toast
@@ -6384,7 +6345,7 @@ impl FfiApp {
                                     if added_count > 0 {
                                         let _ = actor_state
                                             .vector_index
-                                            .save(actor_state.dek.as_ref().map(|d| &**d));
+                                            .save(actor_state.dek.as_deref());
                                     }
                                     log::info!(
                                         "[memory] extracted {} memories ({} embedded) from conv={}",
@@ -6650,7 +6611,7 @@ impl FfiApp {
                                                 {
                                                     actor_state.dek = Some(Zeroizing::new(dek_arr));
                                                     let dek_ref: Option<&[u8; 32]> =
-                                                        actor_state.dek.as_ref().map(|d| &**d);
+                                                        actor_state.dek.as_deref();
                                                     actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
                                                         .unwrap_or_else(|e| {
                                                             log::warn!("[auth] BiometricResult: VectorIndex open failed: {e}");

@@ -14,7 +14,6 @@ mod lock_screen;
 mod pin_setup_screen;
 mod theme;
 mod views;
-mod widgets;
 
 // ── ThemeOverride ────────────────────────────────────────────────────────────
 

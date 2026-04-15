@@ -102,7 +102,7 @@ impl Database {
         validate_dek_hex(dek_hex)?;
         let conn = rusqlite::Connection::open(path)?;
         // CRITICAL: key pragma MUST be first operation after open (per D-01)
-        conn.pragma_update(None, "key", &format!("x'{}'", dek_hex))?;
+        conn.pragma_update(None, "key", format!("x'{}'", dek_hex))?;
         // Verify the key is correct by attempting a read. SQLCipher returns an error
         // on the first real DB operation if the key is wrong.
         conn.pragma_query_value::<i32, _>(None, "user_version", |r| r.get(0))
@@ -172,7 +172,7 @@ impl Database {
         // run_migrations skips already-applied migrations.
         {
             let enc_conn = rusqlite::Connection::open(&enc_path)?;
-            enc_conn.pragma_update(None, "key", &format!("x'{}'", dek_hex))?;
+            enc_conn.pragma_update(None, "key", format!("x'{}'", dek_hex))?;
             enc_conn.pragma_update(None, "user_version", src_version)?;
         }
         // Verify the encrypted copy opens with correct key (and no extra migrations)

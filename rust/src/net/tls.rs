@@ -4,6 +4,7 @@ use std::time::Duration;
 use reqwest::tls::TlsInfo;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
+use rustls::crypto::aws_lc_rs;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{
     ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
@@ -67,6 +68,8 @@ pub fn pinned_reqwest_client(
 fn pinned_rustls_client_config(
     expected_public_key_fp: &str,
 ) -> Result<Arc<ClientConfig>, TlsPinError> {
+    let _ = aws_lc_rs::default_provider().install_default();
+
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 

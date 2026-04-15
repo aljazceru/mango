@@ -223,7 +223,6 @@ pub fn spawn_streaming_task(
         run_streaming_with_api_messages(
             backend,
             transport,
-            base_url,
             model,
             openai_messages,
             pinned_tls_public_key_fp,
@@ -317,7 +316,6 @@ pub fn spawn_streaming_task_from_api_messages(
         run_streaming_with_api_messages(
             backend,
             transport,
-            base_url,
             model,
             messages,
             pinned_tls_public_key_fp,
@@ -383,11 +381,10 @@ fn api_messages_to_chat_messages(
 ///
 /// Shared between `spawn_streaming_task` (after ChatMessage conversion) and
 /// `spawn_streaming_task_from_api_messages` (direct API message types).
-/// Handles client construction, TLS pinning retry, and SSE consumption loop.
+/// Handles client construction and SSE consumption loop.
 async fn run_streaming_with_api_messages(
     backend: super::backend::BackendConfig,
     transport: super::transport::ProviderTransportKind,
-    base_url: String,
     model: String,
     messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage>,
     pinned_tls_public_key_fp: Option<String>,
@@ -397,6 +394,8 @@ async fn run_streaming_with_api_messages(
     use super::error::map_openai_error;
     use async_openai::types::chat::CreateChatCompletionRequestArgs;
     use futures::StreamExt;
+
+    let base_url = backend.base_url.trim_end_matches('/').to_string();
 
     let make_client = |pin: Option<&str>| {
         transport.build_openai_client(&backend, pin, std::time::Duration::from_secs(60))
@@ -430,41 +429,18 @@ async fn run_streaming_with_api_messages(
         }
     };
 
-    let mut stream = match client.chat().create_stream(request.clone()).await {
+    let mut stream = match client.chat().create_stream(request).await {
         Ok(s) => s,
-        Err(e) if used_pin => {
+        Err(e) => {
             let mapped = map_openai_error(e);
             log::warn!(
                 target: "streaming",
-                "[streaming] pinned stream open failed base_url={} model={} error={} retrying unpinned",
+                "[streaming] failed to open stream base_url={} model={} pinned={} error={}",
                 base_url,
                 model,
+                used_pin,
                 mapped
             );
-            let (retry_client, _) = match make_client(None) {
-                Ok(client) => client,
-                Err(error) => {
-                    let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                        InternalEvent::StreamError { error },
-                    )));
-                    return;
-                }
-            };
-            match retry_client.chat().create_stream(request).await {
-                Ok(s) => s,
-                Err(e) => {
-                    let mapped = map_openai_error(e);
-                    log::warn!(target: "streaming", "[streaming] failed to open stream base_url={} model={} error={}", base_url, model, mapped);
-                    let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                        InternalEvent::StreamError { error: mapped },
-                    )));
-                    return;
-                }
-            }
-        }
-        Err(e) => {
-            let mapped = map_openai_error(e);
-            log::warn!(target: "streaming", "[streaming] failed to open stream base_url={} model={} error={}", base_url, model, mapped);
             let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
                 InternalEvent::StreamError { error: mapped },
             )));
