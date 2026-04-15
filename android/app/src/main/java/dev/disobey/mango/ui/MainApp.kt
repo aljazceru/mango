@@ -68,9 +68,6 @@ fun MainApp(
                 onDelete = { id -> manager.dispatch(AppAction.DeleteConversation(id = id)) },
                 onRename = { id, title -> manager.dispatch(AppAction.RenameConversation(id = id, title = title)) },
                 topBarActions = {
-                    TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Agents)) }) {
-                        Text("Agents")
-                    }
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Documents)) }) {
                         Text("RAG")
                     }

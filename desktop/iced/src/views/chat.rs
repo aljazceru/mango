@@ -384,6 +384,34 @@ pub fn chat_view<'a>(
         all_widgets.push(render_streaming_bubble(streaming_content, theme, vc));
     }
 
+    // Thinking indicator: show when Loading (waiting for first token)
+    let is_loading = matches!(&state.busy_state, BusyState::Loading { .. });
+    if is_loading {
+        let loading_msg = if let BusyState::Loading { message } = &state.busy_state {
+            message.as_str()
+        } else {
+            "Thinking…"
+        };
+        let muted = vc.muted;
+        let secondary_surface = vc.secondary_surface;
+        all_widgets.push(
+            container(
+                text(loading_msg).size(14).color(muted),
+            )
+            .padding(Padding::from([8u16, 12]))
+            .max_width(640.0)
+            .style(move |_theme| container::Style {
+                background: Some(Background::Color(secondary_surface)),
+                border: Border {
+                    radius: 12.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into(),
+        );
+    }
+
     let muted_color = vc.muted;
     let msg_column: Element<'_, Message> = if show_placeholder {
         // D-17 welcome placeholder

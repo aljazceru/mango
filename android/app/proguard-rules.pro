@@ -18,3 +18,8 @@
 # WorkManager
 -keep class * extends androidx.work.Worker {}
 -keep class * extends androidx.work.ListenableWorker { public <init>(...); }
+-keep class androidx.work.impl.** { *; }
+
+# Tink crypto — javax annotations not present at runtime
+-dontwarn javax.annotation.Nullable
+-dontwarn javax.annotation.concurrent.GuardedBy
