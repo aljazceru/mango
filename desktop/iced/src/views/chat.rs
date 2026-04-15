@@ -395,20 +395,18 @@ pub fn chat_view<'a>(
         let muted = vc.muted;
         let secondary_surface = vc.secondary_surface;
         all_widgets.push(
-            container(
-                text(loading_msg).size(14).color(muted),
-            )
-            .padding(Padding::from([8u16, 12]))
-            .max_width(640.0)
-            .style(move |_theme| container::Style {
-                background: Some(Background::Color(secondary_surface)),
-                border: Border {
-                    radius: 12.0.into(),
+            container(text(loading_msg).size(14).color(muted))
+                .padding(Padding::from([8u16, 12]))
+                .max_width(640.0)
+                .style(move |_theme| container::Style {
+                    background: Some(Background::Color(secondary_surface)),
+                    border: Border {
+                        radius: 12.0.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
-                ..Default::default()
-            })
-            .into(),
+                })
+                .into(),
         );
     }
 

@@ -60,17 +60,15 @@ impl ProviderTransportKind {
         match self {
             Self::OpenAiCompatible => {
                 if let Some(fp) = pinned_tls_public_key_fp {
-                    match pinned_reqwest_client(fp, timeout) {
-                        Ok(client) => return Ok((client, true)),
-                        Err(error) => {
-                            log::warn!(
-                                target: "transport",
-                                "[transport] backend={} failed to build pinned client: {}",
-                                backend.id,
-                                error
-                            );
+                    let client = pinned_reqwest_client(fp, timeout).map_err(|error| {
+                        LlmError::NetworkError {
+                            reason: format!(
+                                "backend {} requires pinned TLS, but the pinned client could not be built: {}",
+                                backend.id, error
+                            ),
                         }
-                    }
+                    })?;
+                    return Ok((client, true));
                 }
 
                 let client = reqwest::Client::builder()

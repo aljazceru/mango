@@ -91,14 +91,13 @@ ios-full: bindings-swift build-ios ios-xcframework
 # ── Android ───────────────────────────────────────────────────────────────────
 
 # Cross-compile Rust for Android ABIs via cargo-ndk
-# Note: only arm64-v8a — ort (ONNX Runtime) has no prebuilt binaries for x86_64/armv7
 build-android:
   #!/usr/bin/env bash
   set -e
   # Clean stale artifacts before rebuild
   rm -rf android/app/src/main/jniLibs
   cargo ndk -o android/app/src/main/jniLibs -P 28 \
-    -t arm64-v8a \
+    -t arm64-v8a -t x86_64 \
     build -p {{CORE_CRATE}} --release
   # Bundle libc++_shared.so required by ONNX Runtime
   NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_HOME:-${HOME}/Android/Sdk}/ndk/28.2.13676358}"
@@ -107,10 +106,20 @@ build-android:
   SYSROOT="$PREBUILT/$HOST_TAG/sysroot/usr/lib"
   cp "$SYSROOT/aarch64-linux-android/libc++_shared.so" \
     android/app/src/main/jniLibs/arm64-v8a/
+  cp "$SYSROOT/x86_64-linux-android/libc++_shared.so" \
+    android/app/src/main/jniLibs/x86_64/
 
 # Full Android pipeline: bindings -> cross-compile -> assemble
 android-full: bindings-kotlin build-android
   cd android && ./gradlew :app:assembleDebug
+
+# Run the Android adb smoke test against an attached device
+android-smoke:
+  ./scripts/android_smoke_test.sh
+
+# Run a generic mobile smoke scenario
+mobile-smoke profile scenario:
+  python3 tools/mobile-smoke/runner.py --profile {{profile}} --scenario {{scenario}}
 
 # ── Desktop ───────────────────────────────────────────────────────────────────
 

@@ -1,5 +1,4 @@
 use iced::{theme, Color, Theme};
-use mango_core::AttestationStatus;
 
 pub fn dark_palette() -> theme::Palette {
     theme::Palette {
@@ -28,62 +27,6 @@ pub fn app_theme(is_dark: bool) -> Theme {
         Theme::custom("MangoDark".to_string(), dark_palette())
     } else {
         Theme::custom("MangoLight".to_string(), light_palette())
-    }
-}
-
-pub struct BadgeColors {
-    pub bg: Color,
-    pub text: Color,
-    pub border: Color,
-}
-
-pub fn badge_colors(status: &AttestationStatus, is_dark: bool) -> BadgeColors {
-    if is_dark {
-        match status {
-            AttestationStatus::Verified => BadgeColors {
-                bg: Color::from_rgb8(0x1A, 0x3A, 0x1A),
-                text: Color::from_rgb8(0x4A, 0xDE, 0x80),
-                border: Color::from_rgb8(0x3D, 0x9C, 0x3D), // corrected from #2D7A2D (2.36:1) to ~3.1:1
-            },
-            AttestationStatus::Unverified => BadgeColors {
-                bg: Color::from_rgb8(0x2A, 0x2A, 0x2A),
-                text: Color::from_rgb8(0x9C, 0xA3, 0xAF),
-                border: Color::from_rgb8(0x78, 0x78, 0x78), // #787878 on #2A2A2A = 3.25:1 (WCAG 1.4.11 pass)
-            },
-            AttestationStatus::Expired => BadgeColors {
-                bg: Color::from_rgb8(0x2A, 0x2A, 0x1A),
-                text: Color::from_rgb8(0xFB, 0xBF, 0x24),
-                border: Color::from_rgb8(0x99, 0x84, 0x20), // corrected from #7A6A1A (2.70:1) to ~3.1:1
-            },
-            AttestationStatus::Failed { .. } => BadgeColors {
-                bg: Color::from_rgb8(0x3A, 0x1A, 0x1A),
-                text: Color::from_rgb8(0xF8, 0x71, 0x71),
-                border: Color::from_rgb8(0xD0, 0x30, 0x30), // #D03030 on #3A1A1A = 3.09:1 (WCAG 1.4.11 pass)
-            },
-        }
-    } else {
-        match status {
-            AttestationStatus::Verified => BadgeColors {
-                bg: Color::from_rgb8(0xE8, 0xF5, 0xE9),
-                text: Color::from_rgb8(0x1B, 0x5E, 0x20),
-                border: Color::from_rgb8(0x2E, 0x7D, 0x32),
-            },
-            AttestationStatus::Unverified => BadgeColors {
-                bg: Color::from_rgb8(0xF5, 0xF5, 0xF5),
-                text: Color::from_rgb8(0x55, 0x55, 0x55),
-                border: Color::from_rgb8(0x75, 0x75, 0x75),
-            },
-            AttestationStatus::Expired => BadgeColors {
-                bg: Color::from_rgb8(0xFF, 0xFD, 0xE7),
-                text: Color::from_rgb8(0x7B, 0x58, 0x00),
-                border: Color::from_rgb8(0x8C, 0x66, 0x00),
-            },
-            AttestationStatus::Failed { .. } => BadgeColors {
-                bg: Color::from_rgb8(0xFF, 0xEB, 0xEE),
-                text: Color::from_rgb8(0xB7, 0x1C, 0x1C),
-                border: Color::from_rgb8(0xC6, 0x28, 0x28),
-            },
-        }
     }
 }
 

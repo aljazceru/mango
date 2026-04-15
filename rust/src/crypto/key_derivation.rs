@@ -165,7 +165,7 @@ pub fn setup_pin_auth(
         DEFAULT_ITERATIONS,
         DEFAULT_PARALLELISM,
     )?;
-    let wrapped_dek = wrap_dek(&*kek, &*dek);
+    let wrapped_dek = wrap_dek(&kek, &dek);
 
     // hash_pin generates and embeds its own random salt in the PHC string;
     // no separate duress_salt field is needed.
@@ -218,7 +218,7 @@ pub fn verify_pin_auth(
         params.kdf_parallelism,
     )?;
     let _dek: Zeroizing<[u8; 32]> = Zeroizing::new(
-        unwrap_dek(&*kek, &params.wrapped_dek).map_err(|_| anyhow::anyhow!("incorrect PIN"))?,
+        unwrap_dek(&kek, &params.wrapped_dek).map_err(|_| anyhow::anyhow!("incorrect PIN"))?,
     );
 
     Ok(PinVerifyResult { is_duress: false })
