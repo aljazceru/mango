@@ -1,0 +1,23 @@
+repository: https://github.com/aljazceru/mango
+name: Mango
+description: No provider lock-in. No subscriptions. Own your data data. Bring your own key. Protect your chats. And delete them if forced to unlock the app. No tracking, no analytics. The app that serves you.
+summary: Mango - Confidential AI app
+tags:
+    - confidential
+    - privacy
+    - ai
+    - llm
+    - inference
+    - chat
+license: GPL-3.0
+website: https://github.com/aljazceru/mango
+icon: https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/mango-icon.png
+images:
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/artifacts/android-screenshots/light/settings_security.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/artifacts/android-screenshots/dark/home.png
+    - https://github.com/aljazceru/mango/blob/main/artifacts/android-screenshots/dark/chat.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/artifacts/android-screenshots/light/home.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/artifacts/android-screenshots/dark/chat.png
+metadata_sources:
+    - github
+pubkey: npub1aljazgxlpnpfp7n5sunlk3dvfp72456x6nezjw4sd850q879rxqsthg9jp
