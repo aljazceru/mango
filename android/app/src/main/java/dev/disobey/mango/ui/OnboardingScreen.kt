@@ -50,6 +50,9 @@ import dev.disobey.mango.rust.Screen
 import dev.disobey.mango.rust.TeeType
 import dev.disobey.mango.rust.knownProviderPresets
 import dev.disobey.mango.ui.theme.*
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
 
 /// Onboarding wizard screen: 4-step guided setup for Mango.
 /// Per D-04 through D-17 and ONBR-01 through ONBR-05.
@@ -270,6 +273,9 @@ private fun BackendSetupStep(
             singleLine = true,
             visualTransformation = PasswordVisualTransformation()
         )
+
+        // "Don't have an API key?" help section
+        NoApiKeyHelp()
 
         // Error text
         state.onboarding.apiKeyError?.let { error ->
@@ -576,6 +582,37 @@ private fun ReadyToChatStep(onDispatch: (AppAction) -> Unit) {
 
         TextButton(onClick = { onDispatch(AppAction.PreviousOnboardingStep) }) {
             Text("Back", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+// MARK: - No API Key Help
+
+@Composable
+private fun NoApiKeyHelp() {
+    val context = LocalContext.current
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = "Don't have an API key?",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = "Get one from:",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            TextButton(onClick = {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://tinfoil.sh")))
+            }) {
+                Text("tinfoil.sh", color = MaterialTheme.colorScheme.primary)
+            }
+            TextButton(onClick = {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ppq.ai")))
+            }) {
+                Text("ppq.ai", color = MaterialTheme.colorScheme.primary)
+            }
         }
     }
 }

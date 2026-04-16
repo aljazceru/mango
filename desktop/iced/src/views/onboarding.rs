@@ -301,6 +301,25 @@ fn backend_setup_step<'a>(
         validate_btn
     };
 
+    // "Don't have an API key?" help section
+    let no_key_label = text("Don't have an API key? Get one from:").size(13).color(muted_color);
+    let tinfoil_link = button(text("tinfoil.sh").size(13).color(accent_color))
+        .on_press(Message::OpenUrl("https://tinfoil.sh".into()))
+        .padding(Padding::from([2u16, 0]))
+        .style(|_theme, _status| button::Style {
+            background: None,
+            ..Default::default()
+        });
+    let ppq_link = button(text("ppq.ai").size(13).color(accent_color))
+        .on_press(Message::OpenUrl("https://ppq.ai".into()))
+        .padding(Padding::from([2u16, 0]))
+        .style(|_theme, _status| button::Style {
+            background: None,
+            ..Default::default()
+        });
+    let no_key_links = row![tinfoil_link, ppq_link].spacing(12);
+    let no_key_section = column![no_key_label, no_key_links].spacing(4);
+
     let error_area: Element<'_, Message> = if let Some(err) = &_state.onboarding.api_key_error {
         text(err.as_str()).size(13).color(vc.destructive).into()
     } else {
@@ -335,6 +354,7 @@ fn backend_setup_step<'a>(
         subtitle,
         presets_list,
         column![api_key_label, api_key_input].spacing(4),
+        no_key_section,
         error_area,
         validate_area,
         nav_row,
