@@ -1,6 +1,6 @@
 [advisories]
 vulnerability = "deny"
-unmaintained = "warn"
+unmaintained = "workspace"
 
 [bans]
 multiple-versions = "warn"
