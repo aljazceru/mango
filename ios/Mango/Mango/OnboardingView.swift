@@ -147,6 +147,23 @@ struct OnboardingView: View {
             }
             .padding(.top, 4)
 
+            // "Don't have an API key?" help section
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Don't have an API key?")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text("Get one from:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 16) {
+                    Link("tinfoil.sh", destination: URL(string: "https://tinfoil.sh")!)
+                        .font(.subheadline)
+                    Link("ppq.ai", destination: URL(string: "https://ppq.ai")!)
+                        .font(.subheadline)
+                }
+            }
+            .padding(.top, 4)
+
             // Error text
             if let error = onboarding.apiKeyError {
                 Text(error)

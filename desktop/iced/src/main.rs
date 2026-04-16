@@ -377,6 +377,7 @@ enum Message {
     OnboardingRetryAttestation,
     OnboardingToggleLearnMore,
     OnboardingSkip,
+    OpenUrl(String),
     #[allow(dead_code)]
     RunSetupWizard,
     // Documents screen messages (Phase 8, LRAG-06)
@@ -770,7 +771,10 @@ impl App {
                     }
 
                     Message::MarkdownLinkClicked(_url) => {
-                        // URL opening via `open` crate would go here (not a required dep)
+                        let _ = open::that(&_url);
+                    }
+                    Message::OpenUrl(url) => {
+                        let _ = open::that(&url);
                     }
 
                     // Settings form handlers
