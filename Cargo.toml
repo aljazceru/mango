@@ -3,7 +3,7 @@ members = ["rust", "uniffi-bindgen", "desktop/iced"]
 resolver = "2"
 
 [workspace.package]
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-only"
 repository = "https://github.com/aljazceru/mango"
 
 [profile.release]
