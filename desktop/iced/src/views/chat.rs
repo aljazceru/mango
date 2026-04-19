@@ -866,8 +866,14 @@ fn build_compose_bar<'a>(
         state.pending_attachment.as_ref().map(|att| {
             let filename = att.filename.clone();
             let size_display = att.size_display.clone();
+            // Phase 31 IMG-06: prefix pill with [image] when attachment is an image.
+            let label = if att.is_image {
+                format!("[image] {} ({})", filename, size_display)
+            } else {
+                format!("{} ({})", filename, size_display)
+            };
             row![
-                text(format!("{} ({})", filename, size_display))
+                text(label)
                     .size(13)
                     .color(text_dim),
                 button(text("X").size(12))
