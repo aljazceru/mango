@@ -13,6 +13,10 @@ struct MessageBubbleView: View {
     let onEdit: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var appManager: AppManager
+
+    // IMG-07: thumbnail loaded on-demand via decrypt-on-read
+    @State private var thumbnail: UIImage? = nil
 
     var body: some View {
         Group {
@@ -23,6 +27,17 @@ struct MessageBubbleView: View {
             } else {
                 // system role: show dimmed
                 systemBubble
+            }
+        }
+        .task(id: message.id) {
+            guard message.imagePath != nil else { return }
+            do {
+                let bytes = try appManager.ffiApp.readEncryptedImage(messageId: message.id)
+                if let img = UIImage(data: Data(bytes)) {
+                    await MainActor.run { thumbnail = img }
+                }
+            } catch {
+                // Decryption failure: thumbnail stays nil, text content shown as fallback
             }
         }
     }
@@ -36,15 +51,26 @@ struct MessageBubbleView: View {
                 if let name = message.attachmentName, message.hasAttachment {
                     attachmentIndicator(name: name)
                 }
-                Text(message.content)
-                    .font(.body)
-                    .foregroundColor(colorScheme == .dark ? .white : .black)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(userBubbleColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .textSelection(.enabled)
-                    .accessibilityAddTraits(.isStaticText)
+                // IMG-07: show decrypted thumbnail if available, fall through to text otherwise
+                if let thumb = thumbnail {
+                    Image(uiImage: thumb)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 240, maxHeight: 240)
+                        .cornerRadius(8)
+                        .accessibilityLabel("Sent image")
+                }
+                if thumbnail == nil || !message.content.isEmpty {
+                    Text(message.content)
+                        .font(.body)
+                        .foregroundColor(colorScheme == .dark ? .white : .black)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(userBubbleColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .textSelection(.enabled)
+                        .accessibilityAddTraits(.isStaticText)
+                }
                 // Action row: edit
                 HStack(spacing: 8) {
                     Button("Edit") { onEdit() }

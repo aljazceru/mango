@@ -97,6 +97,8 @@ fun ChatScreen(
     onDetachDocument: (String) -> Unit = {},
     // Phase 27: tools toggle (CHAT-TOOL-07)
     onDispatchAction: (AppAction) -> Unit = {},
+    // IMG-07: decrypt-on-read for encrypted image thumbnails
+    onReadEncryptedImage: ((String) -> ByteArray)? = null,
 ) {
     val listState = rememberLazyListState()
     val isStreaming = state.busyState is BusyState.Streaming
@@ -295,6 +297,7 @@ fun ChatScreen(
                     onCopy = { onCopy(message.content) },
                     onRetry = onRetry,
                     onEdit = { onEdit(message.id, message.content) },
+                    onReadEncryptedImage = onReadEncryptedImage,
                 )
             }
         }

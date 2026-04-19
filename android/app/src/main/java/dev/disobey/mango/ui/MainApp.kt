@@ -58,7 +58,8 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) },
                 onAttachDocument = { docId -> manager.dispatch(AppAction.AttachDocumentToConversation(documentId = docId)) },
                 onDetachDocument = { docId -> manager.dispatch(AppAction.DetachDocumentFromConversation(documentId = docId)) },
-                onDispatchAction = { action -> manager.dispatch(action) }
+                onDispatchAction = { action -> manager.dispatch(action) },
+                onReadEncryptedImage = { messageId -> manager.readEncryptedImage(messageId) },
             )
         }
         is Screen.Home -> {

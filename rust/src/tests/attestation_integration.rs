@@ -449,5 +449,6 @@ fn test_provider_fallback() {
             other => panic!("Expected AttestationResult(Failed), got: {:?}", other),
         },
         crate::CoreMsg::Action(_) => panic!("Expected InternalEvent, got Action"),
+        crate::CoreMsg::ReadEncryptedImage { .. } => panic!("Expected InternalEvent, got ReadEncryptedImage"),
     }
 }
