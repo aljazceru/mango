@@ -246,6 +246,11 @@ func diffAgainstStored(current: [(String, Int64, Int64)],
     return (changed, removedPaths)
 }
 
+/// HI-03: 32 MiB cap matches desktop MAX_FILE_BYTES. Files above this are
+/// skipped before any bytes are read into memory so a single large attachment
+/// cannot OOM the app.
+let MAX_FILE_BYTES: Int64 = 32 * 1024 * 1024
+
 /// Read a file's bytes under the current security scope. Returns nil on failure.
 func readFileBytes(rootURL: URL, relativePath: String) -> Data? {
     let fileURL = rootURL.appendingPathComponent(relativePath)
@@ -327,6 +332,10 @@ func syncDirectorySource(
             let isFinal = idx == changedChunks.count - 1
             var entries: [DirectoryFileEntry] = []
             for (rel, mtime, size) in chunk {
+                if size > MAX_FILE_BYTES {
+                    picker_logger.warning("skipping oversized file \(rel, privacy: .public) (\(size) bytes > \(MAX_FILE_BYTES) cap)")
+                    continue
+                }
                 guard let bytes = readFileBytes(rootURL: rootURL, relativePath: rel) else {
                     picker_logger.warning("skipping unreadable file \(rel, privacy: .public)")
                     continue
