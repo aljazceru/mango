@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 32-01-PLAN.md
-last_updated: "2026-04-19T17:04:29.912Z"
+stopped_at: Completed 32-02-PLAN.md
+last_updated: "2026-04-19T17:10:19.642Z"
 last_activity: 2026-04-19
 progress:
   total_phases: 13
   completed_phases: 11
   total_plans: 42
-  completed_plans: 36
-  percent: 86
+  completed_plans: 37
+  percent: 88
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 32 (directory-based-rag-ingestion-with-periodic-sync-and-file-fo) — EXECUTING
-Plan: 2 of 7
+Plan: 3 of 7
 Status: Ready to execute
 Last activity: 2026-04-19
 
@@ -70,6 +70,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 27 P01 | 10min | 2 tasks | 8 files |
 | Phase 27-add-optional-tool-use-to-chat P03 | 20min | 1 tasks | 8 files |
 | Phase 32 P01 | 12min | 2 tasks | 5 files |
+| Phase 32 P02 | 4min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -117,6 +118,8 @@ Key architectural context for v2.0:
 - [Phase quick/260419-ece]: Desktop thumbnails use Task::perform + image_cache HashMap (iced pattern, not async in view)
 - [Phase 32]: DirectorySourceRow carries all 3 platform handles (path/bookmark_data/tree_uri) as nullable columns — single row shape across Desktop/iOS/Android
 - [Phase 32]: upsert_directory_file uses ON CONFLICT DO UPDATE (preserves AUTOINCREMENT id) rather than INSERT OR REPLACE
+- [Phase 32]: Plan 02: diff_files is pure (no DB/FS); walk_with_exclusions uses ignore::OverrideBuilder with ! prefix — desktop-only. validate_glob_pattern (globset) exposed cross-platform for mobile UI validation over UniFFI.
+- [Phase 32]: Plan 02: Path-traversal globs scoped to walk root by ignore crate (T-32-V5); test canonicalises every emitted path and asserts starts_with(canonical_root).
 
 ### Roadmap Evolution
 
@@ -145,6 +148,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-19T17:04:29.910Z
-Stopped at: Completed 32-01-PLAN.md
+Last session: 2026-04-19T17:10:19.639Z
+Stopped at: Completed 32-02-PLAN.md
 Resume file: None
