@@ -197,6 +197,94 @@ fn test_rename_conversation() {
     assert_eq!(renamed.title, "My Renamed Chat", "Title should be updated");
 }
 
+#[test]
+fn test_rename_conversation_empty_title_is_noop() {
+    let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    wait();
+    let conv_id = app.state().current_conversation_id.clone().unwrap();
+    let original_title = app
+        .state()
+        .conversations
+        .iter()
+        .find(|c| c.id == conv_id)
+        .unwrap()
+        .title
+        .clone();
+
+    app.dispatch(AppAction::RenameConversation {
+        id: conv_id.clone(),
+        title: "".into(),
+    });
+    wait();
+    let state = app.state();
+    let row = state
+        .conversations
+        .iter()
+        .find(|c| c.id == conv_id)
+        .expect("Conversation should still exist");
+    assert_eq!(
+        row.title, original_title,
+        "Empty title rename must be a no-op"
+    );
+}
+
+#[test]
+fn test_rename_conversation_whitespace_only_title_is_noop() {
+    let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    wait();
+    let conv_id = app.state().current_conversation_id.clone().unwrap();
+    let original_title = app
+        .state()
+        .conversations
+        .iter()
+        .find(|c| c.id == conv_id)
+        .unwrap()
+        .title
+        .clone();
+
+    app.dispatch(AppAction::RenameConversation {
+        id: conv_id.clone(),
+        title: "   \t  ".into(),
+    });
+    wait();
+    let state = app.state();
+    let row = state
+        .conversations
+        .iter()
+        .find(|c| c.id == conv_id)
+        .expect("Conversation should still exist");
+    assert_eq!(
+        row.title, original_title,
+        "Whitespace-only title rename must be a no-op"
+    );
+}
+
+#[test]
+fn test_rename_conversation_trims_title() {
+    let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    wait();
+    let conv_id = app.state().current_conversation_id.clone().unwrap();
+
+    app.dispatch(AppAction::RenameConversation {
+        id: conv_id.clone(),
+        title: "  Real Name  ".into(),
+    });
+    wait();
+    let state = app.state();
+    let renamed = state
+        .conversations
+        .iter()
+        .find(|c| c.id == conv_id)
+        .expect("Conversation should still exist");
+    assert_eq!(
+        renamed.title, "Real Name",
+        "Rust core should trim title defensively"
+    );
+}
+
 // ── DeleteConversation ────────────────────────────────────────────────────────
 
 #[test]
