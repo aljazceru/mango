@@ -293,6 +293,11 @@ pub struct AppState {
     pub auth_initialized: bool,
     /// True when the main DB was opened with SQLCipher encryption (D-01).
     pub encryption_enabled: bool,
+    // Phase 32 additions:
+    /// Directory-source summaries loaded from SQLite on startup / after mutations
+    /// (DIR-04). Populated by `load_directory_sources_summary`; never includes
+    /// opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
+    pub directory_sources: Vec<DirectorySourceSummary>,
 }
 
 impl Default for AppState {
@@ -337,6 +342,7 @@ impl Default for AppState {
             lock_timeout_seconds: 300,
             auth_initialized: false,
             encryption_enabled: false,
+            directory_sources: vec![],
         }
     }
 }
@@ -637,6 +643,48 @@ pub enum AppAction {
     SetBiometricLoginEnabled { enabled: bool },
     /// Set the lock timeout in seconds. 0 = never lock. Persisted to settings table (D-13).
     SetLockTimeout { seconds: i64 },
+    // Phase 32 additions: directory-based RAG ingestion (DIR-05, DIR-06).
+    /// Register a new directory as a RAG source. Exactly one of `path` (Desktop),
+    /// `bookmark_data` (iOS security-scoped bookmark), or `tree_uri` (Android SAF)
+    /// is expected to be populated.
+    ///
+    /// Does NOT trigger the initial sync — native layer follows up with
+    /// `SyncDirectoryFiles` once it has enumerated files (D-02).
+    AddDirectorySource {
+        display_name: String,
+        path: Option<String>,
+        bookmark_data: Option<Vec<u8>>,
+        tree_uri: Option<String>,
+        exclusion_globs: Vec<String>,
+    },
+    /// Process one batch of up to 50 file fingerprints + raw bytes for a directory
+    /// source (D-25). Per batch: chunk → embed → usearch.add → SQLite insert, then
+    /// flush VectorIndex to disk (D-27). `is_final_batch` marks the last batch.
+    SyncDirectoryFiles {
+        source_id: String,
+        files: Vec<DirectoryFileEntry>,
+        removed_paths: Vec<String>,
+        is_final_batch: bool,
+    },
+    /// Remove a directory source and cascade-delete every document, chunk, and
+    /// usearch key owned by it (DIR-06).
+    RemoveDirectorySource { source_id: String },
+    /// Replace the exclusion glob list for a directory source (DIR-05).
+    /// Each glob is validated with `directory_sync::validate_glob_pattern` before
+    /// persistence (T-32-V5).
+    SetDirectoryExclusions {
+        source_id: String,
+        globs: Vec<String>,
+    },
+    /// Nudge signal asking the native layer to enumerate + resync a specific
+    /// directory source. Per D-01 the actor does not enumerate on mobile.
+    TriggerDirectorySync { source_id: String },
+    /// iOS-only: persist a refreshed security-scoped bookmark blob when the OS
+    /// reports the previous one as stale. Opaque to Rust — never parsed.
+    UpdateDirectorySourceBookmark {
+        source_id: String,
+        bookmark_data: Vec<u8>,
+    },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -740,6 +788,52 @@ pub struct IngestionProgress {
     pub document_name: String,
     /// One of: "extracting", "chunking", "embedding", "indexing", "complete"
     pub stage: String,
+}
+
+// ── Phase 32: Directory-based RAG ingestion (UniFFI surface) ─────────────────
+
+/// A single file fingerprint + content payload inside a SyncDirectoryFiles batch (Phase 32, DIR-05).
+///
+/// Native layers enumerate the user-chosen directory (Desktop walker, iOS bookmark
+/// resolve, Android SAF tree URI), read the bytes with platform permissions, and
+/// pass this struct across the UniFFI boundary. The actor extracts text, chunks,
+/// embeds, and indexes — reusing the existing IngestDocument pipeline per file.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DirectoryFileEntry {
+    /// Path relative to the source root. Used as the stable identifier in
+    /// directory_files (source_id, file_path) unique key.
+    pub relative_path: String,
+    pub mtime_secs: i64,
+    pub size_bytes: i64,
+    pub content: Vec<u8>,
+}
+
+/// Status of the background sync for a directory source (Phase 32).
+///
+/// Used by the UI to render per-source sync indicators.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq)]
+pub enum DirectorySyncStatus {
+    /// No sync in progress, last sync (if any) succeeded.
+    Idle,
+    /// Native layer is enumerating / dispatching batches.
+    Syncing,
+    /// Last sync ended with an error; message is human-readable.
+    Error { message: String },
+}
+
+/// UI-facing summary of a directory source (Phase 32, DIR-04/DIR-05).
+///
+/// Per T-32-I2 (threat register): this struct intentionally omits `bookmark_data`
+/// and `tree_uri` — those handles stay in SQLite and never cross the UniFFI
+/// boundary.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DirectorySourceSummary {
+    pub id: String,
+    pub display_name: String,
+    pub file_count: i64,
+    pub last_synced_at: Option<i64>,
+    pub exclusion_globs: Vec<String>,
+    pub sync_status: DirectorySyncStatus,
 }
 
 /// No-op keychain provider for testing and platforms without a keychain.
@@ -6029,6 +6123,18 @@ impl FfiApp {
                                         &seconds.to_string(),
                                     );
                                 }
+                            }
+
+                            // ── Phase 32: directory-based RAG (stubs in Task 1, filled in Task 2) ──
+                            AppAction::AddDirectorySource { .. }
+                            | AppAction::SyncDirectoryFiles { .. }
+                            | AppAction::RemoveDirectorySource { .. }
+                            | AppAction::SetDirectoryExclusions { .. }
+                            | AppAction::TriggerDirectorySync { .. }
+                            | AppAction::UpdateDirectorySourceBookmark { .. } => {
+                                // Task 2 wires the real handlers. For now: no-op so
+                                // the 6 AppAction variants compile and tests for
+                                // construction pass.
                             }
                         }
 
