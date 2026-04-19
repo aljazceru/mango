@@ -450,5 +450,8 @@ fn test_provider_fallback() {
         },
         crate::CoreMsg::Action(_) => panic!("Expected InternalEvent, got Action"),
         crate::CoreMsg::ReadEncryptedImage { .. } => panic!("Expected InternalEvent, got ReadEncryptedImage"),
+        crate::CoreMsg::ListDirectoryFingerprints { .. } => {
+            panic!("Expected InternalEvent, got ListDirectoryFingerprints")
+        }
     }
 }
