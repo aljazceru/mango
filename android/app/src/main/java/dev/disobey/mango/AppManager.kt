@@ -158,6 +158,11 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         ffiApp.dispatch(action)
     }
 
+    // IMG-07: decrypt-on-read for encrypted image thumbnails
+    fun readEncryptedImage(messageId: String): ByteArray {
+        return ffiApp.readEncryptedImage(messageId)
+    }
+
     override fun reconcile(update: AppUpdate) {
         mainHandler.post {
             when (update) {

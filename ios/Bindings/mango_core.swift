@@ -584,12 +584,20 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
      * actor when attestation verification succeeds.
      */
     func getRawAttestationReport(backendId: String)  -> Data?
-    
+
+    /**
+     * Decrypt the encrypted image for `messageId` and return raw JPEG bytes.
+     *
+     * Plaintext bytes are never stored on disk or in ActorState (T-ECE-04).
+     * Returns an error string if the app is locked, the message has no image, or decryption fails.
+     */
+    func readEncryptedImage(messageId: String) throws -> Data
+
     /**
      * Start listening for state updates and delivering them to the reconciler.
      * Guard with AtomicBool so only one listener thread is spawned.
      */
-    func listenForUpdates(reconciler: AppReconciler) 
+    func listenForUpdates(reconciler: AppReconciler)
     
     /**
      * Read the latest state snapshot from the shared RwLock.
@@ -695,7 +703,21 @@ open func getRawAttestationReport(backendId: String) -> Data?  {
     )
 })
 }
-    
+
+    /**
+     * Decrypt the encrypted image for `messageId` and return raw JPEG bytes.
+     *
+     * Plaintext bytes are never stored on disk or in ActorState (T-ECE-04).
+     * Returns an error string if the app is locked, the message has no image, or decryption fails.
+     */
+open func readEncryptedImage(messageId: String) throws -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterString.lift) {
+    uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(self.uniffiClonePointer(),
+        FfiConverterString.lower(messageId),$0
+    )
+})
+}
+
     /**
      * Start listening for state updates and delivering them to the reconciler.
      * Guard with AtomicBool so only one listener thread is spawned.
@@ -2896,23 +2918,32 @@ public struct UiMessage {
      * None if RAG was not active for this turn.
      */
     public var ragContextCount: UInt32?
+    /**
+     * Absolute path to the encrypted image file for this message, if any (QT-ECE).
+     * Non-null when the user sent an image. Decrypt via readEncryptedImage(messageId:).
+     * Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
+     */
+    public var imagePath: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, 
+    public init(id: String,
         /**
          * Message role: "user", "assistant", or "system"
-         */role: String, content: String, createdAt: Int64, 
+         */role: String, content: String, createdAt: Int64,
         /**
          * True if this message has an attached file (shown as attachment pill in UI)
-         */hasAttachment: Bool, 
+         */hasAttachment: Bool,
         /**
          * Filename of the attached file, if any
-         */attachmentName: String?, 
+         */attachmentName: String?,
         /**
          * Number of distinct documents that contributed RAG context to this message (D-07).
          * None if RAG was not active for this turn.
-         */ragContextCount: UInt32?) {
+         */ragContextCount: UInt32?,
+        /**
+         * Absolute path to the encrypted image file for this message, if any (QT-ECE).
+         */imagePath: String?) {
         self.id = id
         self.role = role
         self.content = content
@@ -2920,6 +2951,7 @@ public struct UiMessage {
         self.hasAttachment = hasAttachment
         self.attachmentName = attachmentName
         self.ragContextCount = ragContextCount
+        self.imagePath = imagePath
     }
 }
 
@@ -2951,6 +2983,9 @@ extension UiMessage: Equatable, Hashable {
         if lhs.ragContextCount != rhs.ragContextCount {
             return false
         }
+        if lhs.imagePath != rhs.imagePath {
+            return false
+        }
         return true
     }
 
@@ -2962,6 +2997,7 @@ extension UiMessage: Equatable, Hashable {
         hasher.combine(hasAttachment)
         hasher.combine(attachmentName)
         hasher.combine(ragContextCount)
+        hasher.combine(imagePath)
     }
 }
 
@@ -2974,13 +3010,14 @@ public struct FfiConverterTypeUiMessage: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UiMessage {
         return
             try UiMessage(
-                id: FfiConverterString.read(from: &buf), 
-                role: FfiConverterString.read(from: &buf), 
-                content: FfiConverterString.read(from: &buf), 
-                createdAt: FfiConverterInt64.read(from: &buf), 
-                hasAttachment: FfiConverterBool.read(from: &buf), 
-                attachmentName: FfiConverterOptionString.read(from: &buf), 
-                ragContextCount: FfiConverterOptionUInt32.read(from: &buf)
+                id: FfiConverterString.read(from: &buf),
+                role: FfiConverterString.read(from: &buf),
+                content: FfiConverterString.read(from: &buf),
+                createdAt: FfiConverterInt64.read(from: &buf),
+                hasAttachment: FfiConverterBool.read(from: &buf),
+                attachmentName: FfiConverterOptionString.read(from: &buf),
+                ragContextCount: FfiConverterOptionUInt32.read(from: &buf),
+                imagePath: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -2992,6 +3029,7 @@ public struct FfiConverterTypeUiMessage: FfiConverterRustBuffer {
         FfiConverterBool.write(value.hasAttachment, into: &buf)
         FfiConverterOptionString.write(value.attachmentName, into: &buf)
         FfiConverterOptionUInt32.write(value.ragContextCount, into: &buf)
+        FfiConverterOptionString.write(value.imagePath, into: &buf)
     }
 }
 
@@ -6269,6 +6307,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 18789) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 58567) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() != 42682) {

@@ -873,6 +873,8 @@ fun uniffi_mango_core_checksum_method_ffiapp_dispatch(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report(
 ): Short
+fun uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(
+): Short
 fun uniffi_mango_core_checksum_method_ffiapp_listen_for_updates(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_state(
@@ -957,9 +959,11 @@ fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`k
 ): Pointer
 fun uniffi_mango_core_fn_method_ffiapp_dispatch(`ptr`: Pointer,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(`ptr`: Pointer,`backendId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(`ptr`: Pointer,`backendId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun uniffi_mango_core_fn_method_ffiapp_listen_for_updates(`ptr`: Pointer,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_mango_core_fn_method_ffiapp_listen_for_updates(`ptr`: Pointer,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
 fun uniffi_mango_core_fn_method_ffiapp_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1108,6 +1112,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 18789.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 58567.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() != 42682.toShort()) {
@@ -1645,7 +1652,16 @@ public interface FfiAppInterface {
      * actor when attestation verification succeeds.
      */
     fun `getRawAttestationReport`(`backendId`: kotlin.String): kotlin.ByteArray?
-    
+
+    /**
+     * Decrypt the encrypted image for `messageId` and return raw JPEG bytes.
+     *
+     * Plaintext bytes are never stored on disk or in ActorState (T-ECE-04).
+     * Throws a String-wrapped exception if the app is locked, the message has no image, or decryption fails.
+     */
+    @Throws(kotlin.Exception::class)
+    fun `readEncryptedImage`(`messageId`: kotlin.String): kotlin.ByteArray
+
     /**
      * Start listening for state updates and delivering them to the reconciler.
      * Guard with AtomicBool so only one listener thread is spawned.
@@ -1790,9 +1806,30 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     }
     )
     }
-    
 
-    
+
+    /**
+     * Decrypt the encrypted image for `messageId` and return raw JPEG bytes.
+     *
+     * Plaintext bytes are never stored on disk or in ActorState (T-ECE-04).
+     * Throws if the app is locked, the message has no image, or decryption fails.
+     */
+    @Throws(kotlin.Exception::class)
+    override fun `readEncryptedImage`(`messageId`: kotlin.String): kotlin.ByteArray {
+        return FfiConverterByteArray.lift(
+    callWithPointer {
+    uniffiRustCallWithError(object : UniffiRustCallStatusErrorHandler<kotlin.Exception> {
+        override fun lift(error_buf: RustBuffer.ByValue): kotlin.Exception =
+            kotlin.Exception(FfiConverterString.lift(error_buf))
+    }) { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(
+        it, FfiConverterString.lower(`messageId`),_status)
+}
+    }
+    )
+    }
+
+
     /**
      * Start listening for state updates and delivering them to the reconciler.
      * Guard with AtomicBool so only one listener thread is spawned.
@@ -2910,28 +2947,34 @@ public object FfiConverterTypeRouter: FfiConverterRustBuffer<Router> {
  * without additional queries. Maps from MessageRow with extra UI fields.
  */
 data class UiMessage (
-    var `id`: kotlin.String, 
+    var `id`: kotlin.String,
     /**
      * Message role: "user", "assistant", or "system"
      */
-    var `role`: kotlin.String, 
-    var `content`: kotlin.String, 
-    var `createdAt`: kotlin.Long, 
+    var `role`: kotlin.String,
+    var `content`: kotlin.String,
+    var `createdAt`: kotlin.Long,
     /**
      * True if this message has an attached file (shown as attachment pill in UI)
      */
-    var `hasAttachment`: kotlin.Boolean, 
+    var `hasAttachment`: kotlin.Boolean,
     /**
      * Filename of the attached file, if any
      */
-    var `attachmentName`: kotlin.String?, 
+    var `attachmentName`: kotlin.String?,
     /**
      * Number of distinct documents that contributed RAG context to this message (D-07).
      * None if RAG was not active for this turn.
      */
-    var `ragContextCount`: kotlin.UInt?
+    var `ragContextCount`: kotlin.UInt?,
+    /**
+     * Absolute path to the encrypted image file for this message, if any (QT-ECE).
+     * Non-null when the user sent an image. Decrypt via readEncryptedImage(messageId).
+     * Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
+     */
+    var `imagePath`: kotlin.String?
 ) {
-    
+
     companion object
 }
 
@@ -2948,6 +2991,7 @@ public object FfiConverterTypeUiMessage: FfiConverterRustBuffer<UiMessage> {
             FfiConverterBoolean.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalUInt.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
@@ -2958,7 +3002,8 @@ public object FfiConverterTypeUiMessage: FfiConverterRustBuffer<UiMessage> {
             FfiConverterLong.allocationSize(value.`createdAt`) +
             FfiConverterBoolean.allocationSize(value.`hasAttachment`) +
             FfiConverterOptionalString.allocationSize(value.`attachmentName`) +
-            FfiConverterOptionalUInt.allocationSize(value.`ragContextCount`)
+            FfiConverterOptionalUInt.allocationSize(value.`ragContextCount`) +
+            FfiConverterOptionalString.allocationSize(value.`imagePath`)
     )
 
     override fun write(value: UiMessage, buf: ByteBuffer) {
@@ -2969,6 +3014,7 @@ public object FfiConverterTypeUiMessage: FfiConverterRustBuffer<UiMessage> {
             FfiConverterBoolean.write(value.`hasAttachment`, buf)
             FfiConverterOptionalString.write(value.`attachmentName`, buf)
             FfiConverterOptionalUInt.write(value.`ragContextCount`, buf)
+            FfiConverterOptionalString.write(value.`imagePath`, buf)
     }
 }
 
