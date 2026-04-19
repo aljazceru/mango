@@ -6255,8 +6255,12 @@ impl FfiApp {
                                 } else {
                                     let id = new_uuid();
                                     let now = now_secs();
-                                    let globs_json =
-                                        serde_json::to_string(&exclusion_globs).unwrap_or_else(|_| "[]".into());
+                                    // ME-06: serialising Vec<String> cannot fail in practice
+                                    // so an explicit expect() signals the invariant and
+                                    // avoids the silent empty-fallback that would drop all
+                                    // user-supplied exclusions on a programming error.
+                                    let globs_json = serde_json::to_string(&exclusion_globs)
+                                        .expect("Vec<String> serialises to JSON");
                                     let row = persistence::queries::DirectorySourceRow {
                                         id: id.clone(),
                                         display_name,
@@ -6631,8 +6635,11 @@ impl FfiApp {
                                 if let Some(msg) = invalid {
                                     actor_state.app_state.last_error = Some(msg);
                                 } else {
+                                    // ME-06: see AddDirectorySource — explicit expect()
+                                    // beats silent "[]" fallback which would wipe the
+                                    // user's exclusions on a future type-signature change.
                                     let json = serde_json::to_string(&globs)
-                                        .unwrap_or_else(|_| "[]".into());
+                                        .expect("Vec<String> serialises to JSON");
                                     let _ =
                                         persistence::queries::update_directory_source_exclusions(
                                             actor_state.db.as_ref().expect("db unlocked").conn(),
