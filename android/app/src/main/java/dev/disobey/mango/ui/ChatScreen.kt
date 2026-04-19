@@ -1,12 +1,20 @@
 package dev.disobey.mango.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -79,6 +87,7 @@ fun ChatScreen(
     onEdit: (String, String) -> Unit,
     onCopy: (String) -> Unit,
     onAttach: (String, String, ULong) -> Unit,
+    onAttachImage: (String, String, String) -> Unit,
     onClearAttachment: () -> Unit,
     onSelectModel: (String) -> Unit,
     onSetSystemPrompt: (String?) -> Unit,
@@ -131,6 +140,73 @@ fun ChatScreen(
         }
     }
 
+    // Phase 31 (IMG-05/06): camera + gallery action sheet state and launchers.
+    // Paperclip opens a bottom sheet with Take Photo / Choose Photo / Attach File (D-6).
+    var showAttachSheet by remember { mutableStateOf(false) }
+    var pendingCameraFile by remember { mutableStateOf<File?>(null) }
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: return@launch
+                    val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    val normalizedMime = if (mime == "image/png") "image/png" else "image/jpeg"
+                    val ext = if (normalizedMime == "image/png") "png" else "jpg"
+                    val tmp = File(context.cacheDir, "img_${System.currentTimeMillis()}.$ext")
+                    tmp.writeBytes(bytes)
+                    val name = uri.lastPathSegment?.substringAfterLast('/') ?: "image.$ext"
+                    withContext(Dispatchers.Main) {
+                        onAttachImage(name, tmp.absolutePath, normalizedMime)
+                    }
+                } catch (_: Exception) {
+                    // Non-readable image -- ignore
+                }
+            }
+        }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { success: Boolean ->
+        if (success) {
+            pendingCameraFile?.let { file ->
+                onAttachImage(file.name, file.absolutePath, "image/jpeg")
+            }
+        }
+        pendingCameraFile = null
+    }
+
+    fun launchCameraInternal() {
+        val file = File(context.cacheDir, "camera_${System.currentTimeMillis()}.jpg")
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        pendingCameraFile = file
+        cameraLauncher.launch(uri)
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted: Boolean ->
+        if (granted) {
+            launchCameraInternal()
+        } else {
+            Toast.makeText(context, "Camera permission denied", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun launchCamera() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            launchCameraInternal()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
     Scaffold(
         topBar = {
             ChatTopBar(
@@ -148,7 +224,7 @@ fun ChatScreen(
                 isStreaming = isStreaming,
                 onSend = onSend,
                 onStop = onStop,
-                onAttach = { fileLauncher.launch("*/*") },
+                onAttach = { showAttachSheet = true },
                 onClearAttachment = onClearAttachment,
             )
         },
@@ -235,6 +311,46 @@ fun ChatScreen(
             },
             onDismiss = { showSystemPromptSheet = false },
         )
+    }
+
+    // Phase 31 (IMG-05/06, D-6): paperclip action sheet — Take Photo / Choose Photo / Attach File
+    if (showAttachSheet) {
+        val attachSheetState = rememberModalBottomSheetState()
+        ModalBottomSheet(
+            onDismissRequest = { showAttachSheet = false },
+            sheetState = attachSheetState,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+            ) {
+                TextButton(
+                    onClick = {
+                        showAttachSheet = false
+                        launchCamera()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Take Photo", style = MaterialTheme.typography.bodyLarge) }
+                TextButton(
+                    onClick = {
+                        showAttachSheet = false
+                        galleryLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Choose Photo", style = MaterialTheme.typography.bodyLarge) }
+                TextButton(
+                    onClick = {
+                        showAttachSheet = false
+                        fileLauncher.launch("*/*")
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Attach File", style = MaterialTheme.typography.bodyLarge) }
+                Spacer(Modifier.height(8.dp))
+            }
+        }
     }
 
     // Document attachment bottom sheet (D-08)
