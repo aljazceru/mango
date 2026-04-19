@@ -1151,6 +1151,27 @@ fn build_user_message_with_image(
 }
 
 /// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
+/// Push the current screen onto the router's back stack before an in-place
+/// navigation (e.g. LoadConversation, NewConversation). Skips push when the
+/// current screen already equals the top of the stack (would be a no-op) or
+/// when the current screen is a terminal/reset entry point that should not
+/// be returned to via back (Locked, Onboarding).
+///
+/// Callers assign the new screen to `router.current_screen` immediately after
+/// invoking this helper. PopScreen then restores the pushed screen.
+fn push_nav_history(router: &mut Router) {
+    match &router.current_screen {
+        // Never allow back to lock screen or any onboarding step from Chat.
+        Screen::Locked | Screen::Onboarding { .. } => return,
+        _ => {}
+    }
+    // Avoid pushing a duplicate if we're already coming from the same screen.
+    if router.screen_stack.last() == Some(&router.current_screen) {
+        return;
+    }
+    router.screen_stack.push(router.current_screen.clone());
+}
+
 fn truncate_title(s: &str, max_chars: usize) -> String {
     let trimmed = s.trim();
     if trimmed.chars().count() <= max_chars {
@@ -4038,6 +4059,10 @@ impl FfiApp {
                                     actor_state.app_state.current_conversation_id =
                                         Some(conv_id.clone());
                                     actor_state.app_state.messages = vec![];
+                                    // Push previous screen onto the back stack so Android
+                                    // system back / edge-swipe returns to the prior screen
+                                    // instead of falling through to Activity.finish().
+                                    push_nav_history(&mut actor_state.app_state.router);
                                     actor_state.app_state.router.current_screen = Screen::Chat {
                                         conversation_id: conv_id,
                                     };
@@ -4138,6 +4163,7 @@ impl FfiApp {
                                 actor_state.app_state.current_conversation_id =
                                     Some(conv_id.clone());
                                 actor_state.app_state.messages = vec![];
+                                push_nav_history(&mut actor_state.app_state.router);
                                 actor_state.app_state.router.current_screen = Screen::Chat {
                                     conversation_id: conv_id,
                                 };
@@ -4169,6 +4195,7 @@ impl FfiApp {
                                     .find(|r| r.id == conversation_id)
                                     .map(|r| r.tools_enabled)
                                     .unwrap_or(false);
+                                push_nav_history(&mut actor_state.app_state.router);
                                 actor_state.app_state.router.current_screen =
                                     Screen::Chat { conversation_id };
                                 sync_visible_streaming_text(&mut actor_state);

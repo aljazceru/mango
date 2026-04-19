@@ -1,5 +1,6 @@
 package dev.disobey.mango.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -25,6 +26,21 @@ fun MainApp(
     }
 
     val state = manager.state
+
+    // Intercept the Android system back gesture / button at the Compose root so it
+    // dispatches PopScreen to the Rust router instead of falling through to the
+    // Activity's default handler (which calls finish() and exits the app).
+    //
+    // The Rust router's screen_stack is the single source of truth for "is there
+    // somewhere to go back to": PushScreen pushes onto the stack, LoadConversation
+    // / NewConversation / SendMessage-auto-create also push the previous screen
+    // (see push_nav_history in rust/src/lib.rs), and PopScreen pops and restores.
+    // When the stack is empty we DO NOT intercept, so back on Home / Onboarding /
+    // Locked falls through to Activity.finish() and exits the app -- the expected
+    // Android behavior on root screens.
+    BackHandler(enabled = state.router.screenStack.isNotEmpty()) {
+        manager.dispatch(AppAction.PopScreen)
+    }
 
     when (val screen = state.router.currentScreen) {
         is Screen.Onboarding -> {
