@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 32-03-PLAN.md
-last_updated: "2026-04-19T17:22:00.655Z"
+stopped_at: Completed 32-04-PLAN.md
+last_updated: "2026-04-19T17:37:17.326Z"
 last_activity: 2026-04-19
 progress:
   total_phases: 13
   completed_phases: 11
   total_plans: 42
-  completed_plans: 38
-  percent: 90
+  completed_plans: 39
+  percent: 93
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 32 (directory-based-rag-ingestion-with-periodic-sync-and-file-fo) — EXECUTING
-Plan: 4 of 7
+Plan: 5 of 7
 Status: Ready to execute
 Last activity: 2026-04-19
 
@@ -72,6 +72,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 32 P01 | 12min | 2 tasks | 5 files |
 | Phase 32 P02 | 4min | 3 tasks | 3 files |
 | Phase 32 P03 | 10min | 2 tasks | 3 files |
+| Phase 32 P04 | 30min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -124,6 +125,8 @@ Key architectural context for v2.0:
 - [Phase 32]: Plan 03: No UDL file in project (proc-macro UniFFI) — new types wired via derive macros instead of UDL entries
 - [Phase 32]: Plan 03: SyncDirectoryFiles embeds synchronously inside actor loop to preserve per-batch VectorIndex flush semantics (deviates from IngestDocument's spawn_blocking)
 - [Phase 32]: Plan 03: 50-file batch ceiling enforced at SyncDirectoryFiles handler entry (T-32-DoS1 mitigation)
+- [Phase 32]: Added FfiApp::list_directory_fingerprints + DirectoryFingerprint Record so native side can diff without crossing persistence/bookmark boundary (T-32-I2)
+- [Phase 32]: PollWatcher fallback uses raw watcher + custom EventHandler (not debouncer_opt) — shared flume channel unifies both backends
 
 ### Roadmap Evolution
 
@@ -152,6 +155,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-19T17:22:00.652Z
-Stopped at: Completed 32-03-PLAN.md
+Last session: 2026-04-19T17:37:17.324Z
+Stopped at: Completed 32-04-PLAN.md
 Resume file: None
