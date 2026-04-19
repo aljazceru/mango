@@ -45,6 +45,9 @@ pub struct MessageRow {
     pub content: String,
     pub created_at: i64,
     pub token_count: Option<i64>,
+    /// Absolute path to the encrypted image file (`{data_dir}/images/{id}.jpg.mgo1`).
+    /// None for text-only messages. File is AES-256-GCM encrypted (MGO1 format, T-ECE-02).
+    pub image_path: Option<String>,
 }
 
 // ── Backend queries ───────────────────────────────────────────────────────────
@@ -305,8 +308,8 @@ pub fn list_agent_steps(
 /// Insert a new message row.
 pub fn insert_message(conn: &Connection, row: &MessageRow) -> Result<(), PersistenceError> {
     conn.prepare_cached(
-        "INSERT INTO messages (id, conversation_id, role, content, created_at, token_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, token_count, image_path)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?
     .execute(rusqlite::params![
         row.id,
@@ -315,6 +318,7 @@ pub fn insert_message(conn: &Connection, row: &MessageRow) -> Result<(), Persist
         row.content,
         row.created_at,
         row.token_count,
+        row.image_path,
     ])?;
     Ok(())
 }
@@ -325,7 +329,7 @@ pub fn list_messages(
     conversation_id: &str,
 ) -> Result<Vec<MessageRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, conversation_id, role, content, created_at, token_count
+        "SELECT id, conversation_id, role, content, created_at, token_count, image_path
          FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC",
     )?;
     let rows = stmt
@@ -337,10 +341,40 @@ pub fn list_messages(
                 content: row.get(3)?,
                 created_at: row.get(4)?,
                 token_count: row.get(5)?,
+                image_path: row.get(6)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Return a single message row by ID.
+///
+/// Used by read_encrypted_image to look up the image_path for a given message_id
+/// before decrypting and returning the JPEG bytes. Returns None if not found.
+pub fn get_message_by_id(
+    conn: &Connection,
+    message_id: &str,
+) -> Result<Option<MessageRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, conversation_id, role, content, created_at, token_count, image_path
+         FROM messages WHERE id = ?1",
+    )?;
+    match stmt.query_row(rusqlite::params![message_id], |row| {
+        Ok(MessageRow {
+            id: row.get(0)?,
+            conversation_id: row.get(1)?,
+            role: row.get(2)?,
+            content: row.get(3)?,
+            created_at: row.get(4)?,
+            token_count: row.get(5)?,
+            image_path: row.get(6)?,
+        })
+    }) {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(PersistenceError::from(e)),
+    }
 }
 
 // ── New Phase 5 conversation management queries ───────────────────────────────

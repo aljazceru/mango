@@ -1,5 +1,6 @@
 mod agent;
 mod attestation_cache;
+mod encrypted_image_persistence;
 mod attestation_integration;
 mod attestation_types;
 mod backend_config;

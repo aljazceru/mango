@@ -292,6 +292,16 @@ pub const MIGRATION_V16: &str = "
 ALTER TABLE conversations ADD COLUMN tools_enabled INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Migration v17: add image_path column to messages table (QT-ECE encrypted image persistence).
+///
+/// Nullable TEXT column stores the absolute on-disk path of the encrypted image file
+/// (`{data_dir}/images/{message_id}.jpg.mgo1`). NULL for text-only messages.
+/// The file itself is AES-256-GCM encrypted (MGO1 format) via file_crypto::encrypt_file;
+/// plaintext image bytes are never written to disk (T-ECE-02).
+pub const MIGRATION_V17: &str = "
+ALTER TABLE messages ADD COLUMN image_path TEXT;
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -310,4 +320,5 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V14,
     MIGRATION_V15,
     MIGRATION_V16,
+    MIGRATION_V17,
 ];

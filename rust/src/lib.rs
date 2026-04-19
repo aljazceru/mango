@@ -147,6 +147,10 @@ pub struct UiMessage {
     /// Number of distinct documents that contributed RAG context to this message (D-07).
     /// None if RAG was not active for this turn.
     pub rag_context_count: Option<u32>,
+    /// Absolute path to the encrypted image file for this message, if any (QT-ECE).
+    /// Non-null when the user sent an image. Decrypt via read_encrypted_image(message_id).
+    /// Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
+    pub image_path: Option<String>,
 }
 
 /// Info about a pending file attachment (shown in the composer bar before send).
@@ -787,6 +791,15 @@ pub enum CoreMsg {
     Action(AppAction),
     /// Delivers async LLM streaming events into the synchronous actor loop
     InternalEvent(Box<llm::InternalEvent>),
+    /// Decrypt the encrypted image for `message_id` and return raw JPEG bytes.
+    ///
+    /// The actor looks up the message row, reads the MGO1 file, decrypts with the DEK,
+    /// and sends the bytes (or an error string) back via the oneshot channel.
+    /// Plaintext bytes live only on the actor stack; never stored in ActorState (T-ECE-04).
+    ReadEncryptedImage {
+        message_id: String,
+        reply: flume::Sender<Result<Vec<u8>, String>>,
+    },
 }
 
 // ── Actor-internal state ─────────────────────────────────────────────────────
@@ -1186,6 +1199,7 @@ fn refresh_messages(actor_state: &mut ActorState, conversation_id: &str) {
             has_attachment: false,
             attachment_name: None,
             rag_context_count: None,
+            image_path: row.image_path.clone(),
         })
         .collect();
 }
@@ -1799,8 +1813,58 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     // Clear pending_attachment from AppState too
     actor_state.app_state.pending_attachment = None;
 
-    // Persist the user message to SQLite
+    // QT-ECE: If this is an image turn, encrypt the source JPEG to disk under data_dir/images/.
+    // Plaintext bytes live only on the stack during encrypt; never written to disk (T-ECE-02).
+    // The encrypt path is independent of the multipart API path below (which uses prepare_image_for_api).
     let msg_id = new_uuid();
+    let image_path: Option<String> = if has_image_attachment {
+        match actor_state.dek.as_ref() {
+            None => {
+                log::warn!("[ece] DEK not available — skipping image encryption, image_path=None");
+                None
+            }
+            Some(dek) => {
+                // Capture the source path before pending_image_attachment is consumed below.
+                let src_path = actor_state
+                    .pending_image_attachment
+                    .as_ref()
+                    .map(|img| img.file_path.clone())
+                    .unwrap_or_default();
+                match std::fs::read(&src_path) {
+                    Err(e) => {
+                        log::warn!("[ece] failed to read source image {src_path}: {e}");
+                        None
+                    }
+                    Ok(plaintext_bytes) => {
+                        // encrypt_file uses a fresh OsRng nonce each call (T-ECE-03 / T-28-07).
+                        let encrypted = crypto::file_crypto::encrypt_file(dek, &plaintext_bytes);
+                        // plaintext_bytes dropped here — never stored.
+                        let images_dir = format!("{}/images", actor_state.data_dir);
+                        if let Err(e) = std::fs::create_dir_all(&images_dir) {
+                            log::warn!("[ece] failed to create images dir {images_dir}: {e}");
+                            None
+                        } else {
+                            let dest = format!("{}/{}.jpg.mgo1", images_dir, msg_id);
+                            match std::fs::write(&dest, &encrypted) {
+                                Ok(()) => {
+                                    log::debug!("[ece] encrypted image -> {dest}");
+                                    Some(dest)
+                                }
+                                Err(e) => {
+                                    log::warn!("[ece] failed to write encrypted image {dest}: {e}");
+                                    None
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // Persist the user message to SQLite
     let user_row = persistence::MessageRow {
         id: msg_id.clone(),
         conversation_id: conv_id.clone(),
@@ -1808,6 +1872,7 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         content: final_text.clone(),
         created_at: now,
         token_count: None,
+        image_path: image_path.clone(),
     };
     let _ = persistence::queries::insert_message(
         actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -1823,6 +1888,7 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         has_attachment,
         attachment_name,
         rag_context_count: None,
+        image_path,
     };
     actor_state.app_state.messages.push(user_ui_msg);
 
@@ -3316,6 +3382,7 @@ fn seed_duress_decoy_data(conn: &rusqlite::Connection) {
                     content: user_text.to_string(),
                     created_at: message_time,
                     token_count: None,
+                    image_path: None,
                 },
             );
             message_time += 9 * minute_ms;
@@ -3328,6 +3395,7 @@ fn seed_duress_decoy_data(conn: &rusqlite::Connection) {
                     content: assistant_text.to_string(),
                     created_at: message_time,
                     token_count: None,
+                    image_path: None,
                 },
             );
             message_time += 9 * minute_ms;
@@ -5952,6 +6020,7 @@ impl FfiApp {
                                         content: content.clone(),
                                         created_at: now,
                                         token_count: None,
+                                        image_path: None,
                                     };
                                     let _ = persistence::queries::insert_message(
                                         actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -5970,6 +6039,7 @@ impl FfiApp {
                                             has_attachment: false,
                                             attachment_name: None,
                                             rag_context_count: rag_count,
+                                            image_path: None,
                                         });
                                     }
 
@@ -7050,6 +7120,31 @@ impl FfiApp {
                             }
                         }
                     }
+
+                    CoreMsg::ReadEncryptedImage { message_id, reply } => {
+                        // Decrypt image on the actor thread (single-user desktop: fine to block briefly).
+                        // Plaintext bytes live only on the stack here — never stored in ActorState (T-ECE-04).
+                        let result: Result<Vec<u8>, String> = (|| {
+                            let dek = match actor_state.dek.as_ref() {
+                                Some(d) => d,
+                                None => return Err("locked".to_string()),
+                            };
+                            let db = match actor_state.db.as_ref() {
+                                Some(d) => d,
+                                None => return Err("db not available".to_string()),
+                            };
+                            let row = persistence::queries::get_message_by_id(db.conn(), &message_id)
+                                .map_err(|e| format!("db error: {e}"))?
+                                .ok_or_else(|| format!("message not found: {message_id}"))?;
+                            let path = row.image_path.ok_or_else(|| "no image for this message".to_string())?;
+                            let encrypted = std::fs::read(&path)
+                                .map_err(|e| format!("read error {path}: {e}"))?;
+                            crypto::file_crypto::decrypt_file(dek, &encrypted)
+                                .map_err(|e| format!("decrypt error: {e}"))
+                        })();
+                        let _ = reply.send(result);
+                        // No emit needed — state unchanged.
+                    }
                 }
             }
         });
@@ -7074,6 +7169,28 @@ impl FfiApp {
     /// Dispatch an action to the actor loop.
     pub fn dispatch(&self, action: AppAction) {
         let _ = self.core_tx.send(CoreMsg::Action(action));
+    }
+
+    /// Decrypt the encrypted image for `message_id` and return raw JPEG bytes.
+    ///
+    /// The actor thread looks up the message row, reads the MGO1-encrypted file from disk,
+    /// decrypts it with the active DEK, and returns the plaintext JPEG bytes.
+    /// Plaintext bytes are never stored on disk or in ActorState — they exist only in
+    /// the returned Vec<u8> (T-ECE-04).
+    ///
+    /// Returns Err("locked") when the DEK is not available (app locked).
+    /// Returns Err("no image for this message") when the message has no associated image.
+    pub fn read_encrypted_image(&self, message_id: String) -> Result<Vec<u8>, String> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.core_tx
+            .send(CoreMsg::ReadEncryptedImage {
+                message_id,
+                reply: reply_tx,
+            })
+            .map_err(|e| format!("actor channel error: {e}"))?;
+        reply_rx
+            .recv()
+            .map_err(|e| format!("actor reply error: {e}"))?
     }
 
     /// Return the raw attestation report blob for `backend_id`, if available.
