@@ -144,9 +144,12 @@ struct GlobMatcher {
                 if relPath == pattern { return true }
                 if relPath.hasSuffix("/" + pattern) { return true }
             } else {
-                // Literal prefix / full match.
+                // ME-03: literal filename match only. Previously this branch
+                // used `hasPrefix`, so an exclusion of `foo` silently dropped
+                // `foobar.md`. Globset would only match `foo` as an exact
+                // filename at the root or as a trailing segment — mirror that.
                 if relPath == pattern { return true }
-                if relPath.hasPrefix(pattern) { return true }
+                if relPath.hasSuffix("/" + pattern) { return true }
             }
         }
         return false
