@@ -292,6 +292,9 @@ enum App {
         setup_pin_input: String,
         setup_confirm_input: String,
         setup_duress_input: String,
+        // IMG-07: decrypted image thumbnails keyed by message_id
+        image_cache: HashMap<String, iced::widget::image::Handle>,
+
     },
 }
 
@@ -416,6 +419,11 @@ enum Message {
     PinSetupConfirmChanged(String),
     PinSetupDuressChanged(String),
     PinSetupSubmit,
+    // IMG-07: thumbnail decrypted and ready for display
+    ThumbnailLoaded {
+        message_id: String,
+        handle: iced::widget::image::Handle,
+    },
 }
 
 impl App {
@@ -468,6 +476,7 @@ impl App {
                     setup_pin_input: String::new(),
                     setup_confirm_input: String::new(),
                     setup_duress_input: String::new(),
+                    image_cache: HashMap::new(),
                 }
             }
             Err(error) => Self::BootError { error },
@@ -552,6 +561,7 @@ impl App {
                 setup_pin_input,
                 setup_confirm_input,
                 setup_duress_input,
+                image_cache,
             } => {
                 match message {
                     Message::CoreUpdated => {
@@ -603,8 +613,46 @@ impl App {
                                 *settings_brave_api_key_message = Some(toast.clone());
                                 manager.dispatch(AppAction::ClearToast);
                             }
-                            *state = latest;
+                            // IMG-07: spawn Tasks to decrypt-on-read any new user messages
+                            // with image_path not yet in the cache.
+                            let mut thumb_tasks: Vec<Task<Message>> = Vec::new();
+                            for msg in &state.messages {
+                                if msg.image_path.is_some()
+                                    && !image_cache.contains_key(&msg.id)
+                                {
+                                    let msg_id = msg.id.clone();
+                                    let ffi = manager.ffi.clone();
+                                    thumb_tasks.push(Task::perform(
+                                        async move {
+                                            tokio::task::spawn_blocking(move || {
+                                                ffi.read_encrypted_image(msg_id.clone())
+                                                    .map(|bytes| (msg_id, bytes))
+                                            })
+                                            .await
+                                            .ok()
+                                            .and_then(|r| r.ok())
+                                        },
+                                        |result| match result {
+                                            Some((message_id, bytes)) => {
+                                                Message::ThumbnailLoaded {
+                                                    message_id,
+                                                    handle: iced::widget::image::Handle::from_bytes(bytes),
+                                                }
+                                            }
+                                            None => Message::CoreUpdated, // no-op on failure
+                                        },
+                                    ));
+                                }
+                            }
+                            if !thumb_tasks.is_empty() {
+                                return Task::batch(thumb_tasks);
+                            }
                         }
+                        return Task::none();
+                    }
+
+                    Message::ThumbnailLoaded { message_id, handle } => {
+                        image_cache.insert(message_id, handle);
                     }
 
                     Message::DispatchAction(action) => {
@@ -1238,6 +1286,7 @@ impl App {
                 setup_pin_input,
                 setup_confirm_input,
                 setup_duress_input,
+                image_cache,
                 ..
             } => {
                 // Phase 28: Lock screen -- shown on cold launch when auth is required.
@@ -1337,6 +1386,7 @@ impl App {
                         *show_docs_attachment_overlay,
                         *show_conv_menu,
                         *show_tools_panel,
+                        image_cache,
                     ),
                     _ => {
                         // Home: show welcome/empty chat area

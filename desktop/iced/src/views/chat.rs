@@ -6,6 +6,7 @@ use iced::widget::{
 };
 use iced::Theme;
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
+use iced::widget::image::{self as iced_image, Handle as ImageHandle};
 
 use mango_core::{AppAction, AppState, BusyState, UiMessage};
 
@@ -33,6 +34,7 @@ pub fn chat_view<'a>(
     show_docs_attachment_overlay: bool,
     show_conv_menu: bool,
     show_tools_panel: bool,
+    image_cache: &'a HashMap<String, ImageHandle>,
 ) -> Element<'a, Message> {
     let vc = crate::theme::view_colors(is_dark);
     let is_streaming = matches!(&state.busy_state, BusyState::Streaming { .. });
@@ -374,6 +376,7 @@ pub fn chat_view<'a>(
                 parsed_messages,
                 theme,
                 vc,
+                image_cache,
             )
         })
         .collect();
@@ -551,6 +554,7 @@ fn render_message<'a>(
     parsed_messages: &'a HashMap<String, Vec<markdown::Item>>,
     theme: &'a Theme,
     vc: crate::theme::ViewColors,
+    image_cache: &'a HashMap<String, ImageHandle>,
 ) -> Element<'a, Message> {
     // Check if this message is in edit mode
     if let Some((edit_id, edit_text)) = edit_state {
@@ -560,7 +564,7 @@ fn render_message<'a>(
     }
 
     match msg.role.as_str() {
-        "user" => render_user_message(msg, vc),
+        "user" => render_user_message(msg, vc, image_cache),
         "assistant" => {
             // If this is the last assistant message AND currently streaming, show streaming content
             let show_streaming = is_last && is_streaming;
@@ -588,10 +592,20 @@ fn render_message<'a>(
 fn render_user_message<'a>(
     msg: &'a UiMessage,
     vc: crate::theme::ViewColors,
+    image_cache: &'a HashMap<String, ImageHandle>,
 ) -> Element<'a, Message> {
     let user_bubble = vc.user_bubble;
     let text_dim = vc.text_dim;
     let surface = vc.surface;
+
+    // IMG-07: render decrypted thumbnail when available
+    let thumbnail_elem: Option<Element<'_, Message>> = image_cache.get(&msg.id).map(|handle: &ImageHandle| {
+        iced_image::Image::new(handle.clone())
+            .width(Length::Fixed(240.0))
+            .content_fit(iced::ContentFit::Contain)
+            .into()
+    });
+
     let content_elem: Element<'_, Message> = if msg.has_attachment {
         let attach_label = msg.attachment_name.as_deref().unwrap_or("attachment");
         column![
@@ -613,7 +627,18 @@ fn render_user_message<'a>(
         text(&msg.content).size(16).into()
     };
 
-    let msg_bubble = container(content_elem)
+    // Stack thumbnail above text bubble when present
+    let bubble_content: Element<'_, Message> = if let Some(thumb) = thumbnail_elem {
+        if msg.content.is_empty() {
+            thumb
+        } else {
+            column![thumb, content_elem].spacing(4).into()
+        }
+    } else {
+        content_elem
+    };
+
+    let msg_bubble = container(bubble_content)
         .padding(Padding::from([8u16, 12]))
         .max_width(480.0)
         .style(move |_theme| container::Style {
