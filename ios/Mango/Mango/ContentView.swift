@@ -73,6 +73,7 @@ struct ContentView: View {
                     onAttachDocument: { docId in appManager.dispatch(.attachDocumentToConversation(documentId: docId)) },
                     onDetachDocument: { docId in appManager.dispatch(.detachDocumentFromConversation(documentId: docId)) }
                 )
+                .environmentObject(appManager)
             case .home:
                 homeView
             }
