@@ -89,6 +89,9 @@ fun MainApp(
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Documents)) }) {
                         Text("RAG")
                     }
+                    TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.DirectorySources)) }) {
+                        Text("Folders")
+                    }
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Settings)) }) {
                         Text("Settings")
                     }
@@ -97,6 +100,13 @@ fun MainApp(
         }
         is Screen.Documents -> {
             DocumentLibraryScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
+        is Screen.DirectorySources -> {
+            DirectorySourcesScreen(
                 appState = state,
                 onDispatch = { action -> manager.dispatch(action) },
                 onBack = { manager.dispatch(AppAction.PopScreen) }
