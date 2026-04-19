@@ -3087,6 +3087,43 @@ fn load_memory_summaries(actor_state: &ActorState) -> Vec<MemorySummary> {
         .collect()
 }
 
+/// Phase 32: map DirectorySourceRow rows into UI-safe summaries.
+///
+/// Drops `bookmark_data` + `tree_uri` + `path` (opaque handles, T-32-I2) and
+/// parses the JSON-encoded `exclusion_globs` column into a Vec. Current
+/// `sync_status` is always `Idle` after a reload — transient `Syncing` /
+/// `Error` states are managed by the handler and preserved across mutations
+/// via a caller-side merge.
+fn load_directory_sources_summary(actor_state: &ActorState) -> Vec<DirectorySourceSummary> {
+    let rows = persistence::queries::list_directory_sources(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+    )
+    .unwrap_or_default();
+    rows.into_iter()
+        .map(|row| {
+            let globs: Vec<String> =
+                serde_json::from_str(&row.exclusion_globs_json).unwrap_or_default();
+            // Preserve any in-flight sync_status from the current AppState so a
+            // summary reload mid-sync doesn't clobber UI state.
+            let prev_status = actor_state
+                .app_state
+                .directory_sources
+                .iter()
+                .find(|s| s.id == row.id)
+                .map(|s| s.sync_status.clone())
+                .unwrap_or(DirectorySyncStatus::Idle);
+            DirectorySourceSummary {
+                id: row.id,
+                display_name: row.display_name,
+                file_count: row.file_count,
+                last_synced_at: row.last_synced_at,
+                exclusion_globs: globs,
+                sync_status: prev_status,
+            }
+        })
+        .collect()
+}
+
 /// Emit state snapshot to shared RwLock and update channel.
 ///
 /// Extracted as a free function so agent event handlers (which run outside the closure)
@@ -3800,6 +3837,9 @@ fn load_post_unlock(
     actor_state.app_state.backends = backend_summaries;
     actor_state.app_state.active_backend_id = final_active_id.clone();
     actor_state.app_state.documents = documents;
+    // Phase 32: load directory-source summaries (after app_state.documents so
+    // load_directory_sources_summary can read from actor_state if needed).
+    actor_state.app_state.directory_sources = load_directory_sources_summary(actor_state);
     actor_state.app_state.attestation_interval_minutes = attestation_interval_minutes;
     actor_state.app_state.global_system_prompt = global_system_prompt;
     actor_state.app_state.memory_count = memory_count;
@@ -6125,16 +6165,403 @@ impl FfiApp {
                                 }
                             }
 
-                            // ── Phase 32: directory-based RAG (stubs in Task 1, filled in Task 2) ──
-                            AppAction::AddDirectorySource { .. }
-                            | AppAction::SyncDirectoryFiles { .. }
-                            | AppAction::RemoveDirectorySource { .. }
-                            | AppAction::SetDirectoryExclusions { .. }
-                            | AppAction::TriggerDirectorySync { .. }
-                            | AppAction::UpdateDirectorySourceBookmark { .. } => {
-                                // Task 2 wires the real handlers. For now: no-op so
-                                // the 6 AppAction variants compile and tests for
-                                // construction pass.
+                            // ── Phase 32: directory-based RAG handlers (DIR-05, DIR-06) ──
+                            AppAction::AddDirectorySource {
+                                display_name,
+                                path,
+                                bookmark_data,
+                                tree_uri,
+                                exclusion_globs,
+                            } => {
+                                // Validate each glob up front (T-32-V5); abort without
+                                // inserting on the first invalid pattern.
+                                let mut invalid: Option<String> = None;
+                                for g in &exclusion_globs {
+                                    if let Err(e) = rag::directory_sync::validate_glob_pattern(g)
+                                    {
+                                        invalid = Some(format!("invalid exclusion glob '{g}': {e}"));
+                                        break;
+                                    }
+                                }
+                                if let Some(msg) = invalid {
+                                    actor_state.app_state.last_error = Some(msg);
+                                } else {
+                                    let id = new_uuid();
+                                    let now = now_secs();
+                                    let globs_json =
+                                        serde_json::to_string(&exclusion_globs).unwrap_or_else(|_| "[]".into());
+                                    let row = persistence::queries::DirectorySourceRow {
+                                        id: id.clone(),
+                                        display_name,
+                                        path,
+                                        bookmark_data,
+                                        tree_uri,
+                                        exclusion_globs_json: globs_json,
+                                        last_synced_at: None,
+                                        file_count: 0,
+                                        created_at: now,
+                                    };
+                                    match persistence::queries::insert_directory_source(
+                                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                                        &row,
+                                    ) {
+                                        Ok(_) => {
+                                            actor_state.app_state.directory_sources =
+                                                load_directory_sources_summary(&actor_state);
+                                        }
+                                        Err(e) => {
+                                            actor_state.app_state.last_error =
+                                                Some(format!("Failed to add directory source: {e}"));
+                                        }
+                                    }
+                                }
+                            }
+
+                            AppAction::SyncDirectoryFiles {
+                                source_id,
+                                files,
+                                removed_paths,
+                                is_final_batch,
+                            } => {
+                                // Enforce 50-file ceiling per D-25 (T-32-DoS1).
+                                if files.len() > 50 {
+                                    actor_state.app_state.last_error = Some(format!(
+                                        "SyncDirectoryFiles batch of {} exceeds 50-file ceiling",
+                                        files.len()
+                                    ));
+                                } else {
+                                    // Mark Syncing status on this source for UI.
+                                    for s in &mut actor_state.app_state.directory_sources {
+                                        if s.id == source_id {
+                                            s.sync_status = DirectorySyncStatus::Syncing;
+                                        }
+                                    }
+                                    actor_state.app_state.ingestion_progress =
+                                        Some(IngestionProgress {
+                                            document_name: "Syncing directory".into(),
+                                            stage: "syncing".into(),
+                                        });
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+
+                                    let mut batch_error: Option<String> = None;
+
+                                    // 1) Removals — delete doc + chunks + usearch keys.
+                                    for rel_path in &removed_paths {
+                                        let existing_rows = persistence::queries::list_directory_files_by_source(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &source_id,
+                                        ).unwrap_or_default();
+                                        let maybe_doc_id = existing_rows
+                                            .iter()
+                                            .find(|r| &r.file_path == rel_path)
+                                            .and_then(|r| r.document_id.clone());
+                                        if let Some(doc_id) = maybe_doc_id {
+                                            let rowids = persistence::queries::delete_chunks_for_document(
+                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                &doc_id,
+                                            )
+                                            .unwrap_or_default();
+                                            for rid in &rowids {
+                                                let _ =
+                                                    actor_state.vector_index.remove(*rid as u64);
+                                            }
+                                            let _ = persistence::queries::delete_document(
+                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                &doc_id,
+                                            );
+                                            actor_state
+                                                .app_state
+                                                .documents
+                                                .retain(|d| d.id != doc_id);
+                                        }
+                                        let _ = persistence::queries::delete_directory_file(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &source_id,
+                                            rel_path,
+                                        );
+                                    }
+
+                                    // 2) Added / modified — ingest each file.
+                                    for entry in &files {
+                                        // If a previous document exists for
+                                        // (source_id, relative_path), delete it first
+                                        // so this is a clean replay rather than a
+                                        // duplicate insert.
+                                        let existing_rows = persistence::queries::list_directory_files_by_source(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &source_id,
+                                        ).unwrap_or_default();
+                                        if let Some(old_doc_id) = existing_rows
+                                            .iter()
+                                            .find(|r| r.file_path == entry.relative_path)
+                                            .and_then(|r| r.document_id.clone())
+                                        {
+                                            let old_rowids = persistence::queries::delete_chunks_for_document(
+                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                &old_doc_id,
+                                            )
+                                            .unwrap_or_default();
+                                            for rid in &old_rowids {
+                                                let _ =
+                                                    actor_state.vector_index.remove(*rid as u64);
+                                            }
+                                            let _ = persistence::queries::delete_document(
+                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                &old_doc_id,
+                                            );
+                                            actor_state
+                                                .app_state
+                                                .documents
+                                                .retain(|d| d.id != old_doc_id);
+                                        }
+
+                                        // Extract text.
+                                        let text = match rag::extract_text_from_file(
+                                            &entry.relative_path,
+                                            &entry.content,
+                                        ) {
+                                            Ok(t) => t,
+                                            Err(e) => {
+                                                batch_error = Some(format!(
+                                                    "extract_text failed for {}: {e}",
+                                                    entry.relative_path
+                                                ));
+                                                continue;
+                                            }
+                                        };
+
+                                        // Document format from extension.
+                                        let lower = entry.relative_path.to_lowercase();
+                                        let format = if lower.ends_with(".pdf") {
+                                            "pdf"
+                                        } else if lower.ends_with(".md") {
+                                            "md"
+                                        } else {
+                                            "txt"
+                                        };
+
+                                        let document_id = new_uuid();
+                                        let now_ts = now_secs();
+                                        let doc_row = persistence::queries::DocumentRow {
+                                            id: document_id.clone(),
+                                            name: entry.relative_path.clone(),
+                                            format: format.to_string(),
+                                            size_bytes: entry.size_bytes,
+                                            ingestion_date: now_ts,
+                                            chunk_count: 0,
+                                        };
+                                        if let Err(e) = persistence::queries::insert_document(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &doc_row,
+                                        ) {
+                                            batch_error = Some(format!(
+                                                "insert_document failed for {}: {e}",
+                                                entry.relative_path
+                                            ));
+                                            continue;
+                                        }
+
+                                        // Chunk.
+                                        let chunks = rag::chunk_text(
+                                            &text,
+                                            rag::DEFAULT_MAX_TOKENS,
+                                            rag::DEFAULT_OVERLAP_TOKENS,
+                                        );
+                                        let mut rowids: Vec<i64> = Vec::new();
+                                        let mut texts: Vec<String> = Vec::new();
+                                        for (i, ch) in chunks.iter().enumerate() {
+                                            if let Ok(rid) = persistence::queries::insert_chunk(
+                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                &document_id,
+                                                i as i64,
+                                                &ch.text,
+                                                ch.char_offset as i64,
+                                            ) {
+                                                rowids.push(rid);
+                                                texts.push(ch.text.clone());
+                                            }
+                                        }
+                                        let _ = persistence::queries::update_document_chunk_count(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &document_id,
+                                            rowids.len() as i64,
+                                        );
+
+                                        // Embed synchronously — Phase 32 directory
+                                        // sync processes batches serially inside the
+                                        // actor so we can drive VectorIndex flush
+                                        // per batch (D-27). Unlike IngestDocument
+                                        // there's no spawn_blocking round-trip here
+                                        // because we would lose batching control.
+                                        let embeddings = if texts.is_empty() {
+                                            Vec::new()
+                                        } else {
+                                            actor_state.embedding_provider.embed(texts.clone())
+                                        };
+                                        let dim = crate::embedding::EMBEDDING_DIM;
+                                        for (i, rid) in rowids.iter().enumerate() {
+                                            let start = i * dim;
+                                            let end = start + dim;
+                                            if end <= embeddings.len() {
+                                                let _ = actor_state
+                                                    .vector_index
+                                                    .add(*rid as u64, &embeddings[start..end]);
+                                            }
+                                        }
+
+                                        // Track fingerprint in directory_files.
+                                        let _ = persistence::queries::upsert_directory_file(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &source_id,
+                                            &entry.relative_path,
+                                            entry.mtime_secs,
+                                            entry.size_bytes,
+                                            Some(&document_id),
+                                        );
+
+                                        // Push DocumentSummary into AppState.
+                                        actor_state.app_state.documents.push(DocumentSummary {
+                                            id: document_id.clone(),
+                                            name: entry.relative_path.clone(),
+                                            format: format.to_string(),
+                                            size_bytes: entry.size_bytes as u64,
+                                            ingestion_date: now_ts,
+                                            chunk_count: rowids.len() as u64,
+                                        });
+                                    }
+
+                                    // Flush VectorIndex after the batch (D-27, T-32-DoS1).
+                                    let _ =
+                                        actor_state.vector_index.save(actor_state.dek.as_deref());
+
+                                    // Update source bookkeeping.
+                                    if is_final_batch {
+                                        let new_count = persistence::queries::count_directory_files(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &source_id,
+                                        )
+                                        .unwrap_or(0);
+                                        let _ =
+                                            persistence::queries::update_directory_source_last_synced(
+                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                &source_id,
+                                                now_secs(),
+                                                new_count,
+                                            );
+                                        actor_state.app_state.ingestion_progress = None;
+                                    }
+
+                                    // Reload summaries and set per-source status.
+                                    actor_state.app_state.directory_sources =
+                                        load_directory_sources_summary(&actor_state);
+                                    if let Some(msg) = batch_error {
+                                        for s in &mut actor_state.app_state.directory_sources {
+                                            if s.id == source_id {
+                                                s.sync_status =
+                                                    DirectorySyncStatus::Error { message: msg.clone() };
+                                            }
+                                        }
+                                    } else if is_final_batch {
+                                        for s in &mut actor_state.app_state.directory_sources {
+                                            if s.id == source_id {
+                                                s.sync_status = DirectorySyncStatus::Idle;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            AppAction::RemoveDirectorySource { source_id } => {
+                                // Cascade delete: for every tracked directory_file row
+                                // with a bound document_id, delete chunks + doc +
+                                // usearch keys. Then delete the source row (the
+                                // directory_files rows cascade via FK).
+                                let files = persistence::queries::list_directory_files_by_source(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    &source_id,
+                                )
+                                .unwrap_or_default();
+                                for f in &files {
+                                    if let Some(doc_id) = &f.document_id {
+                                        let rowids = persistence::queries::delete_chunks_for_document(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            doc_id,
+                                        )
+                                        .unwrap_or_default();
+                                        for rid in &rowids {
+                                            let _ =
+                                                actor_state.vector_index.remove(*rid as u64);
+                                        }
+                                        let _ = persistence::queries::delete_document(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            doc_id,
+                                        );
+                                        actor_state
+                                            .app_state
+                                            .documents
+                                            .retain(|d| &d.id != doc_id);
+                                    }
+                                }
+                                if !files.is_empty() {
+                                    let _ =
+                                        actor_state.vector_index.save(actor_state.dek.as_deref());
+                                }
+                                let _ = persistence::queries::delete_directory_source(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    &source_id,
+                                );
+                                actor_state.app_state.directory_sources =
+                                    load_directory_sources_summary(&actor_state);
+                            }
+
+                            AppAction::SetDirectoryExclusions { source_id, globs } => {
+                                let mut invalid: Option<String> = None;
+                                for g in &globs {
+                                    if let Err(e) = rag::directory_sync::validate_glob_pattern(g)
+                                    {
+                                        invalid = Some(format!("invalid exclusion glob '{g}': {e}"));
+                                        break;
+                                    }
+                                }
+                                if let Some(msg) = invalid {
+                                    actor_state.app_state.last_error = Some(msg);
+                                } else {
+                                    let json = serde_json::to_string(&globs)
+                                        .unwrap_or_else(|_| "[]".into());
+                                    let _ =
+                                        persistence::queries::update_directory_source_exclusions(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &source_id,
+                                            &json,
+                                        );
+                                    actor_state.app_state.directory_sources =
+                                        load_directory_sources_summary(&actor_state);
+                                }
+                            }
+
+                            AppAction::TriggerDirectorySync { source_id } => {
+                                // The Rust actor doesn't enumerate; flipping sync_status
+                                // to Syncing is the state signal the native watcher
+                                // subscribes to — it responds with SyncDirectoryFiles.
+                                for s in &mut actor_state.app_state.directory_sources {
+                                    if s.id == source_id {
+                                        s.sync_status = DirectorySyncStatus::Syncing;
+                                    }
+                                }
+                            }
+
+                            AppAction::UpdateDirectorySourceBookmark {
+                                source_id,
+                                bookmark_data,
+                            } => {
+                                let _ = persistence::queries::update_directory_source_bookmark(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    &source_id,
+                                    &bookmark_data,
+                                );
+                                // Bookmark is opaque (T-32-I2) — not part of the
+                                // summary, so no AppState reload required.
                             }
                         }
 
