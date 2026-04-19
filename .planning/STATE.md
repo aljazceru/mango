@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: "Completed 260419-ece quick task: encrypted image persistence"
-last_updated: "2026-04-19T09:00:11.790Z"
+stopped_at: Completed 32-01-PLAN.md
+last_updated: "2026-04-19T17:04:29.912Z"
 last_activity: 2026-04-19
 progress:
-  total_phases: 12
+  total_phases: 13
   completed_phases: 11
-  total_plans: 35
-  completed_plans: 35
-  percent: 100
+  total_plans: 42
+  completed_plans: 36
+  percent: 86
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Every inference request is provably confidential -- verified via remote attestation, all data stays local
-**Current focus:** Phase 28 — local-data-encryption-authentication
+**Current focus:** Phase 32 — directory-based-rag-ingestion-with-periodic-sync-and-file-fo
 
 ## Current Position
 
-Phase: 31
-Plan: Not started
-Status: Executing Phase 28
-Last activity: 2026-04-19 - Completed quick task 260419-jz5: Allow changing chat title manually
+Phase: 32 (directory-based-rag-ingestion-with-periodic-sync-and-file-fo) — EXECUTING
+Plan: 2 of 7
+Status: Ready to execute
+Last activity: 2026-04-19
 
 Progress: [██░░░░░░░░] 25%
 
@@ -69,6 +69,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 27-add-optional-tool-use-to-chat P00 | 5min | 1 tasks | 2 files |
 | Phase 27 P01 | 10min | 2 tasks | 8 files |
 | Phase 27-add-optional-tool-use-to-chat P03 | 20min | 1 tasks | 8 files |
+| Phase 32 P01 | 12min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -114,6 +115,8 @@ Key architectural context for v2.0:
 - [Phase 27-add-optional-tool-use-to-chat]: Desktop Tools button uses accent background when active showing Tools [ON], surface background when off - consistent with docs_btn visual pattern (27-03)
 - [Phase quick/260419-ece]: Reused file_crypto exclusively for image encryption — MGO1 format, no parallel AES path
 - [Phase quick/260419-ece]: Desktop thumbnails use Task::perform + image_cache HashMap (iced pattern, not async in view)
+- [Phase 32]: DirectorySourceRow carries all 3 platform handles (path/bookmark_data/tree_uri) as nullable columns — single row shape across Desktop/iOS/Android
+- [Phase 32]: upsert_directory_file uses ON CONFLICT DO UPDATE (preserves AUTOINCREMENT id) rather than INSERT OR REPLACE
 
 ### Roadmap Evolution
 
@@ -122,6 +125,7 @@ Key architectural context for v2.0:
 - Phase 26 added: settings submenus and organization — group related settings into collapsible sections or sub-screens
 - Phase 27 added: Add optional tool use to chat — extend chat streaming with inline tool calling, reusing agent tool infrastructure
 - Phase 28 added: Local Data Encryption & Authentication — encrypt all local data (SQLite, vector indices, documents) with platform hardware (Keychain/Keystore/TPM), biometric/PIN unlock, duress PIN for data wipe, graceful degradation on older devices
+- Phase 32 added: Directory-based RAG ingestion with periodic sync and file/folder exclusion — add whole directories (e.g. Obsidian vault) as RAG sources with glob exclusions, automatic periodic re-sync (add/modify/delete diff), cross-platform folder permissions (iOS security-scoped bookmarks, Android persistable tree URIs, Desktop), UI for source list + exclusion editor + manual sync-now
 
 ### Pending Todos
 
@@ -141,6 +145,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-19T09:00:07.095Z
-Stopped at: Completed 260419-ece quick task: encrypted image persistence
+Last session: 2026-04-19T17:04:29.910Z
+Stopped at: Completed 32-01-PLAN.md
 Resume file: None

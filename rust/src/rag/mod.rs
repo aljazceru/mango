@@ -4,6 +4,7 @@
 /// text extraction for the local on-device RAG pipeline.
 pub mod chunker;
 pub mod context;
+pub mod directory_sync;
 pub mod index;
 
 pub use chunker::{chunk_text, ChunkOutput, DEFAULT_MAX_TOKENS, DEFAULT_OVERLAP_TOKENS};
