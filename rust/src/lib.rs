@@ -1981,7 +1981,20 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     // Phase 27: Chat tool use branch.
     // When tools are enabled for this conversation and the backend supports tool calling,
     // run a non-streaming first round to detect tool calls before streaming the answer.
-    if actor_state.current_conv_tools_enabled && backend.supports_tool_use {
+    //
+    // Precedence (debug session `android-image-upload-sent-as-text-placeholder` —
+    // latent issue 3): image-bearing turns MUST bypass this branch and fall
+    // through to the image-multipart branch below. The tools branch builds
+    // plain text api_messages from `msg.content.as_str()` and early-returns
+    // without consuming `pending_image_attachment`, which would silently drop
+    // the attached image AND leave it dangling in actor state for the next
+    // send. Tools + vision multipart is out of scope for this fix; when a
+    // message carries an image, vision takes precedence over tools for that
+    // turn.
+    if actor_state.current_conv_tools_enabled
+        && backend.supports_tool_use
+        && !has_image_attachment
+    {
         let brave_key_set = persistence::queries::get_setting(
             actor_state.db.as_ref().expect("db unlocked").conn(),
             "brave_api_key",
