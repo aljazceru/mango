@@ -4,6 +4,10 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Mango uses the camera so you can attach photos to confidential chats. Photos never leave your device unencrypted.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Mango accesses your photo library so you can attach images to confidential chats. Photos never leave your device unencrypted.</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
