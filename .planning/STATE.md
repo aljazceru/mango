@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 Phase: 31
 Plan: Not started
 Status: Executing Phase 28
-Last activity: 2026-04-19
+Last activity: 2026-04-19 - Completed quick task 260419-jz5: Allow changing chat title manually
 
 Progress: [██░░░░░░░░] 25%
 
@@ -137,6 +137,7 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 260403-ft1 | Add Default Instructions setting in Settings (iOS + desktop) for global_system_prompt | 2026-04-03 | f91690e | [260403-ft1-add-default-instructions-setting-in-sett](./quick/260403-ft1-add-default-instructions-setting-in-sett/) |
 | 260419-ece | encrypted image persistence: store sent/received image JPEG encrypted with DEK + thumbnail rendering on Android/iOS/desktop | 2026-04-19 | a7c204b | [260419-ece-encrypted-image-persistence-store-sent-r](./quick/260419-ece-encrypted-image-persistence-store-sent-r/) |
+| 260419-jz5 | Allow changing chat title manually from chat top bar (iOS/Android/Desktop) | 2026-04-19 | 52fc9f8 | [260419-jz5-feature-request-allow-changing-chat-titl](./quick/260419-jz5-feature-request-allow-changing-chat-titl/) |
 
 ## Session Continuity
 
