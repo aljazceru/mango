@@ -1203,7 +1203,6 @@ pub fn delete_directory_file(
 }
 
 /// Count the number of tracked files for a directory source.
-#[allow(dead_code)]
 pub fn count_directory_files(
     conn: &Connection,
     source_id: &str,
