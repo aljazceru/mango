@@ -1,9 +1,11 @@
 import SwiftUI
 import Textual
+import PhotosUI
 
 /// Full chat screen: message thread + compose bar + header with model picker, attestation badge, and Instructions.
 /// Per CHAT-01 through CHAT-14 and UI-SPEC interaction contract.
 struct ChatView: View {
+    @EnvironmentObject var appManager: AppManager
     let state: AppState
     @Binding var inputText: String
     let onSend: () -> Void
@@ -28,6 +30,11 @@ struct ChatView: View {
     @State private var showDocAttachSheet = false
     @State private var showConvMenu = false
     @State private var showToolsSheet = false
+    // Phase 31 (IMG-05/IMG-06): attach action sheet + image pickers
+    @State private var showAttachOptions = false
+    @State private var showCameraPicker = false
+    @State private var showPhotosPicker = false
+    @State private var photosPickerItem: PhotosPickerItem? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -97,7 +104,7 @@ struct ChatView: View {
                 isStreaming: state.busyState.isStreaming,
                 onSend: onSend,
                 onStop: onStop,
-                onAttach: { showFilePicker = true },
+                onAttach: { showAttachOptions = true },
                 onClearAttachment: onClearAttachment
             )
         }
@@ -163,6 +170,47 @@ struct ChatView: View {
             allowsMultipleSelection: false
         ) { result in
             handleFileImportResult(result)
+        }
+        // Phase 31 (IMG-05/IMG-06): paperclip opens action sheet with 3 choices
+        .confirmationDialog("Attach", isPresented: $showAttachOptions, titleVisibility: .hidden) {
+            Button("Take Photo") { showCameraPicker = true }
+            Button("Choose Photo") { showPhotosPicker = true }
+            Button("Attach File") { showFilePicker = true }
+            Button("Cancel", role: .cancel) { }
+        }
+        .photosPicker(isPresented: $showPhotosPicker,
+                      selection: $photosPickerItem,
+                      matching: .images,
+                      preferredItemEncoding: .compatible)
+        .onChange(of: photosPickerItem) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let ui = UIImage(data: data),
+                   let jpeg = ui.jpegData(compressionQuality: 0.8) {
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("gallery_\(UUID().uuidString).jpg")
+                    try? jpeg.write(to: url)
+                    await MainActor.run {
+                        appManager.dispatch(.attachImage(filename: "image.jpg",
+                                                         filePath: url.path,
+                                                         mimeType: "image/jpeg"))
+                    }
+                }
+                await MainActor.run { photosPickerItem = nil }
+            }
+        }
+        .sheet(isPresented: $showCameraPicker) {
+            ImagePickerView(
+                onPicked: { filename, filePath, mimeType in
+                    appManager.dispatch(.attachImage(filename: filename,
+                                                     filePath: filePath,
+                                                     mimeType: mimeType))
+                    showCameraPicker = false
+                },
+                onCancel: { showCameraPicker = false }
+            )
+            .ignoresSafeArea()
         }
         .sheet(isPresented: $showDocAttachSheet) {
             DocumentAttachSheet(

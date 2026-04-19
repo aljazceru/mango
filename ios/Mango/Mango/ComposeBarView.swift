@@ -17,7 +17,7 @@ struct ComposeBarView: View {
             // Pending attachment indicator
             if let attachment = pendingAttachment {
                 HStack(spacing: 8) {
-                    Image(systemName: "paperclip")
+                    Image(systemName: attachment.isImage ? "photo" : "paperclip")
                         .foregroundColor(.secondary)
                         .font(.subheadline)
                     Text("\(attachment.filename) (\(attachment.sizeDisplay))")
