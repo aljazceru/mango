@@ -5,17 +5,21 @@ pub mod schema;
 pub use error::PersistenceError;
 #[allow(unused_imports)]
 pub use queries::{
-    delete_backend, delete_backend_health, delete_chunks_for_document, delete_conversation,
-    delete_document, delete_message, delete_messages_after, get_active_backend_id,
-    get_chunk_text_by_rowids, get_conversation_attached_docs, get_setting, insert_agent_session,
-    insert_agent_step, insert_backend, insert_chunk, insert_conversation, insert_document,
-    insert_message, list_agent_sessions, list_agent_steps, list_backend_health, list_backends,
-    list_chunks_for_document, list_conversations, list_documents, list_messages,
-    rename_conversation, set_setting, update_backend_display_order, update_backend_models,
-    update_conversation_attached_docs, update_conversation_backend, update_conversation_model,
-    update_conversation_system_prompt, update_conversation_updated_at, update_document_chunk_count,
-    upsert_backend_health, AgentSessionRow, AgentStepRow, BackendHealthRow, BackendRow, ChunkRow,
-    ConversationRow, DocumentRow, MessageRow,
+    count_directory_files, delete_backend, delete_backend_health, delete_chunks_for_document,
+    delete_conversation, delete_directory_file, delete_directory_source, delete_document,
+    delete_message, delete_messages_after, get_active_backend_id, get_chunk_text_by_rowids,
+    get_conversation_attached_docs, get_directory_source, get_setting, insert_agent_session,
+    insert_agent_step, insert_backend, insert_chunk, insert_conversation, insert_directory_source,
+    insert_document, insert_message, list_agent_sessions, list_agent_steps, list_backend_health,
+    list_backends, list_chunks_for_document, list_conversations, list_directory_files_by_source,
+    list_directory_sources, list_documents, list_messages, rename_conversation, set_setting,
+    update_backend_display_order, update_backend_models, update_conversation_attached_docs,
+    update_conversation_backend, update_conversation_model, update_conversation_system_prompt,
+    update_conversation_updated_at, update_directory_source_bookmark,
+    update_directory_source_exclusions, update_directory_source_last_synced,
+    update_document_chunk_count, upsert_backend_health, upsert_directory_file, AgentSessionRow,
+    AgentStepRow, BackendHealthRow, BackendRow, ChunkRow, ConversationRow, DirectoryFileRow,
+    DirectorySourceRow, DocumentRow, MessageRow,
 };
 
 /// Validate that `dek_hex` is exactly 64 lowercase hex characters (32 bytes / 256 bits).
