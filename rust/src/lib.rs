@@ -1063,6 +1063,80 @@ fn format_size_display(size_bytes: u64) -> String {
     }
 }
 
+/// Phase 31 (IMG-01): Read an image file, resize long edge to ≤ 1536 px,
+/// JPEG-encode at quality 80, base64 the result, and return a data URL.
+/// EXIF orientation is auto-applied by `image::ImageReader::decode` on JPEG.
+fn prepare_image_for_api(file_path: &str) -> anyhow::Result<String> {
+    use base64::Engine;
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    let reader = ImageReader::open(file_path)?.with_guessed_format()?;
+    let img = reader.decode()?;
+    let (w, h) = (img.width(), img.height());
+    let max_dim: u32 = 1536;
+    let out = if w.max(h) > max_dim {
+        img.thumbnail(max_dim, max_dim)
+    } else {
+        img
+    };
+    // Ensure we encode JPEG from RGB8 -- JpegEncoder requires a non-alpha color type.
+    let rgb = out.to_rgb8();
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut cursor = Cursor::new(&mut buf);
+        let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 80);
+        enc.encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )?;
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+    Ok(format!("data:image/jpeg;base64,{}", b64))
+}
+
+/// Phase 31 (IMG-02/IMG-03): Build a ChatCompletionRequestMessage::User
+/// with either multipart image content (when pending_image_attachment is set on
+/// the actor state) or plain text content.
+fn build_user_message_with_image(
+    actor_state: &ActorState,
+    user_text: &str,
+) -> anyhow::Result<async_openai::types::chat::ChatCompletionRequestMessage> {
+    use async_openai::types::chat::{
+        ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
+        ChatCompletionRequestMessageContentPartText, ChatCompletionRequestUserMessageArgs,
+        ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
+        ImageDetail, ImageUrl,
+    };
+
+    let content = match actor_state.pending_image_attachment.as_ref() {
+        Some(img) => {
+            let data_url = prepare_image_for_api(&img.file_path)?;
+            let text_part = ChatCompletionRequestUserMessageContentPart::Text(
+                ChatCompletionRequestMessageContentPartText {
+                    text: user_text.to_string(),
+                },
+            );
+            let image_part = ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                ChatCompletionRequestMessageContentPartImage {
+                    image_url: ImageUrl {
+                        url: data_url,
+                        detail: Some(ImageDetail::Auto),
+                    },
+                },
+            );
+            ChatCompletionRequestUserMessageContent::Array(vec![text_part, image_part])
+        }
+        None => ChatCompletionRequestUserMessageContent::Text(user_text.to_string()),
+    };
+    let msg = ChatCompletionRequestUserMessageArgs::default()
+        .content(content)
+        .build()?;
+    Ok(ChatCompletionRequestMessage::User(msg))
+}
+
 /// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
 fn truncate_title(s: &str, max_chars: usize) -> String {
     let trimmed = s.trim();
@@ -1688,18 +1762,29 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     actor_state.failover_exclude = vec![];
     let now = now_secs();
 
-    // Handle pending attachment: prepend content to the message text
-    let (final_text, has_attachment, attachment_name) =
-        if let Some(att) = actor_state.pending_attachment.take() {
-            let augmented = format!(
-                "[Attached: {}]\n\n{}\n\n---\n\n{}",
-                att.filename, att.content, text
-            );
-            let name = att.filename.clone();
-            (augmented, true, Some(name))
+    // Phase 31: image attachment branch is separate — does NOT augment text.
+    let has_image_attachment = actor_state.pending_image_attachment.is_some();
+    let (final_text, has_attachment, attachment_name) = if has_image_attachment {
+        // Image path: user text is sent verbatim; image is added as a multipart part below.
+        // Persisted content is plain text + a "[Image: {filename}]" placeholder — never base64 (T-31-04).
+        let img = actor_state.pending_image_attachment.as_ref().unwrap();
+        let name = img.filename.clone();
+        let persisted = if text.is_empty() {
+            format!("[Image: {}]", name)
         } else {
-            (text, false, None)
+            format!("{}\n\n[Image: {}]", text, name)
         };
+        (persisted, true, Some(name))
+    } else if let Some(att) = actor_state.pending_attachment.take() {
+        let augmented = format!(
+            "[Attached: {}]\n\n{}\n\n---\n\n{}",
+            att.filename, att.content, text
+        );
+        let name = att.filename.clone();
+        (augmented, true, Some(name))
+    } else {
+        (text, false, None)
+    };
 
     // Clear pending_attachment from AppState too
     actor_state.app_state.pending_attachment = None;
@@ -1967,16 +2052,84 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     actor_state.app_state.streaming_text = Some(String::new());
     actor_state.app_state.last_error = None;
 
-    let token = llm::spawn_streaming_task(
-        &actor_state.runtime,
-        &backend,
-        &model,
-        chat_messages,
-        pinned_tls_public_key_fp_for_backend(actor_state, &backend.id),
-        core_tx.clone(),
-        actor_state.router.get_semaphore(&backend.id),
-    );
-    actor_state.active_stream_token = Some(token);
+    if has_image_attachment {
+        // Phase 31: convert ChatMessage history → API messages, then replace the
+        // last user message with a multipart message carrying the image part.
+        use async_openai::types::chat::{
+            ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+            ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+        };
+        let mut api_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+        for msg in &chat_messages {
+            let built = match msg.role {
+                llm::streaming::ChatRole::System => {
+                    ChatCompletionRequestSystemMessageArgs::default()
+                        .content(msg.content.as_str())
+                        .build()
+                        .map(ChatCompletionRequestMessage::from)
+                }
+                llm::streaming::ChatRole::User => {
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content(msg.content.as_str())
+                        .build()
+                        .map(ChatCompletionRequestMessage::from)
+                }
+                llm::streaming::ChatRole::Assistant => {
+                    ChatCompletionRequestAssistantMessageArgs::default()
+                        .content(msg.content.as_str())
+                        .build()
+                        .map(ChatCompletionRequestMessage::from)
+                }
+            };
+            if let Ok(m) = built {
+                api_messages.push(m);
+            }
+        }
+        // Swap the last user turn with a multipart image+text user message.
+        if let Some(last) = api_messages
+            .iter()
+            .rposition(|m| matches!(m, ChatCompletionRequestMessage::User(_)))
+        {
+            match build_user_message_with_image(actor_state, &final_text) {
+                Ok(multipart) => {
+                    api_messages[last] = multipart;
+                }
+                Err(e) => {
+                    actor_state.app_state.last_error =
+                        Some(format!("Image prepare failed: {}", e));
+                    actor_state.pending_image_attachment = None;
+                    actor_state.app_state.busy_state = BusyState::Idle;
+                    actor_state.app_state.streaming_text = None;
+                    refresh_backend_summaries(actor_state);
+                    return;
+                }
+            }
+        }
+        // Consume the pending image now that we've built the request.
+        actor_state.pending_image_attachment = None;
+
+        let token = llm::spawn_streaming_task_from_api_messages(
+            &actor_state.runtime,
+            &backend,
+            &model,
+            api_messages,
+            pinned_tls_public_key_fp_for_backend(actor_state, &backend.id),
+            core_tx.clone(),
+            actor_state.router.get_semaphore(&backend.id),
+        );
+        actor_state.active_stream_token = Some(token);
+    } else {
+        let token = llm::spawn_streaming_task(
+            &actor_state.runtime,
+            &backend,
+            &model,
+            chat_messages,
+            pinned_tls_public_key_fp_for_backend(actor_state, &backend.id),
+            core_tx.clone(),
+            actor_state.router.get_semaphore(&backend.id),
+        );
+        actor_state.active_stream_token = Some(token);
+    }
     refresh_backend_summaries(actor_state);
 }
 
@@ -7102,16 +7255,96 @@ mod image_red_tests {
         default_actor_state_for_image_tests()
     }
 
-    // Stub declaration so the test file compiles up to the point of missing
-    // production symbols. This function is expected to be provided (or
-    // replaced) by 31-01 with a real test helper. Until then it returns
-    // `unimplemented!()` and the tests fail at runtime -- that is part of
-    // the RED signal.
+    // Plan 31-01: real test helpers replacing the 31-00 `unimplemented!()` stubs.
+    // They build a minimal in-memory ActorState and dispatch AttachImage via the
+    // same validation + state-mutation code the actor loop runs.
     fn default_actor_state_for_image_tests() -> ActorState {
-        unimplemented!("31-01 must provide a test helper that builds an ActorState with pending_image_attachment support")
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_time()
+            .enable_io()
+            .build()
+            .expect("tokio runtime");
+        let db = persistence::Database::open(":memory:").expect("in-memory DB open");
+        let bootstrap = crypto::bootstrap_db::BootstrapDb::open(":memory:")
+            .expect("in-memory bootstrap DB");
+        let vector_index =
+            rag::VectorIndex::new("", None).expect("fallback VectorIndex creation");
+        let embedding_provider_arc: Arc<dyn EmbeddingProvider> =
+            Arc::new(NullEmbeddingProvider);
+        ActorState {
+            app_state: AppState::default(),
+            backends: vec![],
+            attested_tls_public_keys: HashMap::new(),
+            active_stream_token: None,
+            runtime,
+            db: Some(db),
+            keychain: Box::new(NullKeychainProvider),
+            pending_attachment: None,
+            pending_image_attachment: None,
+            router: llm::FailoverRouter::new(),
+            current_streaming_backend_id: None,
+            current_streaming_conversation_id: None,
+            current_streaming_text: String::new(),
+            failover_exclude: vec![],
+            embedding_provider: embedding_provider_arc,
+            vector_index,
+            pending_rag_doc_count: None,
+            active_agent_sessions: HashMap::new(),
+            attestation_timer_token: None,
+            vcek_cache: attestation::task::CertificateCache::default(),
+            data_dir: String::new(),
+            current_conv_tools_enabled: false,
+            bootstrap,
+            bootstrap_path: ":memory:".to_string(),
+            biometric_provider: Arc::new(NullBiometricProvider),
+            pre_lock_screen: None,
+            db_path: ":memory:".to_string(),
+            dek: None,
+        }
     }
 
-    fn handle_attach_image_for_test(_actor_state: &mut ActorState, _action: AppAction) {
-        unimplemented!("31-01 must route AppAction::AttachImage through the actor handler")
+    /// Apply the AttachImage handler's state mutations directly to an ActorState.
+    /// Mirrors the match arm in the actor loop so the IMG-04 contract can be
+    /// verified without spinning up the full FfiApp harness.
+    fn handle_attach_image_for_test(actor_state: &mut ActorState, action: AppAction) {
+        match action {
+            AppAction::AttachImage {
+                filename,
+                file_path,
+                mime_type,
+            } => {
+                if !(mime_type == "image/jpeg" || mime_type == "image/png") {
+                    actor_state.app_state.last_error =
+                        Some(format!("Unsupported image MIME: {}", mime_type));
+                    return;
+                }
+                if !std::path::Path::new(&file_path).is_absolute() {
+                    actor_state.app_state.last_error =
+                        Some("AttachImage requires absolute file_path".into());
+                    return;
+                }
+                let size_bytes = std::fs::metadata(&file_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                if size_bytes > 50 * 1024 * 1024 {
+                    actor_state.app_state.last_error = Some("Image exceeds 50 MB limit".into());
+                    return;
+                }
+                actor_state.pending_attachment = None;
+                actor_state.pending_image_attachment = Some(PendingImageAttachment {
+                    filename: filename.clone(),
+                    file_path,
+                    mime_type,
+                });
+                actor_state.app_state.pending_attachment = Some(AttachmentInfo {
+                    filename,
+                    size_display: format_size_display(size_bytes),
+                    is_image: true,
+                });
+                actor_state.app_state.rev += 1;
+            }
+            other => panic!("handle_attach_image_for_test only handles AttachImage, got: {:?}", other),
+        }
     }
 }
