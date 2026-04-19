@@ -200,6 +200,43 @@ pub fn view<'a>(
     .width(Length::Fill)
     .padding(Padding::from([0u16, 16]));
 
+    // ── Directory Sources summary row (Phase 32 Plan 07 entry point) ─────────
+    let dir_count = state.directory_sources.len();
+    let directory_sources_summary = container(
+        button(
+            row![
+                text("Directory Sources").size(14).color(vc.text),
+                iced::widget::Space::new().width(Length::Fill),
+                text(if dir_count == 1 {
+                    "1 folder".to_string()
+                } else {
+                    format!("{} folders", dir_count)
+                })
+                .size(12)
+                .color(vc.muted),
+                text(">").size(12).color(vc.muted),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        )
+        .on_press(Message::DispatchAction(AppAction::PushScreen {
+            screen: Screen::DirectorySources,
+        }))
+        .padding(Padding::from([8u16, 16]))
+        .width(Length::Fill)
+        .style(move |_, _| button::Style {
+            background: Some(Background::Color(vc.card)),
+            border: Border {
+                radius: 8.0.into(),
+                color: vc.border,
+                width: 1.0,
+            },
+            ..Default::default()
+        }),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([0u16, 16]));
+
     // ── Appearance (theme override) ────────────────────────────────────────────
     let appearance_picker = pick_list(
         crate::ThemeOverride::ALL,
@@ -545,6 +582,8 @@ pub fn view<'a>(
         providers_summary,
         section_header("DEFAULTS", vc.muted),
         defaults_summary,
+        section_header("DIRECTORY SOURCES", vc.muted),
+        directory_sources_summary,
         section_header("MEMORY", vc.muted),
         memory_toggle_row,
         memory_row,

@@ -199,9 +199,8 @@ fun DirectorySourcesScreen(
             title = { Text("Remove ${source.displayName}?") },
             text = {
                 Text(
-                    "This will delete ${source.fileCount} indexed file" +
-                        (if (source.fileCount == 1L) "" else "s") +
-                        " and their embeddings. The folder itself is not deleted.",
+                    "Remove source and delete ${formatFileCount(source.fileCount)} indexed chunks? " +
+                        "The folder itself is not deleted.",
                 )
             },
             confirmButton = {
@@ -246,10 +245,8 @@ private fun DirectorySourceRow(
                     Text(source.displayName, style = MaterialTheme.typography.titleMedium)
                     val statusText = when (val st = source.syncStatus) {
                         is DirectorySyncStatus.Idle ->
-                            "${source.fileCount} files" +
-                                (source.lastSyncedAt?.let {
-                                    " · synced " + dirRelativeTime(it)
-                                } ?: "")
+                            "${formatFileCount(source.fileCount)} files · " +
+                                "Last synced: ${source.lastSyncedLabel}"
                         is DirectorySyncStatus.Syncing -> "Syncing…"
                         is DirectorySyncStatus.Error -> "Error: ${st.message}"
                     }
@@ -361,17 +358,14 @@ private fun String.looksLikeValidGlob(): Boolean {
     return true
 }
 
-/** Format an absolute unix-secs timestamp as a human-friendly relative time. */
-private fun dirRelativeTime(epochSecs: Long): String {
-    val now = System.currentTimeMillis() / 1000
-    val delta = now - epochSecs
-    return when {
-        delta < 60 -> "just now"
-        delta < 3600 -> "${delta / 60}m ago"
-        delta < 86400 -> "${delta / 3600}h ago"
-        else -> "${delta / 86400}d ago"
-    }
-}
+/**
+ * Locale-aware thousands-grouping formatter for file counts (e.g. 1234 → "1,234" in en-US).
+ *
+ * Relative-time labels are now produced by the Rust core as `DirectorySourceSummary.lastSyncedLabel`
+ * so all three platforms render identical strings (Plan 32-07).
+ */
+private fun formatFileCount(n: Long): String =
+    java.text.NumberFormat.getIntegerInstance().format(n)
 
 @Suppress("unused") // referenced via symbol name by Color import deduplication
 private val Unused: Color = Color.Transparent

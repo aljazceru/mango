@@ -834,8 +834,40 @@ pub struct DirectorySourceSummary {
     pub display_name: String,
     pub file_count: i64,
     pub last_synced_at: Option<i64>,
+    /// Pre-computed relative-time label (e.g. "Never", "Just now", "3m ago",
+    /// "2h ago", "Yesterday", "3d ago"). Centralised on the Rust side so
+    /// desktop/iOS/Android render identical strings (Phase 32 Plan 07).
+    pub last_synced_label: String,
     pub exclusion_globs: Vec<String>,
     pub sync_status: DirectorySyncStatus,
+}
+
+/// Phase 32 Plan 07: centralised relative-time formatter for
+/// `DirectorySourceSummary.last_synced_label`. Pure function so all three
+/// platforms render the same labels and the logic can be unit-tested.
+///
+/// Cases:
+/// - None or negative delta → "Never" / "Just now"
+/// - 0..=59s → "Just now"
+/// - 60..=3599s → "{m}m ago"
+/// - 3600..=86399s → "{h}h ago"
+/// - 86400..=172799s → "Yesterday"
+/// - ≥172800s → "{d}d ago"
+pub fn relative_time_label(last: Option<i64>, now_secs: i64) -> String {
+    let Some(t) = last else {
+        return "Never".into();
+    };
+    let delta = now_secs - t;
+    if delta < 0 {
+        return "Just now".into();
+    }
+    match delta {
+        0..=59 => "Just now".into(),
+        60..=3599 => format!("{}m ago", delta / 60),
+        3600..=86399 => format!("{}h ago", delta / 3600),
+        86400..=172799 => "Yesterday".into(),
+        _ => format!("{}d ago", delta / 86400),
+    }
 }
 
 /// A single stored fingerprint returned from `FfiApp::list_directory_fingerprints`
@@ -3131,11 +3163,16 @@ fn load_directory_sources_summary(actor_state: &ActorState) -> Vec<DirectorySour
                 .find(|s| s.id == row.id)
                 .map(|s| s.sync_status.clone())
                 .unwrap_or(DirectorySyncStatus::Idle);
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
             DirectorySourceSummary {
                 id: row.id,
                 display_name: row.display_name,
                 file_count: row.file_count,
                 last_synced_at: row.last_synced_at,
+                last_synced_label: relative_time_label(row.last_synced_at, now_secs),
                 exclusion_globs: globs,
                 sync_status: prev_status,
             }

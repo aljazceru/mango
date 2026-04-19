@@ -2725,6 +2725,12 @@ data class DirectorySourceSummary (
     var `displayName`: kotlin.String, 
     var `fileCount`: kotlin.Long, 
     var `lastSyncedAt`: kotlin.Long?, 
+    /**
+     * Pre-computed relative-time label (e.g. "Never", "Just now", "3m ago",
+     * "2h ago", "Yesterday", "3d ago"). Centralised on the Rust side so
+     * desktop/iOS/Android render identical strings (Phase 32 Plan 07).
+     */
+    var `lastSyncedLabel`: kotlin.String, 
     var `exclusionGlobs`: List<kotlin.String>, 
     var `syncStatus`: DirectorySyncStatus
 ) {
@@ -2742,6 +2748,7 @@ public object FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer<Dir
             FfiConverterString.read(buf),
             FfiConverterLong.read(buf),
             FfiConverterOptionalLong.read(buf),
+            FfiConverterString.read(buf),
             FfiConverterSequenceString.read(buf),
             FfiConverterTypeDirectorySyncStatus.read(buf),
         )
@@ -2752,6 +2759,7 @@ public object FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer<Dir
             FfiConverterString.allocationSize(value.`displayName`) +
             FfiConverterLong.allocationSize(value.`fileCount`) +
             FfiConverterOptionalLong.allocationSize(value.`lastSyncedAt`) +
+            FfiConverterString.allocationSize(value.`lastSyncedLabel`) +
             FfiConverterSequenceString.allocationSize(value.`exclusionGlobs`) +
             FfiConverterTypeDirectorySyncStatus.allocationSize(value.`syncStatus`)
     )
@@ -2761,6 +2769,7 @@ public object FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer<Dir
             FfiConverterString.write(value.`displayName`, buf)
             FfiConverterLong.write(value.`fileCount`, buf)
             FfiConverterOptionalLong.write(value.`lastSyncedAt`, buf)
+            FfiConverterString.write(value.`lastSyncedLabel`, buf)
             FfiConverterSequenceString.write(value.`exclusionGlobs`, buf)
             FfiConverterTypeDirectorySyncStatus.write(value.`syncStatus`, buf)
     }
