@@ -60,25 +60,22 @@ pub enum Message {
     CancelExclusions,
 }
 
-fn format_relative(unix_ts: Option<i64>) -> String {
-    match unix_ts {
-        None => "never".to_string(),
-        Some(ts) => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            let diff = now - ts;
-            if diff < 60 {
-                "just now".to_string()
-            } else if diff < 3600 {
-                format!("{}m ago", diff / 60)
-            } else if diff < 86400 {
-                format!("{}h ago", diff / 3600)
-            } else {
-                format!("{}d ago", diff / 86400)
-            }
+/// Group a file count with thousands separators (e.g. 1234 → "1,234").
+/// Uses ASCII comma (locale-agnostic simple form) for consistency on desktop.
+fn format_file_count(n: i64) -> String {
+    let s = n.abs().to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    let bytes = s.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
         }
+        out.push(*b as char);
+    }
+    if n < 0 {
+        format!("-{}", out)
+    } else {
+        out
     }
 }
 
@@ -118,8 +115,10 @@ fn build_source_row<'a>(
     pending_remove: Option<&'a str>,
 ) -> Element<'a, RootMessage> {
     let display_name = src.display_name.clone();
-    let last_synced = format_relative(src.last_synced_at);
-    let file_count_str = format!("{} files", src.file_count);
+    // Use the Rust-core-provided relative-time label so desktop/iOS/Android
+    // render identical strings (Plan 32-07).
+    let last_synced = src.last_synced_label.clone();
+    let file_count_str = format!("{} files", format_file_count(src.file_count));
 
     let name_row = row![
         text(display_name).size(15),
@@ -131,7 +130,9 @@ fn build_source_row<'a>(
     let meta_row = row![
         text(file_count_str).size(12).color(vc.muted),
         text(" · ").size(12).color(vc.muted),
-        text(format!("synced {}", last_synced)).size(12).color(vc.muted),
+        text(format!("Last synced: {}", last_synced))
+            .size(12)
+            .color(vc.muted),
     ]
     .align_y(Alignment::Center);
 
@@ -300,8 +301,8 @@ fn build_remove_confirm<'a>(
         .padding(Padding::from([4u16, 10]));
 
     let warning = text(format!(
-        "Remove source and delete {} indexed chunk(s)? This cannot be undone.",
-        file_count
+        "Remove source and delete {} indexed chunks? This cannot be undone.",
+        format_file_count(file_count)
     ))
     .size(12)
     .color(vc.destructive);
@@ -421,8 +422,7 @@ pub fn view<'a>(
     let content_section: Element<'a, RootMessage> = if state.directory_sources.is_empty() {
         container(
             column![
-                text("No directory sources yet.").size(16),
-                text("Add a folder to sync your notes.")
+                text("No directory sources yet. Add a folder to sync your notes.")
                     .size(14)
                     .color(vc.muted),
             ]

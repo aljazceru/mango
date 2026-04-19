@@ -85,6 +85,22 @@ fun SettingsScreen(
 
             item {
                 Spacer(Modifier.height(16.dp))
+                SettingsSectionLabel("Directory Sources")
+                SettingsLinkCard(
+                    title = "Directory Sources",
+                    subtitle = appState.directorySources.size.let { n ->
+                        when (n) {
+                            0 -> "No folders added"
+                            1 -> "1 folder"
+                            else -> "$n folders"
+                        }
+                    },
+                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.DirectorySources)) },
+                )
+            }
+
+            item {
+                Spacer(Modifier.height(16.dp))
                 SettingsSectionLabel("Memory")
                 SettingsLinkCard(
                     title = "Memory",

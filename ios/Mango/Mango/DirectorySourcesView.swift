@@ -47,7 +47,7 @@ struct DirectorySourcesView: View {
 
                 if appState.directorySources.isEmpty {
                     Section {
-                        Text("No directory sources yet. Add a folder to sync your notes into RAG.")
+                        Text("No directory sources yet. Add a folder to sync your notes.")
                             .foregroundStyle(.secondary)
                             .font(.subheadline)
                     }
@@ -187,7 +187,10 @@ struct DirectorySourcesView: View {
 
     private func removeConfirmTitle(_ source: DirectorySourceSummary?) -> String {
         guard let s = source else { return "Remove source?" }
-        return "Remove \"\(s.displayName)\" and delete \(s.fileCount) indexed file(s)?"
+        let fmt = NumberFormatter()
+        fmt.numberStyle = .decimal
+        let count = fmt.string(from: NSNumber(value: s.fileCount)) ?? "\(s.fileCount)"
+        return "Remove source and delete \(count) indexed chunks?"
     }
 }
 
@@ -211,11 +214,11 @@ private struct DirectorySourceRow: View {
                 statusBadge
             }
             HStack(spacing: 8) {
-                Text("\(source.fileCount) files")
+                Text("\(formattedFileCount) files")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("·").foregroundStyle(.secondary)
-                Text(lastSyncedLabel)
+                Text("Last synced: \(source.lastSyncedLabel)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -264,14 +267,13 @@ private struct DirectorySourceRow: View {
         }
     }
 
-    private var lastSyncedLabel: String {
-        guard let ts = source.lastSyncedAt else { return "never synced" }
-        let diff = Int64(Date().timeIntervalSince1970) - ts
-        if diff < 60 { return "synced just now" }
-        if diff < 3600 { return "synced \(diff / 60)m ago" }
-        if diff < 86400 { return "synced \(diff / 3600)h ago" }
-        let d = diff / 86400
-        return d == 1 ? "synced yesterday" : "synced \(d)d ago"
+    /// Locale-aware thousands-separated file count (e.g. 1234 → "1,234" in en-US).
+    /// Relative-time label is provided by the Rust core as `source.lastSyncedLabel`
+    /// so all three platforms render identically (Plan 32-07).
+    private var formattedFileCount: String {
+        let fmt = NumberFormatter()
+        fmt.numberStyle = .decimal
+        return fmt.string(from: NSNumber(value: source.fileCount)) ?? "\(source.fileCount)"
     }
 }
 
@@ -284,6 +286,22 @@ private struct ExclusionEditor: View {
 
     @State private var text: String = ""
 
+    /// Lightweight inline validation — balanced brackets, non-empty. Authoritative
+    /// validation lives on the Rust side via `validate_glob_pattern` (D-29).
+    private func looksLikeValidGlob(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return false }
+        let opens = trimmed.filter { $0 == "[" }.count
+        let closes = trimmed.filter { $0 == "]" }.count
+        return opens == closes
+    }
+
+    private var invalidLines: [String] {
+        text.split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !looksLikeValidGlob($0) }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -294,8 +312,14 @@ private struct ExclusionEditor: View {
                 } header: {
                     Text("One glob per line")
                 } footer: {
-                    Text("Example: *.tmp, .obsidian/, .git/. Patterns are validated by the Rust core on save.")
-                        .font(.caption)
+                    if invalidLines.isEmpty {
+                        Text("Example: *.tmp, .obsidian/, .git/. Patterns are validated by the Rust core on save.")
+                            .font(.caption)
+                    } else {
+                        Text("Invalid patterns: \(invalidLines.joined(separator: ", "))")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
             }
             .navigationTitle("Edit Exclusions")
@@ -312,6 +336,7 @@ private struct ExclusionEditor: View {
                             .filter { !$0.isEmpty }
                         onSave(globs)
                     }
+                    .disabled(!invalidLines.isEmpty)
                 }
             }
             .onAppear {

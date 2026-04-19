@@ -2369,16 +2369,28 @@ public struct DirectorySourceSummary {
     public var displayName: String
     public var fileCount: Int64
     public var lastSyncedAt: Int64?
+    /**
+     * Pre-computed relative-time label (e.g. "Never", "Just now", "3m ago",
+     * "2h ago", "Yesterday", "3d ago"). Centralised on the Rust side so
+     * desktop/iOS/Android render identical strings (Phase 32 Plan 07).
+     */
+    public var lastSyncedLabel: String
     public var exclusionGlobs: [String]
     public var syncStatus: DirectorySyncStatus
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, displayName: String, fileCount: Int64, lastSyncedAt: Int64?, exclusionGlobs: [String], syncStatus: DirectorySyncStatus) {
+    public init(id: String, displayName: String, fileCount: Int64, lastSyncedAt: Int64?, 
+        /**
+         * Pre-computed relative-time label (e.g. "Never", "Just now", "3m ago",
+         * "2h ago", "Yesterday", "3d ago"). Centralised on the Rust side so
+         * desktop/iOS/Android render identical strings (Phase 32 Plan 07).
+         */lastSyncedLabel: String, exclusionGlobs: [String], syncStatus: DirectorySyncStatus) {
         self.id = id
         self.displayName = displayName
         self.fileCount = fileCount
         self.lastSyncedAt = lastSyncedAt
+        self.lastSyncedLabel = lastSyncedLabel
         self.exclusionGlobs = exclusionGlobs
         self.syncStatus = syncStatus
     }
@@ -2403,6 +2415,9 @@ extension DirectorySourceSummary: Equatable, Hashable {
         if lhs.lastSyncedAt != rhs.lastSyncedAt {
             return false
         }
+        if lhs.lastSyncedLabel != rhs.lastSyncedLabel {
+            return false
+        }
         if lhs.exclusionGlobs != rhs.exclusionGlobs {
             return false
         }
@@ -2417,6 +2432,7 @@ extension DirectorySourceSummary: Equatable, Hashable {
         hasher.combine(displayName)
         hasher.combine(fileCount)
         hasher.combine(lastSyncedAt)
+        hasher.combine(lastSyncedLabel)
         hasher.combine(exclusionGlobs)
         hasher.combine(syncStatus)
     }
@@ -2435,6 +2451,7 @@ public struct FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer {
                 displayName: FfiConverterString.read(from: &buf), 
                 fileCount: FfiConverterInt64.read(from: &buf), 
                 lastSyncedAt: FfiConverterOptionInt64.read(from: &buf), 
+                lastSyncedLabel: FfiConverterString.read(from: &buf), 
                 exclusionGlobs: FfiConverterSequenceString.read(from: &buf), 
                 syncStatus: FfiConverterTypeDirectorySyncStatus.read(from: &buf)
         )
@@ -2445,6 +2462,7 @@ public struct FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer {
         FfiConverterString.write(value.displayName, into: &buf)
         FfiConverterInt64.write(value.fileCount, into: &buf)
         FfiConverterOptionInt64.write(value.lastSyncedAt, into: &buf)
+        FfiConverterString.write(value.lastSyncedLabel, into: &buf)
         FfiConverterSequenceString.write(value.exclusionGlobs, into: &buf)
         FfiConverterTypeDirectorySyncStatus.write(value.syncStatus, into: &buf)
     }

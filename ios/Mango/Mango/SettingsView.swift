@@ -11,6 +11,7 @@ struct SettingsView: View {
             List {
                 providersSection
                 defaultsSection
+                directorySourcesSection
                 memorySection
                 securitySection
                 toolsSection
@@ -46,6 +47,23 @@ struct SettingsView: View {
                 appManager.dispatch(.pushScreen(screen: .settingsDefaults))
             }
         }
+    }
+
+    private var directorySourcesSection: some View {
+        Section("Directory Sources") {
+            settingsRow(
+                title: "Directory Sources",
+                detail: directorySourcesSummary
+            ) {
+                appManager.dispatch(.pushScreen(screen: .directorySources))
+            }
+        }
+    }
+
+    private var directorySourcesSummary: String {
+        let n = appState.directorySources.count
+        if n == 0 { return "No folders added" }
+        return n == 1 ? "1 folder" : "\(n) folders"
     }
 
     private var memorySection: some View {

@@ -364,3 +364,46 @@ fn test_update_bookmark_writes_blob() {
     let state = app.state();
     assert_eq!(state.directory_sources.len(), 1);
 }
+
+/// Phase 32 Plan 07: centralised relative-time labels render identically
+/// across desktop/iOS/Android. Pure function — no actor, no DB.
+#[test]
+fn test_relative_time_labels() {
+    use crate::relative_time_label;
+
+    // Fixed "now" so the test is deterministic.
+    let now: i64 = 1_700_000_000;
+
+    // None → "Never"
+    assert_eq!(relative_time_label(None, now), "Never");
+
+    // 30s ago → "Just now"
+    assert_eq!(relative_time_label(Some(now - 30), now), "Just now");
+
+    // 0s ago → "Just now"
+    assert_eq!(relative_time_label(Some(now), now), "Just now");
+
+    // Clock skew (timestamp in future) → "Just now" (never panic)
+    assert_eq!(relative_time_label(Some(now + 120), now), "Just now");
+
+    // 5 minutes ago
+    assert_eq!(relative_time_label(Some(now - 300), now), "5m ago");
+
+    // 2 hours ago
+    assert_eq!(relative_time_label(Some(now - 7200), now), "2h ago");
+
+    // 1 day ago → "Yesterday" (86400..=172799)
+    assert_eq!(relative_time_label(Some(now - 86400), now), "Yesterday");
+
+    // 1.5 days ago → still "Yesterday"
+    assert_eq!(
+        relative_time_label(Some(now - (86400 + 43200)), now),
+        "Yesterday"
+    );
+
+    // 3 days ago → "3d ago"
+    assert_eq!(relative_time_label(Some(now - 3 * 86400), now), "3d ago");
+
+    // 30 days ago → "30d ago"
+    assert_eq!(relative_time_label(Some(now - 30 * 86400), now), "30d ago");
+}
