@@ -27,6 +27,7 @@ pub fn chat_view<'a>(
     streaming_content: &'a markdown::Content,
     input_text: &'a str,
     edit_state: &'a Option<(String, String)>,
+    rename_state: &'a Option<(String, String)>,
     _show_attestation_detail: bool,
     show_system_prompt_input: bool,
     system_prompt_text: &'a str,
@@ -47,7 +48,62 @@ pub fn chat_view<'a>(
         .map(|c| c.title.as_str())
         .unwrap_or("New Conversation");
 
-    let title_elem = text(conv_title).size(20);
+    // Tap-on-title rename: when rename_state targets the current conversation,
+    // show an inline text_input + Save/Cancel. Otherwise, show a borderless
+    // button styled as a title so the user can tap to start renaming.
+    let current_conv_id: Option<&str> = state.current_conversation_id.as_deref();
+    let is_renaming_current = match (rename_state, current_conv_id) {
+        (Some((rid, _)), Some(cid)) => rid == cid,
+        _ => false,
+    };
+    let title_elem: Element<'_, Message> = if is_renaming_current {
+        let rename_text_val = rename_state
+            .as_ref()
+            .map(|(_, t)| t.as_str())
+            .unwrap_or("");
+        let rename_input = text_input("Conversation name", rename_text_val)
+            .on_input(Message::RenameChanged)
+            .on_submit(Message::SubmitRename)
+            .size(18)
+            .padding(Padding::from([4u16, 8]))
+            .width(Length::Fixed(260.0));
+        let text_dim = vc.text_dim;
+        row![
+            rename_input,
+            button(text("Save").size(13))
+                .on_press(Message::SubmitRename)
+                .padding(Padding::from([4u16, 10])),
+            button(text("Cancel").size(13))
+                .on_press(Message::CancelRename)
+                .padding(Padding::from([4u16, 10]))
+                .style(move |_theme, _status| button::Style {
+                    background: None,
+                    text_color: text_dim,
+                    ..Default::default()
+                }),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into()
+    } else if let Some(cid) = current_conv_id {
+        let title_owned = conv_title.to_string();
+        let text_color = vc.text_dim;
+        button(text(conv_title).size(20))
+            .on_press(Message::StartRename(cid.to_string(), title_owned))
+            .padding(Padding::from([2u16, 4]))
+            .style(move |_theme, _status| button::Style {
+                background: None,
+                text_color,
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    } else {
+        text(conv_title).size(20).into()
+    };
 
     // Model picker: collect available models from active backend.
     // Show a small colored dot before the pick_list to indicate attestation status.
@@ -132,7 +188,7 @@ pub fn chat_view<'a>(
             ..Default::default()
         });
 
-    let mut header_children: Vec<Element<'_, Message>> = vec![title_elem.into()];
+    let mut header_children: Vec<Element<'_, Message>> = vec![title_elem];
     header_children.push(iced::widget::Space::new().width(Length::Fill).into());
     if let Some(dot) = attest_dot {
         header_children.push(dot);

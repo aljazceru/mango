@@ -18,6 +18,7 @@ struct ChatView: View {
     let onSelectModel: (String) -> Void
     let onSetSystemPrompt: (String?) -> Void
     let onSetToolsEnabled: (Bool) -> Void
+    let onRenameConversation: (String, String) -> Void
     let onBack: () -> Void
     // Phase 8: per-conversation document attachment (D-08)
     var onAttachDocument: (String) -> Void = { _ in }
@@ -30,6 +31,8 @@ struct ChatView: View {
     @State private var showDocAttachSheet = false
     @State private var showConvMenu = false
     @State private var showToolsSheet = false
+    @State private var showRenameAlert = false
+    @State private var renameText = ""
     // Phase 31 (IMG-05/IMG-06): attach action sheet + image pickers
     @State private var showAttachOptions = false
     @State private var showCameraPicker = false
@@ -38,6 +41,26 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Tap-on-title rename affordance (only when a conversation exists).
+            // Placed as a slim header strip above the thread so it's discoverable
+            // without conflicting with the principal model picker in the nav bar.
+            if let conv = currentConversation {
+                Button {
+                    renameText = conv.title
+                    showRenameAlert = true
+                } label: {
+                    Text(conv.title)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Rename conversation \(conv.title)")
+            }
             Divider()
 
             // D-17: welcome placeholder when showFirstChatPlaceholder is true and messages empty
@@ -242,6 +265,16 @@ struct ChatView: View {
                 },
                 onDismiss: { showToolsSheet = false }
             )
+        }
+        .alert("Rename Conversation", isPresented: $showRenameAlert) {
+            TextField("Conversation name", text: $renameText)
+            Button("Save") {
+                let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let cid = currentConversation?.id, !trimmed.isEmpty {
+                    onRenameConversation(cid, trimmed)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
         }
     }
 

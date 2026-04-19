@@ -1405,6 +1405,7 @@ impl App {
                         streaming_content,
                         input_text,
                         edit_state,
+                        rename_state,
                         *show_attestation_detail,
                         *show_system_prompt_input,
                         system_prompt_text,
