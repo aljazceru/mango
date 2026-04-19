@@ -32,6 +32,7 @@ subtle = "2"
 jsonwebtoken = "10"
 rand = "0.8"
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }

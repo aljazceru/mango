@@ -4159,6 +4159,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hpke",
+ "image",
  "jsonwebtoken",
  "keyring",
  "log",
