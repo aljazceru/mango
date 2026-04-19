@@ -69,6 +69,9 @@ struct ContentView: View {
                             appManager.dispatch(.setConversationToolsEnabled(conversationId: convId, enabled: enabled))
                         }
                     },
+                    onRenameConversation: { id, title in
+                        appManager.dispatch(.renameConversation(id: id, title: title))
+                    },
                     onBack: { appManager.dispatch(.popScreen) },
                     onAttachDocument: { docId in appManager.dispatch(.attachDocumentToConversation(documentId: docId)) },
                     onDetachDocument: { docId in appManager.dispatch(.detachDocumentFromConversation(documentId: docId)) }

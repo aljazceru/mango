@@ -21,8 +21,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
@@ -413,6 +417,8 @@ private fun ChatTopBar(
 
     var showConvMenu by remember { mutableStateOf(false) }
     var showToolsSheet by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameText by remember { mutableStateOf("") }
     val toolsEnabled = state.conversations
         .firstOrNull { it.id == state.currentConversationId }
         ?.toolsEnabled ?: false
@@ -424,6 +430,14 @@ private fun ChatTopBar(
                 text = currentConversation?.title ?: "New Conversation",
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
+                modifier = if (currentConversation != null) {
+                    Modifier.clickable {
+                        renameText = currentConversation.title
+                        showRenameDialog = true
+                    }
+                } else {
+                    Modifier
+                },
             )
         },
         navigationIcon = {
@@ -548,6 +562,41 @@ private fun ChatTopBar(
             }
         },
     )
+
+    // Rename dialog: tap-on-title affordance opens this.
+    if (showRenameDialog && currentConversation != null) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Rename Conversation") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    placeholder = { Text("Conversation name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = renameText.trim()
+                        if (trimmed.isNotEmpty()) {
+                            onDispatchAction(
+                                AppAction.RenameConversation(
+                                    id = currentConversation.id,
+                                    title = trimmed,
+                                )
+                            )
+                        }
+                        showRenameDialog = false
+                    },
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
 
     // Tools bottom sheet: individual tool toggles
     if (showToolsSheet) {
