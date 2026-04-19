@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 32-04-PLAN.md
-last_updated: "2026-04-19T17:37:17.326Z"
+stopped_at: Completed 32-05-PLAN.md
+last_updated: "2026-04-19T17:57:19.765Z"
 last_activity: 2026-04-19
 progress:
   total_phases: 13
   completed_phases: 11
   total_plans: 42
-  completed_plans: 39
-  percent: 93
+  completed_plans: 40
+  percent: 95
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 32 (directory-based-rag-ingestion-with-periodic-sync-and-file-fo) — EXECUTING
-Plan: 5 of 7
+Plan: 6 of 7
 Status: Ready to execute
 Last activity: 2026-04-19
 
@@ -73,6 +73,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 32 P02 | 4min | 3 tasks | 3 files |
 | Phase 32 P03 | 10min | 2 tasks | 3 files |
 | Phase 32 P04 | 30min | 3 tasks | 6 files |
+| Phase 32 P05 | 16min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -127,6 +128,9 @@ Key architectural context for v2.0:
 - [Phase 32]: Plan 03: 50-file batch ceiling enforced at SyncDirectoryFiles handler entry (T-32-DoS1 mitigation)
 - [Phase 32]: Added FfiApp::list_directory_fingerprints + DirectoryFingerprint Record so native side can diff without crossing persistence/bookmark boundary (T-32-I2)
 - [Phase 32]: PollWatcher fallback uses raw watcher + custom EventHandler (not debouncer_opt) — shared flume channel unifies both backends
+- [Phase 32]: Plan 05: FfiError enum replaces Result<_, String> in FfiApp; uniffi 0.29.5 strict about throws types
+- [Phase 32]: Plan 05: Release profile strip=true hides UNIFFI_META_* symbols; bindgen needs CARGO_PROFILE_RELEASE_STRIP=false
+- [Phase 32]: Plan 05: Bookmark cache is in-process only; cold-launch requires re-add. Deferred bookmark-read FFI to future plan
 
 ### Roadmap Evolution
 
@@ -155,6 +159,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-19T17:37:17.324Z
-Stopped at: Completed 32-04-PLAN.md
+Last session: 2026-04-19T17:57:19.763Z
+Stopped at: Completed 32-05-PLAN.md
 Resume file: None
