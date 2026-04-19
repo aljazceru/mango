@@ -375,6 +375,11 @@ void uniffi_mango_core_fn_method_ffiapp_dispatch(void*_Nonnull ptr, RustBuffer a
 RustBuffer uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(void*_Nonnull ptr, RustBuffer backend_id, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_READ_ENCRYPTED_IMAGE
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_READ_ENCRYPTED_IMAGE
+RustBuffer uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(void*_Nonnull ptr, RustBuffer message_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_LISTEN_FOR_UPDATES
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_LISTEN_FOR_UPDATES
 void uniffi_mango_core_fn_method_ffiapp_listen_for_updates(void*_Nonnull ptr, uint64_t reconciler, RustCallStatus *_Nonnull out_status
@@ -711,7 +716,13 @@ uint16_t uniffi_mango_core_checksum_method_ffiapp_dispatch(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_GET_RAW_ATTESTATION_REPORT
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_GET_RAW_ATTESTATION_REPORT
 uint16_t uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report(void
-    
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_READ_ENCRYPTED_IMAGE
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_READ_ENCRYPTED_IMAGE
+uint16_t uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(void
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_LISTEN_FOR_UPDATES

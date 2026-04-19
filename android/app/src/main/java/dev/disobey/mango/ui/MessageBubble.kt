@@ -1,5 +1,6 @@
 package dev.disobey.mango.ui
 
+import android.graphics.BitmapFactory
 import androidx.compose.animation.core.EaseInOutCubic
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.StartOffset
@@ -18,8 +19,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Warning
@@ -31,10 +35,17 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,6 +54,8 @@ import dev.disobey.mango.rust.UiMessage
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /// Renders a single chat message bubble.
 /// User messages: right-aligned, blue tint, plain Text.
@@ -56,9 +69,17 @@ fun MessageBubble(
     onRetry: () -> Unit,
     onEdit: () -> Unit,
     modifier: Modifier = Modifier,
+    // IMG-07: decrypt-on-read callback; null when DEK unavailable
+    onReadEncryptedImage: ((String) -> ByteArray)? = null,
 ) {
     when (message.role) {
-        "user" -> UserBubble(message = message, onCopy = onCopy, onEdit = onEdit, modifier = modifier)
+        "user" -> UserBubble(
+            message = message,
+            onCopy = onCopy,
+            onEdit = onEdit,
+            onReadEncryptedImage = onReadEncryptedImage,
+            modifier = modifier,
+        )
         "assistant" -> AssistantBubble(
             message = message,
             isLastAssistant = isLastAssistant,
@@ -79,8 +100,22 @@ private fun UserBubble(
     onCopy: () -> Unit,
     onEdit: () -> Unit,
     modifier: Modifier = Modifier,
+    onReadEncryptedImage: ((String) -> ByteArray)? = null,
 ) {
     val bubbleColor = MaterialTheme.colorScheme.primaryContainer
+
+    // IMG-07: load decrypted thumbnail on demand
+    var thumbnail by remember(message.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    if (message.imagePath != null && onReadEncryptedImage != null) {
+        LaunchedEffect(message.id) {
+            runCatching {
+                val bytes = withContext(Dispatchers.IO) { onReadEncryptedImage(message.id) }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }.onSuccess { bmp ->
+                thumbnail = bmp
+            }
+        }
+    }
 
     Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         // Attachment indicator
@@ -89,15 +124,28 @@ private fun UserBubble(
                 AttachmentIndicator(name = name)
             }
         }
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = bubbleColor,
-        ) {
-            Text(
-                text = message.content,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        // IMG-07: show decrypted thumbnail when available
+        thumbnail?.let { bmp ->
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "Sent image",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .widthIn(max = 240.dp)
+                    .clip(RoundedCornerShape(8.dp)),
             )
+        }
+        if (thumbnail == null || message.content.isNotEmpty()) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = bubbleColor,
+            ) {
+                Text(
+                    text = message.content,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
         }
         // Action row
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
