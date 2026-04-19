@@ -351,7 +351,28 @@ fn api_messages_to_chat_messages(
             ChatCompletionRequestMessage::User(u) => {
                 let content = match &u.content {
                     async_openai::types::chat::ChatCompletionRequestUserMessageContent::Text(t) => t.clone(),
-                    _ => return None,
+                    async_openai::types::chat::ChatCompletionRequestUserMessageContent::Array(parts) => {
+                        // TODO(phase-31-followup): Tinfoil/PPQ private transports only
+                        // accept plain ChatMessage today, so we extract the Text parts
+                        // and DROP any image_url parts. Returning None here (the prior
+                        // behavior) silently dropped the entire final user turn,
+                        // producing requests with no user message at all. Preserving
+                        // the text lets the conversation continue, at the cost of the
+                        // image being invisible to the model. When these transports
+                        // gain vision support, propagate multipart content through
+                        // rather than collapsing to text.
+                        let joined: String = parts
+                            .iter()
+                            .filter_map(|part| match part {
+                                async_openai::types::chat::ChatCompletionRequestUserMessageContentPart::Text(t) => {
+                                    Some(t.text.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        joined
+                    }
                 };
                 Some(ChatMessage { role: ChatRole::User, content })
             }
@@ -492,5 +513,83 @@ async fn run_streaming_with_api_messages(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_openai::types::chat::{
+        ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
+        ChatCompletionRequestMessageContentPartText, ChatCompletionRequestUserMessageArgs,
+        ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
+        ImageDetail, ImageUrl,
+    };
+
+    /// Regression (debug session `android-image-upload-sent-as-text-placeholder`
+    /// — latent Tinfoil/PPQ Array-drop bug):
+    /// a User message with `ChatCompletionRequestUserMessageContent::Array` must
+    /// NOT be silently dropped by api_messages_to_chat_messages. The prior
+    /// behavior (returning None for the Array variant) made the entire final user
+    /// turn disappear from Tinfoil/PPQ requests whenever a user attached an image.
+    /// The fix extracts and joins the Text parts; image parts are intentionally
+    /// dropped for these transports until they gain vision support.
+    #[test]
+    fn array_user_message_preserves_text_and_drops_image() {
+        let text_part = ChatCompletionRequestUserMessageContentPart::Text(
+            ChatCompletionRequestMessageContentPartText {
+                text: "whats in the photo".to_string(),
+            },
+        );
+        let image_part = ChatCompletionRequestUserMessageContentPart::ImageUrl(
+            ChatCompletionRequestMessageContentPartImage {
+                image_url: ImageUrl {
+                    url: "data:image/jpeg;base64,AAAA".to_string(),
+                    detail: Some(ImageDetail::Auto),
+                },
+            },
+        );
+        let user_msg = ChatCompletionRequestUserMessageArgs::default()
+            .content(ChatCompletionRequestUserMessageContent::Array(vec![
+                text_part, image_part,
+            ]))
+            .build()
+            .expect("build user multipart message");
+        let api_messages = vec![ChatCompletionRequestMessage::User(user_msg)];
+
+        let chat_messages = api_messages_to_chat_messages(&api_messages);
+
+        assert_eq!(
+            chat_messages.len(),
+            1,
+            "Array user message must not be dropped; got {} messages",
+            chat_messages.len()
+        );
+        assert!(matches!(chat_messages[0].role, ChatRole::User));
+        assert_eq!(chat_messages[0].content, "whats in the photo");
+        assert!(
+            !chat_messages[0].content.contains("data:image"),
+            "image data URL must not bleed into collapsed text content: {}",
+            chat_messages[0].content
+        );
+    }
+
+    /// A plain Text User message should still round-trip verbatim — the new
+    /// Array branch must not regress the common path.
+    #[test]
+    fn text_user_message_preserved_verbatim() {
+        let user_msg = ChatCompletionRequestUserMessageArgs::default()
+            .content(ChatCompletionRequestUserMessageContent::Text(
+                "hello world".to_string(),
+            ))
+            .build()
+            .expect("build user text message");
+        let api_messages = vec![ChatCompletionRequestMessage::User(user_msg)];
+
+        let chat_messages = api_messages_to_chat_messages(&api_messages);
+
+        assert_eq!(chat_messages.len(), 1);
+        assert!(matches!(chat_messages[0].role, ChatRole::User));
+        assert_eq!(chat_messages[0].content, "hello world");
     }
 }
