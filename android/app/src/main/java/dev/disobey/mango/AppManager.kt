@@ -15,6 +15,7 @@ import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.AppUpdate
 import dev.disobey.mango.rust.BiometricProvider
 import dev.disobey.mango.rust.BusyState
+import dev.disobey.mango.rust.DirectoryFingerprint
 import dev.disobey.mango.rust.EmbeddingProvider
 import dev.disobey.mango.rust.EmbeddingStatus
 import dev.disobey.mango.rust.FfiApp
@@ -89,6 +90,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             lockTimeoutSeconds = 300L,
             authInitialized = false,
             encryptionEnabled = false,
+            directorySources = emptyList(),
         ),
     )
         private set
@@ -161,6 +163,13 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
     // IMG-07: decrypt-on-read for encrypted image thumbnails
     fun readEncryptedImage(messageId: String): ByteArray {
         return ffiApp.readEncryptedImage(messageId)
+    }
+
+    // Phase 32 Plan 06: native-side diff needs stored fingerprints so the
+    // Android sync pipeline can determine added/modified/removed without
+    // crossing the persistence/SAF permission boundary (T-32-I2 / D-02).
+    fun listDirectoryFingerprints(sourceId: String): List<DirectoryFingerprint> {
+        return ffiApp.listDirectoryFingerprints(sourceId)
     }
 
     override fun reconcile(update: AppUpdate) {
