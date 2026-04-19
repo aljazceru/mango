@@ -54,6 +54,15 @@
 - [x] **Phase 21: Memory Retrieval & Injection** - Semantic search over memories and injection into conversation context (completed 2026-04-04)
 - [x] **Phase 22: Agent Tools Expansion** - Brave Search, URL fetch, file operations, and calculator tools in ReAct loop (completed 2026-04-04)
 - [x] **Phase 23: Memory Management UI + Agent UI** - Memory view/edit/delete screens and agent UI re-enable on all platforms (completed 2026-04-04)
+- [x] **Phase 24: Redesign Settings UX** - Grouped settings sections, Memories in Settings, Brave Search API key in Tools on all platforms (completed 2026-04-05)
+- [x] **Phase 25: disable/enable making memories** - Toggle in Settings MEMORY section, persisted, defaults enabled (completed 2026-04-05)
+- [x] **Phase 26: settings submenus** - Providers and Defaults as tappable sub-screens, reduced scroll depth on all platforms (completed 2026-04-05)
+- [x] **Phase 27: Add optional tool use to chat** - Per-conversation tools toggle, non-streaming tool detection, streaming final response on all platforms (completed 2026-04-07)
+- [x] **Phase 28: Local Data Encryption & Authentication** - AES-256-GCM encryption, biometric/PIN unlock, duress PIN wipe on all platforms (completed 2026-04-09)
+- [x] **Phase 29: Wire VectorIndex DEK End-to-End** - DEK wired from auth handlers through ActorState to all VectorIndex call sites (completed 2026-04-09)
+- [ ] **Phase 30: Milestone Verification & Requirements Sync** - Close MEM-03 orphan, regenerate UniFFI bindings, sync REQUIREMENTS.md checkboxes (in progress)
+- [x] **Phase 31: Multimodal image attachments** - Camera/gallery on iOS+Android, file picker on Desktop, base64 data URL encoding to LLM (completed 2026-04-19)
+- [ ] **Phase 32: Directory-based RAG ingestion** - Directory sources with periodic sync, glob exclusions, cross-platform folder permissions (in progress)
 
 ## Phase Details
 
@@ -128,8 +137,15 @@ Phases execute in numeric order: 20 → 21 → 22 → 23
 | 21. Memory Retrieval & Injection | v2.0 | 1/1 | Complete    | 2026-04-04 |
 | 22. Agent Tools Expansion | v2.0 | 2/2 | Complete    | 2026-04-04 |
 | 23. Memory Management UI + Agent UI | v2.0 | 3/3 | Complete    | 2026-04-04 |
+| 24. Redesign Settings UX | v2.0 | 3/3 | Complete | 2026-04-05 |
+| 25. disable/enable making memories | v2.0 | 2/2 | Complete | 2026-04-05 |
+| 26. settings submenus | v2.0 | 3/3 | Complete | 2026-04-05 |
+| 27. Add optional tool use to chat | v2.0 | 4/4 | Complete | 2026-04-07 |
+| 28. Local Data Encryption & Authentication | v2.0 | 8/8 | Complete | 2026-04-09 |
 | 29. Wire VectorIndex DEK End-to-End | v2.0 | 1/1 | Complete   | 2026-04-09 |
-| 30. Milestone Verification & Requirements Sync | v2.0 | 0/0 | Pending | — |
+| 30. Milestone Verification & Requirements Sync | v2.0 | 1/1 | In Progress | — |
+| 31. Multimodal image attachments | v2.0 | 6/6 | Complete | 2026-04-19 |
+| 32. Directory-based RAG ingestion | v2.0 | 7/9 | In Progress | — |
 
 ### Phase 24: Redesign Settings UX — move memories into settings, redesign layout with grouped sections, add tool configuration for agents and chats
 
@@ -217,9 +233,10 @@ Plans:
 **Requirements**: MEM-03 (verification), ENC-09 (UX bindings)
 **Depends on:** Phase 29
 **Gap Closure:** Closes MEM-03 orphan, ENC-09 UX gap, stale documentation from v2.0 milestone audit
+**Plans:** 1/1 plans complete
 
 Plans:
-- (none yet — run `/gsd-plan-phase 30`)
+- [ ] 30-01-PLAN.md — Phase 21 VERIFICATION.md + REQUIREMENTS.md ENC-02/ENC-09 sync
 
 ### Phase 31: Multimodal image attachments across all platforms — extend Rust core AttachmentInfo to carry image bytes/URI + MIME, wire vision-capable image_url parts into OpenAI-compatible chat completions (base64 data URLs), update UniFFI bindings. Android: camera capture via FileProvider + TakePicture and gallery picker via PickVisualMedia. iOS: UIImagePickerController camera + photo library with privacy usage strings. Desktop (iced): native file picker scoped to image MIME types. All platforms send photos through the updated AttachmentInfo pipeline so the model actually sees the image, not a placeholder.
 
