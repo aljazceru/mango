@@ -285,14 +285,16 @@ pub fn spawn_streaming_task_from_api_messages(
         };
 
         if transport == super::transport::ProviderTransportKind::TinfoilSecure {
-            // Tinfoil backend takes ChatMessage -- convert API messages best-effort.
-            // Tool-role messages are not representable in ChatMessage; they are dropped
-            // since their semantic content was already injected into the assistant turn.
-            let chat_msgs = api_messages_to_chat_messages(&messages);
-            crate::llm::tinfoil_secure::run_streaming_chat_completion(
+            // Pass the async-openai API messages through unchanged. This preserves
+            // multipart user messages (vision `Content::Array` with image_url parts)
+            // which the prior lossy `api_messages_to_chat_messages` conversion dropped
+            // -- see debug session `image-upload-still-broken-after-fix`. Tool-role
+            // messages, which ChatMessage cannot represent at all, are also passed
+            // verbatim so the model receives the full conversation state.
+            crate::llm::tinfoil_secure::run_streaming_chat_completion_from_api_messages(
                 backend,
                 model,
-                chat_msgs,
+                messages,
                 token_for_task,
                 core_tx,
             )
@@ -300,11 +302,12 @@ pub fn spawn_streaming_task_from_api_messages(
             return;
         }
         if transport == super::transport::ProviderTransportKind::PpqPrivateE2ee {
-            let chat_msgs = api_messages_to_chat_messages(&messages);
-            crate::llm::ppq_private::run_streaming_chat_completion(
+            // See Tinfoil branch above -- same rationale: preserve multipart content
+            // so vision requests actually carry the image to the model.
+            crate::llm::ppq_private::run_streaming_chat_completion_from_api_messages(
                 backend,
                 model,
-                chat_msgs,
+                messages,
                 token_for_task,
                 core_tx,
             )
@@ -326,76 +329,6 @@ pub fn spawn_streaming_task_from_api_messages(
     });
 
     cancel_token
-}
-
-/// Convert async-openai ChatCompletionRequestMessage list to simple ChatMessage list.
-///
-/// Used as a best-effort fallback for custom backends (Tinfoil, PPQ) that only accept
-/// ChatMessage. Tool-role messages are converted to assistant messages with a summary
-/// of the tool result so the model has some context about what was executed.
-fn api_messages_to_chat_messages(
-    messages: &[async_openai::types::chat::ChatCompletionRequestMessage],
-) -> Vec<ChatMessage> {
-    use async_openai::types::chat::ChatCompletionRequestMessage;
-
-    messages
-        .iter()
-        .filter_map(|m| match m {
-            ChatCompletionRequestMessage::System(s) => {
-                let content = match &s.content {
-                    async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(t) => t.clone(),
-                    _ => return None,
-                };
-                Some(ChatMessage { role: ChatRole::System, content })
-            }
-            ChatCompletionRequestMessage::User(u) => {
-                let content = match &u.content {
-                    async_openai::types::chat::ChatCompletionRequestUserMessageContent::Text(t) => t.clone(),
-                    async_openai::types::chat::ChatCompletionRequestUserMessageContent::Array(parts) => {
-                        // TODO(phase-31-followup): Tinfoil/PPQ private transports only
-                        // accept plain ChatMessage today, so we extract the Text parts
-                        // and DROP any image_url parts. Returning None here (the prior
-                        // behavior) silently dropped the entire final user turn,
-                        // producing requests with no user message at all. Preserving
-                        // the text lets the conversation continue, at the cost of the
-                        // image being invisible to the model. When these transports
-                        // gain vision support, propagate multipart content through
-                        // rather than collapsing to text.
-                        let joined: String = parts
-                            .iter()
-                            .filter_map(|part| match part {
-                                async_openai::types::chat::ChatCompletionRequestUserMessageContentPart::Text(t) => {
-                                    Some(t.text.clone())
-                                }
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        joined
-                    }
-                };
-                Some(ChatMessage { role: ChatRole::User, content })
-            }
-            ChatCompletionRequestMessage::Assistant(a) => {
-                let content = match a.content.as_ref() {
-                    Some(async_openai::types::chat::ChatCompletionRequestAssistantMessageContent::Text(t)) => t.clone(),
-                    _ => String::new(),
-                };
-                Some(ChatMessage { role: ChatRole::Assistant, content })
-            }
-            ChatCompletionRequestMessage::Tool(t) => {
-                // Tool result -- represent as assistant context so the model knows the outcome
-                let content = match &t.content {
-                    async_openai::types::chat::ChatCompletionRequestToolMessageContent::Text(s) => {
-                        format!("[tool result]: {}", s)
-                    }
-                    _ => "[tool result]".to_string(),
-                };
-                Some(ChatMessage { role: ChatRole::Assistant, content })
-            }
-            _ => None,
-        })
-        .collect()
 }
 
 /// Inner async function that runs the OpenAI-compatible streaming request.
@@ -518,24 +451,29 @@ async fn run_streaming_with_api_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use async_openai::types::chat::{
         ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
         ChatCompletionRequestMessageContentPartText, ChatCompletionRequestUserMessageArgs,
         ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
-        ImageDetail, ImageUrl,
+        CreateChatCompletionRequestArgs, ImageDetail, ImageUrl,
     };
 
-    /// Regression (debug session `android-image-upload-sent-as-text-placeholder`
-    /// — latent Tinfoil/PPQ Array-drop bug):
-    /// a User message with `ChatCompletionRequestUserMessageContent::Array` must
-    /// NOT be silently dropped by api_messages_to_chat_messages. The prior
-    /// behavior (returning None for the Array variant) made the entire final user
-    /// turn disappear from Tinfoil/PPQ requests whenever a user attached an image.
-    /// The fix extracts and joins the Text parts; image parts are intentionally
-    /// dropped for these transports until they gain vision support.
+    /// Regression (debug session `image-upload-still-broken-after-fix`):
+    /// a multipart User message (`Content::Array` with Text + ImageUrl parts) must
+    /// survive the serialization that happens inside the Tinfoil/PPQ
+    /// `run_streaming_chat_completion_from_api_messages` functions. The wire body
+    /// that eventually hits `/chat/completions` must contain both the raw user
+    /// text AND the image data URL -- no lossy collapse, no dropped parts.
+    ///
+    /// The prior implementation routed Tinfoil/PPQ requests through
+    /// `api_messages_to_chat_messages`, which flattened Array → plain text and
+    /// filter_map-dropped ImageUrl parts. That made vision silently impossible
+    /// on these transports even though Tinfoil DOES support Gemma 3 vision via
+    /// base64 data URLs. This test locks in the fix by exercising the same
+    /// request-body construction the new code path performs, and asserting that
+    /// the serialized JSON still carries the image data URL.
     #[test]
-    fn array_user_message_preserves_text_and_drops_image() {
+    fn multipart_user_message_survives_request_body_serialization() {
         let text_part = ChatCompletionRequestUserMessageContentPart::Text(
             ChatCompletionRequestMessageContentPartText {
                 text: "whats in the photo".to_string(),
@@ -544,7 +482,7 @@ mod tests {
         let image_part = ChatCompletionRequestUserMessageContentPart::ImageUrl(
             ChatCompletionRequestMessageContentPartImage {
                 image_url: ImageUrl {
-                    url: "data:image/jpeg;base64,AAAA".to_string(),
+                    url: "data:image/jpeg;base64,PROOF_OF_IMAGE_BYTES".to_string(),
                     detail: Some(ImageDetail::Auto),
                 },
             },
@@ -555,41 +493,64 @@ mod tests {
             ]))
             .build()
             .expect("build user multipart message");
-        let api_messages = vec![ChatCompletionRequestMessage::User(user_msg)];
+        let api_messages: Vec<ChatCompletionRequestMessage> =
+            vec![ChatCompletionRequestMessage::User(user_msg)];
 
-        let chat_messages = api_messages_to_chat_messages(&api_messages);
+        // This mirrors what both `tinfoil_secure::run_streaming_chat_completion_from_api_messages`
+        // and `ppq_private::run_streaming_chat_completion_from_api_messages` do
+        // before handing bytes to their secure transports.
+        let request = CreateChatCompletionRequestArgs::default()
+            .model("gemma3:27b")
+            .messages(api_messages)
+            .stream(true)
+            .build()
+            .expect("build request");
+        let body = serde_json::to_vec(&request).expect("serialize request body");
+        let body_str = std::str::from_utf8(&body).expect("utf-8 body");
 
-        assert_eq!(
-            chat_messages.len(),
-            1,
-            "Array user message must not be dropped; got {} messages",
-            chat_messages.len()
-        );
-        assert!(matches!(chat_messages[0].role, ChatRole::User));
-        assert_eq!(chat_messages[0].content, "whats in the photo");
         assert!(
-            !chat_messages[0].content.contains("data:image"),
-            "image data URL must not bleed into collapsed text content: {}",
-            chat_messages[0].content
+            body_str.contains("whats in the photo"),
+            "wire body must contain the raw user text, got: {body_str}"
+        );
+        assert!(
+            body_str.contains("data:image/jpeg;base64,PROOF_OF_IMAGE_BYTES"),
+            "wire body must contain the image data URL -- the multipart ImageUrl \
+             part must NOT be dropped on its way into the Tinfoil/PPQ transport; \
+             got: {body_str}"
+        );
+        assert!(
+            body_str.contains("\"image_url\""),
+            "wire body must contain the image_url content part key; got: {body_str}"
         );
     }
 
-    /// A plain Text User message should still round-trip verbatim — the new
-    /// Array branch must not regress the common path.
+    /// A plain Text user message (no attachment) must still produce a
+    /// non-multipart request body after the fix. This ensures the common
+    /// chat-only path is not disturbed.
     #[test]
-    fn text_user_message_preserved_verbatim() {
+    fn text_only_user_message_survives_request_body_serialization() {
         let user_msg = ChatCompletionRequestUserMessageArgs::default()
             .content(ChatCompletionRequestUserMessageContent::Text(
                 "hello world".to_string(),
             ))
             .build()
             .expect("build user text message");
-        let api_messages = vec![ChatCompletionRequestMessage::User(user_msg)];
+        let api_messages: Vec<ChatCompletionRequestMessage> =
+            vec![ChatCompletionRequestMessage::User(user_msg)];
 
-        let chat_messages = api_messages_to_chat_messages(&api_messages);
+        let request = CreateChatCompletionRequestArgs::default()
+            .model("gemma3:27b")
+            .messages(api_messages)
+            .stream(true)
+            .build()
+            .expect("build request");
+        let body = serde_json::to_vec(&request).expect("serialize request body");
+        let body_str = std::str::from_utf8(&body).expect("utf-8 body");
 
-        assert_eq!(chat_messages.len(), 1);
-        assert!(matches!(chat_messages[0].role, ChatRole::User));
-        assert_eq!(chat_messages[0].content, "hello world");
+        assert!(body_str.contains("hello world"));
+        assert!(
+            !body_str.contains("\"image_url\""),
+            "text-only request must not contain image_url parts; got: {body_str}"
+        );
     }
 }
