@@ -292,6 +292,16 @@ pub const MIGRATION_V16: &str = "
 ALTER TABLE conversations ADD COLUMN tools_enabled INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Migration v17: add image_path column to messages table (QT-ECE encrypted image persistence).
+///
+/// Nullable TEXT column stores the absolute on-disk path of the encrypted image file
+/// (`{data_dir}/images/{message_id}.jpg.mgo1`). NULL for text-only messages.
+/// The file itself is AES-256-GCM encrypted (MGO1 format) via file_crypto::encrypt_file;
+/// plaintext image bytes are never written to disk (T-ECE-02).
+pub const MIGRATION_V17: &str = "
+ALTER TABLE messages ADD COLUMN image_path TEXT;
+";
+
 /// Migration v18: add directory_sources and directory_files tables for directory-based RAG.
 ///
 /// Phase 32 (DIR-03, DIR-04): supports adding whole directories (e.g. Obsidian vault) as
@@ -326,16 +336,6 @@ CREATE TABLE IF NOT EXISTS directory_files (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dirfiles_source ON directory_files(source_id);
-";
-
-/// Migration v17: add image_path column to messages table (QT-ECE encrypted image persistence).
-///
-/// Nullable TEXT column stores the absolute on-disk path of the encrypted image file
-/// (`{data_dir}/images/{message_id}.jpg.mgo1`). NULL for text-only messages.
-/// The file itself is AES-256-GCM encrypted (MGO1 format) via file_crypto::encrypt_file;
-/// plaintext image bytes are never written to disk (T-ECE-02).
-pub const MIGRATION_V17: &str = "
-ALTER TABLE messages ADD COLUMN image_path TEXT;
 ";
 
 /// All migrations in order.
