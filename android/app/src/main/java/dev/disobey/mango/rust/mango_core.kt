@@ -869,6 +869,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_mango_core_checksum_func_known_provider_presets(
 ): Short
+fun uniffi_mango_core_checksum_func_model_supports_vision(
+): Short
 fun uniffi_mango_core_checksum_method_ffiapp_dispatch(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report(
@@ -977,9 +979,11 @@ fun uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(`vtable`: Uniff
 ): Unit
 fun uniffi_mango_core_fn_init_callback_vtable_keychainprovider(`vtable`: UniffiVTableCallbackInterfaceKeychainProvider,
 ): Unit
-fun uniffi_mango_core_fn_func_known_provider_presets(uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_mango_core_fn_func_known_provider_presets(uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun ffi_mango_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_mango_core_fn_func_model_supports_vision(`modelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): Byte
+fun ffi_mango_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
 fun ffi_mango_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1105,6 +1109,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_mango_core_checksum_func_model_supports_vision() != 37098.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_mango_core_checksum_func_known_provider_presets() != 26978.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -6591,6 +6598,22 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_mango_core_fn_func_known_provider_presets(
         _status)
+}
+    )
+    }
+
+        /**
+         * Returns `true` when the given model id is known to accept multimodal
+         * image inputs via the OpenAI-compatible `image_url` content part.
+         *
+         * Vision capability gating (follow-up to image-upload-still-broken-after-fix
+         * debug session). UIs hide the image-picker entry points when this returns
+         * false to prevent silent failures on text-only models.
+         */ fun `modelSupportsVision`(`modelId`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_func_model_supports_vision(
+        FfiConverterString.lower(`modelId`),_status)
 }
     )
     }

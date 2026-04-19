@@ -171,10 +171,16 @@ struct ChatView: View {
         ) { result in
             handleFileImportResult(result)
         }
-        // Phase 31 (IMG-05/IMG-06): paperclip opens action sheet with 3 choices
+        // Phase 31 (IMG-05/IMG-06): paperclip opens action sheet with 3 choices.
+        // Vision capability gating (follow-up to image-upload-still-broken-after-fix):
+        // image entries are hidden when the selected model is not vision-capable so
+        // the user never gets into the silent-failure path of sending a photo to a
+        // text-only model.
         .confirmationDialog("Attach", isPresented: $showAttachOptions, titleVisibility: .hidden) {
-            Button("Take Photo") { showCameraPicker = true }
-            Button("Choose Photo") { showPhotosPicker = true }
+            if currentModelSupportsVision {
+                Button("Take Photo") { showCameraPicker = true }
+                Button("Choose Photo") { showPhotosPicker = true }
+            }
             Button("Attach File") { showFilePicker = true }
             Button("Cancel", role: .cancel) { }
         }
@@ -253,6 +259,15 @@ struct ChatView: View {
     private var activeAttestationStatus: AttestationStatus? {
         guard let backendId = state.activeBackendId else { return nil }
         return state.attestationStatuses.first(where: { $0.backendId == backendId })?.status
+    }
+
+    /// Whether the model selected for the current conversation supports vision
+    /// inputs. Drives image-picker visibility in the attach action sheet.
+    /// Defaults to false when no model is selected so the user is never offered
+    /// an image option that would silently fail.
+    private var currentModelSupportsVision: Bool {
+        guard let modelId = currentConversation?.modelId, !modelId.isEmpty else { return false }
+        return modelSupportsVision(modelId: modelId)
     }
 
     private func isLastAssistantMessage(_ message: UiMessage) -> Bool {

@@ -6284,6 +6284,21 @@ public func knownProviderPresets() -> [ProviderPreset]  {
     )
 })
 }
+/**
+ * Returns `true` when the given model id is known to accept multimodal image
+ * inputs via the OpenAI-compatible `image_url` content part.
+ *
+ * Vision capability gating (follow-up to image-upload-still-broken-after-fix
+ * debug session). UIs hide the image-picker entry points when this returns
+ * false to prevent silent failures on text-only models.
+ */
+public func modelSupportsVision(modelId: String) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_mango_core_fn_func_model_supports_vision(
+        FfiConverterString.lower(modelId),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -6301,6 +6316,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.contractVersionMismatch
     }
     if (uniffi_mango_core_checksum_func_known_provider_presets() != 26978) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_func_model_supports_vision() != 37098) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_dispatch() != 49208) {
