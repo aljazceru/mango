@@ -4202,14 +4202,23 @@ impl FfiApp {
                             }
 
                             AppAction::RenameConversation { id, title } => {
-                                let now = now_secs();
-                                let _ = persistence::queries::rename_conversation(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                    &id,
-                                    &title,
-                                    now,
-                                );
-                                refresh_conversations(&mut actor_state);
+                                // Defensive guard: ignore empty/whitespace-only rename requests
+                                // so a broken empty entry never lands in the conversation list.
+                                // Trim defensively so platform UIs don't each need to repeat the rule.
+                                let trimmed = title.trim();
+                                if trimmed.is_empty() {
+                                    // No-op: preserve previous title (and, for fresh conversations,
+                                    // let the auto-title logic in StreamDone continue to apply).
+                                } else {
+                                    let now = now_secs();
+                                    let _ = persistence::queries::rename_conversation(
+                                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                                        &id,
+                                        trimmed,
+                                        now,
+                                    );
+                                    refresh_conversations(&mut actor_state);
+                                }
                             }
 
                             AppAction::DeleteConversation { id } => {
