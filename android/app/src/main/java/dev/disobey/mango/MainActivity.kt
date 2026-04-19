@@ -7,9 +7,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import android.net.Uri
+import androidx.lifecycle.lifecycleScope
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.Screen
+import dev.disobey.mango.ui.DirectorySyncWorker
+import dev.disobey.mango.ui.resolveTreeUri
 import dev.disobey.mango.ui.scheduleAgentWorker
+import dev.disobey.mango.ui.syncDirectory
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
@@ -39,12 +45,41 @@ class MainActivity : AppCompatActivity() {
             }
             backgroundedAt = 0
         }
+
+        // Phase 32 Plan 06: foreground-resume sync for all directory sources
+        // (D-22 belt-and-braces alongside the 15-minute WorkManager schedule).
+        // Skipped when the app is locked (matches iOS ScenePhase gating in plan 32-05).
+        if (manager.state.router.currentScreen !is Screen.Locked) {
+            val ctx = applicationContext
+            val sources = manager.state.directorySources
+            if (sources.isNotEmpty()) {
+                lifecycleScope.launch {
+                    for (source in sources) {
+                        val tree = resolveTreeUri(ctx, source) ?: continue
+                        try {
+                            syncDirectory(ctx, source, Uri.parse(tree)) { action ->
+                                manager.dispatch(action)
+                            }
+                        } catch (t: Throwable) {
+                            android.util.Log.e(
+                                "MainActivity",
+                                "onResume dir sync failed for ${source.id}: ${t.message}",
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         manager = AppManager.getInstance(applicationContext, this)
+
+        // Phase 32 Plan 06: enqueue the 15-minute periodic directory-sync worker
+        // (D-23). KEEP policy means this is idempotent across config changes.
+        DirectorySyncWorker.enqueue(applicationContext)
 
         lifecycle.addObserver(LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
