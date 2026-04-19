@@ -292,6 +292,42 @@ pub const MIGRATION_V16: &str = "
 ALTER TABLE conversations ADD COLUMN tools_enabled INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Migration v18: add directory_sources and directory_files tables for directory-based RAG.
+///
+/// Phase 32 (DIR-03, DIR-04): supports adding whole directories (e.g. Obsidian vault) as
+/// RAG sources with periodic re-sync. `directory_sources` captures the user-chosen folder
+/// plus cross-platform access handle (Desktop path, iOS bookmark_data, Android tree_uri)
+/// and JSON-encoded exclusion globs. `directory_files` stores per-file fingerprints
+/// (mtime + size) so the sync pass can diff against the on-disk state and emit
+/// add/modify/delete events. The FK with ON DELETE CASCADE guarantees file rows are
+/// removed atomically when a source is deleted (T-32-I1 mitigation). UNIQUE (source_id,
+/// file_path) enforces the invariant that each path is tracked exactly once per source.
+pub const MIGRATION_V18: &str = "
+CREATE TABLE IF NOT EXISTS directory_sources (
+    id              TEXT PRIMARY KEY NOT NULL,
+    display_name    TEXT NOT NULL,
+    path            TEXT,
+    bookmark_data   BLOB,
+    tree_uri        TEXT,
+    exclusion_globs TEXT NOT NULL DEFAULT '[]',
+    last_synced_at  INTEGER,
+    file_count      INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS directory_files (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id       TEXT NOT NULL REFERENCES directory_sources(id) ON DELETE CASCADE,
+    file_path       TEXT NOT NULL,
+    mtime_secs      INTEGER NOT NULL,
+    size_bytes      INTEGER NOT NULL,
+    document_id     TEXT,
+    UNIQUE (source_id, file_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dirfiles_source ON directory_files(source_id);
+";
+
 /// Migration v17: add image_path column to messages table (QT-ECE encrypted image persistence).
 ///
 /// Nullable TEXT column stores the absolute on-disk path of the encrypted image file
@@ -321,6 +357,7 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V15,
     MIGRATION_V16,
     MIGRATION_V17,
+    MIGRATION_V18,
 ];
 
 #[cfg(test)]

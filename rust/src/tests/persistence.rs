@@ -60,8 +60,8 @@ fn test_migration_v1_to_v2() {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(
-            version, 17,
-            "user_version should be 17 after all migrations (v17 adds messages.image_path column)"
+            version, 18,
+            "user_version should be 18 after all migrations (v18 adds directory_sources/directory_files tables)"
         );
 
         // Verify pre-existing data survived
@@ -156,8 +156,8 @@ fn test_migration_version_increments() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 17,
-        "user_version should be 17 after all migrations (v1+v2+...+v17)"
+        version, 18,
+        "user_version should be 18 after all migrations (v1+v2+...+v18)"
     );
 }
 
@@ -177,8 +177,8 @@ fn test_migration_idempotent() {
             .unwrap();
         // Second open should not re-run migrations, so version stays at 13
         assert_eq!(
-            version, 17,
-            "user_version must still be 17 on second open (idempotent)"
+            version, 18,
+            "user_version must still be 18 on second open (idempotent)"
         );
     }
     let _ = std::fs::remove_file(&tmp);
@@ -734,8 +734,8 @@ fn test_migration_v11_seeds_ppq_ai_private_transport() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 17,
-        "user_version should be 17 after all migrations including v17"
+        version, 18,
+        "user_version should be 18 after all migrations including v18"
     );
 
     // Query the ppq-ai row directly
