@@ -346,10 +346,15 @@ func syncDirectorySource(
                     sizeBytes: size,
                     content: bytes))
             }
+            // ME-02: removals ride the FIRST batch (matching desktop + Android
+            // conventions) so partial sync interruptions produce consistent
+            // cross-platform state instead of iOS=nothing-removed /
+            // Android=everything-removed divergence.
+            let removedForThisBatch = idx == 0 ? diff.removedPaths : []
             dispatch(.syncDirectoryFiles(
                 sourceId: sourceId,
                 files: entries,
-                removedPaths: isFinal ? diff.removedPaths : [],
+                removedPaths: removedForThisBatch,
                 isFinalBatch: isFinal))
         }
     }
