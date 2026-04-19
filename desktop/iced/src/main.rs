@@ -694,29 +694,71 @@ impl App {
                     }
 
                     Message::AttachFile => {
-                        // Use rfd for native file dialog (blocking, run via spawn_blocking)
+                        // Use rfd for native file dialog (blocking, run via spawn_blocking).
+                        // Phase 31 IMG-05: accept both image extensions (jpg/jpeg/png) and
+                        // the existing text-file extensions via a single filter. When the
+                        // selected file is an image, dispatch AppAction::AttachImage with
+                        // the absolute path + MIME; otherwise keep the existing text path.
                         let manager_clone = manager.clone();
                         let fut = async move {
                             let result = tokio::task::spawn_blocking(move || -> Option<()> {
-                                let path = rfd::FileDialog::new().pick_file()?;
+                                let path = rfd::FileDialog::new()
+                                    .add_filter(
+                                        "Attachable",
+                                        &[
+                                            "jpg", "jpeg", "png", "txt", "md", "json", "csv",
+                                            "log",
+                                        ],
+                                    )
+                                    .add_filter("Images", &["jpg", "jpeg", "png"])
+                                    .add_filter("Text", &["txt", "md", "json", "csv", "log"])
+                                    .pick_file()?;
                                 let filename = path
                                     .file_name()
                                     .map(|n| n.to_string_lossy().to_string())
                                     .unwrap_or_else(|| "attachment".to_string());
-                                match std::fs::read_to_string(&path) {
-                                    Ok(content) => {
-                                        let size_bytes = content.len() as u64;
-                                        manager_clone.dispatch(AppAction::AttachFile {
-                                            filename,
-                                            content,
-                                            size_bytes,
-                                        });
-                                    }
-                                    Err(_) => {
-                                        manager_clone.dispatch(AppAction::ShowToast {
-                                            message: "This file type cannot be read as text."
-                                                .to_string(),
-                                        });
+                                let ext = path
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .unwrap_or("")
+                                    .to_ascii_lowercase();
+                                let is_image =
+                                    matches!(ext.as_str(), "jpg" | "jpeg" | "png");
+
+                                if is_image {
+                                    // Use absolute path for T-31-01 mitigation. Fall back
+                                    // to the original path if canonicalize fails; rfd
+                                    // returns absolute paths on all supported platforms.
+                                    let abs_path = path
+                                        .canonicalize()
+                                        .unwrap_or_else(|_| path.clone());
+                                    let mime = if ext == "png" {
+                                        "image/png".to_string()
+                                    } else {
+                                        "image/jpeg".to_string()
+                                    };
+                                    manager_clone.dispatch(AppAction::AttachImage {
+                                        filename,
+                                        file_path: abs_path.to_string_lossy().into_owned(),
+                                        mime_type: mime,
+                                    });
+                                } else {
+                                    match std::fs::read_to_string(&path) {
+                                        Ok(content) => {
+                                            let size_bytes = content.len() as u64;
+                                            manager_clone.dispatch(AppAction::AttachFile {
+                                                filename,
+                                                content,
+                                                size_bytes,
+                                            });
+                                        }
+                                        Err(_) => {
+                                            manager_clone.dispatch(AppAction::ShowToast {
+                                                message:
+                                                    "This file type cannot be read as text."
+                                                        .to_string(),
+                                            });
+                                        }
                                     }
                                 }
                                 Some(())
