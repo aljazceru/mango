@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: executing
-stopped_at: Completed 32-06-PLAN.md
-last_updated: "2026-04-19T18:07:43.436Z"
+status: verifying
+stopped_at: Completed 32-07-PLAN.md
+last_updated: "2026-04-19T18:17:34.573Z"
 last_activity: 2026-04-19
 progress:
   total_phases: 13
-  completed_phases: 11
+  completed_phases: 12
   total_plans: 42
-  completed_plans: 41
-  percent: 98
+  completed_plans: 42
+  percent: 100
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 Phase: 32 (directory-based-rag-ingestion-with-periodic-sync-and-file-fo) — EXECUTING
 Plan: 7 of 7
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-19
 
 Progress: [██░░░░░░░░] 25%
@@ -75,6 +75,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 32 P04 | 30min | 3 tasks | 6 files |
 | Phase 32 P05 | 16min | 3 tasks | 7 files |
 | Phase 32 P06 | 12min | 3 tasks | 6 files |
+| Phase 32 P07 | 22min | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -135,6 +136,8 @@ Key architectural context for v2.0:
 - [Phase 32]: Plan 06: Android directory-sync files placed under dev.disobey.mango.ui (plan referenced non-existent com.mango package)
 - [Phase 32]: Plan 06: resolveTreeUri uses ContentResolver.persistedUriPermissions keyed by displayName — keeps tree URI out of UniFFI (T-32-I2)
 - [Phase 32]: Plan 06: AppState.directorySources init was missing from AppManager bootstrap after plan 32-05 binding regen — fixed under Rule 1
+- [Phase 32]: Plan 07: Centralised relative_time_label in Rust core + pre-computed last_synced_label field; native layers no longer compute relative-time locally (D-feels-done)
+- [Phase 32]: Plan 07: Settings → Directory Sources entry added between Defaults and Memory on all three platforms; home-level Folders/Sources buttons preserved from 32-04/05/06
 
 ### Roadmap Evolution
 
@@ -163,6 +166,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-19T18:07:43.434Z
-Stopped at: Completed 32-06-PLAN.md
+Last session: 2026-04-19T18:17:28.222Z
+Stopped at: Completed 32-07-PLAN.md
 Resume file: None

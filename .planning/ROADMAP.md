@@ -241,7 +241,7 @@ Plans:
 **Goal:** Users can add a whole directory (e.g. an Obsidian vault) as a RAG source with glob-based exclusion patterns, automatic incremental re-sync across launches (added/modified/deleted files picked up via mtime+size fingerprints), and cross-platform folder-permission lifecycle (iOS security-scoped bookmarks, Android persistable SAF tree URIs, Desktop paths with notify watcher + 5-min fallback). UI delivers source list with relative last-synced time, add/remove source with confirmation, exclusion editor with live validation, and manual Sync Now.
 **Requirements**: DIR-01, DIR-02, DIR-03, DIR-04, DIR-05, DIR-06
 **Depends on:** Phase 31
-**Plans:** 6/7 plans executed
+**Plans:** 7/7 plans complete
 
 Plans:
 - [x] 32-01-PLAN.md — Migration V18 (directory_sources + directory_files) + CRUD queries
@@ -250,4 +250,4 @@ Plans:
 - [x] 32-04-PLAN.md — Desktop iced UI + notify watcher + PollWatcher fallback + 5-min Tokio interval
 - [x] 32-05-PLAN.md — iOS SwiftUI + UIDocumentPickerViewController + .minimalBookmark lifecycle + ScenePhase sync + iCloud placeholder skip
 - [x] 32-06-PLAN.md — Android Compose + OpenDocumentTree + takePersistableUriPermission + bulk DocumentsContract traversal + WorkManager 15-min + onResume sync
-- [ ] 32-07-PLAN.md — Cross-platform UX polish: relative-time labels, sync-status pills, settings entry, reused IngestionProgress
+- [x] 32-07-PLAN.md — Cross-platform UX polish: relative-time labels, sync-status pills, settings entry, reused IngestionProgress
