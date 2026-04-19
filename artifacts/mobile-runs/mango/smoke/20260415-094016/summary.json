@@ -1,0 +1,10 @@
+{
+  "profile": "mango",
+  "scenario": "smoke",
+  "serial": "emulator-5554",
+  "package": "dev.disobey.mango.dev",
+  "artifacts": {
+    "logcat": "artifacts/mobile-runs/mango/smoke/20260415-094016/logcat.txt",
+    "video": null
+  }
+}

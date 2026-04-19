@@ -1,0 +1,109 @@
+name: smoke
+steps:
+  - launch: {}
+  - clear_logcat: {}
+  - maybe:
+      when_text: Get Started
+      steps:
+        - maybe:
+            when_text: Skip setup
+            steps:
+              - tap_text: Skip setup
+        - maybe:
+            when_text: Get Started
+            steps:
+              - tap_text: Get Started
+  - maybe:
+      when_text: Secure Your App
+      steps:
+        - type_into_text:
+            field: PIN (min 4 characters)
+            text: "{{MANGO_SMOKE_PIN}}"
+        - type_into_text:
+            field: Confirm PIN
+            text: "{{MANGO_SMOKE_PIN}}"
+        - tap_text: Set PIN and Continue
+  - wait_for_text:
+      text: Conversations
+      tries: 45
+      label: home
+  - assert_text: RAG
+  - assert_text: Settings
+  - assert_desc: New Conversation
+  - tap_text: Settings
+  - wait_for_text:
+      text: Settings
+      label: settings
+  - assert_text: Providers
+  - assert_text: Defaults
+  - assert_text: Memory
+  - assert_text: Security
+  - assert_text: Tools
+  - assert_text: Appearance
+  - tap_text: Providers
+  - wait_for_text: Providers
+  - back: {}
+  - wait_for_text: Settings
+  - tap_text: Defaults
+  - wait_for_text: Defaults
+  - back: {}
+  - wait_for_text: Settings
+  - tap_text: Memory
+  - wait_for_text: Memory
+  - back: {}
+  - wait_for_text: Settings
+  - tap_text: Security
+  - wait_for_text: Security
+  - back: {}
+  - wait_for_text: Settings
+  - tap_text: Tools
+  - wait_for_text: Tools
+  - back: {}
+  - wait_for_text: Settings
+  - tap_text: Appearance
+  - wait_for_text: Appearance
+  - back: {}
+  - wait_for_text: Settings
+  - back: {}
+  - wait_for_text:
+      text: Conversations
+      label: home-return
+  - tap_text: RAG
+  - wait_for_text:
+      text: RAG Library
+      label: rag
+  - assert_desc: Add Document
+  - tap_percent:
+      x: 89
+      y: 92
+  - sleep: 2
+  - wait_for_any_package:
+      packages:
+        - com.android.documentsui
+        - com.google.android.documentsui
+      label: document-picker
+  - back: {}
+  - wait_for_text:
+      text: RAG Library
+      label: rag-return
+  - back: {}
+  - wait_for_text:
+      text: Conversations
+      label: home-for-new
+  - tap_percent:
+      x: 89
+      y: 92
+  - wait_for_text:
+      text: New Conversation
+      label: new-conversation
+  - type_into_text:
+      field: Message
+      text: "{{MANGO_SMOKE_MESSAGE}}"
+  - sleep: 1
+  - press_enter: {}
+  - sleep: 1
+  - tap_desc: Send message
+  - wait_for_desc:
+      desc: Stop generating
+      tries: 20
+      label: new-conversation-streaming

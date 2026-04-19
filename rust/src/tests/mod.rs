@@ -7,6 +7,7 @@ mod backend_config;
 mod chat;
 mod chat_tools;
 mod crypto;
+mod directory_rag;
 mod embedding_degradation;
 mod error_mapping;
 mod hpke_key_hygiene;
