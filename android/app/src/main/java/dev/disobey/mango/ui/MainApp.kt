@@ -51,6 +51,7 @@ fun MainApp(
                 onEdit = { id, text -> manager.dispatch(AppAction.EditMessage(messageId = id, newText = text)) },
                 onCopy = { _ -> },
                 onAttach = { filename, content, size -> manager.dispatch(AppAction.AttachFile(filename = filename, content = content, sizeBytes = size)) },
+                onAttachImage = { filename, filePath, mimeType -> manager.dispatch(AppAction.AttachImage(filename = filename, filePath = filePath, mimeType = mimeType)) },
                 onClearAttachment = { manager.dispatch(AppAction.ClearAttachment) },
                 onSelectModel = { model -> manager.dispatch(AppAction.SelectModel(modelId = model)) },
                 onSetSystemPrompt = { prompt -> manager.dispatch(AppAction.SetSystemPrompt(prompt = prompt)) },
