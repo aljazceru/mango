@@ -1,0 +1,8 @@
+name: mango
+package: dev.disobey.mango.dev
+release_package: dev.disobey.mango
+activity: dev.disobey.mango.MainActivity
+apk: android/app/build/outputs/apk/debug/app-debug.apk
+recording_remote: /sdcard/mango-smoke.mp4
+allow_fatal_patterns:
+  - com.android.commands.uiautomator
