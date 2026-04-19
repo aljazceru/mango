@@ -127,6 +127,13 @@ fun traverseTree(
     return results
 }
 
+/**
+ * HI-03: 32 MiB cap matches desktop MAX_FILE_BYTES / iOS MAX_FILE_BYTES.
+ * Files above this are skipped before `readBytes()` is called so a single
+ * large attachment inside a vault cannot OOM the app.
+ */
+const val MAX_FILE_BYTES: Long = 32L * 1024L * 1024L
+
 /** Read a single file's bytes via a document URI rooted in the persisted tree. */
 fun readFileContent(context: Context, treeUri: Uri, docId: String): ByteArray? {
     val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
@@ -249,6 +256,13 @@ suspend fun syncDirectory(
     val chunks = changed.chunked(50)
     chunks.forEachIndexed { idx, chunk ->
         val entries: List<DirectoryFileEntry> = chunk.mapNotNull { e ->
+            if (e.sizeBytes > MAX_FILE_BYTES) {
+                Log.w(
+                    "DirectorySourcePicker",
+                    "skipping oversized file ${e.name} (${e.sizeBytes} bytes > $MAX_FILE_BYTES cap)",
+                )
+                return@mapNotNull null
+            }
             val bytes = readFileContent(context, treeUri, e.docId) ?: return@mapNotNull null
             DirectoryFileEntry(
                 relativePath = e.docId,

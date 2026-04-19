@@ -2118,6 +2118,11 @@ fn run_desktop_sync(
             return;
         }
 
+        // HI-03: skip oversized files before `std::fs::read` pulls the whole blob
+        // into memory. 32 MiB is ample for the markdown/PDF/txt files that make
+        // up realistic RAG corpora and avoids OOM on large bundled attachments.
+        const MAX_FILE_BYTES: i64 = 32 * 1024 * 1024;
+
         let root = std::path::PathBuf::from(&root_path);
         let batches: Vec<Vec<(String, i64, i64)>> =
             to_read.chunks(50).map(|c| c.to_vec()).collect();
@@ -2125,6 +2130,13 @@ fn run_desktop_sync(
         for (idx, batch) in batches.into_iter().enumerate() {
             let mut files: Vec<DirectoryFileEntry> = Vec::with_capacity(batch.len());
             for (rel, mtime, size) in batch {
+                if size > MAX_FILE_BYTES {
+                    eprintln!(
+                        "[dir-sync] skipping oversized file {} ({} bytes > {} cap)",
+                        rel, size, MAX_FILE_BYTES
+                    );
+                    continue;
+                }
                 let abs = root.join(&rel);
                 match std::fs::read(&abs) {
                     Ok(bytes) => {
