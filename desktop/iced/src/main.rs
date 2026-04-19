@@ -747,20 +747,46 @@ impl App {
                         // the existing text-file extensions via a single filter. When the
                         // selected file is an image, dispatch AppAction::AttachImage with
                         // the absolute path + MIME; otherwise keep the existing text path.
+                        //
+                        // Vision capability gating (follow-up to image-upload-still-broken-after-fix):
+                        // when the current conversation's model does not support vision,
+                        // omit the image extensions from the filter so the user cannot
+                        // pick a photo that would silently fail at the model.
+                        let current_model_id = manager
+                            .state()
+                            .current_conversation_id
+                            .as_ref()
+                            .and_then(|id| {
+                                manager
+                                    .state()
+                                    .conversations
+                                    .iter()
+                                    .find(|c| &c.id == id)
+                                    .map(|c| c.model_id.clone())
+                            })
+                            .unwrap_or_default();
+                        let allow_images = !current_model_id.is_empty()
+                            && mango_core::is_vision_model(&current_model_id);
                         let manager_clone = manager.clone();
                         let fut = async move {
                             let result = tokio::task::spawn_blocking(move || -> Option<()> {
-                                let path = rfd::FileDialog::new()
-                                    .add_filter(
-                                        "Attachable",
-                                        &[
-                                            "jpg", "jpeg", "png", "txt", "md", "json", "csv",
-                                            "log",
-                                        ],
-                                    )
-                                    .add_filter("Images", &["jpg", "jpeg", "png"])
-                                    .add_filter("Text", &["txt", "md", "json", "csv", "log"])
-                                    .pick_file()?;
+                                let mut dialog = rfd::FileDialog::new();
+                                dialog = if allow_images {
+                                    dialog
+                                        .add_filter(
+                                            "Attachable",
+                                            &[
+                                                "jpg", "jpeg", "png", "txt", "md", "json", "csv",
+                                                "log",
+                                            ],
+                                        )
+                                        .add_filter("Images", &["jpg", "jpeg", "png"])
+                                        .add_filter("Text", &["txt", "md", "json", "csv", "log"])
+                                } else {
+                                    dialog
+                                        .add_filter("Text", &["txt", "md", "json", "csv", "log"])
+                                };
+                                let path = dialog.pick_file()?;
                                 let filename = path
                                     .file_name()
                                     .map(|n| n.to_string_lossy().to_string())

@@ -418,7 +418,13 @@ void uniffi_mango_core_fn_init_callback_vtable_keychainprovider(const UniffiVTab
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_KNOWN_PROVIDER_PRESETS
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_KNOWN_PROVIDER_PRESETS
 RustBuffer uniffi_mango_core_fn_func_known_provider_presets(RustCallStatus *_Nonnull out_status
-    
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_MODEL_SUPPORTS_VISION
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_MODEL_SUPPORTS_VISION
+int8_t uniffi_mango_core_fn_func_model_supports_vision(RustBuffer model_id, RustCallStatus *_Nonnull out_status
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_MANGO_CORE_RUSTBUFFER_ALLOC
@@ -704,7 +710,13 @@ void ffi_mango_core_rust_future_complete_void(uint64_t handle, RustCallStatus *_
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_KNOWN_PROVIDER_PRESETS
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_KNOWN_PROVIDER_PRESETS
 uint16_t uniffi_mango_core_checksum_func_known_provider_presets(void
-    
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_MODEL_SUPPORTS_VISION
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_MODEL_SUPPORTS_VISION
+uint16_t uniffi_mango_core_checksum_func_model_supports_vision(void
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_DISPATCH

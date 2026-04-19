@@ -71,6 +71,7 @@ import dev.disobey.mango.rust.BusyState
 import dev.disobey.mango.rust.DocumentSummary
 import dev.disobey.mango.rust.HealthStatus
 import dev.disobey.mango.rust.UiMessage
+import dev.disobey.mango.rust.modelSupportsVision
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -316,7 +317,15 @@ fun ChatScreen(
         )
     }
 
-    // Phase 31 (IMG-05/06, D-6): paperclip action sheet — Take Photo / Choose Photo / Attach File
+    // Phase 31 (IMG-05/06, D-6): paperclip action sheet — Take Photo / Choose Photo / Attach File.
+    // Vision capability gating (follow-up to image-upload-still-broken-after-fix):
+    // image entries are hidden when the selected model is not vision-capable so
+    // the user never gets into the silent-failure path of sending a photo to a
+    // text-only model.
+    val currentModelId = state.currentConversationId
+        ?.let { id -> state.conversations.firstOrNull { it.id == id }?.modelId }
+        .orEmpty()
+    val showImageOptions = currentModelId.isNotEmpty() && modelSupportsVision(currentModelId)
     if (showAttachSheet) {
         val attachSheetState = rememberModalBottomSheetState()
         ModalBottomSheet(
@@ -328,22 +337,24 @@ fun ChatScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp, vertical = 8.dp),
             ) {
-                TextButton(
-                    onClick = {
-                        showAttachSheet = false
-                        launchCamera()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Take Photo", style = MaterialTheme.typography.bodyLarge) }
-                TextButton(
-                    onClick = {
-                        showAttachSheet = false
-                        galleryLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Choose Photo", style = MaterialTheme.typography.bodyLarge) }
+                if (showImageOptions) {
+                    TextButton(
+                        onClick = {
+                            showAttachSheet = false
+                            launchCamera()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Take Photo", style = MaterialTheme.typography.bodyLarge) }
+                    TextButton(
+                        onClick = {
+                            showAttachSheet = false
+                            galleryLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Choose Photo", style = MaterialTheme.typography.bodyLarge) }
+                }
                 TextButton(
                     onClick = {
                         showAttachSheet = false

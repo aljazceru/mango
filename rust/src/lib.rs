@@ -33,7 +33,7 @@ pub enum EmbeddingStatus {
     Unavailable,
 }
 pub use llm::known_provider_presets;
-pub use llm::{BackendSummary, HealthStatus, LlmError, ProviderPreset, TeeType};
+pub use llm::{is_vision_model, BackendSummary, HealthStatus, LlmError, ProviderPreset, TeeType};
 pub use persistence::PersistenceError;
 
 uniffi::setup_scaffolding!();
@@ -4372,8 +4372,36 @@ impl FfiApp {
                                 file_path,
                                 mime_type,
                             } => {
+                                // Defense-in-depth vision capability gate (follow-up to
+                                // "image-upload-still-broken-after-fix" debug session):
+                                // UIs hide the image-picker entry points for non-vision
+                                // models, but a stale state or a model-switch-after-attach
+                                // could still dispatch this action. Reject with a clear
+                                // error before the image ever enters the pending slot.
+                                let current_model_id = actor_state
+                                    .app_state
+                                    .current_conversation_id
+                                    .as_ref()
+                                    .and_then(|conv_id| {
+                                        actor_state
+                                            .app_state
+                                            .conversations
+                                            .iter()
+                                            .find(|c| &c.id == conv_id)
+                                            .map(|c| c.model_id.clone())
+                                    })
+                                    .unwrap_or_default();
+                                if !current_model_id.is_empty()
+                                    && !llm::is_vision_model(&current_model_id)
+                                {
+                                    actor_state.app_state.last_error = Some(format!(
+                                        "Model \"{}\" does not support image input",
+                                        current_model_id
+                                    ));
+                                    actor_state.app_state.rev += 1;
+                                }
                                 // Validate MIME (V5 input validation — threat T-31-03).
-                                if !(mime_type == "image/jpeg" || mime_type == "image/png") {
+                                else if !(mime_type == "image/jpeg" || mime_type == "image/png") {
                                     actor_state.app_state.last_error =
                                         Some(format!("Unsupported image MIME: {}", mime_type));
                                 } else if !std::path::Path::new(&file_path).is_absolute() {
@@ -7447,6 +7475,92 @@ mod image_red_tests {
         assert!(info.is_image, "AttachmentInfo.is_image must be true for images");
     }
 
+    /// Follow-up (vision-capability gating): AttachImage must be rejected with a
+    /// user-visible error when the current conversation's model does not support
+    /// vision inputs. Defense-in-depth against stale UI or model-switch-after-attach.
+    #[test]
+    fn attach_image_rejected_for_non_vision_model() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        // Simulate a conversation whose selected model is text-only.
+        actor_state.app_state.current_conversation_id = Some("conv-1".to_string());
+        actor_state.app_state.conversations.push(ConversationSummary {
+            id: "conv-1".to_string(),
+            title: "Test".to_string(),
+            model_id: "llama3-3-70b".to_string(),
+            backend_id: "tinfoil".to_string(),
+            updated_at: 0,
+            system_prompt: None,
+            tools_enabled: false,
+        });
+
+        let action = AppAction::AttachImage {
+            filename: "a.png".to_string(),
+            file_path: "/tmp/a.png".to_string(),
+            mime_type: "image/png".to_string(),
+        };
+        handle_attach_image_for_test(&mut actor_state, action);
+
+        assert!(
+            actor_state.pending_image_attachment.is_none(),
+            "pending_image_attachment must not be set when model is text-only"
+        );
+        assert!(
+            actor_state.app_state.pending_attachment.is_none(),
+            "AttachmentInfo must not be published when model is text-only"
+        );
+        let err = actor_state
+            .app_state
+            .last_error
+            .as_ref()
+            .expect("last_error must be set");
+        assert!(
+            err.contains("llama3-3-70b") && err.contains("does not support image"),
+            "error message should name the model and mention image support, got: {}",
+            err
+        );
+    }
+
+    /// Vision-capable model with an otherwise-valid AttachImage should proceed
+    /// to the pending-image slot (the existing happy-path test covers this,
+    /// but with a conversation attached to exercise the new gate's false branch).
+    #[test]
+    fn attach_image_allowed_for_vision_model() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.app_state.current_conversation_id = Some("conv-1".to_string());
+        actor_state.app_state.conversations.push(ConversationSummary {
+            id: "conv-1".to_string(),
+            title: "Test".to_string(),
+            model_id: "gemma3:27b".to_string(),
+            backend_id: "tinfoil".to_string(),
+            updated_at: 0,
+            system_prompt: None,
+            tools_enabled: false,
+        });
+
+        // Write a tiny tmp file so metadata() succeeds inside the handler.
+        let tmp = std::env::temp_dir().join("vision-gate-probe.png");
+        std::fs::write(&tmp, b"not-a-real-png-but-non-empty").expect("tmp write");
+
+        let action = AppAction::AttachImage {
+            filename: "probe.png".to_string(),
+            file_path: tmp.to_string_lossy().to_string(),
+            mime_type: "image/png".to_string(),
+        };
+        handle_attach_image_for_test(&mut actor_state, action);
+
+        assert!(
+            actor_state.pending_image_attachment.is_some(),
+            "vision-capable model must accept image attachment"
+        );
+        assert!(
+            actor_state.app_state.last_error.is_none(),
+            "no error expected on vision-capable model, got: {:?}",
+            actor_state.app_state.last_error
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
     // --- Test-only helpers. These exist so the test file compiles as far as
     // possible; the assertions still depend on symbols introduced in 31-01.
 
@@ -7517,6 +7631,28 @@ mod image_red_tests {
                 file_path,
                 mime_type,
             } => {
+                let current_model_id = actor_state
+                    .app_state
+                    .current_conversation_id
+                    .as_ref()
+                    .and_then(|conv_id| {
+                        actor_state
+                            .app_state
+                            .conversations
+                            .iter()
+                            .find(|c| &c.id == conv_id)
+                            .map(|c| c.model_id.clone())
+                    })
+                    .unwrap_or_default();
+                if !current_model_id.is_empty()
+                    && !llm::is_vision_model(&current_model_id)
+                {
+                    actor_state.app_state.last_error = Some(format!(
+                        "Model \"{}\" does not support image input",
+                        current_model_id
+                    ));
+                    return;
+                }
                 if !(mime_type == "image/jpeg" || mime_type == "image/png") {
                     actor_state.app_state.last_error =
                         Some(format!("Unsupported image MIME: {}", mime_type));
