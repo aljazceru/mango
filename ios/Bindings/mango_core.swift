@@ -584,20 +584,32 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
      * actor when attestation verification succeeds.
      */
     func getRawAttestationReport(backendId: String)  -> Data?
-
+    
     /**
-     * Decrypt the encrypted image for `messageId` and return raw JPEG bytes.
-     *
-     * Plaintext bytes are never stored on disk or in ActorState (T-ECE-04).
-     * Returns an error string if the app is locked, the message has no image, or decryption fails.
+     * Return stored directory fingerprints (relative_path, mtime_secs, size_bytes) for a
+     * registered directory source. Used by native sync pipelines to diff against the
+     * current on-disk enumeration before dispatching SyncDirectoryFiles batches.
      */
-    func readEncryptedImage(messageId: String) throws -> Data
-
+    func listDirectoryFingerprints(sourceId: String) throws  -> [DirectoryFingerprint]
+    
     /**
      * Start listening for state updates and delivering them to the reconciler.
      * Guard with AtomicBool so only one listener thread is spawned.
      */
-    func listenForUpdates(reconciler: AppReconciler)
+    func listenForUpdates(reconciler: AppReconciler) 
+    
+    /**
+     * Decrypt the encrypted image for `message_id` and return raw JPEG bytes.
+     *
+     * The actor thread looks up the message row, reads the MGO1-encrypted file from disk,
+     * decrypts it with the active DEK, and returns the plaintext JPEG bytes.
+     * Plaintext bytes are never stored on disk or in ActorState — they exist only in
+     * the returned Vec<u8> (T-ECE-04).
+     *
+     * Returns Err("locked") when the DEK is not available (app locked).
+     * Returns Err("no image for this message") when the message has no associated image.
+     */
+    func readEncryptedImage(messageId: String) throws  -> Data
     
     /**
      * Read the latest state snapshot from the shared RwLock.
@@ -703,21 +715,20 @@ open func getRawAttestationReport(backendId: String) -> Data?  {
     )
 })
 }
-
+    
     /**
-     * Decrypt the encrypted image for `messageId` and return raw JPEG bytes.
-     *
-     * Plaintext bytes are never stored on disk or in ActorState (T-ECE-04).
-     * Returns an error string if the app is locked, the message has no image, or decryption fails.
+     * Return stored directory fingerprints (relative_path, mtime_secs, size_bytes) for a
+     * registered directory source. Used by native sync pipelines to diff against the
+     * current on-disk enumeration before dispatching SyncDirectoryFiles batches.
      */
-open func readEncryptedImage(messageId: String) throws -> Data  {
-    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterString.lift) {
-    uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(self.uniffiClonePointer(),
-        FfiConverterString.lower(messageId),$0
+open func listDirectoryFingerprints(sourceId: String)throws  -> [DirectoryFingerprint]  {
+    return try  FfiConverterSequenceTypeDirectoryFingerprint.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+    uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(self.uniffiClonePointer(),
+        FfiConverterString.lower(sourceId),$0
     )
 })
 }
-
+    
     /**
      * Start listening for state updates and delivering them to the reconciler.
      * Guard with AtomicBool so only one listener thread is spawned.
@@ -727,6 +738,25 @@ open func listenForUpdates(reconciler: AppReconciler)  {try! rustCall() {
         FfiConverterCallbackInterfaceAppReconciler_lower(reconciler),$0
     )
 }
+}
+    
+    /**
+     * Decrypt the encrypted image for `message_id` and return raw JPEG bytes.
+     *
+     * The actor thread looks up the message row, reads the MGO1-encrypted file from disk,
+     * decrypts it with the active DEK, and returns the plaintext JPEG bytes.
+     * Plaintext bytes are never stored on disk or in ActorState — they exist only in
+     * the returned Vec<u8> (T-ECE-04).
+     *
+     * Returns Err("locked") when the DEK is not available (app locked).
+     * Returns Err("no image for this message") when the message has no associated image.
+     */
+open func readEncryptedImage(messageId: String)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+    uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(self.uniffiClonePointer(),
+        FfiConverterString.lower(messageId),$0
+    )
+})
 }
     
     /**
@@ -1231,6 +1261,12 @@ public struct AppState {
      * True when the main DB was opened with SQLCipher encryption (D-01).
      */
     public var encryptionEnabled: Bool
+    /**
+     * Directory-source summaries loaded from SQLite on startup / after mutations
+     * (DIR-04). Populated by `load_directory_sources_summary`; never includes
+     * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
+     */
+    public var directorySources: [DirectorySourceSummary]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1358,7 +1394,12 @@ public struct AppState {
          */authInitialized: Bool, 
         /**
          * True when the main DB was opened with SQLCipher encryption (D-01).
-         */encryptionEnabled: Bool) {
+         */encryptionEnabled: Bool, 
+        /**
+         * Directory-source summaries loaded from SQLite on startup / after mutations
+         * (DIR-04). Populated by `load_directory_sources_summary`; never includes
+         * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
+         */directorySources: [DirectorySourceSummary]) {
         self.rev = rev
         self.router = router
         self.busyState = busyState
@@ -1395,6 +1436,7 @@ public struct AppState {
         self.lockTimeoutSeconds = lockTimeoutSeconds
         self.authInitialized = authInitialized
         self.encryptionEnabled = encryptionEnabled
+        self.directorySources = directorySources
     }
 }
 
@@ -1513,6 +1555,9 @@ extension AppState: Equatable, Hashable {
         if lhs.encryptionEnabled != rhs.encryptionEnabled {
             return false
         }
+        if lhs.directorySources != rhs.directorySources {
+            return false
+        }
         return true
     }
 
@@ -1553,6 +1598,7 @@ extension AppState: Equatable, Hashable {
         hasher.combine(lockTimeoutSeconds)
         hasher.combine(authInitialized)
         hasher.combine(encryptionEnabled)
+        hasher.combine(directorySources)
     }
 }
 
@@ -1600,7 +1646,8 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 duressPinConfigured: FfiConverterBool.read(from: &buf), 
                 lockTimeoutSeconds: FfiConverterInt64.read(from: &buf), 
                 authInitialized: FfiConverterBool.read(from: &buf), 
-                encryptionEnabled: FfiConverterBool.read(from: &buf)
+                encryptionEnabled: FfiConverterBool.read(from: &buf), 
+                directorySources: FfiConverterSequenceTypeDirectorySourceSummary.read(from: &buf)
         )
     }
 
@@ -1641,6 +1688,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterInt64.write(value.lockTimeoutSeconds, into: &buf)
         FfiConverterBool.write(value.authInitialized, into: &buf)
         FfiConverterBool.write(value.encryptionEnabled, into: &buf)
+        FfiConverterSequenceTypeDirectorySourceSummary.write(value.directorySources, into: &buf)
     }
 }
 
@@ -2121,6 +2169,300 @@ public func FfiConverterTypeConversationSummary_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeConversationSummary_lower(_ value: ConversationSummary) -> RustBuffer {
     return FfiConverterTypeConversationSummary.lower(value)
+}
+
+
+/**
+ * A single file fingerprint + content payload inside a SyncDirectoryFiles batch (Phase 32, DIR-05).
+ *
+ * Native layers enumerate the user-chosen directory (Desktop walker, iOS bookmark
+ * resolve, Android SAF tree URI), read the bytes with platform permissions, and
+ * pass this struct across the UniFFI boundary. The actor extracts text, chunks,
+ * embeds, and indexes — reusing the existing IngestDocument pipeline per file.
+ */
+public struct DirectoryFileEntry {
+    /**
+     * Path relative to the source root. Used as the stable identifier in
+     * directory_files (source_id, file_path) unique key.
+     */
+    public var relativePath: String
+    public var mtimeSecs: Int64
+    public var sizeBytes: Int64
+    public var content: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Path relative to the source root. Used as the stable identifier in
+         * directory_files (source_id, file_path) unique key.
+         */relativePath: String, mtimeSecs: Int64, sizeBytes: Int64, content: Data) {
+        self.relativePath = relativePath
+        self.mtimeSecs = mtimeSecs
+        self.sizeBytes = sizeBytes
+        self.content = content
+    }
+}
+
+#if compiler(>=6)
+extension DirectoryFileEntry: Sendable {}
+#endif
+
+
+extension DirectoryFileEntry: Equatable, Hashable {
+    public static func ==(lhs: DirectoryFileEntry, rhs: DirectoryFileEntry) -> Bool {
+        if lhs.relativePath != rhs.relativePath {
+            return false
+        }
+        if lhs.mtimeSecs != rhs.mtimeSecs {
+            return false
+        }
+        if lhs.sizeBytes != rhs.sizeBytes {
+            return false
+        }
+        if lhs.content != rhs.content {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(relativePath)
+        hasher.combine(mtimeSecs)
+        hasher.combine(sizeBytes)
+        hasher.combine(content)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirectoryFileEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectoryFileEntry {
+        return
+            try DirectoryFileEntry(
+                relativePath: FfiConverterString.read(from: &buf), 
+                mtimeSecs: FfiConverterInt64.read(from: &buf), 
+                sizeBytes: FfiConverterInt64.read(from: &buf), 
+                content: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DirectoryFileEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.relativePath, into: &buf)
+        FfiConverterInt64.write(value.mtimeSecs, into: &buf)
+        FfiConverterInt64.write(value.sizeBytes, into: &buf)
+        FfiConverterData.write(value.content, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectoryFileEntry_lift(_ buf: RustBuffer) throws -> DirectoryFileEntry {
+    return try FfiConverterTypeDirectoryFileEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectoryFileEntry_lower(_ value: DirectoryFileEntry) -> RustBuffer {
+    return FfiConverterTypeDirectoryFileEntry.lower(value)
+}
+
+
+/**
+ * A single stored fingerprint returned from `FfiApp::list_directory_fingerprints`
+ * (Phase 32, DIR-02/DIR-05). Returned to native sync pipelines so they can diff
+ * against the current on-disk enumeration before dispatching SyncDirectoryFiles.
+ */
+public struct DirectoryFingerprint {
+    public var relativePath: String
+    public var mtimeSecs: Int64
+    public var sizeBytes: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(relativePath: String, mtimeSecs: Int64, sizeBytes: Int64) {
+        self.relativePath = relativePath
+        self.mtimeSecs = mtimeSecs
+        self.sizeBytes = sizeBytes
+    }
+}
+
+#if compiler(>=6)
+extension DirectoryFingerprint: Sendable {}
+#endif
+
+
+extension DirectoryFingerprint: Equatable, Hashable {
+    public static func ==(lhs: DirectoryFingerprint, rhs: DirectoryFingerprint) -> Bool {
+        if lhs.relativePath != rhs.relativePath {
+            return false
+        }
+        if lhs.mtimeSecs != rhs.mtimeSecs {
+            return false
+        }
+        if lhs.sizeBytes != rhs.sizeBytes {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(relativePath)
+        hasher.combine(mtimeSecs)
+        hasher.combine(sizeBytes)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirectoryFingerprint: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectoryFingerprint {
+        return
+            try DirectoryFingerprint(
+                relativePath: FfiConverterString.read(from: &buf), 
+                mtimeSecs: FfiConverterInt64.read(from: &buf), 
+                sizeBytes: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DirectoryFingerprint, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.relativePath, into: &buf)
+        FfiConverterInt64.write(value.mtimeSecs, into: &buf)
+        FfiConverterInt64.write(value.sizeBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectoryFingerprint_lift(_ buf: RustBuffer) throws -> DirectoryFingerprint {
+    return try FfiConverterTypeDirectoryFingerprint.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectoryFingerprint_lower(_ value: DirectoryFingerprint) -> RustBuffer {
+    return FfiConverterTypeDirectoryFingerprint.lower(value)
+}
+
+
+/**
+ * UI-facing summary of a directory source (Phase 32, DIR-04/DIR-05).
+ *
+ * Per T-32-I2 (threat register): this struct intentionally omits `bookmark_data`
+ * and `tree_uri` — those handles stay in SQLite and never cross the UniFFI
+ * boundary.
+ */
+public struct DirectorySourceSummary {
+    public var id: String
+    public var displayName: String
+    public var fileCount: Int64
+    public var lastSyncedAt: Int64?
+    public var exclusionGlobs: [String]
+    public var syncStatus: DirectorySyncStatus
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, displayName: String, fileCount: Int64, lastSyncedAt: Int64?, exclusionGlobs: [String], syncStatus: DirectorySyncStatus) {
+        self.id = id
+        self.displayName = displayName
+        self.fileCount = fileCount
+        self.lastSyncedAt = lastSyncedAt
+        self.exclusionGlobs = exclusionGlobs
+        self.syncStatus = syncStatus
+    }
+}
+
+#if compiler(>=6)
+extension DirectorySourceSummary: Sendable {}
+#endif
+
+
+extension DirectorySourceSummary: Equatable, Hashable {
+    public static func ==(lhs: DirectorySourceSummary, rhs: DirectorySourceSummary) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.displayName != rhs.displayName {
+            return false
+        }
+        if lhs.fileCount != rhs.fileCount {
+            return false
+        }
+        if lhs.lastSyncedAt != rhs.lastSyncedAt {
+            return false
+        }
+        if lhs.exclusionGlobs != rhs.exclusionGlobs {
+            return false
+        }
+        if lhs.syncStatus != rhs.syncStatus {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(displayName)
+        hasher.combine(fileCount)
+        hasher.combine(lastSyncedAt)
+        hasher.combine(exclusionGlobs)
+        hasher.combine(syncStatus)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectorySourceSummary {
+        return
+            try DirectorySourceSummary(
+                id: FfiConverterString.read(from: &buf), 
+                displayName: FfiConverterString.read(from: &buf), 
+                fileCount: FfiConverterInt64.read(from: &buf), 
+                lastSyncedAt: FfiConverterOptionInt64.read(from: &buf), 
+                exclusionGlobs: FfiConverterSequenceString.read(from: &buf), 
+                syncStatus: FfiConverterTypeDirectorySyncStatus.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DirectorySourceSummary, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.displayName, into: &buf)
+        FfiConverterInt64.write(value.fileCount, into: &buf)
+        FfiConverterOptionInt64.write(value.lastSyncedAt, into: &buf)
+        FfiConverterSequenceString.write(value.exclusionGlobs, into: &buf)
+        FfiConverterTypeDirectorySyncStatus.write(value.syncStatus, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectorySourceSummary_lift(_ buf: RustBuffer) throws -> DirectorySourceSummary {
+    return try FfiConverterTypeDirectorySourceSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectorySourceSummary_lower(_ value: DirectorySourceSummary) -> RustBuffer {
+    return FfiConverterTypeDirectorySourceSummary.lower(value)
 }
 
 
@@ -2920,29 +3262,31 @@ public struct UiMessage {
     public var ragContextCount: UInt32?
     /**
      * Absolute path to the encrypted image file for this message, if any (QT-ECE).
-     * Non-null when the user sent an image. Decrypt via readEncryptedImage(messageId:).
+     * Non-null when the user sent an image. Decrypt via read_encrypted_image(message_id).
      * Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
      */
     public var imagePath: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String,
+    public init(id: String, 
         /**
          * Message role: "user", "assistant", or "system"
-         */role: String, content: String, createdAt: Int64,
+         */role: String, content: String, createdAt: Int64, 
         /**
          * True if this message has an attached file (shown as attachment pill in UI)
-         */hasAttachment: Bool,
+         */hasAttachment: Bool, 
         /**
          * Filename of the attached file, if any
-         */attachmentName: String?,
+         */attachmentName: String?, 
         /**
          * Number of distinct documents that contributed RAG context to this message (D-07).
          * None if RAG was not active for this turn.
-         */ragContextCount: UInt32?,
+         */ragContextCount: UInt32?, 
         /**
          * Absolute path to the encrypted image file for this message, if any (QT-ECE).
+         * Non-null when the user sent an image. Decrypt via read_encrypted_image(message_id).
+         * Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
          */imagePath: String?) {
         self.id = id
         self.role = role
@@ -3010,13 +3354,13 @@ public struct FfiConverterTypeUiMessage: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UiMessage {
         return
             try UiMessage(
-                id: FfiConverterString.read(from: &buf),
-                role: FfiConverterString.read(from: &buf),
-                content: FfiConverterString.read(from: &buf),
-                createdAt: FfiConverterInt64.read(from: &buf),
-                hasAttachment: FfiConverterBool.read(from: &buf),
-                attachmentName: FfiConverterOptionString.read(from: &buf),
-                ragContextCount: FfiConverterOptionUInt32.read(from: &buf),
+                id: FfiConverterString.read(from: &buf), 
+                role: FfiConverterString.read(from: &buf), 
+                content: FfiConverterString.read(from: &buf), 
+                createdAt: FfiConverterInt64.read(from: &buf), 
+                hasAttachment: FfiConverterBool.read(from: &buf), 
+                attachmentName: FfiConverterOptionString.read(from: &buf), 
+                ragContextCount: FfiConverterOptionUInt32.read(from: &buf), 
                 imagePath: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -3385,6 +3729,48 @@ public enum AppAction {
      */
     case setLockTimeout(seconds: Int64
     )
+    /**
+     * Register a new directory as a RAG source. Exactly one of `path` (Desktop),
+     * `bookmark_data` (iOS security-scoped bookmark), or `tree_uri` (Android SAF)
+     * is expected to be populated.
+     *
+     * Does NOT trigger the initial sync — native layer follows up with
+     * `SyncDirectoryFiles` once it has enumerated files (D-02).
+     */
+    case addDirectorySource(displayName: String, path: String?, bookmarkData: Data?, treeUri: String?, exclusionGlobs: [String]
+    )
+    /**
+     * Process one batch of up to 50 file fingerprints + raw bytes for a directory
+     * source (D-25). Per batch: chunk → embed → usearch.add → SQLite insert, then
+     * flush VectorIndex to disk (D-27). `is_final_batch` marks the last batch.
+     */
+    case syncDirectoryFiles(sourceId: String, files: [DirectoryFileEntry], removedPaths: [String], isFinalBatch: Bool
+    )
+    /**
+     * Remove a directory source and cascade-delete every document, chunk, and
+     * usearch key owned by it (DIR-06).
+     */
+    case removeDirectorySource(sourceId: String
+    )
+    /**
+     * Replace the exclusion glob list for a directory source (DIR-05).
+     * Each glob is validated with `directory_sync::validate_glob_pattern` before
+     * persistence (T-32-V5).
+     */
+    case setDirectoryExclusions(sourceId: String, globs: [String]
+    )
+    /**
+     * Nudge signal asking the native layer to enumerate + resync a specific
+     * directory source. Per D-01 the actor does not enumerate on mobile.
+     */
+    case triggerDirectorySync(sourceId: String
+    )
+    /**
+     * iOS-only: persist a refreshed security-scoped bookmark blob when the OS
+     * reports the previous one as stale. Opaque to Rust — never parsed.
+     */
+    case updateDirectorySourceBookmark(sourceId: String, bookmarkData: Data
+    )
 }
 
 
@@ -3572,6 +3958,24 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         )
         
         case 63: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
+        )
+        
+        case 64: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
+        )
+        
+        case 65: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 66: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 67: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
+        )
+        
+        case 68: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 69: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3898,6 +4302,45 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case let .setLockTimeout(seconds):
             writeInt(&buf, Int32(63))
             FfiConverterInt64.write(seconds, into: &buf)
+            
+        
+        case let .addDirectorySource(displayName,path,bookmarkData,treeUri,exclusionGlobs):
+            writeInt(&buf, Int32(64))
+            FfiConverterString.write(displayName, into: &buf)
+            FfiConverterOptionString.write(path, into: &buf)
+            FfiConverterOptionData.write(bookmarkData, into: &buf)
+            FfiConverterOptionString.write(treeUri, into: &buf)
+            FfiConverterSequenceString.write(exclusionGlobs, into: &buf)
+            
+        
+        case let .syncDirectoryFiles(sourceId,files,removedPaths,isFinalBatch):
+            writeInt(&buf, Int32(65))
+            FfiConverterString.write(sourceId, into: &buf)
+            FfiConverterSequenceTypeDirectoryFileEntry.write(files, into: &buf)
+            FfiConverterSequenceString.write(removedPaths, into: &buf)
+            FfiConverterBool.write(isFinalBatch, into: &buf)
+            
+        
+        case let .removeDirectorySource(sourceId):
+            writeInt(&buf, Int32(66))
+            FfiConverterString.write(sourceId, into: &buf)
+            
+        
+        case let .setDirectoryExclusions(sourceId,globs):
+            writeInt(&buf, Int32(67))
+            FfiConverterString.write(sourceId, into: &buf)
+            FfiConverterSequenceString.write(globs, into: &buf)
+            
+        
+        case let .triggerDirectorySync(sourceId):
+            writeInt(&buf, Int32(68))
+            FfiConverterString.write(sourceId, into: &buf)
+            
+        
+        case let .updateDirectorySourceBookmark(sourceId,bookmarkData):
+            writeInt(&buf, Int32(69))
+            FfiConverterString.write(sourceId, into: &buf)
+            FfiConverterData.write(bookmarkData, into: &buf)
             
         }
     }
@@ -4349,6 +4792,100 @@ extension BusyState: Equatable, Hashable {}
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Status of the background sync for a directory source (Phase 32).
+ *
+ * Used by the UI to render per-source sync indicators.
+ */
+
+public enum DirectorySyncStatus {
+    
+    /**
+     * No sync in progress, last sync (if any) succeeded.
+     */
+    case idle
+    /**
+     * Native layer is enumerating / dispatching batches.
+     */
+    case syncing
+    /**
+     * Last sync ended with an error; message is human-readable.
+     */
+    case error(message: String
+    )
+}
+
+
+#if compiler(>=6)
+extension DirectorySyncStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirectorySyncStatus: FfiConverterRustBuffer {
+    typealias SwiftType = DirectorySyncStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectorySyncStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .idle
+        
+        case 2: return .syncing
+        
+        case 3: return .error(message: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: DirectorySyncStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .idle:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .syncing:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .error(message):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(message, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectorySyncStatus_lift(_ buf: RustBuffer) throws -> DirectorySyncStatus {
+    return try FfiConverterTypeDirectorySyncStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectorySyncStatus_lower(_ value: DirectorySyncStatus) -> RustBuffer {
+    return FfiConverterTypeDirectorySyncStatus.lower(value)
+}
+
+
+extension DirectorySyncStatus: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Embedding provider operational status (Phase 15 / SAFE-03).
  */
 
@@ -4432,6 +4969,89 @@ public func FfiConverterTypeEmbeddingStatus_lower(_ value: EmbeddingStatus) -> R
 extension EmbeddingStatus: Equatable, Hashable {}
 
 
+
+
+
+
+
+/**
+ * Generic FFI error type for synchronous FfiApp methods that can fail for
+ * infrastructure reasons (actor channel disconnect, DB lookup failure, DEK
+ * unavailable, etc.). Uniffi 0.29 requires a concrete enum for throws types —
+ * raw `String` panics the bindgen. Variants are deliberately coarse because
+ * native callers log `reason` and surface a toast rather than branching on code.
+ */
+public enum FfiError: Swift.Error {
+
+    
+    
+    case Internal(reason: String
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiError: FfiConverterRustBuffer {
+    typealias SwiftType = FfiError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Internal(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FfiError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Internal(reason):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiError_lift(_ buf: RustBuffer) throws -> FfiError {
+    return try FfiConverterTypeFfiError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiError_lower(_ value: FfiError) -> RustBuffer {
+    return FfiConverterTypeFfiError.lower(value)
+}
+
+
+extension FfiError: Equatable, Hashable {}
+
+
+
+
+extension FfiError: Foundation.LocalizedError {
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+}
 
 
 
@@ -4795,6 +5415,10 @@ public enum Screen {
      */
     case documents
     /**
+     * Directory sources -- Phase 32 DIR-05 screen for managing folder-based RAG sources.
+     */
+    case directorySources
+    /**
      * Agent session list -- shown when user navigates to the agent management screen (Phase 9).
      */
     case agents
@@ -4863,25 +5487,27 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         
         case 5: return .documents
         
-        case 6: return .agents
+        case 6: return .directorySources
         
-        case 7: return .memories
+        case 7: return .agents
         
-        case 8: return .settingsProviders
+        case 8: return .memories
         
-        case 9: return .settingsDefaults
+        case 9: return .settingsProviders
         
-        case 10: return .settingsMemory
+        case 10: return .settingsDefaults
         
-        case 11: return .settingsAppearance
+        case 11: return .settingsMemory
         
-        case 12: return .settingsSecurity
+        case 12: return .settingsAppearance
         
-        case 13: return .settingsTools
+        case 13: return .settingsSecurity
         
-        case 14: return .locked
+        case 14: return .settingsTools
         
-        case 15: return .pinSetup
+        case 15: return .locked
+        
+        case 16: return .pinSetup
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4913,44 +5539,48 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
             writeInt(&buf, Int32(5))
         
         
-        case .agents:
+        case .directorySources:
             writeInt(&buf, Int32(6))
         
         
-        case .memories:
+        case .agents:
             writeInt(&buf, Int32(7))
         
         
-        case .settingsProviders:
+        case .memories:
             writeInt(&buf, Int32(8))
         
         
-        case .settingsDefaults:
+        case .settingsProviders:
             writeInt(&buf, Int32(9))
         
         
-        case .settingsMemory:
+        case .settingsDefaults:
             writeInt(&buf, Int32(10))
         
         
-        case .settingsAppearance:
+        case .settingsMemory:
             writeInt(&buf, Int32(11))
         
         
-        case .settingsSecurity:
+        case .settingsAppearance:
             writeInt(&buf, Int32(12))
         
         
-        case .settingsTools:
+        case .settingsSecurity:
             writeInt(&buf, Int32(13))
         
         
-        case .locked:
+        case .settingsTools:
             writeInt(&buf, Int32(14))
         
         
-        case .pinSetup:
+        case .locked:
             writeInt(&buf, Int32(15))
+        
+        
+        case .pinSetup:
+            writeInt(&buf, Int32(16))
         
         }
     }
@@ -5834,6 +6464,30 @@ fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
+    typealias SwiftType = Int64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -6153,6 +6807,81 @@ fileprivate struct FfiConverterSequenceTypeConversationSummary: FfiConverterRust
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeDirectoryFileEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [DirectoryFileEntry]
+
+    public static func write(_ value: [DirectoryFileEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeDirectoryFileEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [DirectoryFileEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [DirectoryFileEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeDirectoryFileEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeDirectoryFingerprint: FfiConverterRustBuffer {
+    typealias SwiftType = [DirectoryFingerprint]
+
+    public static func write(_ value: [DirectoryFingerprint], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeDirectoryFingerprint.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [DirectoryFingerprint] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [DirectoryFingerprint]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeDirectoryFingerprint.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeDirectorySourceSummary: FfiConverterRustBuffer {
+    typealias SwiftType = [DirectorySourceSummary]
+
+    public static func write(_ value: [DirectorySourceSummary], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeDirectorySourceSummary.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [DirectorySourceSummary] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [DirectorySourceSummary]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeDirectorySourceSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeDocumentSummary: FfiConverterRustBuffer {
     typealias SwiftType = [DocumentSummary]
 
@@ -6288,9 +7017,10 @@ public func knownProviderPresets() -> [ProviderPreset]  {
  * Returns `true` when the given model id is known to accept multimodal image
  * inputs via the OpenAI-compatible `image_url` content part.
  *
- * Vision capability gating (follow-up to image-upload-still-broken-after-fix
- * debug session). UIs hide the image-picker entry points when this returns
- * false to prevent silent failures on text-only models.
+ * Input is the raw model id string as it appears in `BackendConfig.models`
+ * (e.g. `"llama3-3-70b"`, `"private/qwen3-vl-30b"`, `"gemma3:27b"`).
+ *
+ * Matching is case-insensitive substring. Unknown models return `false`.
  */
 public func modelSupportsVision(modelId: String) -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
@@ -6327,10 +7057,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 18789) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 58567) {
+    if (uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints() != 35481) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() != 42682) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 38651) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_state() != 64379) {

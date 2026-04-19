@@ -406,6 +406,8 @@ pub enum Screen {
     Onboarding { step: OnboardingStep },
     /// Document library -- shown when user navigates to the RAG document management screen (D-09).
     Documents,
+    /// Directory sources -- Phase 32 DIR-05 screen for managing folder-based RAG sources.
+    DirectorySources,
     /// Agent session list -- shown when user navigates to the agent management screen (Phase 9).
     Agents,
     /// Memory management screen -- view, edit, delete stored memories (Phase 23, per D-09).
@@ -3907,6 +3909,17 @@ fn load_post_unlock(
 }
 
 // ── FFI entry point ──────────────────────────────────────────────────────────
+
+/// Generic FFI error type for synchronous FfiApp methods that can fail for
+/// infrastructure reasons (actor channel disconnect, DB lookup failure, DEK
+/// unavailable, etc.). Uniffi 0.29 requires a concrete enum for throws types —
+/// raw `String` panics the bindgen. Variants are deliberately coarse because
+/// native callers log `reason` and surface a toast rather than branching on code.
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum FfiError {
+    #[error("{reason}")]
+    Internal { reason: String },
+}
 
 #[derive(uniffi::Object)]
 pub struct FfiApp {
@@ -7817,17 +7830,22 @@ impl FfiApp {
     ///
     /// Returns Err("locked") when the DEK is not available (app locked).
     /// Returns Err("no image for this message") when the message has no associated image.
-    pub fn read_encrypted_image(&self, message_id: String) -> Result<Vec<u8>, String> {
+    pub fn read_encrypted_image(&self, message_id: String) -> Result<Vec<u8>, FfiError> {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.core_tx
             .send(CoreMsg::ReadEncryptedImage {
                 message_id,
                 reply: reply_tx,
             })
-            .map_err(|e| format!("actor channel error: {e}"))?;
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor channel error: {e}"),
+            })?;
         reply_rx
             .recv()
-            .map_err(|e| format!("actor reply error: {e}"))?
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor reply error: {e}"),
+            })?
+            .map_err(|reason| FfiError::Internal { reason })
     }
 
     /// Return stored directory fingerprints (relative_path, mtime_secs, size_bytes) for a
@@ -7836,17 +7854,22 @@ impl FfiApp {
     pub fn list_directory_fingerprints(
         &self,
         source_id: String,
-    ) -> Result<Vec<DirectoryFingerprint>, String> {
+    ) -> Result<Vec<DirectoryFingerprint>, FfiError> {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.core_tx
             .send(CoreMsg::ListDirectoryFingerprints {
                 source_id,
                 reply: reply_tx,
             })
-            .map_err(|e| format!("actor channel error: {e}"))?;
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor channel error: {e}"),
+            })?;
         reply_rx
             .recv()
-            .map_err(|e| format!("actor reply error: {e}"))?
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor reply error: {e}"),
+            })?
+            .map_err(|reason| FfiError::Internal { reason })
     }
 
     /// Return the raw attestation report blob for `backend_id`, if available.

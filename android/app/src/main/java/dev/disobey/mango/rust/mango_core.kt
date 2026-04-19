@@ -852,6 +852,12 @@ internal open class UniffiVTableCallbackInterfaceKeychainProvider(
 
 
 
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -875,9 +881,11 @@ fun uniffi_mango_core_checksum_method_ffiapp_dispatch(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report(
 ): Short
-fun uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(
+fun uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_listen_for_updates(
+): Short
+fun uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_state(
 ): Short
@@ -961,12 +969,14 @@ fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`k
 ): Pointer
 fun uniffi_mango_core_fn_method_ffiapp_dispatch(`ptr`: Pointer,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(`ptr`: Pointer,`backendId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(`ptr`: Pointer,`backendId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(`ptr`: Pointer,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_mango_core_fn_method_ffiapp_listen_for_updates(`ptr`: Pointer,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_mango_core_fn_method_ffiapp_listen_for_updates(`ptr`: Pointer,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_mango_core_fn_method_ffiapp_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_mango_core_fn_init_callback_vtable_appreconciler(`vtable`: UniffiVTableCallbackInterfaceAppReconciler,
@@ -979,11 +989,11 @@ fun uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(`vtable`: Uniff
 ): Unit
 fun uniffi_mango_core_fn_init_callback_vtable_keychainprovider(`vtable`: UniffiVTableCallbackInterfaceKeychainProvider,
 ): Unit
-fun uniffi_mango_core_fn_func_known_provider_presets(uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_mango_core_fn_func_known_provider_presets(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_mango_core_fn_func_model_supports_vision(`modelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_mango_core_fn_func_model_supports_vision(`modelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
-fun ffi_mango_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_mango_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_mango_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1109,10 +1119,10 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_mango_core_checksum_func_model_supports_vision() != 37098.toShort()) {
+    if (lib.uniffi_mango_core_checksum_func_known_provider_presets() != 26978.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_func_known_provider_presets() != 26978.toShort()) {
+    if (lib.uniffi_mango_core_checksum_func_model_supports_vision() != 37098.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_dispatch() != 49208.toShort()) {
@@ -1121,10 +1131,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 18789.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 58567.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints() != 35481.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() != 42682.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 38651.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_state() != 64379.toShort()) {
@@ -1659,21 +1672,32 @@ public interface FfiAppInterface {
      * actor when attestation verification succeeds.
      */
     fun `getRawAttestationReport`(`backendId`: kotlin.String): kotlin.ByteArray?
-
+    
     /**
-     * Decrypt the encrypted image for `messageId` and return raw JPEG bytes.
-     *
-     * Plaintext bytes are never stored on disk or in ActorState (T-ECE-04).
-     * Throws a String-wrapped exception if the app is locked, the message has no image, or decryption fails.
+     * Return stored directory fingerprints (relative_path, mtime_secs, size_bytes) for a
+     * registered directory source. Used by native sync pipelines to diff against the
+     * current on-disk enumeration before dispatching SyncDirectoryFiles batches.
      */
-    @Throws(kotlin.Exception::class)
-    fun `readEncryptedImage`(`messageId`: kotlin.String): kotlin.ByteArray
-
+    fun `listDirectoryFingerprints`(`sourceId`: kotlin.String): List<DirectoryFingerprint>
+    
     /**
      * Start listening for state updates and delivering them to the reconciler.
      * Guard with AtomicBool so only one listener thread is spawned.
      */
     fun `listenForUpdates`(`reconciler`: AppReconciler)
+    
+    /**
+     * Decrypt the encrypted image for `message_id` and return raw JPEG bytes.
+     *
+     * The actor thread looks up the message row, reads the MGO1-encrypted file from disk,
+     * decrypts it with the active DEK, and returns the plaintext JPEG bytes.
+     * Plaintext bytes are never stored on disk or in ActorState — they exist only in
+     * the returned Vec<u8> (T-ECE-04).
+     *
+     * Returns Err("locked") when the DEK is not available (app locked).
+     * Returns Err("no image for this message") when the message has no associated image.
+     */
+    fun `readEncryptedImage`(`messageId`: kotlin.String): kotlin.ByteArray
     
     /**
      * Read the latest state snapshot from the shared RwLock.
@@ -1813,30 +1837,27 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     }
     )
     }
+    
 
-
+    
     /**
-     * Decrypt the encrypted image for `messageId` and return raw JPEG bytes.
-     *
-     * Plaintext bytes are never stored on disk or in ActorState (T-ECE-04).
-     * Throws if the app is locked, the message has no image, or decryption fails.
+     * Return stored directory fingerprints (relative_path, mtime_secs, size_bytes) for a
+     * registered directory source. Used by native sync pipelines to diff against the
+     * current on-disk enumeration before dispatching SyncDirectoryFiles batches.
      */
-    @Throws(kotlin.Exception::class)
-    override fun `readEncryptedImage`(`messageId`: kotlin.String): kotlin.ByteArray {
-        return FfiConverterByteArray.lift(
+    @Throws(FfiException::class)override fun `listDirectoryFingerprints`(`sourceId`: kotlin.String): List<DirectoryFingerprint> {
+            return FfiConverterSequenceTypeDirectoryFingerprint.lift(
     callWithPointer {
-    uniffiRustCallWithError(object : UniffiRustCallStatusErrorHandler<kotlin.Exception> {
-        override fun lift(error_buf: RustBuffer.ByValue): kotlin.Exception =
-            kotlin.Exception(FfiConverterString.lift(error_buf))
-    }) { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(
-        it, FfiConverterString.lower(`messageId`),_status)
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(
+        it, FfiConverterString.lower(`sourceId`),_status)
 }
     }
     )
     }
+    
 
-
+    
     /**
      * Start listening for state updates and delivering them to the reconciler.
      * Guard with AtomicBool so only one listener thread is spawned.
@@ -1849,6 +1870,30 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
 }
     }
     
+    
+
+    
+    /**
+     * Decrypt the encrypted image for `message_id` and return raw JPEG bytes.
+     *
+     * The actor thread looks up the message row, reads the MGO1-encrypted file from disk,
+     * decrypts it with the active DEK, and returns the plaintext JPEG bytes.
+     * Plaintext bytes are never stored on disk or in ActorState — they exist only in
+     * the returned Vec<u8> (T-ECE-04).
+     *
+     * Returns Err("locked") when the DEK is not available (app locked).
+     * Returns Err("no image for this message") when the message has no associated image.
+     */
+    @Throws(FfiException::class)override fun `readEncryptedImage`(`messageId`: kotlin.String): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(
+        it, FfiConverterString.lower(`messageId`),_status)
+}
+    }
+    )
+    }
     
 
     
@@ -2202,7 +2247,13 @@ data class AppState (
     /**
      * True when the main DB was opened with SQLCipher encryption (D-01).
      */
-    var `encryptionEnabled`: kotlin.Boolean
+    var `encryptionEnabled`: kotlin.Boolean, 
+    /**
+     * Directory-source summaries loaded from SQLite on startup / after mutations
+     * (DIR-04). Populated by `load_directory_sources_summary`; never includes
+     * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
+     */
+    var `directorySources`: List<DirectorySourceSummary>
 ) {
     
     companion object
@@ -2250,6 +2301,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterLong.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterSequenceTypeDirectorySourceSummary.read(buf),
         )
     }
 
@@ -2289,7 +2341,8 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterBoolean.allocationSize(value.`duressPinConfigured`) +
             FfiConverterLong.allocationSize(value.`lockTimeoutSeconds`) +
             FfiConverterBoolean.allocationSize(value.`authInitialized`) +
-            FfiConverterBoolean.allocationSize(value.`encryptionEnabled`)
+            FfiConverterBoolean.allocationSize(value.`encryptionEnabled`) +
+            FfiConverterSequenceTypeDirectorySourceSummary.allocationSize(value.`directorySources`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -2329,6 +2382,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterLong.write(value.`lockTimeoutSeconds`, buf)
             FfiConverterBoolean.write(value.`authInitialized`, buf)
             FfiConverterBoolean.write(value.`encryptionEnabled`, buf)
+            FfiConverterSequenceTypeDirectorySourceSummary.write(value.`directorySources`, buf)
     }
 }
 
@@ -2561,6 +2615,154 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
             FfiConverterLong.write(value.`updatedAt`, buf)
             FfiConverterOptionalString.write(value.`systemPrompt`, buf)
             FfiConverterBoolean.write(value.`toolsEnabled`, buf)
+    }
+}
+
+
+
+/**
+ * A single file fingerprint + content payload inside a SyncDirectoryFiles batch (Phase 32, DIR-05).
+ *
+ * Native layers enumerate the user-chosen directory (Desktop walker, iOS bookmark
+ * resolve, Android SAF tree URI), read the bytes with platform permissions, and
+ * pass this struct across the UniFFI boundary. The actor extracts text, chunks,
+ * embeds, and indexes — reusing the existing IngestDocument pipeline per file.
+ */
+data class DirectoryFileEntry (
+    /**
+     * Path relative to the source root. Used as the stable identifier in
+     * directory_files (source_id, file_path) unique key.
+     */
+    var `relativePath`: kotlin.String, 
+    var `mtimeSecs`: kotlin.Long, 
+    var `sizeBytes`: kotlin.Long, 
+    var `content`: kotlin.ByteArray
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectoryFileEntry: FfiConverterRustBuffer<DirectoryFileEntry> {
+    override fun read(buf: ByteBuffer): DirectoryFileEntry {
+        return DirectoryFileEntry(
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DirectoryFileEntry) = (
+            FfiConverterString.allocationSize(value.`relativePath`) +
+            FfiConverterLong.allocationSize(value.`mtimeSecs`) +
+            FfiConverterLong.allocationSize(value.`sizeBytes`) +
+            FfiConverterByteArray.allocationSize(value.`content`)
+    )
+
+    override fun write(value: DirectoryFileEntry, buf: ByteBuffer) {
+            FfiConverterString.write(value.`relativePath`, buf)
+            FfiConverterLong.write(value.`mtimeSecs`, buf)
+            FfiConverterLong.write(value.`sizeBytes`, buf)
+            FfiConverterByteArray.write(value.`content`, buf)
+    }
+}
+
+
+
+/**
+ * A single stored fingerprint returned from `FfiApp::list_directory_fingerprints`
+ * (Phase 32, DIR-02/DIR-05). Returned to native sync pipelines so they can diff
+ * against the current on-disk enumeration before dispatching SyncDirectoryFiles.
+ */
+data class DirectoryFingerprint (
+    var `relativePath`: kotlin.String, 
+    var `mtimeSecs`: kotlin.Long, 
+    var `sizeBytes`: kotlin.Long
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectoryFingerprint: FfiConverterRustBuffer<DirectoryFingerprint> {
+    override fun read(buf: ByteBuffer): DirectoryFingerprint {
+        return DirectoryFingerprint(
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DirectoryFingerprint) = (
+            FfiConverterString.allocationSize(value.`relativePath`) +
+            FfiConverterLong.allocationSize(value.`mtimeSecs`) +
+            FfiConverterLong.allocationSize(value.`sizeBytes`)
+    )
+
+    override fun write(value: DirectoryFingerprint, buf: ByteBuffer) {
+            FfiConverterString.write(value.`relativePath`, buf)
+            FfiConverterLong.write(value.`mtimeSecs`, buf)
+            FfiConverterLong.write(value.`sizeBytes`, buf)
+    }
+}
+
+
+
+/**
+ * UI-facing summary of a directory source (Phase 32, DIR-04/DIR-05).
+ *
+ * Per T-32-I2 (threat register): this struct intentionally omits `bookmark_data`
+ * and `tree_uri` — those handles stay in SQLite and never cross the UniFFI
+ * boundary.
+ */
+data class DirectorySourceSummary (
+    var `id`: kotlin.String, 
+    var `displayName`: kotlin.String, 
+    var `fileCount`: kotlin.Long, 
+    var `lastSyncedAt`: kotlin.Long?, 
+    var `exclusionGlobs`: List<kotlin.String>, 
+    var `syncStatus`: DirectorySyncStatus
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer<DirectorySourceSummary> {
+    override fun read(buf: ByteBuffer): DirectorySourceSummary {
+        return DirectorySourceSummary(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterSequenceString.read(buf),
+            FfiConverterTypeDirectorySyncStatus.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DirectorySourceSummary) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`displayName`) +
+            FfiConverterLong.allocationSize(value.`fileCount`) +
+            FfiConverterOptionalLong.allocationSize(value.`lastSyncedAt`) +
+            FfiConverterSequenceString.allocationSize(value.`exclusionGlobs`) +
+            FfiConverterTypeDirectorySyncStatus.allocationSize(value.`syncStatus`)
+    )
+
+    override fun write(value: DirectorySourceSummary, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`displayName`, buf)
+            FfiConverterLong.write(value.`fileCount`, buf)
+            FfiConverterOptionalLong.write(value.`lastSyncedAt`, buf)
+            FfiConverterSequenceString.write(value.`exclusionGlobs`, buf)
+            FfiConverterTypeDirectorySyncStatus.write(value.`syncStatus`, buf)
     }
 }
 
@@ -2954,34 +3156,34 @@ public object FfiConverterTypeRouter: FfiConverterRustBuffer<Router> {
  * without additional queries. Maps from MessageRow with extra UI fields.
  */
 data class UiMessage (
-    var `id`: kotlin.String,
+    var `id`: kotlin.String, 
     /**
      * Message role: "user", "assistant", or "system"
      */
-    var `role`: kotlin.String,
-    var `content`: kotlin.String,
-    var `createdAt`: kotlin.Long,
+    var `role`: kotlin.String, 
+    var `content`: kotlin.String, 
+    var `createdAt`: kotlin.Long, 
     /**
      * True if this message has an attached file (shown as attachment pill in UI)
      */
-    var `hasAttachment`: kotlin.Boolean,
+    var `hasAttachment`: kotlin.Boolean, 
     /**
      * Filename of the attached file, if any
      */
-    var `attachmentName`: kotlin.String?,
+    var `attachmentName`: kotlin.String?, 
     /**
      * Number of distinct documents that contributed RAG context to this message (D-07).
      * None if RAG was not active for this turn.
      */
-    var `ragContextCount`: kotlin.UInt?,
+    var `ragContextCount`: kotlin.UInt?, 
     /**
      * Absolute path to the encrypted image file for this message, if any (QT-ECE).
-     * Non-null when the user sent an image. Decrypt via readEncryptedImage(messageId).
+     * Non-null when the user sent an image. Decrypt via read_encrypted_image(message_id).
      * Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
      */
     var `imagePath`: kotlin.String?
 ) {
-
+    
     companion object
 }
 
@@ -3553,6 +3755,75 @@ sealed class AppAction {
         companion object
     }
     
+    /**
+     * Register a new directory as a RAG source. Exactly one of `path` (Desktop),
+     * `bookmark_data` (iOS security-scoped bookmark), or `tree_uri` (Android SAF)
+     * is expected to be populated.
+     *
+     * Does NOT trigger the initial sync — native layer follows up with
+     * `SyncDirectoryFiles` once it has enumerated files (D-02).
+     */
+    data class AddDirectorySource(
+        val `displayName`: kotlin.String, 
+        val `path`: kotlin.String?, 
+        val `bookmarkData`: kotlin.ByteArray?, 
+        val `treeUri`: kotlin.String?, 
+        val `exclusionGlobs`: List<kotlin.String>) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Process one batch of up to 50 file fingerprints + raw bytes for a directory
+     * source (D-25). Per batch: chunk → embed → usearch.add → SQLite insert, then
+     * flush VectorIndex to disk (D-27). `is_final_batch` marks the last batch.
+     */
+    data class SyncDirectoryFiles(
+        val `sourceId`: kotlin.String, 
+        val `files`: List<DirectoryFileEntry>, 
+        val `removedPaths`: List<kotlin.String>, 
+        val `isFinalBatch`: kotlin.Boolean) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Remove a directory source and cascade-delete every document, chunk, and
+     * usearch key owned by it (DIR-06).
+     */
+    data class RemoveDirectorySource(
+        val `sourceId`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Replace the exclusion glob list for a directory source (DIR-05).
+     * Each glob is validated with `directory_sync::validate_glob_pattern` before
+     * persistence (T-32-V5).
+     */
+    data class SetDirectoryExclusions(
+        val `sourceId`: kotlin.String, 
+        val `globs`: List<kotlin.String>) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Nudge signal asking the native layer to enumerate + resync a specific
+     * directory source. Per D-01 the actor does not enumerate on mobile.
+     */
+    data class TriggerDirectorySync(
+        val `sourceId`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * iOS-only: persist a refreshed security-scoped bookmark blob when the OS
+     * reports the previous one as stale. Opaque to Rust — never parsed.
+     */
+    data class UpdateDirectorySourceBookmark(
+        val `sourceId`: kotlin.String, 
+        val `bookmarkData`: kotlin.ByteArray) : AppAction() {
+        companion object
+    }
+    
 
     
     companion object
@@ -3738,6 +4009,33 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 )
             63 -> AppAction.SetLockTimeout(
                 FfiConverterLong.read(buf),
+                )
+            64 -> AppAction.AddDirectorySource(
+                FfiConverterString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalByteArray.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterSequenceString.read(buf),
+                )
+            65 -> AppAction.SyncDirectoryFiles(
+                FfiConverterString.read(buf),
+                FfiConverterSequenceTypeDirectoryFileEntry.read(buf),
+                FfiConverterSequenceString.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            66 -> AppAction.RemoveDirectorySource(
+                FfiConverterString.read(buf),
+                )
+            67 -> AppAction.SetDirectoryExclusions(
+                FfiConverterString.read(buf),
+                FfiConverterSequenceString.read(buf),
+                )
+            68 -> AppAction.TriggerDirectorySync(
+                FfiConverterString.read(buf),
+                )
+            69 -> AppAction.UpdateDirectorySourceBookmark(
+                FfiConverterString.read(buf),
+                FfiConverterByteArray.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
@@ -4188,6 +4486,57 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterLong.allocationSize(value.`seconds`)
             )
         }
+        is AppAction.AddDirectorySource -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`displayName`)
+                + FfiConverterOptionalString.allocationSize(value.`path`)
+                + FfiConverterOptionalByteArray.allocationSize(value.`bookmarkData`)
+                + FfiConverterOptionalString.allocationSize(value.`treeUri`)
+                + FfiConverterSequenceString.allocationSize(value.`exclusionGlobs`)
+            )
+        }
+        is AppAction.SyncDirectoryFiles -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`sourceId`)
+                + FfiConverterSequenceTypeDirectoryFileEntry.allocationSize(value.`files`)
+                + FfiConverterSequenceString.allocationSize(value.`removedPaths`)
+                + FfiConverterBoolean.allocationSize(value.`isFinalBatch`)
+            )
+        }
+        is AppAction.RemoveDirectorySource -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`sourceId`)
+            )
+        }
+        is AppAction.SetDirectoryExclusions -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`sourceId`)
+                + FfiConverterSequenceString.allocationSize(value.`globs`)
+            )
+        }
+        is AppAction.TriggerDirectorySync -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`sourceId`)
+            )
+        }
+        is AppAction.UpdateDirectorySourceBookmark -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`sourceId`)
+                + FfiConverterByteArray.allocationSize(value.`bookmarkData`)
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -4508,6 +4857,45 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             is AppAction.SetLockTimeout -> {
                 buf.putInt(63)
                 FfiConverterLong.write(value.`seconds`, buf)
+                Unit
+            }
+            is AppAction.AddDirectorySource -> {
+                buf.putInt(64)
+                FfiConverterString.write(value.`displayName`, buf)
+                FfiConverterOptionalString.write(value.`path`, buf)
+                FfiConverterOptionalByteArray.write(value.`bookmarkData`, buf)
+                FfiConverterOptionalString.write(value.`treeUri`, buf)
+                FfiConverterSequenceString.write(value.`exclusionGlobs`, buf)
+                Unit
+            }
+            is AppAction.SyncDirectoryFiles -> {
+                buf.putInt(65)
+                FfiConverterString.write(value.`sourceId`, buf)
+                FfiConverterSequenceTypeDirectoryFileEntry.write(value.`files`, buf)
+                FfiConverterSequenceString.write(value.`removedPaths`, buf)
+                FfiConverterBoolean.write(value.`isFinalBatch`, buf)
+                Unit
+            }
+            is AppAction.RemoveDirectorySource -> {
+                buf.putInt(66)
+                FfiConverterString.write(value.`sourceId`, buf)
+                Unit
+            }
+            is AppAction.SetDirectoryExclusions -> {
+                buf.putInt(67)
+                FfiConverterString.write(value.`sourceId`, buf)
+                FfiConverterSequenceString.write(value.`globs`, buf)
+                Unit
+            }
+            is AppAction.TriggerDirectorySync -> {
+                buf.putInt(68)
+                FfiConverterString.write(value.`sourceId`, buf)
+                Unit
+            }
+            is AppAction.UpdateDirectorySourceBookmark -> {
+                buf.putInt(69)
+                FfiConverterString.write(value.`sourceId`, buf)
+                FfiConverterByteArray.write(value.`bookmarkData`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -4999,6 +5387,98 @@ public object FfiConverterTypeBusyState : FfiConverterRustBuffer<BusyState>{
 
 
 /**
+ * Status of the background sync for a directory source (Phase 32).
+ *
+ * Used by the UI to render per-source sync indicators.
+ */
+sealed class DirectorySyncStatus {
+    
+    /**
+     * No sync in progress, last sync (if any) succeeded.
+     */
+    object Idle : DirectorySyncStatus()
+    
+    
+    /**
+     * Native layer is enumerating / dispatching batches.
+     */
+    object Syncing : DirectorySyncStatus()
+    
+    
+    /**
+     * Last sync ended with an error; message is human-readable.
+     */
+    data class Error(
+        val `message`: kotlin.String) : DirectorySyncStatus() {
+        companion object
+    }
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectorySyncStatus : FfiConverterRustBuffer<DirectorySyncStatus>{
+    override fun read(buf: ByteBuffer): DirectorySyncStatus {
+        return when(buf.getInt()) {
+            1 -> DirectorySyncStatus.Idle
+            2 -> DirectorySyncStatus.Syncing
+            3 -> DirectorySyncStatus.Error(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DirectorySyncStatus) = when(value) {
+        is DirectorySyncStatus.Idle -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectorySyncStatus.Syncing -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectorySyncStatus.Error -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`message`)
+            )
+        }
+    }
+
+    override fun write(value: DirectorySyncStatus, buf: ByteBuffer) {
+        when(value) {
+            is DirectorySyncStatus.Idle -> {
+                buf.putInt(1)
+                Unit
+            }
+            is DirectorySyncStatus.Syncing -> {
+                buf.putInt(2)
+                Unit
+            }
+            is DirectorySyncStatus.Error -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`message`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
  * Embedding provider operational status (Phase 15 / SAFE-03).
  */
 
@@ -5039,6 +5519,72 @@ public object FfiConverterTypeEmbeddingStatus: FfiConverterRustBuffer<EmbeddingS
 }
 
 
+
+
+
+
+
+/**
+ * Generic FFI error type for synchronous FfiApp methods that can fail for
+ * infrastructure reasons (actor channel disconnect, DB lookup failure, DEK
+ * unavailable, etc.). Uniffi 0.29 requires a concrete enum for throws types —
+ * raw `String` panics the bindgen. Variants are deliberately coarse because
+ * native callers log `reason` and surface a toast rather than branching on code.
+ */
+sealed class FfiException: kotlin.Exception() {
+    
+    class Internal(
+        
+        val `reason`: kotlin.String
+        ) : FfiException() {
+        override val message
+            get() = "reason=${ `reason` }"
+    }
+    
+
+    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<FfiException> {
+        override fun lift(error_buf: RustBuffer.ByValue): FfiException = FfiConverterTypeFfiError.lift(error_buf)
+    }
+
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiException> {
+    override fun read(buf: ByteBuffer): FfiException {
+        
+
+        return when(buf.getInt()) {
+            1 -> FfiException.Internal(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: FfiException): ULong {
+        return when(value) {
+            is FfiException.Internal -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+        }
+    }
+
+    override fun write(value: FfiException, buf: ByteBuffer) {
+        when(value) {
+            is FfiException.Internal -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+
+}
 
 
 
@@ -5339,6 +5885,12 @@ sealed class Screen {
     
     
     /**
+     * Directory sources -- Phase 32 DIR-05 screen for managing folder-based RAG sources.
+     */
+    object DirectorySources : Screen()
+    
+    
+    /**
      * Agent session list -- shown when user navigates to the agent management screen (Phase 9).
      */
     object Agents : Screen()
@@ -5418,16 +5970,17 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 FfiConverterTypeOnboardingStep.read(buf),
                 )
             5 -> Screen.Documents
-            6 -> Screen.Agents
-            7 -> Screen.Memories
-            8 -> Screen.SettingsProviders
-            9 -> Screen.SettingsDefaults
-            10 -> Screen.SettingsMemory
-            11 -> Screen.SettingsAppearance
-            12 -> Screen.SettingsSecurity
-            13 -> Screen.SettingsTools
-            14 -> Screen.Locked
-            15 -> Screen.PinSetup
+            6 -> Screen.DirectorySources
+            7 -> Screen.Agents
+            8 -> Screen.Memories
+            9 -> Screen.SettingsProviders
+            10 -> Screen.SettingsDefaults
+            11 -> Screen.SettingsMemory
+            12 -> Screen.SettingsAppearance
+            13 -> Screen.SettingsSecurity
+            14 -> Screen.SettingsTools
+            15 -> Screen.Locked
+            16 -> Screen.PinSetup
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -5460,6 +6013,12 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             )
         }
         is Screen.Documents -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is Screen.DirectorySources -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
@@ -5551,44 +6110,48 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 buf.putInt(5)
                 Unit
             }
-            is Screen.Agents -> {
+            is Screen.DirectorySources -> {
                 buf.putInt(6)
                 Unit
             }
-            is Screen.Memories -> {
+            is Screen.Agents -> {
                 buf.putInt(7)
                 Unit
             }
-            is Screen.SettingsProviders -> {
+            is Screen.Memories -> {
                 buf.putInt(8)
                 Unit
             }
-            is Screen.SettingsDefaults -> {
+            is Screen.SettingsProviders -> {
                 buf.putInt(9)
                 Unit
             }
-            is Screen.SettingsMemory -> {
+            is Screen.SettingsDefaults -> {
                 buf.putInt(10)
                 Unit
             }
-            is Screen.SettingsAppearance -> {
+            is Screen.SettingsMemory -> {
                 buf.putInt(11)
                 Unit
             }
-            is Screen.SettingsSecurity -> {
+            is Screen.SettingsAppearance -> {
                 buf.putInt(12)
                 Unit
             }
-            is Screen.SettingsTools -> {
+            is Screen.SettingsSecurity -> {
                 buf.putInt(13)
                 Unit
             }
-            is Screen.Locked -> {
+            is Screen.SettingsTools -> {
                 buf.putInt(14)
                 Unit
             }
-            is Screen.PinSetup -> {
+            is Screen.Locked -> {
                 buf.putInt(15)
+                Unit
+            }
+            is Screen.PinSetup -> {
+                buf.putInt(16)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -6069,6 +6632,38 @@ public object FfiConverterOptionalULong: FfiConverterRustBuffer<kotlin.ULong?> {
 /**
  * @suppress
  */
+public object FfiConverterOptionalLong: FfiConverterRustBuffer<kotlin.Long?> {
+    override fun read(buf: ByteBuffer): kotlin.Long? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterLong.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Long?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterLong.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Long?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterLong.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
     override fun read(buf: ByteBuffer): kotlin.String? {
         if (buf.get().toInt() == 0) {
@@ -6457,6 +7052,90 @@ public object FfiConverterSequenceTypeConversationSummary: FfiConverterRustBuffe
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeDirectoryFileEntry: FfiConverterRustBuffer<List<DirectoryFileEntry>> {
+    override fun read(buf: ByteBuffer): List<DirectoryFileEntry> {
+        val len = buf.getInt()
+        return List<DirectoryFileEntry>(len) {
+            FfiConverterTypeDirectoryFileEntry.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<DirectoryFileEntry>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeDirectoryFileEntry.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<DirectoryFileEntry>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeDirectoryFileEntry.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeDirectoryFingerprint: FfiConverterRustBuffer<List<DirectoryFingerprint>> {
+    override fun read(buf: ByteBuffer): List<DirectoryFingerprint> {
+        val len = buf.getInt()
+        return List<DirectoryFingerprint>(len) {
+            FfiConverterTypeDirectoryFingerprint.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<DirectoryFingerprint>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeDirectoryFingerprint.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<DirectoryFingerprint>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeDirectoryFingerprint.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeDirectorySourceSummary: FfiConverterRustBuffer<List<DirectorySourceSummary>> {
+    override fun read(buf: ByteBuffer): List<DirectorySourceSummary> {
+        val len = buf.getInt()
+        return List<DirectorySourceSummary>(len) {
+            FfiConverterTypeDirectorySourceSummary.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<DirectorySourceSummary>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeDirectorySourceSummary.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<DirectorySourceSummary>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeDirectorySourceSummary.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeDocumentSummary: FfiConverterRustBuffer<List<DocumentSummary>> {
     override fun read(buf: ByteBuffer): List<DocumentSummary> {
         val len = buf.getInt()
@@ -6601,14 +7280,16 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
 }
     )
     }
+    
 
         /**
-         * Returns `true` when the given model id is known to accept multimodal
-         * image inputs via the OpenAI-compatible `image_url` content part.
+         * Returns `true` when the given model id is known to accept multimodal image
+         * inputs via the OpenAI-compatible `image_url` content part.
          *
-         * Vision capability gating (follow-up to image-upload-still-broken-after-fix
-         * debug session). UIs hide the image-picker entry points when this returns
-         * false to prevent silent failures on text-only models.
+         * Input is the raw model id string as it appears in `BackendConfig.models`
+         * (e.g. `"llama3-3-70b"`, `"private/qwen3-vl-30b"`, `"gemma3:27b"`).
+         *
+         * Matching is case-insensitive substring. Unknown models return `false`.
          */ fun `modelSupportsVision`(`modelId`: kotlin.String): kotlin.Boolean {
             return FfiConverterBoolean.lift(
     uniffiRustCall() { _status ->
