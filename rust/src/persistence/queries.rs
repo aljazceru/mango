@@ -968,3 +968,397 @@ pub fn get_memory_content_by_usearch_keys(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
+
+// ── Directory source + directory file queries (Phase 32, MIGRATION_V18) ───────
+
+/// A row from the `directory_sources` table.
+///
+/// Represents a user-chosen filesystem directory that should be kept in sync with the
+/// local RAG index. Exactly one of `path` (Desktop), `bookmark_data` (iOS
+/// security-scoped bookmark), or `tree_uri` (Android persistable tree URI) is expected
+/// to be populated depending on the platform — the column names are nullable so the
+/// same row shape works across all three.
+#[derive(Debug, Clone)]
+pub struct DirectorySourceRow {
+    pub id: String,
+    pub display_name: String,
+    pub path: Option<String>,
+    pub bookmark_data: Option<Vec<u8>>,
+    pub tree_uri: Option<String>,
+    /// JSON-encoded list of glob patterns to exclude from sync (e.g. `["*.tmp","/.git/**"]`).
+    pub exclusion_globs_json: String,
+    pub last_synced_at: Option<i64>,
+    pub file_count: i64,
+    pub created_at: i64,
+}
+
+/// A row from the `directory_files` table.
+///
+/// Stores a single file fingerprint inside a directory source. The fingerprint
+/// (mtime_secs + size_bytes) is used by the sync pass to detect modified files
+/// without rehashing contents.
+#[derive(Debug, Clone)]
+pub struct DirectoryFileRow {
+    pub id: i64,
+    pub source_id: String,
+    pub file_path: String,
+    pub mtime_secs: i64,
+    pub size_bytes: i64,
+    pub document_id: Option<String>,
+}
+
+/// Insert a new directory source row.
+pub fn insert_directory_source(
+    conn: &Connection,
+    row: &DirectorySourceRow,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "INSERT INTO directory_sources
+             (id, display_name, path, bookmark_data, tree_uri, exclusion_globs,
+              last_synced_at, file_count, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?
+    .execute(rusqlite::params![
+        row.id,
+        row.display_name,
+        row.path,
+        row.bookmark_data,
+        row.tree_uri,
+        row.exclusion_globs_json,
+        row.last_synced_at,
+        row.file_count,
+        row.created_at,
+    ])?;
+    Ok(())
+}
+
+/// Return all directory sources ordered by `created_at` ascending (insertion order).
+pub fn list_directory_sources(
+    conn: &Connection,
+) -> Result<Vec<DirectorySourceRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, display_name, path, bookmark_data, tree_uri, exclusion_globs,
+                last_synced_at, file_count, created_at
+         FROM directory_sources ORDER BY created_at ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DirectorySourceRow {
+                id: row.get(0)?,
+                display_name: row.get(1)?,
+                path: row.get(2)?,
+                bookmark_data: row.get(3)?,
+                tree_uri: row.get(4)?,
+                exclusion_globs_json: row.get(5)?,
+                last_synced_at: row.get(6)?,
+                file_count: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Return a single directory source row by id, or None if not found.
+pub fn get_directory_source(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<DirectorySourceRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, display_name, path, bookmark_data, tree_uri, exclusion_globs,
+                last_synced_at, file_count, created_at
+         FROM directory_sources WHERE id = ?1",
+    )?;
+    match stmt.query_row(rusqlite::params![id], |row| {
+        Ok(DirectorySourceRow {
+            id: row.get(0)?,
+            display_name: row.get(1)?,
+            path: row.get(2)?,
+            bookmark_data: row.get(3)?,
+            tree_uri: row.get(4)?,
+            exclusion_globs_json: row.get(5)?,
+            last_synced_at: row.get(6)?,
+            file_count: row.get(7)?,
+            created_at: row.get(8)?,
+        })
+    }) {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(PersistenceError::from(e)),
+    }
+}
+
+/// Delete a directory source row by id. Associated directory_files rows are removed
+/// automatically via ON DELETE CASCADE (MIGRATION_V18).
+pub fn delete_directory_source(conn: &Connection, id: &str) -> Result<(), PersistenceError> {
+    conn.prepare_cached("DELETE FROM directory_sources WHERE id = ?1")?
+        .execute(rusqlite::params![id])?;
+    Ok(())
+}
+
+/// Update `last_synced_at` and `file_count` for a directory source. Called at the
+/// end of each successful sync pass.
+pub fn update_directory_source_last_synced(
+    conn: &Connection,
+    id: &str,
+    ts: i64,
+    file_count: i64,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "UPDATE directory_sources SET last_synced_at = ?2, file_count = ?3 WHERE id = ?1",
+    )?
+    .execute(rusqlite::params![id, ts, file_count])?;
+    Ok(())
+}
+
+/// Replace the exclusion glob list (JSON-encoded) for a directory source.
+pub fn update_directory_source_exclusions(
+    conn: &Connection,
+    id: &str,
+    globs_json: &str,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached("UPDATE directory_sources SET exclusion_globs = ?2 WHERE id = ?1")?
+        .execute(rusqlite::params![id, globs_json])?;
+    Ok(())
+}
+
+/// Replace the iOS security-scoped bookmark blob for a directory source. Called when
+/// the OS returns a refreshed bookmark via `isStale` detection.
+pub fn update_directory_source_bookmark(
+    conn: &Connection,
+    id: &str,
+    bookmark: &[u8],
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached("UPDATE directory_sources SET bookmark_data = ?2 WHERE id = ?1")?
+        .execute(rusqlite::params![id, bookmark])?;
+    Ok(())
+}
+
+/// Insert-or-update a file fingerprint for a directory source.
+///
+/// Uses `ON CONFLICT (source_id, file_path) DO UPDATE` to overwrite `mtime_secs`,
+/// `size_bytes`, and `document_id` when a fingerprint for the same path already
+/// exists. This is the primary call used by the sync diff pass when it detects a
+/// changed file.
+pub fn upsert_directory_file(
+    conn: &Connection,
+    source_id: &str,
+    file_path: &str,
+    mtime_secs: i64,
+    size_bytes: i64,
+    document_id: Option<&str>,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "INSERT INTO directory_files (source_id, file_path, mtime_secs, size_bytes, document_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(source_id, file_path) DO UPDATE SET
+             mtime_secs  = excluded.mtime_secs,
+             size_bytes  = excluded.size_bytes,
+             document_id = excluded.document_id",
+    )?
+    .execute(rusqlite::params![
+        source_id,
+        file_path,
+        mtime_secs,
+        size_bytes,
+        document_id,
+    ])?;
+    Ok(())
+}
+
+/// Return all file fingerprints for a source ordered by file_path ascending.
+pub fn list_directory_files_by_source(
+    conn: &Connection,
+    source_id: &str,
+) -> Result<Vec<DirectoryFileRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, source_id, file_path, mtime_secs, size_bytes, document_id
+         FROM directory_files WHERE source_id = ?1 ORDER BY file_path ASC",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![source_id], |row| {
+            Ok(DirectoryFileRow {
+                id: row.get(0)?,
+                source_id: row.get(1)?,
+                file_path: row.get(2)?,
+                mtime_secs: row.get(3)?,
+                size_bytes: row.get(4)?,
+                document_id: row.get(5)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Delete a single file fingerprint (source_id, file_path) pair.
+#[allow(dead_code)]
+pub fn delete_directory_file(
+    conn: &Connection,
+    source_id: &str,
+    file_path: &str,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached("DELETE FROM directory_files WHERE source_id = ?1 AND file_path = ?2")?
+        .execute(rusqlite::params![source_id, file_path])?;
+    Ok(())
+}
+
+/// Count the number of tracked files for a directory source.
+#[allow(dead_code)]
+pub fn count_directory_files(
+    conn: &Connection,
+    source_id: &str,
+) -> Result<i64, PersistenceError> {
+    let count: i64 = conn
+        .prepare_cached("SELECT COUNT(*) FROM directory_files WHERE source_id = ?1")?
+        .query_row(rusqlite::params![source_id], |row| row.get(0))?;
+    Ok(count)
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+    use crate::persistence::Database;
+
+    fn sample_source(id: &str, display: &str) -> DirectorySourceRow {
+        DirectorySourceRow {
+            id: id.to_string(),
+            display_name: display.to_string(),
+            path: Some(format!("/tmp/{id}")),
+            bookmark_data: None,
+            tree_uri: None,
+            exclusion_globs_json: "[]".to_string(),
+            last_synced_at: None,
+            file_count: 0,
+            created_at: 100,
+        }
+    }
+
+    #[test]
+    fn test_directory_source_queries() {
+        let db = Database::open(":memory:").unwrap();
+        let conn = db.conn();
+
+        // Desktop variant
+        let desktop = sample_source("s1", "Desktop Vault");
+        insert_directory_source(conn, &desktop).unwrap();
+
+        // iOS bookmark variant
+        let ios = DirectorySourceRow {
+            id: "s2".to_string(),
+            display_name: "iOS Vault".to_string(),
+            path: None,
+            bookmark_data: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+            tree_uri: None,
+            exclusion_globs_json: "[]".to_string(),
+            last_synced_at: None,
+            file_count: 0,
+            created_at: 200,
+        };
+        insert_directory_source(conn, &ios).unwrap();
+
+        // Android tree_uri variant
+        let android = DirectorySourceRow {
+            id: "s3".to_string(),
+            display_name: "Android Vault".to_string(),
+            path: None,
+            bookmark_data: None,
+            tree_uri: Some("content://com.android/tree/abc".to_string()),
+            exclusion_globs_json: "[]".to_string(),
+            last_synced_at: None,
+            file_count: 0,
+            created_at: 300,
+        };
+        insert_directory_source(conn, &android).unwrap();
+
+        let listed = list_directory_sources(conn).unwrap();
+        assert_eq!(listed.len(), 3, "should list all 3 sources");
+        assert_eq!(listed[0].id, "s1");
+        assert_eq!(listed[1].id, "s2");
+        assert_eq!(listed[2].id, "s3");
+        assert_eq!(listed[1].bookmark_data, Some(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        assert_eq!(
+            listed[2].tree_uri.as_deref(),
+            Some("content://com.android/tree/abc")
+        );
+
+        // get_directory_source
+        let fetched = get_directory_source(conn, "s2").unwrap().unwrap();
+        assert_eq!(fetched.display_name, "iOS Vault");
+        assert!(get_directory_source(conn, "missing").unwrap().is_none());
+
+        // update_last_synced
+        update_directory_source_last_synced(conn, "s1", 500, 42).unwrap();
+        let fetched = get_directory_source(conn, "s1").unwrap().unwrap();
+        assert_eq!(fetched.last_synced_at, Some(500));
+        assert_eq!(fetched.file_count, 42);
+
+        // delete
+        delete_directory_source(conn, "s2").unwrap();
+        let listed = list_directory_sources(conn).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|r| r.id != "s2"));
+    }
+
+    #[test]
+    fn test_directory_file_fingerprints() {
+        let db = Database::open(":memory:").unwrap();
+        let conn = db.conn();
+        insert_directory_source(conn, &sample_source("src1", "Vault")).unwrap();
+
+        // First insert
+        upsert_directory_file(conn, "src1", "notes/a.md", 100, 500, None).unwrap();
+        let files = list_directory_files_by_source(conn, "src1").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].mtime_secs, 100);
+        assert_eq!(files[0].size_bytes, 500);
+
+        // Upsert same path — should update in place, not duplicate
+        upsert_directory_file(conn, "src1", "notes/a.md", 200, 800, Some("doc-abc")).unwrap();
+        let files = list_directory_files_by_source(conn, "src1").unwrap();
+        assert_eq!(files.len(), 1, "upsert must update, not duplicate");
+        assert_eq!(files[0].mtime_secs, 200);
+        assert_eq!(files[0].size_bytes, 800);
+        assert_eq!(files[0].document_id.as_deref(), Some("doc-abc"));
+
+        // delete_directory_file
+        upsert_directory_file(conn, "src1", "notes/b.md", 300, 900, None).unwrap();
+        delete_directory_file(conn, "src1", "notes/a.md").unwrap();
+        let files = list_directory_files_by_source(conn, "src1").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_path, "notes/b.md");
+    }
+
+    #[test]
+    fn test_count_directory_files() {
+        let db = Database::open(":memory:").unwrap();
+        let conn = db.conn();
+        insert_directory_source(conn, &sample_source("src1", "Vault")).unwrap();
+        insert_directory_source(conn, &sample_source("src2", "Other")).unwrap();
+
+        assert_eq!(count_directory_files(conn, "src1").unwrap(), 0);
+
+        upsert_directory_file(conn, "src1", "a.md", 1, 10, None).unwrap();
+        upsert_directory_file(conn, "src1", "b.md", 2, 20, None).unwrap();
+        upsert_directory_file(conn, "src2", "x.md", 3, 30, None).unwrap();
+
+        assert_eq!(count_directory_files(conn, "src1").unwrap(), 2);
+        assert_eq!(count_directory_files(conn, "src2").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_update_exclusions_and_bookmark() {
+        let db = Database::open(":memory:").unwrap();
+        let conn = db.conn();
+        insert_directory_source(conn, &sample_source("src1", "Vault")).unwrap();
+
+        let new_globs = r#"["*.tmp","/.git/**"]"#;
+        update_directory_source_exclusions(conn, "src1", new_globs).unwrap();
+        let fetched = get_directory_source(conn, "src1").unwrap().unwrap();
+        assert_eq!(fetched.exclusion_globs_json, new_globs);
+
+        let new_bookmark = vec![0x01, 0x02, 0x03, 0x04, 0x05];
+        update_directory_source_bookmark(conn, "src1", &new_bookmark).unwrap();
+        let fetched = get_directory_source(conn, "src1").unwrap().unwrap();
+        assert_eq!(fetched.bookmark_data, Some(new_bookmark));
+    }
+}
