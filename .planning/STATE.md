@@ -136,6 +136,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260403-ft1 | Add Default Instructions setting in Settings (iOS + desktop) for global_system_prompt | 2026-04-03 | f91690e | [260403-ft1-add-default-instructions-setting-in-sett](./quick/260403-ft1-add-default-instructions-setting-in-sett/) |
+| 260419-ece | encrypted image persistence: store sent/received image JPEG encrypted with DEK + thumbnail rendering on Android/iOS/desktop | 2026-04-19 | a7c204b | [260419-ece-encrypted-image-persistence-store-sent-r](./quick/260419-ece-encrypted-image-persistence-store-sent-r/) |
 
 ## Session Continuity
 
