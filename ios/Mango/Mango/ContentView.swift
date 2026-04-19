@@ -27,6 +27,9 @@ struct ContentView: View {
             case .documents:
                 DocumentLibraryView()
                     .environmentObject(appManager)
+            case .directorySources:
+                DirectorySourcesView()
+                    .environmentObject(appManager)
             case .memories:
                 MemoryManagementView()
                     .environmentObject(appManager)
@@ -96,6 +99,11 @@ struct ContentView: View {
                     }
                 }
                 backgroundedAt = nil
+                // Phase 32 D-22: foreground-resume sync for all directory sources.
+                // Runs after the lock-gate check so a locked app does not sync.
+                if !appManager.appState.directorySources.isEmpty {
+                    DirectorySyncScheduler.syncAll(appManager: appManager)
+                }
             case .inactive:
                 // backgroundedAt intentionally not reset here (WR-04).
                 // iOS guarantees the .background phase is always reached before .active
@@ -125,6 +133,10 @@ struct ContentView: View {
                     HStack(spacing: 12) {
                         Button("Documents") {
                             appManager.dispatch(.pushScreen(screen: .documents))
+                        }
+                        .font(.subheadline)
+                        Button("Folders") {
+                            appManager.dispatch(.pushScreen(screen: .directorySources))
                         }
                         .font(.subheadline)
                         Button("Settings") {
