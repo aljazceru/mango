@@ -836,6 +836,16 @@ pub struct DirectorySourceSummary {
     pub sync_status: DirectorySyncStatus,
 }
 
+/// A single stored fingerprint returned from `FfiApp::list_directory_fingerprints`
+/// (Phase 32, DIR-02/DIR-05). Returned to native sync pipelines so they can diff
+/// against the current on-disk enumeration before dispatching SyncDirectoryFiles.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DirectoryFingerprint {
+    pub relative_path: String,
+    pub mtime_secs: i64,
+    pub size_bytes: i64,
+}
+
 /// No-op keychain provider for testing and platforms without a keychain.
 ///
 /// `load` always returns `None`, `store` and `delete` are no-ops.
@@ -893,6 +903,13 @@ pub enum CoreMsg {
     ReadEncryptedImage {
         message_id: String,
         reply: flume::Sender<Result<Vec<u8>, String>>,
+    },
+    /// Return stored fingerprints for the given directory source (Phase 32).
+    /// Used by native layers to compute the walker-side diff before dispatching
+    /// SyncDirectoryFiles batches.
+    ListDirectoryFingerprints {
+        source_id: String,
+        reply: flume::Sender<Result<Vec<DirectoryFingerprint>, String>>,
     },
 }
 
@@ -7718,6 +7735,29 @@ impl FfiApp {
                         }
                     }
 
+                    CoreMsg::ListDirectoryFingerprints { source_id, reply } => {
+                        let result: Result<Vec<DirectoryFingerprint>, String> = (|| {
+                            let db = actor_state
+                                .db
+                                .as_ref()
+                                .ok_or_else(|| "db not available".to_string())?;
+                            let rows = persistence::queries::list_directory_files_by_source(
+                                db.conn(),
+                                &source_id,
+                            )
+                            .map_err(|e| format!("db error: {e}"))?;
+                            Ok(rows
+                                .into_iter()
+                                .map(|r| DirectoryFingerprint {
+                                    relative_path: r.file_path,
+                                    mtime_secs: r.mtime_secs,
+                                    size_bytes: r.size_bytes,
+                                })
+                                .collect())
+                        })();
+                        let _ = reply.send(result);
+                    }
+
                     CoreMsg::ReadEncryptedImage { message_id, reply } => {
                         // Decrypt image on the actor thread (single-user desktop: fine to block briefly).
                         // Plaintext bytes live only on the stack here — never stored in ActorState (T-ECE-04).
@@ -7782,6 +7822,25 @@ impl FfiApp {
         self.core_tx
             .send(CoreMsg::ReadEncryptedImage {
                 message_id,
+                reply: reply_tx,
+            })
+            .map_err(|e| format!("actor channel error: {e}"))?;
+        reply_rx
+            .recv()
+            .map_err(|e| format!("actor reply error: {e}"))?
+    }
+
+    /// Return stored directory fingerprints (relative_path, mtime_secs, size_bytes) for a
+    /// registered directory source. Used by native sync pipelines to diff against the
+    /// current on-disk enumeration before dispatching SyncDirectoryFiles batches.
+    pub fn list_directory_fingerprints(
+        &self,
+        source_id: String,
+    ) -> Result<Vec<DirectoryFingerprint>, String> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.core_tx
+            .send(CoreMsg::ListDirectoryFingerprints {
+                source_id,
                 reply: reply_tx,
             })
             .map_err(|e| format!("actor channel error: {e}"))?;
