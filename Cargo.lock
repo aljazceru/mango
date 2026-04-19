@@ -4253,6 +4253,7 @@ dependencies = [
  "flume",
  "iced",
  "mango_core",
+ "notify-debouncer-mini",
  "open",
  "rfd",
  "serde",

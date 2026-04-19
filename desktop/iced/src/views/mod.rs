@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod chat;
+pub mod directory_sources;
 pub mod documents;
 pub mod home;
 pub mod memories;

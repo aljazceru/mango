@@ -12,7 +12,8 @@ mango_core = { path = "../../rust" }
 iced = { version = "0.14", features = ["tokio", "markdown", "highlighter", "lazy", "image"] }
 flume = "0.11"
 rfd = "0.15"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+notify-debouncer-mini = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 open = "5"
