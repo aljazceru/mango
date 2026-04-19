@@ -1,13 +1,15 @@
 use iced::widget::{center, column, row, text};
 use iced::{Element, Subscription, Task, Theme};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration as StdDuration;
 
 use mango_core::embedding::desktop::DesktopEmbeddingProvider;
 use mango_core::{
-    AppAction, AppReconciler, AppState, AppUpdate, DesktopKeychainProvider, FfiApp,
-    NullBiometricProvider, NullEmbeddingProvider, OnboardingStep, Screen, TeeType,
+    AppAction, AppReconciler, AppState, AppUpdate, DesktopKeychainProvider,
+    DirectoryFileEntry, FfiApp, NullBiometricProvider, NullEmbeddingProvider, OnboardingStep,
+    Screen, TeeType,
 };
 
 mod lock_screen;
@@ -294,6 +296,24 @@ enum App {
         setup_duress_input: String,
         // IMG-07: decrypted image thumbnails keyed by message_id
         image_cache: HashMap<String, iced::widget::image::Handle>,
+        // Phase 32 DIR-05: directory sources view local state
+        dir_editing_exclusions_for: Option<String>,
+        dir_exclusion_edit_text: String,
+        dir_exclusion_validation: HashMap<String, String>,
+        dir_pending_remove_id: Option<String>,
+        dir_watcher_warning: Option<String>,
+        /// Receiver wired to `dir_watcher_tx`; a channel fed by the notify
+        /// debouncer + 5-minute fallback ticker. Consumed by the iced
+        /// subscription so sync triggers are processed on the main loop.
+        dir_trigger_rx: flume::Receiver<Message>,
+        /// Cloneable sender used by the startup watcher/ticker threads.
+        dir_trigger_tx: flume::Sender<Message>,
+        /// Set of source_ids currently being enumerated/synced to avoid
+        /// overlapping pipelines (D-25).
+        dir_in_flight: Arc<Mutex<HashSet<String>>>,
+        /// Per-source absolute path cache for the watcher thread (source_id
+        /// → path). Populated whenever the core emits an updated source list.
+        dir_watched_paths: Arc<Mutex<HashMap<String, String>>>,
 
     },
 }
@@ -424,6 +444,17 @@ enum Message {
         message_id: String,
         handle: iced::widget::image::Handle,
     },
+    // Phase 32 DIR-05: directory sources screen entry + messages
+    OpenDirectorySources,
+    DirSources(views::directory_sources::Message),
+    /// Internal signal: the notify watcher reported a change for this source.
+    DirSyncTriggered(String),
+    /// Internal signal: 5-minute fallback interval fired (phase 32, D-21).
+    DirSyncIntervalTick,
+    /// Internal signal: surface or clear the PollWatcher fallback warning banner.
+    DirWatcherFallbackWarning(Option<String>),
+    /// Internal signal: a directory sync pipeline run completed (no-op update).
+    DirSyncCompleted,
 }
 
 impl App {
@@ -437,6 +468,24 @@ impl App {
                     ThemeOverride::ForceLight => false,
                     ThemeOverride::FollowSystem => true,
                 };
+
+                // Phase 32 DIR-05: directory sync channels + watcher state.
+                // The watcher thread (notify debouncer + PollWatcher fallback) and the
+                // 5-minute tokio interval ticker both push Message values into
+                // dir_trigger_tx; the iced subscription consumes dir_trigger_rx and
+                // delivers them to the main update loop.
+                let (dir_trigger_tx, dir_trigger_rx) = flume::unbounded::<Message>();
+                let dir_in_flight: Arc<Mutex<HashSet<String>>> =
+                    Arc::new(Mutex::new(HashSet::new()));
+                let dir_watched_paths: Arc<Mutex<HashMap<String, String>>> =
+                    Arc::new(Mutex::new(HashMap::new()));
+
+                spawn_directory_sync_workers(
+                    manager.clone(),
+                    dir_trigger_tx.clone(),
+                    dir_watched_paths.clone(),
+                );
+
                 Self::Loaded {
                     manager,
                     state,
@@ -477,6 +526,15 @@ impl App {
                     setup_confirm_input: String::new(),
                     setup_duress_input: String::new(),
                     image_cache: HashMap::new(),
+                    dir_editing_exclusions_for: None,
+                    dir_exclusion_edit_text: String::new(),
+                    dir_exclusion_validation: HashMap::new(),
+                    dir_pending_remove_id: None,
+                    dir_watcher_warning: None,
+                    dir_trigger_rx: dir_trigger_rx.clone(),
+                    dir_trigger_tx: dir_trigger_tx.clone(),
+                    dir_in_flight: dir_in_flight.clone(),
+                    dir_watched_paths: dir_watched_paths.clone(),
                 }
             }
             Err(error) => Self::BootError { error },
@@ -494,9 +552,29 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         match self {
             App::BootError { .. } => Subscription::none(),
-            App::Loaded { manager, .. } => {
+            App::Loaded {
+                manager,
+                dir_trigger_rx,
+                ..
+            } => {
                 let core_updates = Subscription::run_with(manager.clone(), manager_update_stream)
                     .map(|_| Message::CoreUpdated);
+
+                // Phase 32: directory-sync trigger stream (notify watcher, 5-min
+                // interval, PollWatcher fallback warnings, pipeline completion).
+                let dir_rx = dir_trigger_rx.clone();
+                let dir_triggers = Subscription::run_with(
+                    DirTriggerId(dir_rx.clone()),
+                    move |id: &DirTriggerId| {
+                        let rx = id.0.clone();
+                        iced::futures::stream::unfold(rx, |rx| async move {
+                            match rx.recv_async().await {
+                                Ok(m) => Some((m, rx)),
+                                Err(_) => None,
+                            }
+                        })
+                    },
+                );
 
                 // D-12: Listen for window close to checkpoint running agent sessions
                 // D-10 (desktop): iced has no background/foreground lifecycle API.
@@ -514,7 +592,7 @@ impl App {
                 let theme_sub = iced::system::theme_changes()
                     .map(|mode| Message::SystemThemeChanged(mode == iced::theme::Mode::Dark));
 
-                Subscription::batch(vec![core_updates, window_close, theme_sub])
+                Subscription::batch(vec![core_updates, window_close, theme_sub, dir_triggers])
             }
         }
     }
@@ -562,6 +640,15 @@ impl App {
                 setup_confirm_input,
                 setup_duress_input,
                 image_cache,
+                dir_editing_exclusions_for,
+                dir_exclusion_edit_text,
+                dir_exclusion_validation,
+                dir_pending_remove_id,
+                dir_watcher_warning,
+                dir_trigger_rx: _,
+                dir_trigger_tx,
+                dir_in_flight,
+                dir_watched_paths,
             } => {
                 match message {
                     Message::CoreUpdated => {
@@ -1252,6 +1339,229 @@ impl App {
                         }
                     }
 
+                    // ── Phase 32 DIR-05: directory sources handlers ────────────
+                    Message::OpenDirectorySources => {
+                        manager.dispatch(AppAction::PushScreen {
+                            screen: Screen::DirectorySources,
+                        });
+                    }
+
+                    Message::DirWatcherFallbackWarning(msg) => {
+                        *dir_watcher_warning = msg;
+                    }
+
+                    Message::DirSyncCompleted => { /* no-op: UI refresh comes via CoreUpdated */ }
+
+                    Message::DirSyncTriggered(source_id) => {
+                        // Watcher fired for source_id → enqueue a sync pipeline run.
+                        if let Some((path, globs)) =
+                            lookup_source_path_and_globs(state, dir_watched_paths, &source_id)
+                        {
+                            manager.dispatch(AppAction::TriggerDirectorySync {
+                                source_id: source_id.clone(),
+                            });
+                            run_desktop_sync(
+                                manager.clone(),
+                                source_id,
+                                path,
+                                globs,
+                                dir_in_flight.clone(),
+                                dir_trigger_tx.clone(),
+                            );
+                        }
+                    }
+
+                    Message::DirSyncIntervalTick => {
+                        // 5-minute fallback: resync all known sources.
+                        let ids: Vec<String> = state
+                            .directory_sources
+                            .iter()
+                            .map(|s| s.id.clone())
+                            .collect();
+                        for sid in ids {
+                            if let Some((path, globs)) =
+                                lookup_source_path_and_globs(state, dir_watched_paths, &sid)
+                            {
+                                manager.dispatch(AppAction::TriggerDirectorySync {
+                                    source_id: sid.clone(),
+                                });
+                                run_desktop_sync(
+                                    manager.clone(),
+                                    sid,
+                                    path,
+                                    globs,
+                                    dir_in_flight.clone(),
+                                    dir_trigger_tx.clone(),
+                                );
+                            }
+                        }
+                    }
+
+                    Message::DirSources(dm) => {
+                        use views::directory_sources::Message as DM;
+                        match dm {
+                            DM::AddFolder => {
+                                return Task::perform(
+                                    async move {
+                                        rfd::AsyncFileDialog::new()
+                                            .pick_folder()
+                                            .await
+                                            .map(|h| h.path().to_path_buf())
+                                    },
+                                    |opt| Message::DirSources(DM::FolderPicked(opt)),
+                                );
+                            }
+                            DM::FolderPicked(Some(path)) => {
+                                let path_str = path.to_string_lossy().to_string();
+                                let display_name = path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path_str.clone());
+                                let globs = views::directory_sources::default_exclusion_presets();
+                                manager.dispatch(AppAction::AddDirectorySource {
+                                    display_name,
+                                    path: Some(path_str.clone()),
+                                    bookmark_data: None,
+                                    tree_uri: None,
+                                    exclusion_globs: globs.clone(),
+                                });
+                                // The actor will emit a fresh directory_sources list; we
+                                // grab the newly-added id by diffing the next state. For
+                                // robustness we defer path registration to the next
+                                // CoreUpdated tick (see below) by also spawning a
+                                // background retry that reads manager.state() for 2s.
+                                let watched_paths_clone = dir_watched_paths.clone();
+                                let manager_clone = manager.clone();
+                                let globs_clone = globs.clone();
+                                let trigger_tx_clone = dir_trigger_tx.clone();
+                                let in_flight_clone = dir_in_flight.clone();
+                                std::thread::spawn(move || {
+                                    // Poll for up to 2 seconds for the new source row.
+                                    for _ in 0..20 {
+                                        std::thread::sleep(StdDuration::from_millis(100));
+                                        let sources = manager_clone.state().directory_sources;
+                                        if let Some(s) = sources
+                                            .iter()
+                                            .find(|s| s.exclusion_globs == globs_clone)
+                                        {
+                                            if let Ok(mut g) = watched_paths_clone.lock() {
+                                                g.insert(s.id.clone(), path_str.clone());
+                                            }
+                                            // Kick off the initial sync for the freshly
+                                            // added source.
+                                            manager_clone.dispatch(
+                                                AppAction::TriggerDirectorySync {
+                                                    source_id: s.id.clone(),
+                                                },
+                                            );
+                                            run_desktop_sync(
+                                                manager_clone.clone(),
+                                                s.id.clone(),
+                                                path_str.clone(),
+                                                globs_clone.clone(),
+                                                in_flight_clone.clone(),
+                                                trigger_tx_clone.clone(),
+                                            );
+                                            break;
+                                        }
+                                    }
+                                });
+                            }
+                            DM::FolderPicked(None) => {
+                                // User cancelled — no-op.
+                            }
+                            DM::RemoveSource(id) => {
+                                *dir_pending_remove_id = Some(id);
+                            }
+                            DM::CancelRemove => {
+                                *dir_pending_remove_id = None;
+                            }
+                            DM::ConfirmRemove(id) => {
+                                manager.dispatch(AppAction::RemoveDirectorySource {
+                                    source_id: id.clone(),
+                                });
+                                if let Ok(mut g) = dir_watched_paths.lock() {
+                                    g.remove(&id);
+                                }
+                                *dir_pending_remove_id = None;
+                            }
+                            DM::EditExclusions(id) => {
+                                // Pre-populate editor with current source's globs.
+                                let globs = state
+                                    .directory_sources
+                                    .iter()
+                                    .find(|s| s.id == id)
+                                    .map(|s| s.exclusion_globs.join("\n"))
+                                    .unwrap_or_default();
+                                *dir_exclusion_edit_text = globs;
+                                dir_exclusion_validation.remove(&id);
+                                *dir_editing_exclusions_for = Some(id);
+                            }
+                            DM::ExclusionsChanged(id, txt) => {
+                                *dir_exclusion_edit_text = txt;
+                                // Live-validate: store any validation error keyed by id.
+                                match views::directory_sources::parse_and_validate_exclusions(
+                                    dir_exclusion_edit_text,
+                                ) {
+                                    Ok(_) => {
+                                        dir_exclusion_validation.remove(&id);
+                                    }
+                                    Err(e) => {
+                                        dir_exclusion_validation.insert(id, e);
+                                    }
+                                }
+                            }
+                            DM::RestoreDefaultExclusions(id) => {
+                                *dir_exclusion_edit_text =
+                                    views::directory_sources::default_exclusion_presets()
+                                        .join("\n");
+                                dir_exclusion_validation.remove(&id);
+                            }
+                            DM::SaveExclusions(id) => {
+                                match views::directory_sources::parse_and_validate_exclusions(
+                                    dir_exclusion_edit_text,
+                                ) {
+                                    Ok(globs) => {
+                                        manager.dispatch(AppAction::SetDirectoryExclusions {
+                                            source_id: id.clone(),
+                                            globs,
+                                        });
+                                        dir_exclusion_validation.remove(&id);
+                                        *dir_editing_exclusions_for = None;
+                                        *dir_exclusion_edit_text = String::new();
+                                    }
+                                    Err(e) => {
+                                        dir_exclusion_validation.insert(id, e);
+                                    }
+                                }
+                            }
+                            DM::CancelExclusions => {
+                                *dir_editing_exclusions_for = None;
+                                *dir_exclusion_edit_text = String::new();
+                                dir_exclusion_validation.clear();
+                            }
+                            DM::SyncNow(id) => {
+                                if let Some((path, globs)) = lookup_source_path_and_globs(
+                                    state,
+                                    dir_watched_paths,
+                                    &id,
+                                ) {
+                                    manager.dispatch(AppAction::TriggerDirectorySync {
+                                        source_id: id.clone(),
+                                    });
+                                    run_desktop_sync(
+                                        manager.clone(),
+                                        id,
+                                        path,
+                                        globs,
+                                        dir_in_flight.clone(),
+                                        dir_trigger_tx.clone(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     // D-12: On window close, checkpoint all running agent sessions to SQLite
                     Message::WindowCloseRequested => {
                         for session in &state.agent_sessions {
@@ -1313,6 +1623,11 @@ impl App {
                 setup_confirm_input,
                 setup_duress_input,
                 image_cache,
+                dir_editing_exclusions_for,
+                dir_exclusion_edit_text,
+                dir_exclusion_validation,
+                dir_pending_remove_id,
+                dir_watcher_warning,
                 ..
             } => {
                 // Phase 28: Lock screen -- shown on cold launch when auth is required.
@@ -1385,6 +1700,19 @@ impl App {
                     return views::documents::view(state, *is_dark);
                 }
 
+                // DirectorySources screen (Phase 32 DIR-05): full-screen overlay.
+                if matches!(&state.router.current_screen, Screen::DirectorySources) {
+                    return views::directory_sources::view(
+                        state,
+                        dir_watcher_warning.as_deref(),
+                        dir_editing_exclusions_for.as_deref(),
+                        dir_exclusion_edit_text,
+                        dir_exclusion_validation,
+                        dir_pending_remove_id.as_deref(),
+                        *is_dark,
+                    );
+                }
+
                 // Memories screen: full-screen overlay (no sidebar)
                 if matches!(&state.router.current_screen, Screen::Memories) {
                     return views::memories::view(state, memory_edit_state, *is_dark);
@@ -1433,4 +1761,399 @@ impl App {
             }
         }
     }
+}
+
+/// Stable identity wrapper used by iced's `Subscription::run_with` to dedupe
+/// the directory-trigger subscription across renders. We hash by the Arc
+/// pointer of the receiver (one receiver per App instance).
+#[derive(Clone)]
+struct DirTriggerId(flume::Receiver<Message>);
+
+impl Hash for DirTriggerId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Use the address of the underlying inner as identity surrogate.
+        (&self.0 as *const _ as usize).hash(state);
+    }
+}
+
+// ── Phase 32 DIR-05: helpers ──────────────────────────────────────────────────
+
+/// Resolve (absolute_path, exclusion_globs) for a source_id by looking up the
+/// watched_paths map (populated by AddFolder) for the path and AppState for the
+/// globs. Returns None if the source is not yet registered on the desktop side.
+fn lookup_source_path_and_globs(
+    state: &AppState,
+    watched: &Arc<Mutex<HashMap<String, String>>>,
+    source_id: &str,
+) -> Option<(String, Vec<String>)> {
+    let path = watched.lock().ok()?.get(source_id).cloned()?;
+    let globs = state
+        .directory_sources
+        .iter()
+        .find(|s| s.id == source_id)
+        .map(|s| s.exclusion_globs.clone())
+        .unwrap_or_default();
+    Some((path, globs))
+}
+
+// ── Phase 32 DIR-05: directory sync workers + walker pipeline ─────────────────
+
+/// Spawn the long-lived watcher + fallback-ticker threads on app startup.
+///
+/// Three workers are started:
+///
+/// 1. A notify-debouncer-mini debouncer (2s debounce per D-10) watching every
+///    registered directory source's absolute path recursively. Change events
+///    dispatch [`Message::DirSyncTriggered`] per affected source.
+///
+/// 2. A 5-minute tokio interval ticker (D-21 belt-and-braces fallback) that
+///    fires [`Message::DirSyncIntervalTick`] so even if inotify is deaf the
+///    sources still re-sync periodically.
+///
+/// 3. A state-subscriber that keeps the watched-paths map in sync with
+///    AppState and rebuilds the watcher set as sources are added or removed.
+///    Also flips to PollWatcher (60s) when ENOSPC / watch-limit is reported
+///    by notify, emitting [`Message::DirWatcherFallbackWarning`].
+fn spawn_directory_sync_workers(
+    _manager: AppManager,
+    trigger_tx: flume::Sender<Message>,
+    watched_paths: Arc<Mutex<HashMap<String, String>>>,
+) {
+    use notify_debouncer_mini::new_debouncer;
+    use notify_debouncer_mini::notify::{
+        Config as NotifyConfig, Event as NotifyEvent, EventHandler, PollWatcher, RecursiveMode,
+        Watcher,
+    };
+
+    // ── Watcher thread ────────────────────────────────────────────────────────
+    // Strategy: build a RecommendedWatcher-backed debouncer (2s timeout per
+    // D-10) as the primary watcher. If either the debouncer or a subsequent
+    // `watch()` call fails with ENOSPC / watch-limit exhaustion, fall back to
+    // a plain `PollWatcher` with a 60s poll interval (D-11) and surface a UI
+    // warning banner. The 5-minute ticker (below) is the belt-and-braces
+    // belt-and-braces fallback either way.
+    {
+        let trigger_tx = trigger_tx.clone();
+        let watched_paths = watched_paths.clone();
+        std::thread::spawn(move || {
+            // Shared event-raw-stream channel: both the RecommendedWatcher
+            // debouncer and the PollWatcher fallback push events here.
+            let (ev_tx, ev_rx) = flume::unbounded::<Vec<std::path::PathBuf>>();
+
+            // Primary: RecommendedWatcher-backed debouncer with 2s timeout.
+            let ev_tx_primary = ev_tx.clone();
+            let primary = new_debouncer(
+                StdDuration::from_secs(2),
+                move |res: notify_debouncer_mini::DebounceEventResult| match res {
+                    Ok(events) => {
+                        let paths: Vec<std::path::PathBuf> =
+                            events.into_iter().map(|e| e.path).collect();
+                        let _ = ev_tx_primary.send(paths);
+                    }
+                    Err(e) => {
+                        eprintln!("[dir-sync] debouncer error: {e:?}");
+                    }
+                },
+            );
+
+            // If the RecommendedWatcher failed to init, spin up PollWatcher
+            // with poll_interval(60s). This trait-object dance avoids the
+            // generic-parameter mismatch between Debouncer<InotifyWatcher>
+            // and Debouncer<PollWatcher>.
+            struct PollHandler {
+                tx: flume::Sender<Vec<std::path::PathBuf>>,
+            }
+            impl EventHandler for PollHandler {
+                fn handle_event(&mut self, res: notify_debouncer_mini::notify::Result<NotifyEvent>) {
+                    if let Ok(ev) = res {
+                        let _ = self.tx.send(ev.paths);
+                    }
+                }
+            }
+
+            let mut poll_watcher: Option<PollWatcher> = None;
+            let mut debouncer = match primary {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    eprintln!(
+                        "[dir-sync] RecommendedWatcher init failed: {e}; using PollWatcher(60s)"
+                    );
+                    let _ = trigger_tx.send(Message::DirWatcherFallbackWarning(Some(
+                        "File watching unavailable; syncing on schedule every 5 min".to_string(),
+                    )));
+                    let ev_tx_poll = ev_tx.clone();
+                    let cfg = NotifyConfig::default()
+                        .with_poll_interval(StdDuration::from_secs(60));
+                    match PollWatcher::new(PollHandler { tx: ev_tx_poll }, cfg) {
+                        Ok(w) => {
+                            poll_watcher = Some(w);
+                        }
+                        Err(e2) => eprintln!("[dir-sync] PollWatcher init failed: {e2}"),
+                    }
+                    None
+                }
+            };
+
+            let mut using_poll_fallback = poll_watcher.is_some();
+
+            // Main loop: reconcile watch registrations + drain events.
+            let mut registered_paths: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            loop {
+                // Apply any newly-registered paths.
+                if let Ok(guard) = watched_paths.lock() {
+                    for (_sid, p) in guard.iter() {
+                        if registered_paths.contains(p) {
+                            continue;
+                        }
+                        let path = std::path::Path::new(p);
+                        let result: Result<(), notify_debouncer_mini::notify::Error> =
+                            if let Some(d) = debouncer.as_mut() {
+                                d.watcher().watch(path, RecursiveMode::Recursive)
+                            } else if let Some(pw) = poll_watcher.as_mut() {
+                                pw.watch(path, RecursiveMode::Recursive)
+                            } else {
+                                Ok(())
+                            };
+                        match result {
+                            Ok(()) => {
+                                registered_paths.insert(p.clone());
+                            }
+                            Err(e) => {
+                                let msg = e.to_string();
+                                if !using_poll_fallback
+                                    && (msg.contains("No space left")
+                                        || msg.contains("ENOSPC")
+                                        || msg.contains("watch limit"))
+                                {
+                                    eprintln!(
+                                        "[dir-sync] inotify exhausted ({msg}); switching to PollWatcher"
+                                    );
+                                    let _ = trigger_tx.send(
+                                        Message::DirWatcherFallbackWarning(Some(
+                                            "File watching unavailable; syncing on schedule every 5 min"
+                                                .to_string(),
+                                        )),
+                                    );
+                                    // Drop the primary debouncer and build
+                                    // a PollWatcher fallback.
+                                    debouncer = None;
+                                    let ev_tx_poll = ev_tx.clone();
+                                    let cfg = NotifyConfig::default()
+                                        .with_poll_interval(StdDuration::from_secs(60));
+                                    match PollWatcher::new(
+                                        PollHandler { tx: ev_tx_poll },
+                                        cfg,
+                                    ) {
+                                        Ok(w) => {
+                                            poll_watcher = Some(w);
+                                            using_poll_fallback = true;
+                                            // Force re-registration of all
+                                            // paths on the new watcher.
+                                            registered_paths.clear();
+                                        }
+                                        Err(e2) => eprintln!(
+                                            "[dir-sync] PollWatcher init failed: {e2}"
+                                        ),
+                                    }
+                                } else {
+                                    eprintln!("[dir-sync] watch({p}) failed: {msg}");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Drain raw-path events with short timeout.
+                match ev_rx.recv_timeout(StdDuration::from_millis(500)) {
+                    Ok(paths) => {
+                        let map_snapshot = watched_paths
+                            .lock()
+                            .map(|g| g.clone())
+                            .unwrap_or_default();
+                        let mut fired: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        for p in paths {
+                            let ev_path_str = p.to_string_lossy().to_string();
+                            let mut best_match: Option<(&String, usize)> = None;
+                            for (sid, root) in &map_snapshot {
+                                if ev_path_str.starts_with(root.as_str()) {
+                                    let len = root.len();
+                                    if best_match.map(|(_, l)| len > l).unwrap_or(true) {
+                                        best_match = Some((sid, len));
+                                    }
+                                }
+                            }
+                            if let Some((sid, _)) = best_match {
+                                fired.insert(sid.clone());
+                            }
+                        }
+                        for sid in fired {
+                            let _ = trigger_tx.send(Message::DirSyncTriggered(sid));
+                        }
+                    }
+                    Err(flume::RecvTimeoutError::Timeout) => {
+                        // Normal idle — continue loop to re-check new watches.
+                    }
+                    Err(flume::RecvTimeoutError::Disconnected) => {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    // ── 5-minute fallback interval ticker (D-21) ─────────────────────────────
+    {
+        let trigger_tx_iv = trigger_tx.clone();
+        std::thread::spawn(move || {
+            // Simple sleep loop — we don't need tokio for a 5-minute tick.
+            // Using std::thread::sleep keeps the worker self-contained and
+            // avoids depending on the iced runtime executor for cadence.
+            loop {
+                std::thread::sleep(StdDuration::from_secs(60 * 5));
+                let _ = trigger_tx_iv.send(Message::DirSyncIntervalTick);
+            }
+        });
+    }
+}
+
+/// Run the desktop walker pipeline for a single directory source.
+///
+/// Steps:
+/// 1. Enumerate files on disk via `walk_with_exclusions`.
+/// 2. Fetch stored fingerprints via `FfiApp::list_directory_fingerprints`.
+/// 3. Diff with `diff_files`.
+/// 4. For each 50-file batch in (added ∪ modified), read bytes and dispatch
+///    `SyncDirectoryFiles { files, removed_paths (first batch only), is_final_batch }`.
+/// 5. If no adds/mods but there are removals, dispatch a single final batch
+///    with empty `files` + `removed_paths`.
+fn run_desktop_sync(
+    manager: AppManager,
+    source_id: String,
+    root_path: String,
+    exclusion_globs: Vec<String>,
+    in_flight: Arc<Mutex<HashSet<String>>>,
+    done_tx: flume::Sender<Message>,
+) {
+    std::thread::spawn(move || {
+        // Guard against overlapping runs for the same source.
+        {
+            let mut guard = match in_flight.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            if !guard.insert(source_id.clone()) {
+                return;
+            }
+        }
+        let cleanup_in_flight = || {
+            if let Ok(mut g) = in_flight.lock() {
+                g.remove(&source_id);
+            }
+        };
+
+        // 1. Enumerate.
+        let current: Vec<(String, i64, i64)> =
+            match mango_core::rag::directory_sync::walk_with_exclusions(
+                &root_path,
+                &exclusion_globs,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[dir-sync] walk_with_exclusions({root_path}) failed: {e}");
+                    cleanup_in_flight();
+                    let _ = done_tx.send(Message::DirSyncCompleted);
+                    return;
+                }
+            };
+
+        // 2. Fetch stored fingerprints.
+        let stored_rows = match manager.ffi.list_directory_fingerprints(source_id.clone()) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[dir-sync] list_directory_fingerprints failed: {e}");
+                cleanup_in_flight();
+                let _ = done_tx.send(Message::DirSyncCompleted);
+                return;
+            }
+        };
+        let stored: Vec<mango_core::rag::directory_sync::StoredFingerprint> = stored_rows
+            .into_iter()
+            .map(|f| mango_core::rag::directory_sync::StoredFingerprint {
+                file_path: f.relative_path,
+                mtime_secs: f.mtime_secs,
+                size_bytes: f.size_bytes,
+            })
+            .collect();
+
+        // 3. Diff.
+        let diff = mango_core::rag::directory_sync::diff_files(&stored, &current);
+
+        // Build the list of (relative_path, mtime, size) tuples we need bytes for.
+        let mut to_read: Vec<(String, i64, i64)> = Vec::new();
+        to_read.extend(diff.added.iter().cloned());
+        to_read.extend(diff.modified.iter().cloned());
+        let removed: Vec<String> = diff.removed.clone();
+
+        // No-op fast path: nothing to add/modify AND nothing to remove.
+        if to_read.is_empty() && removed.is_empty() {
+            cleanup_in_flight();
+            let _ = done_tx.send(Message::DirSyncCompleted);
+            return;
+        }
+
+        // 4+5. Dispatch batches of up to 50 files. `removed_paths` attach to the
+        // first batch; `is_final_batch` marks the last dispatched batch.
+        if to_read.is_empty() && !removed.is_empty() {
+            // Empty-files final batch carrying the removals.
+            manager.dispatch(AppAction::SyncDirectoryFiles {
+                source_id: source_id.clone(),
+                files: vec![],
+                removed_paths: removed,
+                is_final_batch: true,
+            });
+            cleanup_in_flight();
+            let _ = done_tx.send(Message::DirSyncCompleted);
+            return;
+        }
+
+        let root = std::path::PathBuf::from(&root_path);
+        let batches: Vec<Vec<(String, i64, i64)>> =
+            to_read.chunks(50).map(|c| c.to_vec()).collect();
+        let batch_count = batches.len();
+        for (idx, batch) in batches.into_iter().enumerate() {
+            let mut files: Vec<DirectoryFileEntry> = Vec::with_capacity(batch.len());
+            for (rel, mtime, size) in batch {
+                let abs = root.join(&rel);
+                match std::fs::read(&abs) {
+                    Ok(bytes) => {
+                        files.push(DirectoryFileEntry {
+                            relative_path: rel,
+                            mtime_secs: mtime,
+                            size_bytes: size,
+                            content: bytes,
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[dir-sync] failed to read {}: {e}", abs.display());
+                    }
+                }
+            }
+            let is_final = idx + 1 == batch_count;
+            let removed_paths = if idx == 0 {
+                removed.clone()
+            } else {
+                Vec::new()
+            };
+            manager.dispatch(AppAction::SyncDirectoryFiles {
+                source_id: source_id.clone(),
+                files,
+                removed_paths,
+                is_final_batch: is_final,
+            });
+        }
+        cleanup_in_flight();
+        let _ = done_tx.send(Message::DirSyncCompleted);
+    });
 }
