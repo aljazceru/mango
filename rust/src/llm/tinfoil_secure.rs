@@ -168,7 +168,6 @@ pub async fn run_streaming_chat_completion(
     use async_openai::types::chat::{
         ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
         ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
-        CreateChatCompletionRequestArgs,
     };
 
     let mut openai_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
@@ -208,6 +207,33 @@ pub async fn run_streaming_chat_completion(
             }
         }
     }
+
+    run_streaming_chat_completion_from_api_messages(
+        backend,
+        model,
+        openai_messages,
+        cancel_token,
+        core_tx,
+    )
+    .await;
+}
+
+/// Stream Tinfoil chat completions from already-built async-openai API messages.
+///
+/// Used by `spawn_streaming_task_from_api_messages` so that multipart user messages
+/// (vision: `ChatCompletionRequestUserMessageContent::Array` with an image_url part)
+/// reach the Tinfoil secure tunnel unchanged. The prior path collapsed Array → plain
+/// text and silently dropped image parts, breaking vision on Tinfoil-hosted models
+/// (debug session `image-upload-still-broken-after-fix`).
+pub async fn run_streaming_chat_completion_from_api_messages(
+    backend: BackendConfig,
+    model: String,
+    openai_messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage>,
+    cancel_token: tokio_util::sync::CancellationToken,
+    core_tx: flume::Sender<crate::CoreMsg>,
+) {
+    use crate::llm::error::LlmError;
+    use async_openai::types::chat::CreateChatCompletionRequestArgs;
 
     let request = match CreateChatCompletionRequestArgs::default()
         .model(model.as_str())
