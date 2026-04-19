@@ -1763,9 +1763,16 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     let now = now_secs();
 
     // Phase 31: image attachment branch is separate — does NOT augment text.
+    // IMPORTANT: `final_text` is the PERSISTENCE string (SQLite `content` column +
+    // UiMessage render). `api_text` is the WIRE string (what the model sees in the
+    // multipart Text content part). For image turns they intentionally differ — the
+    // persistence string carries the "[Image: {filename}]" placeholder (T-31-04,
+    // no base64 ever persisted); the wire string must stay the raw user input so
+    // the model does not see a bracketed filename and treat it as a truncated
+    // attachment reference.
     let has_image_attachment = actor_state.pending_image_attachment.is_some();
-    let (final_text, has_attachment, attachment_name) = if has_image_attachment {
-        // Image path: user text is sent verbatim; image is added as a multipart part below.
+    let (final_text, api_text, has_attachment, attachment_name) = if has_image_attachment {
+        // Image path: image is added as a multipart part below; user text is sent verbatim on the wire.
         // Persisted content is plain text + a "[Image: {filename}]" placeholder — never base64 (T-31-04).
         let img = actor_state.pending_image_attachment.as_ref().unwrap();
         let name = img.filename.clone();
@@ -1774,16 +1781,19 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         } else {
             format!("{}\n\n[Image: {}]", text, name)
         };
-        (persisted, true, Some(name))
+        // api_text is the original user input, without the "[Image: ...]" placeholder.
+        (persisted, text.clone(), true, Some(name))
     } else if let Some(att) = actor_state.pending_attachment.take() {
         let augmented = format!(
             "[Attached: {}]\n\n{}\n\n---\n\n{}",
             att.filename, att.content, text
         );
         let name = att.filename.clone();
-        (augmented, true, Some(name))
+        // For text attachments there is no wire/persistence split today — both carry
+        // the full augmented context; keep api_text == final_text.
+        (augmented.clone(), augmented, true, Some(name))
     } else {
-        (text, false, None)
+        (text.clone(), text, false, None)
     };
 
     // Clear pending_attachment from AppState too
@@ -2090,7 +2100,12 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
             .iter()
             .rposition(|m| matches!(m, ChatCompletionRequestMessage::User(_)))
         {
-            match build_user_message_with_image(actor_state, &final_text) {
+            // Use `api_text` (raw user input), NOT `final_text` which carries the
+            // "[Image: {filename}]" persistence placeholder. Leaking that placeholder
+            // into the multipart Text part makes models treat the message as a
+            // truncated attachment reference (debug session
+            // `android-image-upload-sent-as-text-placeholder`).
+            match build_user_message_with_image(actor_state, &api_text) {
                 Ok(multipart) => {
                     api_messages[last] = multipart;
                 }
@@ -7183,6 +7198,64 @@ mod image_red_tests {
         assert!(
             json.contains("data:image/jpeg;base64,"),
             "expected data URL, got: {}",
+            json
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Regression (debug session `android-image-upload-sent-as-text-placeholder`):
+    /// when the caller passes the RAW user text, the multipart Text content part
+    /// must NOT contain the "[Image: {filename}]" persistence placeholder. The
+    /// placeholder belongs only in the SQLite row and UiMessage, not on the wire.
+    ///
+    /// This test locks in the fix at the `build_user_message_with_image` boundary:
+    /// the helper must emit exactly what the caller passes. Callers (see
+    /// `do_send_message`) are responsible for passing `api_text`, NOT `final_text`.
+    #[test]
+    fn test_build_user_message_with_image_does_not_leak_placeholder() {
+        use image::{DynamicImage, RgbImage};
+        let img = DynamicImage::ImageRgb8(RgbImage::new(16, 16));
+        let tmp = std::env::temp_dir().join(format!(
+            "t31_noleak_{}_{}.jpg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        img.save_with_format(&tmp, image::ImageFormat::Jpeg)
+            .unwrap();
+
+        let filename = "camera_42.jpg";
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.pending_image_attachment = Some(PendingImageAttachment {
+            filename: filename.to_string(),
+            file_path: tmp.to_str().unwrap().to_string(),
+            mime_type: "image/jpeg".to_string(),
+        });
+
+        // Simulate what `do_send_message` now does: pass the RAW user text.
+        let raw_user_text = "whats in the photo";
+        let msg = build_user_message_with_image(&actor_state, raw_user_text)
+            .expect("multipart message");
+        let json = serde_json::to_string(&msg).expect("serialize");
+
+        assert!(
+            json.contains(raw_user_text),
+            "wire text must contain raw user input, got: {}",
+            json
+        );
+        assert!(
+            !json.contains("[Image:"),
+            "wire payload must NOT contain the '[Image: ...]' persistence placeholder; \
+             got: {}",
+            json
+        );
+        assert!(
+            !json.contains(filename),
+            "wire payload must NOT leak the client-side filename (the image is sent as \
+             a data URL, not by filename); got: {}",
             json
         );
 
