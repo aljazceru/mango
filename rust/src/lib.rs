@@ -159,6 +159,10 @@ pub struct AttachmentInfo {
     pub filename: String,
     /// Human-readable size string, e.g. "42 KB" or "1 MB"
     pub size_display: String,
+    /// Phase 31 (IMG-04): true when the pending attachment is an image to be
+    /// sent as a multipart `image_url` part rather than a text file prepended
+    /// to the user message. Platforms use this to render a distinct pill style.
+    pub is_image: bool,
 }
 
 /// File picker result returned by the native FilePickerProvider callback.
@@ -474,6 +478,14 @@ pub enum AppAction {
     },
     /// Clear the pending file attachment without sending
     ClearAttachment,
+    /// Store a pending image attachment to be sent with the next message (Phase 31).
+    /// file_path is an absolute path to a JPEG/PNG file in the app sandbox.
+    /// The actor reads bytes at request time and builds a multipart user message.
+    AttachImage {
+        filename: String,
+        file_path: String,
+        mime_type: String,
+    },
     /// Select a model for the current conversation (per D-06)
     SelectModel { model_id: String },
     /// Set a system prompt for the current conversation (per D-09)
@@ -789,6 +801,17 @@ struct PendingAttachment {
     content: String,
 }
 
+/// Actor-internal pending image attachment -- never crosses UniFFI.
+/// Stored until the next SendMessage; file is read + resized + JPEG-encoded
+/// at request-build time in do_send_message.
+#[derive(Clone, Debug)]
+struct PendingImageAttachment {
+    filename: String,
+    file_path: String, // absolute path in app sandbox
+    #[allow(dead_code)]
+    mime_type: String, // "image/jpeg" | "image/png"
+}
+
 /// Actor-internal state -- holds secrets and Tokio types that must NOT enter AppState.
 /// Per Pitfall 3: BackendConfig (with api_key) and CancellationToken never cross FFI.
 /// Per Pitfall 6 in RESEARCH.md: rusqlite::Connection is not Send -- must stay on actor thread.
@@ -811,11 +834,18 @@ struct ActorState {
     keychain: Box<dyn KeychainProvider>,
     /// Pending file attachment waiting to be sent with the next message (D-17).
     pending_attachment: Option<PendingAttachment>,
+    /// Phase 31: pending image attachment (mutually exclusive with pending_attachment).
+    pending_image_attachment: Option<PendingImageAttachment>,
     // Phase 6 additions:
     /// In-memory failover router -- health state persisted to SQLite on failure/success.
     router: llm::FailoverRouter,
     /// The backend_id that is currently streaming, for failover on StreamError.
     current_streaming_backend_id: Option<String>,
+    /// The conversation that owns the currently active chat stream.
+    current_streaming_conversation_id: Option<String>,
+    /// Canonical buffer for the active stream. AppState.streaming_text mirrors this
+    /// only while the owning conversation is visible.
+    current_streaming_text: String,
     /// Backend IDs already excluded in the current failover chain (tried and failed).
     failover_exclude: Vec<String>,
     // Phase 8 additions:
@@ -937,6 +967,8 @@ fn wipe_local_install(
     actor_state.pending_attachment = None;
     actor_state.active_agent_sessions.clear();
     actor_state.current_streaming_backend_id = None;
+    actor_state.current_streaming_conversation_id = None;
+    actor_state.current_streaming_text.clear();
     actor_state.failover_exclude.clear();
     actor_state.current_conv_tools_enabled = false;
     actor_state.attested_tls_public_keys.clear();
@@ -1082,6 +1114,62 @@ fn refresh_messages(actor_state: &mut ActorState, conversation_id: &str) {
             rag_context_count: None,
         })
         .collect();
+}
+
+fn sync_visible_streaming_text(actor_state: &mut ActorState) {
+    let visible_stream = actor_state
+        .current_streaming_conversation_id
+        .as_deref()
+        .is_some_and(|stream_conv_id| {
+            actor_state.app_state.current_conversation_id.as_deref() == Some(stream_conv_id)
+        });
+
+    actor_state.app_state.streaming_text = if visible_stream {
+        Some(actor_state.current_streaming_text.clone())
+    } else {
+        None
+    };
+}
+
+fn build_chat_messages_for_conversation(
+    actor_state: &ActorState,
+    conversation_id: &str,
+) -> Vec<llm::streaming::ChatMessage> {
+    let mut msgs = Vec::new();
+    let conn = actor_state.db.as_ref().expect("db unlocked").conn();
+
+    let conv_system_prompt = persistence::queries::list_conversations(conn)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|c| c.id == conversation_id)
+        .and_then(|c| c.system_prompt);
+    let system_prompt = conv_system_prompt.or_else(|| {
+        persistence::queries::get_setting(conn, "global_system_prompt").unwrap_or(None)
+    });
+    if let Some(sp) = system_prompt {
+        if !sp.is_empty() {
+            msgs.push(llm::streaming::ChatMessage {
+                role: llm::streaming::ChatRole::System,
+                content: sp,
+            });
+        }
+    }
+
+    let rows = persistence::queries::list_messages(conn, conversation_id).unwrap_or_default();
+    for row in rows {
+        let role = match row.role.as_str() {
+            "user" => llm::streaming::ChatRole::User,
+            "assistant" => llm::streaming::ChatRole::Assistant,
+            "system" => llm::streaming::ChatRole::System,
+            _ => llm::streaming::ChatRole::User,
+        };
+        msgs.push(llm::streaming::ChatMessage {
+            role,
+            content: row.content,
+        });
+    }
+
+    msgs
 }
 
 /// Refresh app_state.backends summaries using live router health state.
@@ -1595,6 +1683,8 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
 
     // Track which backend is streaming for failover
     actor_state.current_streaming_backend_id = Some(backend.id.clone());
+    actor_state.current_streaming_conversation_id = Some(conv_id.clone());
+    actor_state.current_streaming_text.clear();
     actor_state.failover_exclude = vec![];
     let now = now_secs();
 
@@ -3582,8 +3672,11 @@ impl FfiApp {
                 db: db_opt,
                 keychain,
                 pending_attachment: None,
+                pending_image_attachment: None,
                 router: llm::FailoverRouter::new(),
                 current_streaming_backend_id: None,
+                current_streaming_conversation_id: None,
+                current_streaming_text: String::new(),
                 failover_exclude: vec![],
                 embedding_provider: embedding_provider_arc,
                 vector_index,
@@ -3801,6 +3894,7 @@ impl FfiApp {
                                 };
                                 // Phase 27: new conversations start with tools disabled.
                                 actor_state.current_conv_tools_enabled = false;
+                                sync_visible_streaming_text(&mut actor_state);
                             }
 
                             AppAction::LoadConversation { conversation_id } => {
@@ -3828,6 +3922,7 @@ impl FfiApp {
                                     .unwrap_or(false);
                                 actor_state.app_state.router.current_screen =
                                     Screen::Chat { conversation_id };
+                                sync_visible_streaming_text(&mut actor_state);
                             }
 
                             AppAction::RenameConversation { id, title } => {
@@ -4004,6 +4099,8 @@ impl FfiApp {
                                 size_bytes,
                             } => {
                                 let size_display = format_size_display(size_bytes);
+                                // Mutually exclusive with any pending image attachment.
+                                actor_state.pending_image_attachment = None;
                                 actor_state.pending_attachment = Some(PendingAttachment {
                                     filename: filename.clone(),
                                     content,
@@ -4011,12 +4108,55 @@ impl FfiApp {
                                 actor_state.app_state.pending_attachment = Some(AttachmentInfo {
                                     filename,
                                     size_display,
+                                    is_image: false,
                                 });
                             }
 
                             AppAction::ClearAttachment => {
                                 actor_state.pending_attachment = None;
+                                actor_state.pending_image_attachment = None;
                                 actor_state.app_state.pending_attachment = None;
+                            }
+
+                            AppAction::AttachImage {
+                                filename,
+                                file_path,
+                                mime_type,
+                            } => {
+                                // Validate MIME (V5 input validation — threat T-31-03).
+                                if !(mime_type == "image/jpeg" || mime_type == "image/png") {
+                                    actor_state.app_state.last_error =
+                                        Some(format!("Unsupported image MIME: {}", mime_type));
+                                } else if !std::path::Path::new(&file_path).is_absolute() {
+                                    // Validate path is absolute; reject path traversal (T-31-01).
+                                    actor_state.app_state.last_error =
+                                        Some("AttachImage requires absolute file_path".into());
+                                } else {
+                                    // Stat file for size (DoS bound — T-31-02). Reject > 50 MB raw input.
+                                    let size_bytes = std::fs::metadata(&file_path)
+                                        .map(|m| m.len())
+                                        .unwrap_or(0);
+                                    if size_bytes > 50 * 1024 * 1024 {
+                                        actor_state.app_state.last_error =
+                                            Some("Image exceeds 50 MB limit".into());
+                                    } else {
+                                        // Clear any pending text attachment — one slot.
+                                        actor_state.pending_attachment = None;
+                                        actor_state.pending_image_attachment =
+                                            Some(PendingImageAttachment {
+                                                filename: filename.clone(),
+                                                file_path,
+                                                mime_type,
+                                            });
+                                        actor_state.app_state.pending_attachment =
+                                            Some(AttachmentInfo {
+                                                filename,
+                                                size_display: format_size_display(size_bytes),
+                                                is_image: true,
+                                            });
+                                        actor_state.app_state.rev += 1;
+                                    }
+                                }
                             }
 
                             AppAction::SelectModel { model_id } => {
@@ -5586,27 +5726,42 @@ impl FfiApp {
                     CoreMsg::InternalEvent(event) => {
                         match *event {
                             llm::InternalEvent::StreamChunk { token } => {
-                                // Append token to the in-flight streaming_text buffer
-                                let text = actor_state
-                                    .app_state
-                                    .streaming_text
-                                    .get_or_insert_with(String::new);
-                                text.push_str(&token);
+                                if actor_state.current_streaming_conversation_id.is_some() {
+                                    actor_state.current_streaming_text.push_str(&token);
+                                    sync_visible_streaming_text(&mut actor_state);
+                                } else {
+                                    // Tests and legacy internal producers can inject stream
+                                    // events without first registering an owning conversation.
+                                    let text = actor_state
+                                        .app_state
+                                        .streaming_text
+                                        .get_or_insert_with(String::new);
+                                    text.push_str(&token);
+                                }
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
                             llm::InternalEvent::StreamDone => {
                                 // Stream completed: persist the assistant message,
                                 // update AppState.messages, clear streaming_text.
-                                let content = actor_state
-                                    .app_state
-                                    .streaming_text
-                                    .take()
-                                    .unwrap_or_default();
+                                let stream_conv_id =
+                                    actor_state.current_streaming_conversation_id.take();
+                                let content = if stream_conv_id.is_some() {
+                                    std::mem::take(&mut actor_state.current_streaming_text)
+                                } else {
+                                    actor_state
+                                        .app_state
+                                        .streaming_text
+                                        .take()
+                                        .unwrap_or_default()
+                                };
 
-                                if let Some(conv_id) =
+                                let target_conv_id = stream_conv_id.or_else(|| {
                                     actor_state.app_state.current_conversation_id.clone()
-                                {
+                                });
+                                let completed_conv_id = target_conv_id.clone();
+
+                                if let Some(conv_id) = target_conv_id {
                                     let now = now_secs();
                                     let msg_id = new_uuid();
                                     let row = persistence::MessageRow {
@@ -5622,15 +5777,20 @@ impl FfiApp {
                                         &row,
                                     );
                                     let rag_count = actor_state.pending_rag_doc_count.take();
-                                    actor_state.app_state.messages.push(UiMessage {
-                                        id: msg_id,
-                                        role: "assistant".to_string(),
-                                        content,
-                                        created_at: now,
-                                        has_attachment: false,
-                                        attachment_name: None,
-                                        rag_context_count: rag_count,
-                                    });
+                                    let is_visible_conversation =
+                                        actor_state.app_state.current_conversation_id.as_deref()
+                                            == Some(conv_id.as_str());
+                                    if is_visible_conversation {
+                                        actor_state.app_state.messages.push(UiMessage {
+                                            id: msg_id,
+                                            role: "assistant".to_string(),
+                                            content: content.clone(),
+                                            created_at: now,
+                                            has_attachment: false,
+                                            attachment_name: None,
+                                            rag_context_count: rag_count,
+                                        });
+                                    }
 
                                     // Update conversation updated_at
                                     let _ = persistence::queries::update_conversation_updated_at(
@@ -5649,13 +5809,28 @@ impl FfiApp {
                                         .map(|c| c.title == "New Conversation")
                                         .unwrap_or(false);
                                     if is_placeholder {
-                                        if let Some(first_user_text) = actor_state
-                                            .app_state
-                                            .messages
-                                            .iter()
+                                        let first_user_text = if is_visible_conversation {
+                                            actor_state
+                                                .app_state
+                                                .messages
+                                                .iter()
+                                                .find(|m| m.role == "user")
+                                                .map(|m| m.content.clone())
+                                        } else {
+                                            persistence::queries::list_messages(
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
+                                                &conv_id,
+                                            )
+                                            .unwrap_or_default()
+                                            .into_iter()
                                             .find(|m| m.role == "user")
-                                            .map(|m| m.content.clone())
-                                        {
+                                            .map(|m| m.content)
+                                        };
+                                        if let Some(first_user_text) = first_user_text {
                                             let new_title = truncate_title(&first_user_text, 50);
                                             let _ = persistence::queries::rename_conversation(
                                                 actor_state
@@ -5696,15 +5871,19 @@ impl FfiApp {
 
                                 actor_state.app_state.busy_state = BusyState::Idle;
                                 actor_state.active_stream_token = None;
+                                sync_visible_streaming_text(&mut actor_state);
                                 refresh_backend_summaries(&mut actor_state);
 
                                 // Phase 20: Spawn background memory extraction (MEM-01, MEM-07)
-                                if actor_state.app_state.current_conversation_id.is_some() {
-                                    let messages_snapshot: Vec<(String, String)> = actor_state
-                                        .app_state
-                                        .messages
-                                        .iter()
-                                        .map(|m| (m.role.clone(), m.content.clone()))
+                                if let Some(completed_conv_id) = completed_conv_id {
+                                    let messages_snapshot: Vec<(String, String)> =
+                                        persistence::queries::list_messages(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &completed_conv_id,
+                                        )
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .map(|m| (m.role, m.content))
                                         .collect();
 
                                     if actor_state.app_state.memories_enabled
@@ -5720,11 +5899,7 @@ impl FfiApp {
                                                 .find(|b| b.id == *bid)
                                                 .cloned()
                                             {
-                                                let conv_id = actor_state
-                                                    .app_state
-                                                    .current_conversation_id
-                                                    .clone()
-                                                    .unwrap();
+                                                let conv_id = completed_conv_id.clone();
                                                 let model = actor_state
                                                     .app_state
                                                     .conversations
@@ -5891,9 +6066,20 @@ impl FfiApp {
                                         if let Some(next_backend) = next {
                                             actor_state.current_streaming_backend_id =
                                                 Some(next_backend.id.clone());
-                                            actor_state.app_state.streaming_text =
-                                                Some(String::new());
-                                            let chat_messages = build_chat_messages(&actor_state);
+                                            actor_state.current_streaming_text.clear();
+                                            sync_visible_streaming_text(&mut actor_state);
+                                            let chat_messages = actor_state
+                                                .current_streaming_conversation_id
+                                                .as_deref()
+                                                .map(|conv_id| {
+                                                    build_chat_messages_for_conversation(
+                                                        &actor_state,
+                                                        conv_id,
+                                                    )
+                                                })
+                                                .unwrap_or_else(|| {
+                                                    build_chat_messages(&actor_state)
+                                                });
                                             let next_model = if !model_id.is_empty() {
                                                 model_id.clone()
                                             } else {
@@ -5936,7 +6122,22 @@ impl FfiApp {
                                 actor_state.app_state.busy_state = BusyState::Idle;
                                 actor_state.app_state.last_error = Some(error.display_message());
                                 actor_state.active_stream_token = None;
+                                let visible_partial = actor_state
+                                    .current_streaming_conversation_id
+                                    .as_deref()
+                                    .is_some_and(|stream_conv_id| {
+                                        actor_state.app_state.current_conversation_id.as_deref()
+                                            == Some(stream_conv_id)
+                                    });
+                                if visible_partial {
+                                    actor_state.app_state.streaming_text =
+                                        Some(actor_state.current_streaming_text.clone());
+                                } else if actor_state.current_streaming_conversation_id.is_some() {
+                                    actor_state.app_state.streaming_text = None;
+                                }
                                 actor_state.current_streaming_backend_id = None;
+                                actor_state.current_streaming_conversation_id = None;
+                                actor_state.current_streaming_text.clear();
                                 actor_state.failover_exclude.clear();
                                 refresh_backend_summaries(&mut actor_state);
                                 actor_state.app_state.rev += 1;
@@ -5947,6 +6148,19 @@ impl FfiApp {
                                 // streaming_text preserved as partial response.
                                 actor_state.app_state.busy_state = BusyState::Idle;
                                 actor_state.active_stream_token = None;
+                                let visible_partial = actor_state
+                                    .current_streaming_conversation_id
+                                    .as_deref()
+                                    .is_some_and(|stream_conv_id| {
+                                        actor_state.app_state.current_conversation_id.as_deref()
+                                            == Some(stream_conv_id)
+                                    });
+                                if visible_partial {
+                                    actor_state.app_state.streaming_text =
+                                        Some(actor_state.current_streaming_text.clone());
+                                }
+                                actor_state.current_streaming_conversation_id = None;
+                                actor_state.current_streaming_text.clear();
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
@@ -6386,6 +6600,9 @@ impl FfiApp {
                                         conv_id, actor_state.app_state.current_conversation_id
                                     );
                                     actor_state.app_state.busy_state = BusyState::Idle;
+                                    actor_state.current_streaming_conversation_id = None;
+                                    actor_state.current_streaming_text.clear();
+                                    sync_visible_streaming_text(&mut actor_state);
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
@@ -6510,13 +6727,21 @@ impl FfiApp {
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
-                            llm::InternalEvent::ChatToolNone { conv_id: _, text } => {
+                            llm::InternalEvent::ChatToolNone { conv_id, text } => {
+                                if actor_state.current_streaming_conversation_id.as_deref()
+                                    != Some(conv_id.as_str())
+                                {
+                                    log::warn!(
+                                        "ChatToolNone for conv {} but active stream is {:?}, dropping",
+                                        conv_id, actor_state.current_streaming_conversation_id
+                                    );
+                                    continue;
+                                }
                                 // Model answered without calling any tools.
                                 // Inject the text into streaming_text and trigger StreamDone
                                 // so the standard message-persist and emit path handles it.
-                                if let Some(ref mut st) = actor_state.app_state.streaming_text {
-                                    st.push_str(&text);
-                                }
+                                actor_state.current_streaming_text.push_str(&text);
+                                sync_visible_streaming_text(&mut actor_state);
                                 let _ = core_tx_for_thread.send(CoreMsg::InternalEvent(Box::new(
                                     llm::InternalEvent::StreamDone,
                                 )));
