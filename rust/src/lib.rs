@@ -6714,3 +6714,179 @@ impl FfiApp {
 
 #[cfg(test)]
 mod tests;
+
+// Wave-0 RED tests for Phase 31 multimodal image attachments (IMG-01..04).
+// These tests intentionally reference symbols that do NOT yet exist in this crate:
+//   - `prepare_image_for_api`
+//   - `build_user_message_with_image`
+//   - `PendingImageAttachment`
+//   - `AppAction::AttachImage`
+//   - `AttachmentInfo::is_image`
+// Plan 31-01 adds these symbols. The tests turn GREEN at that point.
+// Until then, `cargo test -p mango_core --no-run` is expected to fail with
+// unresolved-symbol errors naming exactly the items above.
+#[cfg(test)]
+mod image_red_tests {
+    use super::*;
+    use base64::Engine;
+
+    /// IMG-01: prepare_image_for_api resizes and re-encodes as JPEG.
+    #[test]
+    fn test_prepare_image_jpeg() {
+        use image::{DynamicImage, RgbImage};
+        let img = DynamicImage::ImageRgb8(RgbImage::new(2000, 1500));
+        let tmp = std::env::temp_dir().join(format!(
+            "t31_prepare_{}_{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        img.save_with_format(&tmp, image::ImageFormat::Png).unwrap();
+        // NOTE: `prepare_image_for_api` does not exist yet -- RED.
+        let out = prepare_image_for_api(tmp.to_str().unwrap()).expect("prepare ok");
+        assert!(
+            out.starts_with("data:image/jpeg;base64,"),
+            "bad prefix: {}",
+            &out[..40.min(out.len())]
+        );
+        let b64 = out.trim_start_matches("data:image/jpeg;base64,");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        let reader = image::ImageReader::new(std::io::Cursor::new(&decoded))
+            .with_guessed_format()
+            .unwrap();
+        let decoded_img = reader.decode().unwrap();
+        let (w, h) = (decoded_img.width(), decoded_img.height());
+        assert!(w.max(h) <= 1536, "not resized: {}x{}", w, h);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// IMG-02: build_user_message_with_image produces a multipart user message
+    /// containing `"type":"image_url"` and a `data:image/jpeg;base64,` payload
+    /// when a pending image attachment is present.
+    #[test]
+    fn test_send_message_with_image() {
+        // Create a minimal real JPEG on disk so prepare_image_for_api can read it.
+        use image::{DynamicImage, RgbImage};
+        let img = DynamicImage::ImageRgb8(RgbImage::new(16, 16));
+        let tmp = std::env::temp_dir().join(format!(
+            "t31_withimg_{}_{}.jpg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        img.save_with_format(&tmp, image::ImageFormat::Jpeg)
+            .unwrap();
+
+        // Build an ActorState with a pending image attachment.
+        // NOTE: `PendingImageAttachment` and the `pending_image_attachment`
+        // field do not exist yet -- RED.
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.pending_image_attachment = Some(PendingImageAttachment {
+            filename: "x.jpg".to_string(),
+            file_path: tmp.to_str().unwrap().to_string(),
+            mime_type: "image/jpeg".to_string(),
+        });
+
+        // NOTE: `build_user_message_with_image` does not exist yet -- RED.
+        let msg = build_user_message_with_image(&actor_state, "describe")
+            .expect("multipart message");
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(
+            json.contains("\"type\":\"image_url\""),
+            "expected image_url content part, got: {}",
+            json
+        );
+        assert!(
+            json.contains("data:image/jpeg;base64,"),
+            "expected data URL, got: {}",
+            json
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// IMG-03: text-only path produces a plain text user message (no image_url part).
+    #[test]
+    fn test_send_message_text_only() {
+        let actor_state = test_build_actor_state_for_image_tests();
+        // `pending_image_attachment` intentionally left None.
+        // NOTE: `build_user_message_with_image` does not exist yet -- RED.
+        let msg = build_user_message_with_image(&actor_state, "hello")
+            .expect("text message");
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(
+            !json.contains("\"type\":\"image_url\""),
+            "text-only path should not produce image_url, got: {}",
+            json
+        );
+        assert!(
+            json.contains("hello"),
+            "text-only path should contain user text, got: {}",
+            json
+        );
+    }
+
+    /// IMG-04: AppAction::AttachImage populates pending_image_attachment and
+    /// publishes AttachmentInfo { is_image: true } into app_state.
+    #[test]
+    fn test_attach_image_action() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        // NOTE: `AppAction::AttachImage` does not exist yet -- RED.
+        let action = AppAction::AttachImage {
+            filename: "a.png".to_string(),
+            file_path: "/tmp/a.png".to_string(),
+            mime_type: "image/png".to_string(),
+        };
+
+        // Apply the action via the same handler pattern used by other AppActions.
+        // Plan 31-01 may introduce a dedicated helper; for now we expect a
+        // `handle_app_action` or equivalent path to exist. If it doesn't,
+        // the test still fails at the AttachImage variant (RED).
+        handle_attach_image_for_test(&mut actor_state, action);
+
+        let pending = actor_state
+            .pending_image_attachment
+            .as_ref()
+            .expect("pending_image_attachment set");
+        assert_eq!(pending.filename, "a.png");
+
+        let info = actor_state
+            .app_state
+            .pending_attachment
+            .as_ref()
+            .expect("AttachmentInfo published");
+        assert_eq!(info.filename, "a.png");
+        // NOTE: `AttachmentInfo::is_image` does not exist yet -- RED.
+        assert!(info.is_image, "AttachmentInfo.is_image must be true for images");
+    }
+
+    // --- Test-only helpers. These exist so the test file compiles as far as
+    // possible; the assertions still depend on symbols introduced in 31-01.
+
+    fn test_build_actor_state_for_image_tests() -> ActorState {
+        // Leverage the existing test constructor in rust/src/tests if one is
+        // exposed; otherwise fall back to the test helper already used by
+        // streaming/chat tests. The unresolved call below is intentional if
+        // no such helper exists -- 31-01 must provide one.
+        default_actor_state_for_image_tests()
+    }
+
+    // Stub declaration so the test file compiles up to the point of missing
+    // production symbols. This function is expected to be provided (or
+    // replaced) by 31-01 with a real test helper. Until then it returns
+    // `unimplemented!()` and the tests fail at runtime -- that is part of
+    // the RED signal.
+    fn default_actor_state_for_image_tests() -> ActorState {
+        unimplemented!("31-01 must provide a test helper that builds an ActorState with pending_image_attachment support")
+    }
+
+    fn handle_attach_image_for_test(_actor_state: &mut ActorState, _action: AppAction) {
+        unimplemented!("31-01 must route AppAction::AttachImage through the actor handler")
+    }
+}
