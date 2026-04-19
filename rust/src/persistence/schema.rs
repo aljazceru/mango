@@ -322,3 +322,94 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V16,
     MIGRATION_V17,
 ];
+
+#[cfg(test)]
+mod tests {
+    use crate::persistence::Database;
+
+    #[test]
+    fn test_migration_v18_creates_directory_tables() {
+        let db = Database::open(":memory:").unwrap();
+        let tables: Vec<String> = db
+            .conn()
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            tables.contains(&"directory_sources".to_string()),
+            "directory_sources table missing after MIGRATION_V18, got: {:?}",
+            tables
+        );
+        assert!(
+            tables.contains(&"directory_files".to_string()),
+            "directory_files table missing after MIGRATION_V18, got: {:?}",
+            tables
+        );
+    }
+
+    #[test]
+    fn test_directory_files_cascade_delete() {
+        let db = Database::open(":memory:").unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO directory_sources (id, display_name, path, exclusion_globs, file_count, created_at)
+             VALUES ('src1', 'My Vault', '/tmp/vault', '[]', 0, 100)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO directory_files (source_id, file_path, mtime_secs, size_bytes)
+             VALUES ('src1', 'a.md', 100, 500), ('src1', 'b.md', 200, 1000)",
+            [],
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM directory_files WHERE source_id = 'src1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 2, "two files should exist before cascade delete");
+        conn.execute("DELETE FROM directory_sources WHERE id = 'src1'", [])
+            .unwrap();
+        let after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM directory_files WHERE source_id = 'src1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 0, "files should be cascade-deleted when source removed");
+    }
+
+    #[test]
+    fn test_directory_files_unique_source_path() {
+        let db = Database::open(":memory:").unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO directory_sources (id, display_name, path, exclusion_globs, file_count, created_at)
+             VALUES ('src1', 'My Vault', '/tmp/vault', '[]', 0, 100)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO directory_files (source_id, file_path, mtime_secs, size_bytes)
+             VALUES ('src1', 'dup.md', 100, 500)",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO directory_files (source_id, file_path, mtime_secs, size_bytes)
+             VALUES ('src1', 'dup.md', 200, 800)",
+            [],
+        );
+        assert!(
+            dup.is_err(),
+            "second insert with same (source_id, file_path) should fail UNIQUE constraint"
+        );
+    }
+}
