@@ -6311,18 +6311,27 @@ impl FfiApp {
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
 
-                                    let mut batch_error: Option<String> = None;
+                                    let mut batch_errors: Vec<String> = Vec::new();
+
+                                    // Pre-fetch all tracked files for this source once so both
+                                    // the removals and adds/modifies loops can do O(1) HashMap
+                                    // lookups instead of O(N) full-table scans per file
+                                    // (HI-02 from 32-REVIEW.md).
+                                    let existing_by_path: HashMap<String, Option<String>> =
+                                        persistence::queries::list_directory_files_by_source(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &source_id,
+                                        )
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .map(|r| (r.file_path, r.document_id))
+                                        .collect();
 
                                     // 1) Removals — delete doc + chunks + usearch keys.
                                     for rel_path in &removed_paths {
-                                        let existing_rows = persistence::queries::list_directory_files_by_source(
-                                            actor_state.db.as_ref().expect("db unlocked").conn(),
-                                            &source_id,
-                                        ).unwrap_or_default();
-                                        let maybe_doc_id = existing_rows
-                                            .iter()
-                                            .find(|r| &r.file_path == rel_path)
-                                            .and_then(|r| r.document_id.clone());
+                                        let maybe_doc_id = existing_by_path
+                                            .get(rel_path)
+                                            .and_then(|d| d.clone());
                                         if let Some(doc_id) = maybe_doc_id {
                                             let rowids = persistence::queries::delete_chunks_for_document(
                                                 actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -6354,15 +6363,11 @@ impl FfiApp {
                                         // If a previous document exists for
                                         // (source_id, relative_path), delete it first
                                         // so this is a clean replay rather than a
-                                        // duplicate insert.
-                                        let existing_rows = persistence::queries::list_directory_files_by_source(
-                                            actor_state.db.as_ref().expect("db unlocked").conn(),
-                                            &source_id,
-                                        ).unwrap_or_default();
-                                        if let Some(old_doc_id) = existing_rows
-                                            .iter()
-                                            .find(|r| r.file_path == entry.relative_path)
-                                            .and_then(|r| r.document_id.clone())
+                                        // duplicate insert. Uses the pre-fetched
+                                        // existing_by_path map (HI-02).
+                                        if let Some(old_doc_id) = existing_by_path
+                                            .get(&entry.relative_path)
+                                            .and_then(|d| d.clone())
                                         {
                                             let old_rowids = persistence::queries::delete_chunks_for_document(
                                                 actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -6390,7 +6395,7 @@ impl FfiApp {
                                         ) {
                                             Ok(t) => t,
                                             Err(e) => {
-                                                batch_error = Some(format!(
+                                                batch_errors.push(format!(
                                                     "extract_text failed for {}: {e}",
                                                     entry.relative_path
                                                 ));
@@ -6422,7 +6427,7 @@ impl FfiApp {
                                             actor_state.db.as_ref().expect("db unlocked").conn(),
                                             &doc_row,
                                         ) {
-                                            batch_error = Some(format!(
+                                            batch_errors.push(format!(
                                                 "insert_document failed for {}: {e}",
                                                 entry.relative_path
                                             ));
@@ -6467,6 +6472,37 @@ impl FfiApp {
                                             actor_state.embedding_provider.embed(texts.clone())
                                         };
                                         let dim = crate::embedding::EMBEDDING_DIM;
+                                        let expected_len = texts.len() * dim;
+                                        if !texts.is_empty() && embeddings.len() != expected_len {
+                                            // HI-04: embedding returned wrong length (provider
+                                            // error or partial result). Roll back chunks +
+                                            // document so we don't persist half-indexed state
+                                            // with orphan rows the user sees as "Idle" but
+                                            // retrieval can never hit. Leaving document_id = None
+                                            // on directory_files (we skip the upsert below) lets
+                                            // the next sync retry this file.
+                                            let rollback_rowids =
+                                                persistence::queries::delete_chunks_for_document(
+                                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                    &document_id,
+                                                )
+                                                .unwrap_or_default();
+                                            for rid in &rollback_rowids {
+                                                let _ =
+                                                    actor_state.vector_index.remove(*rid as u64);
+                                            }
+                                            let _ = persistence::queries::delete_document(
+                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                &document_id,
+                                            );
+                                            batch_errors.push(format!(
+                                                "embedding failed for {} (got {} floats, expected {})",
+                                                entry.relative_path,
+                                                embeddings.len(),
+                                                expected_len
+                                            ));
+                                            continue;
+                                        }
                                         for (i, rid) in rowids.iter().enumerate() {
                                             let start = i * dim;
                                             let end = start + dim;
@@ -6522,7 +6558,8 @@ impl FfiApp {
                                     // Reload summaries and set per-source status.
                                     actor_state.app_state.directory_sources =
                                         load_directory_sources_summary(&actor_state);
-                                    if let Some(msg) = batch_error {
+                                    if !batch_errors.is_empty() {
+                                        let msg = batch_errors.join("; ");
                                         for s in &mut actor_state.app_state.directory_sources {
                                             if s.id == source_id {
                                                 s.sync_status =
