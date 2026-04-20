@@ -48,8 +48,9 @@ fn format_badge(format: &str) -> &'static str {
     }
 }
 
-/// Documents screen: document library management (LRAG-06, D-09, D-10).
-/// Full-screen overlay following the same pattern as Settings.
+/// Unified RAG screen: folders + documents under one entry (LRAG-06, DIR-05).
+/// The bottom-nav "RAG" button opens this screen; the detailed DirectorySources
+/// screen remains reachable via a folder row click.
 pub fn view(state: &AppState, is_dark: bool) -> Element<'_, Message> {
     let vc = crate::theme::view_colors(is_dark);
 
@@ -69,8 +70,22 @@ pub fn view(state: &AppState, is_dark: bool) -> Element<'_, Message> {
 
     let accent_color = vc.accent;
     let bg_color = vc.bg;
-    let add_btn = button(text("Add Document").size(14).color(bg_color))
+    let add_doc_btn = button(text("+ Document").size(14).color(bg_color))
         .on_press(Message::PickDocumentFile)
+        .padding(Padding::from([4u16, 12]))
+        .style(move |_theme, _status| button::Style {
+            background: Some(Background::Color(accent_color)),
+            border: Border {
+                radius: 6.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+    let add_folder_btn = button(text("+ Folder").size(14).color(bg_color))
+        .on_press(Message::DirSources(
+            crate::views::directory_sources::Message::AddFolder,
+        ))
         .padding(Padding::from([4u16, 12]))
         .style(move |_theme, _status| button::Style {
             background: Some(Background::Color(accent_color)),
@@ -85,11 +100,12 @@ pub fn view(state: &AppState, is_dark: bool) -> Element<'_, Message> {
     let header = container(
         row![
             back_btn,
-            text("Document Library").size(22),
+            text("RAG").size(22),
             iced::widget::Space::new().width(Length::Fill),
-            add_btn,
+            add_doc_btn,
+            add_folder_btn,
         ]
-        .spacing(12)
+        .spacing(8)
         .align_y(Alignment::Center),
     )
     .padding(Padding::from([10u16, 16]))
@@ -135,41 +151,70 @@ pub fn view(state: &AppState, is_dark: bool) -> Element<'_, Message> {
             .into()
         });
 
-    // ── Document list ────────────────────────────────────────────────────────
-    let content_section: Element<'_, Message> =
-        if state.documents.is_empty() && state.ingestion_progress.is_none() {
-            // Empty state
-            container(
-                column![
-                    text("No documents ingested yet.").size(16),
-                    text("Add a document to get started.")
-                        .size(14)
-                        .color(muted_color),
-                ]
-                .spacing(8)
-                .align_x(Alignment::Center),
-            )
-            .padding(48)
-            .width(Length::Fill)
+    // ── Unified list: folders + documents ────────────────────────────────────
+    let both_empty = state.documents.is_empty()
+        && state.directory_sources.is_empty()
+        && state.ingestion_progress.is_none();
+
+    let content_section: Element<'_, Message> = if both_empty {
+        container(
+            column![
+                text("No RAG sources yet.").size(16),
+                text("Click + Document or + Folder to add a source.")
+                    .size(14)
+                    .color(muted_color),
+            ]
+            .spacing(8)
+            .align_x(Alignment::Center),
+        )
+        .padding(48)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .into()
+    } else {
+        let mut list_children: Vec<Element<'_, Message>> = Vec::new();
+
+        if !state.directory_sources.is_empty() {
+            list_children.push(
+                text("FOLDERS")
+                    .size(11)
+                    .color(muted_color)
+                    .into(),
+            );
+            for src in state.directory_sources.iter() {
+                list_children.push(
+                    crate::views::directory_sources::directory_source_compact_row(src, vc),
+                );
+            }
+        }
+
+        if !state.documents.is_empty() {
+            if !state.directory_sources.is_empty() {
+                list_children.push(
+                    iced::widget::Space::new().height(Length::Fixed(8.0)).into(),
+                );
+            }
+            list_children.push(
+                text("DOCUMENTS")
+                    .size(11)
+                    .color(muted_color)
+                    .into(),
+            );
+            for doc in state.documents.iter() {
+                list_children.push(build_document_row(doc, vc));
+            }
+        }
+
+        let list = column(list_children)
+            .spacing(8)
+            .padding(Padding::from([8u16, 16]));
+
+        scrollable(list)
             .height(Length::Fill)
-            .align_x(Alignment::Center)
+            .width(Length::Fill)
             .into()
-        } else {
-            let doc_rows: Vec<Element<'_, Message>> = state
-                .documents
-                .iter()
-                .map(|doc| build_document_row(doc, vc))
-                .collect();
-
-            let list = column(doc_rows)
-                .spacing(8)
-                .padding(Padding::from([8u16, 16]));
-
-            scrollable(list)
-                .height(Length::Fill)
-                .width(Length::Fill)
-                .into()
-        };
+    };
 
     // ── Compose full layout ───────────────────────────────────────────────────
     let mut page_children: Vec<Element<'_, Message>> = vec![header.into()];
