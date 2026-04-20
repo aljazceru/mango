@@ -453,5 +453,8 @@ fn test_provider_fallback() {
         crate::CoreMsg::ListDirectoryFingerprints { .. } => {
             panic!("Expected InternalEvent, got ListDirectoryFingerprints")
         }
+        crate::CoreMsg::GetDirectoryBookmark { .. } => {
+            panic!("Expected InternalEvent, got GetDirectoryBookmark")
+        }
     }
 }
