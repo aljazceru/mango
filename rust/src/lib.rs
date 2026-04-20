@@ -945,6 +945,14 @@ pub enum CoreMsg {
         source_id: String,
         reply: flume::Sender<Result<Vec<DirectoryFingerprint>, String>>,
     },
+    /// Return the raw bookmark BLOB for a single directory source (iOS cold-launch
+    /// rehydration). `bookmark_data` is NOT included in DirectorySourceSummary
+    /// per T-32-I2 (keep large opaque blobs out of AppState); this accessor is
+    /// a targeted per-source read used only at init time and on stale refresh.
+    GetDirectoryBookmark {
+        source_id: String,
+        reply: flume::Sender<Result<Option<Vec<u8>>, String>>,
+    },
 }
 
 // ── Actor-internal state ─────────────────────────────────────────────────────
@@ -7852,6 +7860,19 @@ impl FfiApp {
                         let _ = reply.send(result);
                     }
 
+                    CoreMsg::GetDirectoryBookmark { source_id, reply } => {
+                        let result: Result<Option<Vec<u8>>, String> = (|| {
+                            let db = actor_state
+                                .db
+                                .as_ref()
+                                .ok_or_else(|| "database locked".to_string())?;
+                            let row = persistence::queries::get_directory_source(db.conn(), &source_id)
+                                .map_err(|e| format!("get_directory_source failed: {e}"))?;
+                            Ok(row.and_then(|r| r.bookmark_data))
+                        })();
+                        let _ = reply.send(result);
+                    }
+
                     CoreMsg::ReadEncryptedImage { message_id, reply } => {
                         // Decrypt image on the actor thread (single-user desktop: fine to block briefly).
                         // Plaintext bytes live only on the stack here — never stored in ActorState (T-ECE-04).
@@ -7939,6 +7960,32 @@ impl FfiApp {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.core_tx
             .send(CoreMsg::ListDirectoryFingerprints {
+                source_id,
+                reply: reply_tx,
+            })
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor channel error: {e}"),
+            })?;
+        reply_rx
+            .recv()
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor reply error: {e}"),
+            })?
+            .map_err(|reason| FfiError::Internal { reason })
+    }
+
+    /// Return the persisted bookmark BLOB for a directory source, or None if the
+    /// source doesn't exist or has no bookmark (Desktop/Android sources).
+    /// Used by iOS AppManager at init time to rehydrate the in-process
+    /// DirectorySyncScheduler.bookmarkCache before the first ScenePhase.active
+    /// fires (closes HI-01 / VERIFICATION truth #12).
+    pub fn get_directory_bookmark(
+        &self,
+        source_id: String,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.core_tx
+            .send(CoreMsg::GetDirectoryBookmark {
                 source_id,
                 reply: reply_tx,
             })

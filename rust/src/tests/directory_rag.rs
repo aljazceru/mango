@@ -365,6 +365,67 @@ fn test_update_bookmark_writes_blob() {
     assert_eq!(state.directory_sources.len(), 1);
 }
 
+// ── Phase 32 Plan 08 tests — get_directory_bookmark accessor ─────────────────
+
+/// Test 1: inserting a source with bookmark_data = Some(blob) and reading it back
+/// via get_directory_bookmark returns the exact blob.
+#[test]
+fn test_get_directory_bookmark_returns_stored_blob() {
+    let app = make_app();
+    app.dispatch(AppAction::AddDirectorySource {
+        display_name: "iOS Vault".into(),
+        path: None,
+        bookmark_data: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        tree_uri: None,
+        exclusion_globs: vec![],
+    });
+    wait();
+    let sid = app.state().directory_sources[0].id.clone();
+
+    let result = app.get_directory_bookmark(sid).expect("should not error");
+    assert_eq!(
+        result,
+        Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        "get_directory_bookmark must return the stored blob verbatim"
+    );
+}
+
+/// Test 2: querying get_directory_bookmark for a source that does not exist
+/// returns Ok(None) — not an error.
+#[test]
+fn test_get_directory_bookmark_missing_source_returns_none() {
+    let app = make_app();
+
+    let result = app
+        .get_directory_bookmark("nonexistent-id".to_string())
+        .expect("should not error for missing source");
+    assert_eq!(result, None, "missing source must yield Ok(None)");
+}
+
+/// Test 3: a source inserted without bookmark_data (Desktop/Android shape —
+/// bookmark_data = None) returns Ok(None), not an error.
+#[test]
+fn test_get_directory_bookmark_null_blob_returns_none() {
+    let app = make_app();
+    app.dispatch(AppAction::AddDirectorySource {
+        display_name: "Desktop Notes".into(),
+        path: Some("/tmp/notes".into()),
+        bookmark_data: None,
+        tree_uri: None,
+        exclusion_globs: vec![],
+    });
+    wait();
+    let sid = app.state().directory_sources[0].id.clone();
+
+    let result = app
+        .get_directory_bookmark(sid)
+        .expect("should not error for null blob");
+    assert_eq!(
+        result, None,
+        "null bookmark_data column must map to Ok(None), not an error"
+    );
+}
+
 /// Phase 32 Plan 07: centralised relative-time labels render identically
 /// across desktop/iOS/Android. Pure function — no actor, no DB.
 #[test]
