@@ -131,12 +131,8 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 12) {
-                        Button("Documents") {
+                        Button("RAG") {
                             appManager.dispatch(.pushScreen(screen: .documents))
-                        }
-                        .font(.subheadline)
-                        Button("Folders") {
-                            appManager.dispatch(.pushScreen(screen: .directorySources))
                         }
                         .font(.subheadline)
                         Button("Settings") {
