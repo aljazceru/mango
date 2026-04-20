@@ -1,8 +1,10 @@
 package dev.disobey.mango.ui
 
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,8 +23,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -34,15 +39,28 @@ import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
+import dev.disobey.mango.rust.DirectorySourceSummary
+import dev.disobey.mango.rust.DirectorySyncStatus
 import dev.disobey.mango.rust.DocumentSummary
+import dev.disobey.mango.rust.Screen
+import kotlinx.coroutines.launch
 
-/// Document Library screen: manage local document collection for RAG (LRAG-06, D-09, D-10).
+/// Unified RAG screen: lists documents + directory sources under one entry
+/// (LRAG-06, DIR-05). The Home toolbar routes here via Screen.Documents; the
+/// legacy DirectorySources screen remains reachable by tapping a folder row.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DocumentLibraryScreen(
@@ -51,9 +69,14 @@ fun DocumentLibraryScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
-    // File picker launcher for OpenDocument
-    // Phase 8: Replace with CoreML/XNNPACK EmbeddingProvider when custom ORT build is ready
+    var showAddMenu by remember { mutableStateOf(false) }
+
+    // Cache URIs by display name so the first Sync Now can resolve even before
+    // the source row re-appears in AppState. Mirrors DirectorySourcesScreen.
+    val pickedUrisByName = remember { mutableStateOf<Map<String, Uri>>(emptyMap()) }
+
     val openDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -69,12 +92,42 @@ fun DocumentLibraryScreen(
                 val bytes = contentResolver.openInputStream(it)?.use { stream ->
                     stream.readBytes()
                 } ?: return@let
-                onDispatch(AppAction.IngestDocument(
-                    filename = filename,
-                    content = bytes
-                ))
+                onDispatch(
+                    AppAction.IngestDocument(
+                        filename = filename,
+                        content = bytes,
+                    )
+                )
             } catch (e: Exception) {
                 // File read error -- future plan adds toast
+            }
+        }
+    }
+
+    // Folder picker — same launcher pattern as DirectorySourcesScreen.kt. The
+    // persisted URI permission is taken inside rememberDirectoryPicker, so
+    // bookmark rehydration remains intact.
+    val openFolderPicker = rememberDirectoryPicker { uri, displayName ->
+        pickedUrisByName.value = pickedUrisByName.value + (displayName to uri)
+        onDispatch(
+            AppAction.AddDirectorySource(
+                displayName = displayName,
+                path = null,
+                bookmarkData = null,
+                treeUri = uri.toString(),
+                exclusionGlobs = DEFAULT_EXCLUSION_PRESETS,
+            )
+        )
+    }
+
+    // Kick an initial sync for any newly-added folder whose URI is cached but
+    // whose file_count is still 0 — matches DirectorySourcesScreen behavior.
+    LaunchedEffect(appState.directorySources.map { it.id to it.fileCount }) {
+        for (source in appState.directorySources) {
+            if (source.fileCount > 0L) continue
+            val uri = pickedUrisByName.value[source.displayName] ?: continue
+            scope.launch {
+                syncDirectory(context, source, uri) { action -> onDispatch(action) }
             }
         }
     }
@@ -82,7 +135,7 @@ fun DocumentLibraryScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("RAG Library") },
+                title = { Text("RAG") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -91,14 +144,31 @@ fun DocumentLibraryScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    openDocumentLauncher.launch(
-                        arrayOf("application/pdf", "text/plain", "text/markdown")
+            Box {
+                FloatingActionButton(onClick = { showAddMenu = true }) {
+                    Icon(Icons.Filled.Add, contentDescription = "Add RAG source")
+                }
+                DropdownMenu(
+                    expanded = showAddMenu,
+                    onDismissRequest = { showAddMenu = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Document") },
+                        onClick = {
+                            showAddMenu = false
+                            openDocumentLauncher.launch(
+                                arrayOf("application/pdf", "text/plain", "text/markdown")
+                            )
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Folder") },
+                        onClick = {
+                            showAddMenu = false
+                            openFolderPicker()
+                        },
                     )
                 }
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = "Add Document")
             }
         }
     ) { paddingValues ->
@@ -107,7 +177,7 @@ fun DocumentLibraryScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Ingestion progress indicator
+            // Ingestion progress indicator (unchanged)
             appState.ingestionProgress?.let { progress ->
                 Column(
                     modifier = Modifier
@@ -126,9 +196,11 @@ fun DocumentLibraryScreen(
                 }
             }
 
-            // Document list or empty state
-            if (appState.documents.isEmpty() && appState.ingestionProgress == null) {
-                // Empty state
+            val bothEmpty = appState.documents.isEmpty() &&
+                appState.directorySources.isEmpty() &&
+                appState.ingestionProgress == null
+
+            if (bothEmpty) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -144,12 +216,12 @@ fun DocumentLibraryScreen(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            "No documents ingested yet",
+                            "No RAG sources yet",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            "Tap + to add a PDF, text, or Markdown file.",
+                            "Tap + to add a document or a folder.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -161,15 +233,102 @@ fun DocumentLibraryScreen(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(appState.documents, key = { it.id }) { doc ->
-                        DocumentRow(
-                            doc = doc,
-                            onDelete = {
-                                onDispatch(AppAction.DeleteDocument(documentId = doc.id))
-                            }
-                        )
+                    if (appState.directorySources.isNotEmpty()) {
+                        item(key = "folders_header") {
+                            Text(
+                                text = "FOLDERS",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 2.dp)
+                            )
+                        }
+                        items(appState.directorySources, key = { "dir_${it.id}" }) { src ->
+                            DirectorySourceCompactRow(
+                                source = src,
+                                onClick = {
+                                    onDispatch(
+                                        AppAction.PushScreen(screen = Screen.DirectorySources)
+                                    )
+                                },
+                            )
+                        }
+                    }
+
+                    if (appState.documents.isNotEmpty()) {
+                        item(key = "documents_header") {
+                            Text(
+                                text = "DOCUMENTS",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 2.dp)
+                            )
+                        }
+                        items(appState.documents, key = { "doc_${it.id}" }) { doc ->
+                            DocumentRow(
+                                doc = doc,
+                                onDelete = {
+                                    onDispatch(AppAction.DeleteDocument(documentId = doc.id))
+                                }
+                            )
+                        }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Compact directory-source row shown inside the unified RAG screen. Tapping
+/// pushes Screen.DirectorySources so the full management UI (exclusions, sync,
+/// remove) stays reachable without being a top-level Home entry.
+@Composable
+private fun DirectorySourceCompactRow(
+    source: DirectorySourceSummary,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Folder,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp),
+            )
+            Spacer(modifier = Modifier.size(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = source.displayName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val statusText = when (val st = source.syncStatus) {
+                    is DirectorySyncStatus.Idle ->
+                        "${source.fileCount} files · ${source.lastSyncedLabel}"
+                    is DirectorySyncStatus.Syncing -> "Syncing…"
+                    is DirectorySyncStatus.Error -> "Error: ${st.message}"
+                }
+                val statusColor = when (source.syncStatus) {
+                    is DirectorySyncStatus.Error -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = statusColor,
+                )
             }
         }
     }
@@ -276,3 +435,8 @@ private fun formatDate(unixTimestamp: Long): String {
         else -> "${diff / 86400}d ago"
     }
 }
+
+// Suppressed import — DocumentsContract kept for future use when we want to
+// display the SAF path under the folder name without touching DirectorySourcesScreen.
+@Suppress("unused")
+private val _documentsContractMarker: Class<*> = DocumentsContract::class.java

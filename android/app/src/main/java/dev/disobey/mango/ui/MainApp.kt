@@ -89,9 +89,6 @@ fun MainApp(
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Documents)) }) {
                         Text("RAG")
                     }
-                    TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.DirectorySources)) }) {
-                        Text("Folders")
-                    }
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Settings)) }) {
                         Text("Settings")
                     }
