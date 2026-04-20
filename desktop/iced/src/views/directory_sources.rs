@@ -58,6 +58,8 @@ pub enum Message {
     SyncNow(String),
     /// Close the exclusion editor without saving.
     CancelExclusions,
+    /// User clicked "Open folder" — open path in the native file browser.
+    OpenFolder(String),
 }
 
 /// Group a file count with thousands separators (e.g. 1234 → "1,234").
@@ -120,8 +122,21 @@ fn build_source_row<'a>(
     let last_synced = src.last_synced_label.clone();
     let file_count_str = format!("{} files", format_file_count(src.file_count));
 
+    // Build name row: display name + optional full path underneath + status pill.
+    let name_col = if let Some(ref path) = src.path {
+        let path_text = text(path.as_str()).size(11).color(vc.muted);
+        iced::widget::column![
+            text(display_name).size(15),
+            path_text,
+        ]
+        .spacing(2)
+    } else {
+        iced::widget::column![text(display_name).size(15)]
+            .spacing(0)
+    };
+
     let name_row = row![
-        text(display_name).size(15),
+        name_col,
         status_pill(&src.sync_status, vc),
     ]
     .spacing(10)
@@ -147,6 +162,11 @@ fn build_source_row<'a>(
         .on_press(RootMessage::DirSources(Message::EditExclusions(src_id_for_edit)))
         .padding(Padding::from([4u16, 10]));
 
+    let src_id_for_open = src.id.clone();
+    let open_btn = button(text("Open folder").size(12))
+        .on_press(RootMessage::DirSources(Message::OpenFolder(src_id_for_open)))
+        .padding(Padding::from([4u16, 10]));
+
     let src_id_for_remove = src.id.clone();
     let remove_btn = button(text("Remove").size(12))
         .on_press(RootMessage::DirSources(Message::RemoveSource(src_id_for_remove)))
@@ -165,7 +185,7 @@ fn build_source_row<'a>(
             ..Default::default()
         });
 
-    let actions = row![sync_btn, edit_btn, remove_btn]
+    let actions = row![sync_btn, edit_btn, open_btn, remove_btn]
         .spacing(8)
         .align_y(Alignment::Center);
 

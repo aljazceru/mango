@@ -2759,20 +2759,24 @@ public object FfiConverterTypeDirectoryFingerprint: FfiConverterRustBuffer<Direc
  * boundary.
  */
 data class DirectorySourceSummary (
-    var `id`: kotlin.String, 
-    var `displayName`: kotlin.String, 
-    var `fileCount`: kotlin.Long, 
-    var `lastSyncedAt`: kotlin.Long?, 
+    var `id`: kotlin.String,
+    var `displayName`: kotlin.String,
+    /**
+     * Human-readable filesystem path. Populated on Desktop; null on iOS and Android.
+     */
+    var `path`: kotlin.String?,
+    var `fileCount`: kotlin.Long,
+    var `lastSyncedAt`: kotlin.Long?,
     /**
      * Pre-computed relative-time label (e.g. "Never", "Just now", "3m ago",
      * "2h ago", "Yesterday", "3d ago"). Centralised on the Rust side so
      * desktop/iOS/Android render identical strings (Phase 32 Plan 07).
      */
-    var `lastSyncedLabel`: kotlin.String, 
-    var `exclusionGlobs`: List<kotlin.String>, 
+    var `lastSyncedLabel`: kotlin.String,
+    var `exclusionGlobs`: List<kotlin.String>,
     var `syncStatus`: DirectorySyncStatus
 ) {
-    
+
     companion object
 }
 
@@ -2784,6 +2788,7 @@ public object FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer<Dir
         return DirectorySourceSummary(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterLong.read(buf),
             FfiConverterOptionalLong.read(buf),
             FfiConverterString.read(buf),
@@ -2795,6 +2800,7 @@ public object FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer<Dir
     override fun allocationSize(value: DirectorySourceSummary) = (
             FfiConverterString.allocationSize(value.`id`) +
             FfiConverterString.allocationSize(value.`displayName`) +
+            FfiConverterOptionalString.allocationSize(value.`path`) +
             FfiConverterLong.allocationSize(value.`fileCount`) +
             FfiConverterOptionalLong.allocationSize(value.`lastSyncedAt`) +
             FfiConverterString.allocationSize(value.`lastSyncedLabel`) +
@@ -2805,6 +2811,7 @@ public object FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer<Dir
     override fun write(value: DirectorySourceSummary, buf: ByteBuffer) {
             FfiConverterString.write(value.`id`, buf)
             FfiConverterString.write(value.`displayName`, buf)
+            FfiConverterOptionalString.write(value.`path`, buf)
             FfiConverterLong.write(value.`fileCount`, buf)
             FfiConverterOptionalLong.write(value.`lastSyncedAt`, buf)
             FfiConverterString.write(value.`lastSyncedLabel`, buf)
