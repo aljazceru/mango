@@ -44,7 +44,7 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 ### Local Data Encryption & Authentication
 
 - [x] **ENC-01**: SQLCipher replaces vanilla SQLite as the bundled encryption engine (bundled-sqlcipher feature)
-- [ ] **ENC-02**: Usearch vector index files and cached documents encrypted with AES-256-GCM using DEK
+- [x] **ENC-02**: Usearch vector index files and cached documents encrypted with AES-256-GCM using DEK
 - [x] **ENC-03**: AES-256-GCM file encryption uses MGO1 magic header, random nonce, and authenticated tag
 - [x] **ENC-04**: 256-bit random DEK generated on first launch and stored in platform keychain
 - [x] **ENC-05**: PIN/password fallback derives KEK via Argon2id (64MiB, 3 iterations, parallelism 1) to wrap/unwrap DEK
@@ -110,14 +110,14 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 | CHAT-TOOL-07 | Phase 27 | Complete |
 | CHAT-TOOL-08 | Phase 27 | Complete |
 | ENC-01 | Phase 28 | Complete |
-| ENC-02 | Phase 29 | Pending |
+| ENC-02 | Phase 29 | Complete |
 | ENC-03 | Phase 28 | Complete |
 | ENC-04 | Phase 28 | Complete |
 | ENC-05 | Phase 28 | Complete |
 | ENC-06 | Phase 28 | Complete |
 | ENC-07 | Phase 28 | Complete |
 | ENC-08 | Phase 28 | Complete |
-| ENC-09 | Phase 30 | Pending |
+| ENC-09 | Phase 28 | Complete |
 | ENC-10 | Phase 28 | Complete |
 | ENC-11 | Phase 28 | Complete |
 | ENC-12 | Phase 28 | Complete |
@@ -128,9 +128,9 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 - v2.0 requirements: 36 total
 - Mapped to phases: 36
 - Unmapped: 0
-- Complete: 34
-- Pending (gap closure): 2 (ENC-02 → Phase 29, ENC-09 → Phase 30)
+- Complete: 36
+- Pending (gap closure): 0
 
 ---
 *Requirements defined: 2026-04-02*
-*Last updated: 2026-04-09 — gap closure phases 29-30 added from milestone audit*
+*Last updated: 2026-04-19 — ENC-02 and ENC-09 synced to Complete after Phase 29 delivery confirmation*
