@@ -370,6 +370,11 @@ void*_Nonnull uniffi_mango_core_fn_constructor_ffiapp_new(RustBuffer data_dir, u
 void uniffi_mango_core_fn_method_ffiapp_dispatch(void*_Nonnull ptr, RustBuffer action, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_GET_DIRECTORY_BOOKMARK
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_GET_DIRECTORY_BOOKMARK
+RustBuffer uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(void*_Nonnull ptr, RustBuffer source_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_GET_RAW_ATTESTATION_REPORT
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_GET_RAW_ATTESTATION_REPORT
 RustBuffer uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(void*_Nonnull ptr, RustBuffer backend_id, RustCallStatus *_Nonnull out_status
@@ -726,6 +731,12 @@ uint16_t uniffi_mango_core_checksum_func_model_supports_vision(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_DISPATCH
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_DISPATCH
 uint16_t uniffi_mango_core_checksum_method_ffiapp_dispatch(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_GET_DIRECTORY_BOOKMARK
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_GET_DIRECTORY_BOOKMARK
+uint16_t uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark(void
     
 );
 #endif

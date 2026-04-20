@@ -577,6 +577,15 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
     func dispatch(action: AppAction) 
     
     /**
+     * Return the persisted bookmark BLOB for a directory source, or None if the
+     * source doesn't exist or has no bookmark (Desktop/Android sources).
+     * Used by iOS AppManager at init time to rehydrate the in-process
+     * DirectorySyncScheduler.bookmarkCache before the first ScenePhase.active
+     * fires (closes HI-01 / VERIFICATION truth #12).
+     */
+    func getDirectoryBookmark(sourceId: String) throws  -> Data?
+    
+    /**
      * Return the raw attestation report blob for `backend_id`, if available.
      *
      * Per D-12: raw blobs are not carried in AppState (too large for frequent snapshots).
@@ -699,6 +708,21 @@ open func dispatch(action: AppAction)  {try! rustCall() {
         FfiConverterTypeAppAction_lower(action),$0
     )
 }
+}
+    
+    /**
+     * Return the persisted bookmark BLOB for a directory source, or None if the
+     * source doesn't exist or has no bookmark (Desktop/Android sources).
+     * Used by iOS AppManager at init time to rehydrate the in-process
+     * DirectorySyncScheduler.bookmarkCache before the first ScenePhase.active
+     * fires (closes HI-01 / VERIFICATION truth #12).
+     */
+open func getDirectoryBookmark(sourceId: String)throws  -> Data?  {
+    return try  FfiConverterOptionData.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+    uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(self.uniffiClonePointer(),
+        FfiConverterString.lower(sourceId),$0
+    )
+})
 }
     
     /**
@@ -7070,6 +7094,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_dispatch() != 49208) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() != 42562) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 18789) {

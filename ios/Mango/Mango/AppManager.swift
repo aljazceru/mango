@@ -93,6 +93,23 @@ final class AppManager: AppReconciler, ObservableObject {
         self.lastRevApplied = initial.rev
 
         app.listenForUpdates(reconciler: self)
+
+        // Rehydrate DirectorySyncScheduler.bookmarkCache from persisted
+        // directory_sources.bookmark_data so the first ScenePhase.active
+        // after cold launch can sync pre-existing sources without requiring
+        // the user to re-add the folder. Closes HI-01 / VERIFICATION truth #12.
+        for source in initial.directorySources {
+            do {
+                if let blob = try app.getDirectoryBookmark(sourceId: source.id) {
+                    DirectorySyncScheduler.cacheBookmark(sourceId: source.id, bookmarkData: blob)
+                } else {
+                    // Desktop/Android-shaped row (no bookmark) — expected; skip silently.
+                    logger.info("AppManager rehydrate: no bookmark for source \(source.id, privacy: .public)")
+                }
+            } catch {
+                logger.warning("AppManager rehydrate: getDirectoryBookmark failed for \(source.id, privacy: .public): \(error.localizedDescription)")
+            }
+        }
     }
 
     nonisolated func reconcile(update: AppUpdate) {

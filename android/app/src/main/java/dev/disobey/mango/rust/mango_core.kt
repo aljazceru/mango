@@ -858,6 +858,8 @@ internal open class UniffiVTableCallbackInterfaceKeychainProvider(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -878,6 +880,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
 fun uniffi_mango_core_checksum_func_model_supports_vision(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_dispatch(
+): Short
+fun uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report(
 ): Short
@@ -969,6 +973,8 @@ fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`k
 ): Pointer
 fun uniffi_mango_core_fn_method_ffiapp_dispatch(`ptr`: Pointer,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(`ptr`: Pointer,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(`ptr`: Pointer,`backendId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(`ptr`: Pointer,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1126,6 +1132,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_dispatch() != 49208.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() != 42562.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 18789.toShort()) {
@@ -1665,6 +1674,15 @@ public interface FfiAppInterface {
     fun `dispatch`(`action`: AppAction)
     
     /**
+     * Return the persisted bookmark BLOB for a directory source, or None if the
+     * source doesn't exist or has no bookmark (Desktop/Android sources).
+     * Used by iOS AppManager at init time to rehydrate the in-process
+     * DirectorySyncScheduler.bookmarkCache before the first ScenePhase.active
+     * fires (closes HI-01 / VERIFICATION truth #12).
+     */
+    fun `getDirectoryBookmark`(`sourceId`: kotlin.String): kotlin.ByteArray?
+    
+    /**
      * Return the raw attestation report blob for `backend_id`, if available.
      *
      * Per D-12: raw blobs are not carried in AppState (too large for frequent snapshots).
@@ -1818,6 +1836,26 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
 }
     }
     
+    
+
+    
+    /**
+     * Return the persisted bookmark BLOB for a directory source, or None if the
+     * source doesn't exist or has no bookmark (Desktop/Android sources).
+     * Used by iOS AppManager at init time to rehydrate the in-process
+     * DirectorySyncScheduler.bookmarkCache before the first ScenePhase.active
+     * fires (closes HI-01 / VERIFICATION truth #12).
+     */
+    @Throws(FfiException::class)override fun `getDirectoryBookmark`(`sourceId`: kotlin.String): kotlin.ByteArray? {
+            return FfiConverterOptionalByteArray.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(
+        it, FfiConverterString.lower(`sourceId`),_status)
+}
+    }
+    )
+    }
     
 
     
