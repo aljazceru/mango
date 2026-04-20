@@ -3,7 +3,9 @@ package dev.disobey.mango.ui
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,6 +30,46 @@ import kotlinx.coroutines.withContext
  * survives process death and device reboot (D-18 / Pitfall 4).
  */
 
+/**
+ * Bitmask of URI-permission flags persisted in the picker callback.
+ * MUST include BOTH read and write — see
+ * .planning/debug/resolved/android-saf-cant-use-folder-grapheneos.md (Evidence #2):
+ * OpenDocumentTree grants both by default and some providers (GrapheneOS) require
+ * write to be acknowledged even for read-only consumers.
+ */
+internal const val PERSISTABLE_URI_FLAGS: Int =
+    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
+/**
+ * Returns true when the SDK version supports `MediaStore.Downloads` (API 29+) and the
+ * picker should be seeded with the Downloads URI to avoid the Android 11+ internal-
+ * storage root restriction.
+ *
+ * Exposed as a pure-Kotlin predicate so JVM unit tests can assert the SDK-gating
+ * logic without touching `android.net.Uri` (whose constructor is package-private and
+ * factory methods throw in the stubbed test android.jar).
+ *
+ * See .planning/debug/resolved/android-saf-cant-use-folder-grapheneos.md for the full
+ * root-cause trace. Reverting this to always return false is a regression — covered by
+ * DirectorySourcePickerTest.
+ */
+internal fun useDownloadsUriForSdk(sdkInt: Int): Boolean = sdkInt >= Build.VERSION_CODES.Q
+
+/**
+ * Initial URI passed to ActivityResultContracts.OpenDocumentTree launch().
+ *
+ * Returning null causes DocumentsUI to open at the internal-storage root, which on
+ * Android 11+ (API 30+) triggers the "Can't use this folder" privacy banner for
+ * every subfolder navigated to from there. Seeding with Downloads side-steps the
+ * restriction because the user starts inside a non-root subtree.
+ *
+ * See .planning/debug/resolved/android-saf-cant-use-folder-grapheneos.md for the
+ * full root-cause trace. Reverting this to `null` is a regression — covered by
+ * DirectorySourcePickerTest.
+ */
+internal fun initialTreeUriForSdk(sdkInt: Int): Uri? =
+    if (useDownloadsUriForSdk(sdkInt)) MediaStore.Downloads.EXTERNAL_CONTENT_URI else null
+
 /** A single SAF document entry produced by `traverseTree`. */
 data class SafChildEntry(
     val docId: String,
@@ -43,6 +85,16 @@ data class SafChildEntry(
  * On success the URI + a derived displayName are handed to `onPicked`.
  * Pitfall 4: `takePersistableUriPermission` MUST be called before the URI is stored
  * or released; we do it here inline.
+ *
+ * Bug fix (GrapheneOS / Android 11+): We pass a non-restricted initial URI to the
+ * picker so DocumentsUI opens inside a permitted subtree rather than the internal
+ * storage root. When the picker opens at the root ("Pixel 9a" in GrapheneOS
+ * DocumentsUI), Android 11+ (API 30+) blocks selecting *any* folder that the user
+ * reaches by navigating down from that root, showing "Can't use this folder / To
+ * protect your privacy, choose another folder". Seeding with
+ * `MediaStore.Downloads.EXTERNAL_CONTENT_URI` opens the picker inside Downloads,
+ * which is an unrestricted starting point — the user can still navigate anywhere
+ * from there. Fallback to null on API < 29 (Downloads MediaStore URI requires 29+).
  */
 @Composable
 fun rememberDirectoryPicker(onPicked: (Uri, String) -> Unit): () -> Unit {
@@ -53,9 +105,11 @@ fun rememberDirectoryPicker(onPicked: (Uri, String) -> Unit): () -> Unit {
         uri ?: return@rememberLauncherForActivityResult
         // D-18 / Pitfall 4: MUST take persistable permission before returning so
         // the grant survives process death / device reboot.
-        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+        // Take both read AND write flags — OpenDocumentTree grants both, and some
+        // ContentResolver implementations (including GrapheneOS) require the write
+        // flag to be acknowledged even for read-only consumers.
         try {
-            context.contentResolver.takePersistableUriPermission(uri, flags)
+            context.contentResolver.takePersistableUriPermission(uri, PERSISTABLE_URI_FLAGS)
         } catch (se: SecurityException) {
             Log.e("DirectorySourcePicker", "takePersistableUriPermission failed: ${se.message}")
             return@rememberLauncherForActivityResult
@@ -70,7 +124,11 @@ fun rememberDirectoryPicker(onPicked: (Uri, String) -> Unit): () -> Unit {
         }
         onPicked(uri, displayName)
     }
-    return { launcher.launch(null) }
+    // Seed the picker at the public Downloads directory (API 29+). This avoids
+    // opening at the internal-storage root which triggers Android 11+'s
+    // "Can't use this folder" privacy restriction for all subfolders navigated to
+    // from that root. On API < 29 fall back to null (no initial URI hint).
+    return { launcher.launch(initialTreeUriForSdk(Build.VERSION.SDK_INT)) }
 }
 
 /**
