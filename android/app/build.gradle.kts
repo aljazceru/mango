@@ -65,6 +65,10 @@ android {
             listOf("/META-INF/{AL2.0,LGPL2.1}", "META-INF/DEPENDENCIES"),
         )
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 tasks.register("ensureUniffiGenerated") {
@@ -119,4 +123,6 @@ dependencies {
 
     // WorkManager for background agent execution (Phase 9, D-13)
     implementation("androidx.work:work-runtime-ktx:2.10.1")
+
+    testImplementation("junit:junit:4.13.2")
 }
