@@ -1559,6 +1559,20 @@ impl App {
                                     );
                                 }
                             }
+                            DM::OpenFolder(id) => {
+                                // Resolve the path from AppState (the `path` field added in
+                                // this polish pass) and open it in the native file browser
+                                // via the `open` crate (xdg-open on Linux, Finder on macOS).
+                                if let Some(src) = state
+                                    .directory_sources
+                                    .iter()
+                                    .find(|s| s.id == id)
+                                {
+                                    if let Some(ref path) = src.path {
+                                        let _ = open::that(path);
+                                    }
+                                }
+                            }
                         }
                     }
 

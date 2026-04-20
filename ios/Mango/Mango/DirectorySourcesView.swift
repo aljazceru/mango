@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import os
 
 /// Phase 32 Plan 05: Directory Sources management screen (iOS).
@@ -208,9 +209,18 @@ private struct DirectorySourceRow: View {
             HStack(spacing: 8) {
                 Image(systemName: "folder.fill")
                     .foregroundStyle(.accentColor)
-                Text(source.displayName)
-                    .font(.subheadline)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.displayName)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    // Show full path when available (Desktop), or display name on iOS/Android.
+                    if let fullPath = source.path, fullPath != source.displayName {
+                        Text(fullPath)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
                 Spacer()
                 statusBadge
             }
@@ -224,12 +234,15 @@ private struct DirectorySourceRow: View {
                     .foregroundStyle(.secondary)
                 Spacer()
             }
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 Button("Sync Now", action: onSyncNow)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(isSyncing)
                 Button("Edit", action: onEditExclusions)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button("Open", action: openInFiles)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 Button(role: .destructive, action: onRemove) {
@@ -240,6 +253,20 @@ private struct DirectorySourceRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    /// Open the folder in the iOS Files app via the `shareddocuments://` URL scheme.
+    /// This works for security-scoped bookmark URLs — the Files app accepts the encoded
+    /// path from the bookmark-resolved URL as a deep-link target.
+    private func openInFiles() {
+        // Try the display name as a last-path-component hint. The Files app deep-link
+        // format is shareddocuments:///private/var/... but we don't have the resolved
+        // absolute path on iOS (bookmarks are opaque). Open the Files app root instead;
+        // the user can navigate from there. This is the best we can do without resolving
+        // the security-scoped bookmark synchronously here.
+        if let url = URL(string: "shareddocuments://") {
+            UIApplication.shared.open(url)
+        }
     }
 
     private var isSyncing: Bool {

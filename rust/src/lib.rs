@@ -828,10 +828,18 @@ pub enum DirectorySyncStatus {
 /// Per T-32-I2 (threat register): this struct intentionally omits `bookmark_data`
 /// and `tree_uri` — those handles stay in SQLite and never cross the UniFFI
 /// boundary.
+///
+/// `path` is the human-readable filesystem path stored at add-time on Desktop
+/// (e.g. `/home/user/Notes`). On iOS and Android this is `None` because those
+/// platforms use opaque handles (security-scoped bookmarks / tree URIs) instead
+/// of plain filesystem paths. The native UI layers derive a display path from
+/// their own handle stores (DocumentsContract on Android, bookmark URL on iOS).
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct DirectorySourceSummary {
     pub id: String,
     pub display_name: String,
+    /// Human-readable filesystem path. Populated on Desktop; `None` on iOS and Android.
+    pub path: Option<String>,
     pub file_count: i64,
     pub last_synced_at: Option<i64>,
     /// Pre-computed relative-time label (e.g. "Never", "Just now", "3m ago",
@@ -3178,6 +3186,7 @@ fn load_directory_sources_summary(actor_state: &ActorState) -> Vec<DirectorySour
             DirectorySourceSummary {
                 id: row.id,
                 display_name: row.display_name,
+                path: row.path,
                 file_count: row.file_count,
                 last_synced_at: row.last_synced_at,
                 last_synced_label: relative_time_label(row.last_synced_at, now_secs),

@@ -1,9 +1,12 @@
 package dev.disobey.mango.ui
 
+import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +22,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -48,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.AppManager
 import dev.disobey.mango.rust.AppAction
@@ -152,11 +157,27 @@ fun DirectorySourcesScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     items(appState.directorySources, key = { it.id }) { source ->
+                        // Resolve the tree URI string once per row so we can derive
+                        // both the human-readable path and the URI for the open-in-files intent.
+                        val treeUriString = resolveTreeUri(context, source)
+                            ?: pickedUrisByName.value[source.displayName]?.toString()
+                        // Derive a human-readable relative path from the tree URI document ID
+                        // (e.g. "primary:Download/test" → "Download/test"). Falls back to
+                        // displayName when the URI is not yet resolved.
+                        val displayPath: String = treeUriString?.let { uriStr ->
+                            try {
+                                DocumentsContract.getTreeDocumentId(Uri.parse(uriStr))
+                                    .substringAfterLast(':')
+                                    .trimStart('/')
+                                    .ifEmpty { null }
+                            } catch (_: Exception) { null }
+                        } ?: source.displayName
+
                         DirectorySourceRow(
                             source = source,
+                            displayPath = displayPath,
                             onSyncNow = {
-                                val uri = resolveTreeUri(context, source)?.let(Uri::parse)
-                                    ?: pickedUrisByName.value[source.displayName]
+                                val uri = treeUriString?.let(Uri::parse)
                                 if (uri != null) {
                                     onDispatch(AppAction.TriggerDirectorySync(sourceId = source.id))
                                     scope.launch {
@@ -168,6 +189,19 @@ fun DirectorySourcesScreen(
                             },
                             onEdit = { editingSource = source },
                             onRemove = { confirmRemoveSource = source },
+                            onOpenFolder = {
+                                treeUriString?.let { uriStr ->
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                                            setDataAndType(Uri.parse(uriStr), DocumentsContract.Document.MIME_TYPE_DIR)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {
+                                        // DocumentsUI not present on this device — silently ignore.
+                                    }
+                                }
+                            },
                         )
                     }
                 }
@@ -224,10 +258,15 @@ fun DirectorySourcesScreen(
 @Composable
 private fun DirectorySourceRow(
     source: DirectorySourceSummary,
+    displayPath: String,
     onSyncNow: () -> Unit,
     onEdit: () -> Unit,
     onRemove: () -> Unit,
+    onOpenFolder: () -> Unit,
 ) {
+    // Compact content padding so four buttons fit on one line on a 360dp-wide screen.
+    val compactPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+
     Card(
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier.fillMaxWidth(),
@@ -243,6 +282,16 @@ private fun DirectorySourceRow(
                 Spacer(modifier = Modifier.size(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(source.displayName, style = MaterialTheme.typography.titleMedium)
+                    // Full path under the display name — shows the storage location.
+                    if (displayPath != source.displayName) {
+                        Text(
+                            displayPath,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                     val statusText = when (val st = source.syncStatus) {
                         is DirectorySyncStatus.Idle ->
                             "${formatFileCount(source.fileCount)} files · " +
@@ -258,26 +307,42 @@ private fun DirectorySourceRow(
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onSyncNow) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.size(6.dp))
-                    Text("Sync now")
+            // Use compact contentPadding so all four buttons fit on one row without wrapping.
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = onSyncNow,
+                    contentPadding = compactPadding,
+                ) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.size(4.dp))
+                    Text("Sync", style = MaterialTheme.typography.labelSmall)
                 }
-                OutlinedButton(onClick = onEdit) {
-                    Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.size(6.dp))
-                    Text("Edit")
+                OutlinedButton(
+                    onClick = onEdit,
+                    contentPadding = compactPadding,
+                ) {
+                    Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.size(4.dp))
+                    Text("Edit", style = MaterialTheme.typography.labelSmall)
+                }
+                OutlinedButton(
+                    onClick = onOpenFolder,
+                    contentPadding = compactPadding,
+                ) {
+                    Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.size(4.dp))
+                    Text("Open", style = MaterialTheme.typography.labelSmall)
                 }
                 OutlinedButton(
                     onClick = onRemove,
+                    contentPadding = compactPadding,
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.error,
                     ),
                 ) {
-                    Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.size(6.dp))
-                    Text("Remove")
+                    Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.size(4.dp))
+                    Text("Remove", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }

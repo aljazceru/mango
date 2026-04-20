@@ -2391,6 +2391,10 @@ public func FfiConverterTypeDirectoryFingerprint_lower(_ value: DirectoryFingerp
 public struct DirectorySourceSummary {
     public var id: String
     public var displayName: String
+    /**
+     * Human-readable filesystem path. Populated on Desktop; nil on iOS and Android.
+     */
+    public var path: String?
     public var fileCount: Int64
     public var lastSyncedAt: Int64?
     /**
@@ -2404,7 +2408,7 @@ public struct DirectorySourceSummary {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, displayName: String, fileCount: Int64, lastSyncedAt: Int64?, 
+    public init(id: String, displayName: String, path: String?, fileCount: Int64, lastSyncedAt: Int64?,
         /**
          * Pre-computed relative-time label (e.g. "Never", "Just now", "3m ago",
          * "2h ago", "Yesterday", "3d ago"). Centralised on the Rust side so
@@ -2412,6 +2416,7 @@ public struct DirectorySourceSummary {
          */lastSyncedLabel: String, exclusionGlobs: [String], syncStatus: DirectorySyncStatus) {
         self.id = id
         self.displayName = displayName
+        self.path = path
         self.fileCount = fileCount
         self.lastSyncedAt = lastSyncedAt
         self.lastSyncedLabel = lastSyncedLabel
@@ -2431,6 +2436,9 @@ extension DirectorySourceSummary: Equatable, Hashable {
             return false
         }
         if lhs.displayName != rhs.displayName {
+            return false
+        }
+        if lhs.path != rhs.path {
             return false
         }
         if lhs.fileCount != rhs.fileCount {
@@ -2454,6 +2462,7 @@ extension DirectorySourceSummary: Equatable, Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
         hasher.combine(displayName)
+        hasher.combine(path)
         hasher.combine(fileCount)
         hasher.combine(lastSyncedAt)
         hasher.combine(lastSyncedLabel)
@@ -2471,12 +2480,13 @@ public struct FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectorySourceSummary {
         return
             try DirectorySourceSummary(
-                id: FfiConverterString.read(from: &buf), 
-                displayName: FfiConverterString.read(from: &buf), 
-                fileCount: FfiConverterInt64.read(from: &buf), 
-                lastSyncedAt: FfiConverterOptionInt64.read(from: &buf), 
-                lastSyncedLabel: FfiConverterString.read(from: &buf), 
-                exclusionGlobs: FfiConverterSequenceString.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf),
+                displayName: FfiConverterString.read(from: &buf),
+                path: FfiConverterOptionString.read(from: &buf),
+                fileCount: FfiConverterInt64.read(from: &buf),
+                lastSyncedAt: FfiConverterOptionInt64.read(from: &buf),
+                lastSyncedLabel: FfiConverterString.read(from: &buf),
+                exclusionGlobs: FfiConverterSequenceString.read(from: &buf),
                 syncStatus: FfiConverterTypeDirectorySyncStatus.read(from: &buf)
         )
     }
@@ -2484,6 +2494,7 @@ public struct FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer {
     public static func write(_ value: DirectorySourceSummary, into buf: inout [UInt8]) {
         FfiConverterString.write(value.id, into: &buf)
         FfiConverterString.write(value.displayName, into: &buf)
+        FfiConverterOptionString.write(value.path, into: &buf)
         FfiConverterInt64.write(value.fileCount, into: &buf)
         FfiConverterOptionInt64.write(value.lastSyncedAt, into: &buf)
         FfiConverterString.write(value.lastSyncedLabel, into: &buf)
