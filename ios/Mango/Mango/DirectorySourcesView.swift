@@ -145,8 +145,9 @@ struct DirectorySourcesView: View {
         appManager.dispatch(.triggerDirectorySync(sourceId: source.id))
 
         // Resolve bookmark: prefer in-memory cache keyed on id, then displayName
-        // (post-add fallback), else bail — user must tap Sync Now again after
-        // the next reload since we do not yet expose bookmark read over FFI.
+        // (post-add fallback). Cache is pre-populated from SQLite at AppManager.init
+        // (cold-launch rehydration), so a missing entry here means the bookmark was
+        // never persisted or the FFI call errored — genuine failure, not cold-launch.
         var bookmark: Data? = bookmarkCache[source.id] ?? bookmarkCache[source.displayName]
 
         // Promote displayName-keyed cache entry to id-keyed now that we have the id.
@@ -161,8 +162,8 @@ struct DirectorySourcesView: View {
         }
 
         guard let bk = bookmark else {
-            ds_logger.warning("no cached bookmark for \(source.id, privacy: .public); rebinding required")
-            skippedCloudToast = "This source needs to be re-added on this device (cold launch without cached bookmark). Tap Add folder again."
+            ds_logger.warning("no cached bookmark for \(source.id, privacy: .public); bookmark missing or load failed")
+            skippedCloudToast = "Could not load bookmark for this source. Try removing and re-adding the folder."
             return
         }
 
@@ -357,10 +358,10 @@ extension DirectorySourceSummary: Identifiable {}
 /// pass using the bookmark cache held on DirectorySourcesView — except this
 /// static helper uses a process-wide cache fed at add-time.
 enum DirectorySyncScheduler {
-    /// Bookmark BLOBs captured at add-time; read on ScenePhase .active.
-    /// This is a best-effort cache — a cold launch with no in-memory state
-    /// requires the user to re-add the folder (plan acceptance: this is a
-    /// known v1 limitation called out in the picker logger).
+    /// Bookmark BLOBs captured at add-time and rehydrated from SQLite on cold
+    /// launch (AppManager.init). Read on ScenePhase .active to drive sync without
+    /// user intervention on subsequent launches. Updated when a bookmark becomes
+    /// stale and is re-created during sync (keeps the cache current across moves).
     static var bookmarkCache: [String: Data] = [:]
 
     static func cacheBookmark(sourceId: String, bookmarkData: Data) {
@@ -368,6 +369,11 @@ enum DirectorySyncScheduler {
     }
 
     /// Called from ContentView's ScenePhase handler. Runs one sync pass per source.
+    /// Routes through the same `syncDirectorySource` pipeline as the add-time /
+    /// Sync Now path, ensuring stale-bookmark parity: if the resolved bookmark
+    /// is stale, `syncDirectorySource` dispatches `updateDirectorySourceBookmark`
+    /// to persist the refreshed BLOB, and we also update the in-process cache so
+    /// subsequent foreground activations work without another cold launch.
     static func syncAll(appManager: AppManager) {
         let sources = appManager.appState.directorySources
         for source in sources {
@@ -378,6 +384,12 @@ enum DirectorySyncScheduler {
             let sourceId = source.id
             let exclusions = source.exclusionGlobs
             Task.detached { [appManager] in
+                // Check for stale bookmark before dispatching — update cache if refreshed
+                // so subsequent foreground activations pick up the new BLOB without another launch.
+                if case .ok(_, let isStale, let refreshed) = resolveBookmark(bk),
+                   isStale, let fresh = refreshed {
+                    cacheBookmark(sourceId: sourceId, bookmarkData: fresh)
+                }
                 _ = syncDirectorySource(
                     sourceId: sourceId,
                     bookmarkData: bk,
