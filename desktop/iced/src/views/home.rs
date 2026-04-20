@@ -126,18 +126,8 @@ pub fn sidebar_view<'a>(
             ..Default::default()
         });
 
-    let docs_btn = button(container(text("Documents").size(13)).padding(Padding::from([4u16, 12])))
+    let docs_btn = button(container(text("RAG").size(13)).padding(Padding::from([4u16, 12])))
         .on_press(Message::OpenDocuments)
-        .padding(0)
-        .width(Length::Fill)
-        .style(move |_theme, _status| button::Style {
-            background: None,
-            text_color: vc.text_dim,
-            ..Default::default()
-        });
-
-    let sources_btn = button(container(text("Sources").size(13)).padding(Padding::from([4u16, 12])))
-        .on_press(Message::OpenDirectorySources)
         .padding(0)
         .width(Length::Fill)
         .style(move |_theme, _status| button::Style {
@@ -169,14 +159,6 @@ pub fn sidebar_view<'a>(
             })
             .width(Length::Fill),
         container(docs_btn)
-            .padding(Padding {
-                top: 0.0,
-                right: 8.0,
-                bottom: 4.0,
-                left: 8.0
-            })
-            .width(Length::Fill),
-        container(sources_btn)
             .padding(Padding {
                 top: 0.0,
                 right: 8.0,

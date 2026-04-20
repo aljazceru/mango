@@ -108,6 +108,59 @@ fn status_pill<'a>(
         .into()
 }
 
+/// Compact folder row for the unified RAG screen (plan quick/260420-krp).
+/// Emits `OpenDirectorySources` on click so the detailed management screen
+/// stays reachable. Kept next to `build_source_row` so both share the same
+/// visual language and status-pill helper.
+pub(crate) fn directory_source_compact_row<'a>(
+    src: &'a DirectorySourceSummary,
+    vc: crate::theme::ViewColors,
+) -> Element<'a, RootMessage> {
+    let file_count_str = format!("{} files", format_file_count(src.file_count));
+    let last_synced = src.last_synced_label.clone();
+
+    let meta = row![
+        text(file_count_str).size(12).color(vc.muted),
+        text(" · ").size(12).color(vc.muted),
+        text(format!("Last synced: {}", last_synced))
+            .size(12)
+            .color(vc.muted),
+    ]
+    .align_y(Alignment::Center);
+
+    let info = column![
+        row![
+            text(src.display_name.clone()).size(14),
+            Space::new().width(Length::Fill),
+            status_pill(&src.sync_status, vc),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8),
+        meta,
+    ]
+    .spacing(2);
+
+    let row_btn = button(
+        container(info)
+            .padding(Padding::from([10u16, 14]))
+            .width(Length::Fill),
+    )
+    .on_press(RootMessage::OpenDirectorySources)
+    .padding(0)
+    .width(Length::Fill)
+    .style(move |_theme, _status| button::Style {
+        background: Some(Background::Color(vc.secondary_surface)),
+        border: Border {
+            radius: 6.0.into(),
+            color: vc.border,
+            width: 1.0,
+        },
+        ..Default::default()
+    });
+
+    row_btn.into()
+}
+
 fn build_source_row<'a>(
     src: &'a DirectorySourceSummary,
     vc: crate::theme::ViewColors,
