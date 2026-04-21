@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 Phase: 31
 Plan: Not started
 Status: Ready to execute
-Last activity: 2026-04-21 - Completed quick task 260421-bys: honor "Never" lock timeout on cold launch (skip PIN when user opts out)
+Last activity: 2026-04-21 - Completed quick task 260421-fij: silence dead_code warnings on DirectoryFileRow
 
 Progress: [██░░░░░░░░] 25%
 
@@ -166,6 +166,7 @@ None yet.
 | 260419-jz5 | Allow changing chat title manually from chat top bar (iOS/Android/Desktop) | 2026-04-19 | 52fc9f8 | [260419-jz5-feature-request-allow-changing-chat-titl](./quick/260419-jz5-feature-request-allow-changing-chat-titl/) |
 | 260420-krp | Fold folder-adding into RAG as one source type (Android + Desktop; iOS awaits human build) | 2026-04-20 | 162ca36 | [260420-krp-adding-folders-should-be-part-of-rag-not](./quick/260420-krp-adding-folders-should-be-part-of-rag-not/) |
 | 260421-bys | Honor "Never" lock timeout on cold launch — skip PIN when user opts out (reuses biometric keychain DEK path) | 2026-04-21 | b7f31d8 | [260421-bys-user-needs-to-be-able-to-disable-pin-bio](./quick/260421-bys-user-needs-to-be-able-to-disable-pin-bio/) |
+| 260421-fij | Silence dead_code warnings on DirectoryFileRow.id / source_id | 2026-04-21 | 5d3f5c8 | [260421-fij-silence-dead-code-warnings-on-directoryf](./quick/260421-fij-silence-dead-code-warnings-on-directoryf/) |
 
 ## Session Continuity
 
