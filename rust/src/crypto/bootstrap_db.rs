@@ -54,6 +54,14 @@ impl BootstrapDb {
                 kdf_parallelism INTEGER NOT NULL
             );",
         )?;
+        // Quick 260421-bys: add cold_launch_bypass column to existing DBs idempotently.
+        // `cold_launch_bypass`: non-sensitive hint. Flipping this to 1 without the
+        // corresponding keychain DEK entry is benign — cold-launch code falls back to
+        // Screen::Locked when the keychain load returns None.
+        conn.execute_batch(
+            "ALTER TABLE auth_params ADD COLUMN cold_launch_bypass INTEGER NOT NULL DEFAULT 0;",
+        )
+        .ok(); // ignore "duplicate column" on existing DBs
         Ok(Self { conn })
     }
 
@@ -118,6 +126,39 @@ impl BootstrapDb {
     /// main DB is permanently inaccessible (DEK is gone).
     pub fn delete_all(&self) -> Result<(), anyhow::Error> {
         self.conn.execute("DELETE FROM auth_params", [])?;
+        Ok(())
+    }
+
+    // ── Quick 260421-bys: cold-launch bypass flag ─────────────────────────────
+    //
+    // `cold_launch_bypass` is a non-sensitive hint stored alongside auth_params.
+    // Setting it to 1 without the corresponding keychain DEK entry is benign —
+    // the cold-launch code in lib.rs falls back to Screen::Locked when the
+    // keychain load returns None.
+    //
+    // NOTE: `write_auth_params` uses INSERT OR REPLACE and does NOT include this
+    // column, so the PIN-setup path cannot accidentally reset the flag.
+
+    /// Read the cold-launch bypass flag. Returns `false` on any error or if no row exists.
+    pub fn read_cold_launch_bypass(&self) -> Result<bool, anyhow::Error> {
+        let val: i32 = self
+            .conn
+            .query_row(
+                "SELECT cold_launch_bypass FROM auth_params WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        Ok(val != 0)
+    }
+
+    /// Persist the cold-launch bypass flag. Call after writing the keychain DEK
+    /// (or after evicting it) so the two sources of truth stay in sync.
+    pub fn write_cold_launch_bypass(&self, on: bool) -> Result<(), anyhow::Error> {
+        self.conn.execute(
+            "UPDATE auth_params SET cold_launch_bypass = ?1 WHERE id = 1",
+            params![if on { 1i32 } else { 0i32 }],
+        )?;
         Ok(())
     }
 }
