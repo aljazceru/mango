@@ -180,9 +180,9 @@ fun SettingsSecurityScreen(
 
                         if (appState.lockTimeoutSeconds == -1L) {
                             Text(
-                                "Not recommended. The app will only lock on restart.",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFFE65100),
+                                "Auto-lock disabled. The app will open without your PIN — it is protected only by your device unlock. If your device is unlocked, anyone with access can open the app.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }

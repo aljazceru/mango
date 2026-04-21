@@ -72,9 +72,9 @@ struct SettingsSecurityView: View {
             }
 
             if appState.lockTimeoutSeconds == -1 {
-                Text("Not recommended. The app will only lock on restart.")
+                Text("Auto-lock disabled. The app will open without your PIN — it is protected only by your device unlock. If your device is unlocked, anyone with access can open the app.")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.secondary)
             }
         }
     }
