@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 Phase: 31
 Plan: Not started
 Status: Ready to execute
-Last activity: 2026-04-21 - Completed quick task 260421-fij: silence dead_code warnings on DirectoryFileRow
+Last activity: 2026-04-21 - Completed quick task 260421-tg6: export chat to markdown file
 
 Progress: [██░░░░░░░░] 25%
 
@@ -167,6 +167,7 @@ None yet.
 | 260420-krp | Fold folder-adding into RAG as one source type (Android + Desktop; iOS awaits human build) | 2026-04-20 | 162ca36 | [260420-krp-adding-folders-should-be-part-of-rag-not](./quick/260420-krp-adding-folders-should-be-part-of-rag-not/) |
 | 260421-bys | Honor "Never" lock timeout on cold launch — skip PIN when user opts out (reuses biometric keychain DEK path) | 2026-04-21 | b7f31d8 | [260421-bys-user-needs-to-be-able-to-disable-pin-bio](./quick/260421-bys-user-needs-to-be-able-to-disable-pin-bio/) |
 | 260421-fij | Silence dead_code warnings on DirectoryFileRow.id / source_id | 2026-04-21 | 5d3f5c8 | [260421-fij-silence-dead-code-warnings-on-directoryf](./quick/260421-fij-silence-dead-code-warnings-on-directoryf/) |
+| 260421-tg6 | Export chat to markdown file (Rust core + Desktop; iOS/Android deferred) | 2026-04-21 | 9d78c1c | [260421-tg6-export-chat-to-markdown-file](./quick/260421-tg6-export-chat-to-markdown-file/) |
 
 ## Session Continuity
 
