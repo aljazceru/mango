@@ -96,6 +96,47 @@ fn save_preferences(prefs: &Preferences) {
 }
 
 #[allow(dead_code)]
+/// Sanitize a conversation title into a safe filename stem.
+///
+/// Keeps ASCII alphanumerics, space, underscore, and hyphen. Everything else is
+/// replaced with `_`. Runs of whitespace collapse to a single `_`. Truncates to
+/// 60 bytes. Empty input falls back to "conversation".
+fn sanitize_filename(title: &str) -> String {
+    let collapsed: String = title
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else if c.is_whitespace() {
+                '_'
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // Collapse runs of underscores introduced above.
+    let mut out = String::with_capacity(collapsed.len());
+    let mut prev_us = false;
+    for c in collapsed.chars() {
+        if c == '_' {
+            if !prev_us {
+                out.push('_');
+            }
+            prev_us = true;
+        } else {
+            out.push(c);
+            prev_us = false;
+        }
+    }
+    let trimmed = out.trim_matches(|c: char| c == '_' || c == '-').to_string();
+    let bounded: String = trimmed.chars().take(60).collect();
+    if bounded.is_empty() {
+        "conversation".to_string()
+    } else {
+        bounded
+    }
+}
+
 fn tee_type_to_str(tee: &TeeType) -> &'static str {
     match tee {
         TeeType::IntelTdx => "IntelTdx",
@@ -427,6 +468,13 @@ enum Message {
     ToggleConvMenu,
     // Toggle the tools sub-panel within the conv menu
     ToggleToolsPanel,
+    // Export the current conversation to a .md file (quick/260421-tg6).
+    ExportConversationMarkdown,
+    // Result of the save-file dialog + fs::write. Ok(Some(path)) = saved,
+    // Ok(None) = user cancelled, Err = dialog/write failure.
+    ExportMarkdownReady {
+        result: Result<Option<std::path::PathBuf>, String>,
+    },
     // Window close request (D-12: checkpoint running agent sessions on exit)
     WindowCloseRequested,
     // OS dark/light theme change
@@ -1188,6 +1236,78 @@ impl App {
 
                     Message::ToggleToolsPanel => {
                         *show_tools_panel = !*show_tools_panel;
+                    }
+
+                    // Export current conversation as Markdown (quick/260421-tg6).
+                    // Round-trip: core render → rfd save dialog → std::fs::write.
+                    // No cloud/network; stays on-device per project privacy constraint.
+                    Message::ExportConversationMarkdown => {
+                        let cid = match state.current_conversation_id.clone() {
+                            Some(id) => id,
+                            None => {
+                                manager.dispatch(AppAction::ShowToast {
+                                    message: "No conversation to export".into(),
+                                });
+                                return Task::none();
+                            }
+                        };
+                        // Look up title for filename pre-fill.
+                        let title = state
+                            .conversations
+                            .iter()
+                            .find(|c| c.id == cid)
+                            .map(|c| c.title.clone())
+                            .unwrap_or_default();
+                        let sanitized = sanitize_filename(&title);
+
+                        // Render markdown on the actor thread.
+                        let markdown = match manager.ffi.export_conversation_markdown(cid) {
+                            Ok(md) => md,
+                            Err(e) => {
+                                manager.dispatch(AppAction::ShowToast {
+                                    message: format!("Export failed: {e}"),
+                                });
+                                return Task::none();
+                            }
+                        };
+
+                        // Run the blocking save dialog + write off the UI thread.
+                        let fut = async move {
+                            tokio::task::spawn_blocking(move || {
+                                let picked = rfd::FileDialog::new()
+                                    .set_file_name(format!("{sanitized}.md"))
+                                    .add_filter("Markdown", &["md"])
+                                    .save_file();
+                                match picked {
+                                    Some(path) => match std::fs::write(&path, &markdown) {
+                                        Ok(_) => Ok(Some(path)),
+                                        Err(e) => Err(format!("write failed: {e}")),
+                                    },
+                                    None => Ok(None), // user cancelled
+                                }
+                            })
+                            .await
+                            .unwrap_or_else(|e| Err(format!("task join error: {e}")))
+                        };
+                        return Task::perform(fut, |result| {
+                            Message::ExportMarkdownReady { result }
+                        });
+                    }
+
+                    Message::ExportMarkdownReady { result } => {
+                        match result {
+                            Ok(Some(path)) => {
+                                manager.dispatch(AppAction::ShowToast {
+                                    message: format!("Exported to {}", path.display()),
+                                });
+                            }
+                            Ok(None) => { /* cancelled — no toast, no error */ }
+                            Err(reason) => {
+                                manager.dispatch(AppAction::ShowToast {
+                                    message: format!("Export failed: {reason}"),
+                                });
+                            }
+                        }
                     }
 
                     Message::ToggleDocumentAttachment(doc_id) => {

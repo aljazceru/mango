@@ -381,10 +381,37 @@ pub fn chat_view<'a>(
                 .into()
         };
 
+        // ── Export as Markdown button (quick/260421-tg6) ──
+        // Enabled only when a conversation is loaded and has messages; the main.rs
+        // handler is a no-op/toast otherwise, so this is purely a UX affordance.
+        let export_enabled =
+            state.current_conversation_id.is_some() && !state.messages.is_empty();
+        let export_bg = vc.surface;
+        let export_text_color = if export_enabled {
+            vc.text_dim
+        } else {
+            vc.muted
+        };
+        let mut export_btn_widget = button(text("Export as Markdown").size(13))
+            .padding(Padding::from([4u16, 8]))
+            .style(move |_theme, _status| button::Style {
+                background: Some(Background::Color(export_bg)),
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                text_color: export_text_color,
+                ..Default::default()
+            });
+        if export_enabled {
+            export_btn_widget = export_btn_widget.on_press(Message::ExportConversationMarkdown);
+        }
+        let export_btn = export_btn_widget;
+
         let secondary_surface = vc.secondary_surface;
         let accent = vc.accent;
         let menu_row = container(
-            row![docs_btn, tools_btn, instructions_section_inner]
+            row![docs_btn, tools_btn, export_btn, instructions_section_inner]
                 .spacing(12)
                 .align_y(Alignment::Center),
         )
