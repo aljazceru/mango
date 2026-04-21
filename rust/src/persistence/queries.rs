@@ -999,7 +999,9 @@ pub struct DirectorySourceRow {
 /// without rehashing contents.
 #[derive(Debug, Clone)]
 pub struct DirectoryFileRow {
+    #[allow(dead_code)]
     pub id: i64,
+    #[allow(dead_code)]
     pub source_id: String,
     pub file_path: String,
     pub mtime_secs: i64,
