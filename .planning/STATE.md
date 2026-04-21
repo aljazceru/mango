@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 Phase: 31
 Plan: Not started
 Status: Ready to execute
-Last activity: 2026-04-20 - Completed quick task 260420-krp: unify folders under RAG (Android + Desktop verified; iOS awaits human build)
+Last activity: 2026-04-21 - Completed quick task 260421-bys: honor "Never" lock timeout on cold launch (skip PIN when user opts out)
 
 Progress: [██░░░░░░░░] 25%
 
@@ -165,6 +165,7 @@ None yet.
 | 260419-ece | encrypted image persistence: store sent/received image JPEG encrypted with DEK + thumbnail rendering on Android/iOS/desktop | 2026-04-19 | a7c204b | [260419-ece-encrypted-image-persistence-store-sent-r](./quick/260419-ece-encrypted-image-persistence-store-sent-r/) |
 | 260419-jz5 | Allow changing chat title manually from chat top bar (iOS/Android/Desktop) | 2026-04-19 | 52fc9f8 | [260419-jz5-feature-request-allow-changing-chat-titl](./quick/260419-jz5-feature-request-allow-changing-chat-titl/) |
 | 260420-krp | Fold folder-adding into RAG as one source type (Android + Desktop; iOS awaits human build) | 2026-04-20 | 162ca36 | [260420-krp-adding-folders-should-be-part-of-rag-not](./quick/260420-krp-adding-folders-should-be-part-of-rag-not/) |
+| 260421-bys | Honor "Never" lock timeout on cold launch — skip PIN when user opts out (reuses biometric keychain DEK path) | 2026-04-21 | b7f31d8 | [260421-bys-user-needs-to-be-able-to-disable-pin-bio](./quick/260421-bys-user-needs-to-be-able-to-disable-pin-bio/) |
 
 ## Session Continuity
 
