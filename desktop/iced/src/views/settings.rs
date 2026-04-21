@@ -532,14 +532,9 @@ pub fn view<'a>(
     .padding(Padding::from([7u16, 10]));
 
     let never_warning: Element<'_, Message> = if state.lock_timeout_seconds == -1 {
-        text("Not recommended. App will only lock on restart.")
+        text("Auto-lock disabled. The app will open without your PIN — it is protected only by your device unlock. If your device is unlocked, anyone with access can open the app.")
             .size(11)
-            .color(Color {
-                r: 0.9,
-                g: 0.4,
-                b: 0.1,
-                a: 1.0,
-            })
+            .color(vc.muted)
             .into()
     } else {
         iced::widget::Space::new().height(0).into()
