@@ -4099,25 +4099,73 @@ impl FfiApp {
             // Deferred-open case:
             //   D. Auth params exist → returning user, show Screen::Locked, wait for pin/biometric.
             let has_auth = bootstrap.has_auth_params();
-            let (db_opt, encryption_enabled, auth_initialized) = if db_path == ":memory:" {
-                // Case A: in-memory / test mode
-                let db = persistence::Database::open(":memory:").expect("in-memory DB open");
-                (Some(db), false, false)
-            } else if !has_auth {
-                // Case B/C: no auth params → open plaintext (or create new plaintext)
-                let db =
-                    persistence::Database::open(&db_path).expect("database open and migration");
-                (Some(db), false, false)
+
+            // Quick 260421-bys: Case D bypass — if the user has set lock_timeout == Never,
+            // a DEK is cached in the keychain and cold_launch_bypass == 1 in the bootstrap DB.
+            // In that case we can open the encrypted DB immediately without a PIN prompt.
+            // The keychain item is OS-gated (device unlock required), which is the same
+            // protection level as biometric login with a PIN bypass.
+            let cold_launch_bypass = has_auth
+                && bootstrap.read_cold_launch_bypass().unwrap_or(false);
+            let cold_launch_dek_hex: Option<zeroize::Zeroizing<String>> = if cold_launch_bypass {
+                keychain
+                    .load("mango".to_string(), "dek".to_string())
+                    .map(zeroize::Zeroizing::new)
             } else {
-                // Case D: auth params exist → deferred open, show lock screen
-                (None, true, true)
+                None
             };
+
+            let (db_opt, encryption_enabled, auth_initialized, bypass_succeeded) =
+                if db_path == ":memory:" {
+                    // Case A: in-memory / test mode
+                    let db = persistence::Database::open(":memory:").expect("in-memory DB open");
+                    (Some(db), false, false, false)
+                } else if !has_auth {
+                    // Case B/C: no auth params → open plaintext (or create new plaintext)
+                    let db = persistence::Database::open(&db_path)
+                        .expect("database open and migration");
+                    (Some(db), false, false, false)
+                } else if let Some(ref dek_hex) = cold_launch_dek_hex {
+                    // Case D (Never bypass): auth params exist but user selected Never timeout.
+                    // DEK is in keychain — open encrypted DB directly, skip lock screen.
+                    match persistence::Database::open_encrypted(&db_path, dek_hex) {
+                        Ok(db) => {
+                            log::info!("[auth] Cold-launch bypass succeeded — skipping lock screen");
+                            (Some(db), true, true, true)
+                        }
+                        Err(e) => {
+                            log::warn!("[auth] Cold-launch bypass: open_encrypted failed ({e}); falling back to lock screen");
+                            (None, true, true, false)
+                        }
+                    }
+                } else {
+                    // Case D: auth params exist → deferred open, show lock screen
+                    (None, true, true, false)
+                };
 
             // Phase 8: load or create the HNSW vector index from disk.
             // Phase 29 (D-03/D-05): In encrypted mode (Case D), defer VectorIndex to post-unlock.
             // In non-encrypted mode, open unencrypted index directly as before.
-            let vector_index = if has_auth {
-                // Case D: encrypted index may exist on disk but DEK not yet available.
+            // Quick 260421-bys: bypass_succeeded means DEK is already decoded — open real index.
+            let vector_index = if bypass_succeeded {
+                // Bypass succeeded: decode DEK from hex and open the encrypted vector index.
+                let opened = cold_launch_dek_hex
+                    .as_deref()
+                    .and_then(|hex| hex::decode(hex).ok())
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+                    .and_then(|arr| {
+                        rag::VectorIndex::new(&vector_data_dir, Some(&arr))
+                            .map_err(|e| {
+                                log::warn!("[auth] Cold-launch bypass: VectorIndex open failed: {e}");
+                            })
+                            .ok()
+                    })
+                    .unwrap_or_else(|| {
+                        rag::VectorIndex::new("", None).expect("fallback VectorIndex creation failed")
+                    });
+                opened
+            } else if has_auth {
+                // Case D (not bypassed): encrypted index may exist on disk but DEK not yet available.
                 // Use empty in-memory fallback; real index loaded post-unlock (D-04).
                 rag::VectorIndex::new("", None).expect("fallback VectorIndex creation failed")
             } else {
@@ -4126,6 +4174,17 @@ impl FfiApp {
                     // Fallback: create index with empty path (no persistence for this run).
                     rag::VectorIndex::new("", None).expect("fallback VectorIndex creation failed")
                 })
+            };
+
+            // If bypass succeeded, decode the DEK bytes so actor_state.dek is populated.
+            let bypass_dek: Option<zeroize::Zeroizing<[u8; 32]>> = if bypass_succeeded {
+                cold_launch_dek_hex
+                    .as_deref()
+                    .and_then(|hex| hex::decode(hex).ok())
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+                    .map(zeroize::Zeroizing::new)
+            } else {
+                None
             };
 
             let embedding_provider_arc: Arc<dyn EmbeddingProvider> = Arc::from(embedding_provider);
@@ -4143,7 +4202,7 @@ impl FfiApp {
             };
 
             // Set initial screen based on auth state.
-            if has_auth {
+            if has_auth && !bypass_succeeded {
                 // Returning user: show lock screen (D-09).
                 initial_state.router.current_screen = Screen::Locked;
             }
@@ -4179,7 +4238,8 @@ impl FfiApp {
                 biometric_provider: Arc::from(biometric_provider),
                 pre_lock_screen: None,
                 db_path: db_path.clone(),
-                dek: None,
+                // Quick 260421-bys: populate DEK immediately when cold-launch bypass succeeded.
+                dek: bypass_dek,
             };
 
             // If DB is available (auto-open path), load all state from it.
@@ -6246,6 +6306,36 @@ impl FfiApp {
                                         "lock_timeout_seconds",
                                         &seconds.to_string(),
                                     );
+                                }
+
+                                // Quick 260421-bys: Never mode reuses the biometric DEK-cache path.
+                                // - seconds == -1 and we have a live DEK -> cache it so cold launch can skip PIN.
+                                // - seconds >= 0 and biometric is disabled -> evict cache so cold launch prompts PIN again.
+                                // - seconds >= 0 and biometric is enabled -> leave cache alone (biometric owns it).
+                                if seconds == -1 {
+                                    if let Some(dek) = actor_state.dek.as_ref() {
+                                        let dek_hex: String =
+                                            dek.iter().map(|b| format!("{:02x}", b)).collect();
+                                        actor_state.keychain.store(
+                                            "mango".to_string(),
+                                            "dek".to_string(),
+                                            dek_hex,
+                                        );
+                                        let _ = actor_state.bootstrap.write_cold_launch_bypass(true);
+                                        log::info!("[auth] SetLockTimeout(Never): DEK cached in keychain for cold-launch bypass");
+                                    } else {
+                                        log::warn!("[auth] SetLockTimeout(Never) with no live DEK — cache not written; next unlock will re-cache");
+                                    }
+                                    actor_state.app_state.toast = Some(
+                                        "Auto-lock disabled. App will open without PIN — protected only by your device unlock.".to_string()
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                } else if !actor_state.app_state.biometric_login_enabled {
+                                    actor_state
+                                        .keychain
+                                        .delete("mango".to_string(), "dek".to_string());
+                                    let _ = actor_state.bootstrap.write_cold_launch_bypass(false);
+                                    log::info!("[auth] SetLockTimeout(finite) + biometric off: DEK evicted from keychain");
                                 }
                             }
 
