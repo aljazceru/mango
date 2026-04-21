@@ -929,6 +929,98 @@ impl KeychainProvider for DesktopKeychainProvider {
     }
 }
 
+// ── Conversation markdown export (quick/260421-tg6) ─────────────────────────
+//
+// Pure, dependency-free renderer so it can be unit-tested from an integration
+// test without dragging in the DB or FFI. The actor handler maps persistence
+// MessageRow → ExportMessage before calling the formatter, which keeps this
+// function decoupled from the persistence layer.
+
+/// Message shape consumed by the markdown exporter. Mirrors the subset of
+/// `persistence::queries::MessageRow` that the formatter actually needs.
+/// Public so integration tests can construct values; the formatter never stores
+/// these values, so zeroisation is not required here.
+#[derive(Clone, Debug)]
+pub struct ExportMessage {
+    pub role: String,
+    pub content: String,
+    pub image_path: Option<String>,
+}
+
+/// Title-case a role string for heading rendering. Known roles map to canonical
+/// labels (User/Assistant/System); unknown roles have their first ASCII letter
+/// upper-cased (e.g. `"tool"` → `"Tool"`). Returns "Unknown" for empty input.
+fn role_heading(role: &str) -> String {
+    match role {
+        "user" => "User".to_string(),
+        "assistant" => "Assistant".to_string(),
+        "system" => "System".to_string(),
+        other if other.is_empty() => "Unknown".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => "Unknown".to_string(),
+            }
+        }
+    }
+}
+
+/// Format a conversation as markdown using `now_rfc3339` as the export stamp.
+///
+/// Separating the timestamp parameter makes the function deterministic and
+/// unit-testable; the thin [`format_conversation_as_markdown`] wrapper fills
+/// it in from `chrono::Utc::now()` at runtime.
+///
+/// Content is NOT escaped — it is copied verbatim since user/model content is
+/// already Markdown in practice, and double-escaping would corrupt code fences.
+pub fn format_conversation_as_markdown_with_now(
+    title: &str,
+    messages: &[ExportMessage],
+    now_rfc3339: &str,
+) -> String {
+    let effective_title = if title.trim().is_empty() {
+        "Untitled conversation"
+    } else {
+        title
+    };
+    let mut out = String::new();
+    out.push_str("# ");
+    out.push_str(effective_title);
+    out.push_str("\n\n");
+    out.push_str("_Exported ");
+    out.push_str(now_rfc3339);
+    out.push_str("_\n\n");
+
+    for m in messages {
+        out.push_str("## ");
+        out.push_str(&role_heading(&m.role));
+        out.push_str("\n\n");
+        out.push_str(&m.content);
+        if m.image_path.is_some() {
+            // Ensure a blank line between content and the marker.
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("\n_[image attachment]_");
+        }
+        out.push_str("\n\n");
+    }
+
+    // Trim trailing whitespace runs, restore single trailing newline.
+    while out.ends_with(|c: char| c == '\n' || c == ' ' || c == '\t') {
+        out.pop();
+    }
+    out.push('\n');
+    out
+}
+
+/// Convenience wrapper that fills the timestamp with the current UTC time.
+pub fn format_conversation_as_markdown(title: &str, messages: &[ExportMessage]) -> String {
+    let now = chrono::Utc::now().to_rfc3339();
+    format_conversation_as_markdown_with_now(title, messages, &now)
+}
+
 // ── Internal messages ────────────────────────────────────────────────────────
 
 /// Internal actor messages -- not UniFFI-exported
@@ -960,6 +1052,12 @@ pub enum CoreMsg {
     GetDirectoryBookmark {
         source_id: String,
         reply: flume::Sender<Result<Option<Vec<u8>>, String>>,
+    },
+    /// Render the conversation's messages as a Markdown string (quick/260421-tg6).
+    /// Read-only: actor does not mutate state, the native layer handles file I/O.
+    ExportConversationMarkdown {
+        conversation_id: String,
+        reply: flume::Sender<Result<String, String>>,
     },
 }
 
@@ -7972,6 +8070,36 @@ impl FfiApp {
                         let _ = reply.send(result);
                     }
 
+                    CoreMsg::ExportConversationMarkdown { conversation_id, reply } => {
+                        // Read-only: load messages, render markdown, send back.
+                        // No AppState mutation, no emit.
+                        let result: Result<String, String> = (|| {
+                            let db = actor_state
+                                .db
+                                .as_ref()
+                                .ok_or_else(|| "db not available".to_string())?;
+                            let title = actor_state
+                                .app_state
+                                .conversations
+                                .iter()
+                                .find(|c| c.id == conversation_id)
+                                .map(|c| c.title.clone())
+                                .unwrap_or_default();
+                            let rows = persistence::queries::list_messages(db.conn(), &conversation_id)
+                                .map_err(|e| format!("list_messages failed: {e}"))?;
+                            let export_msgs: Vec<ExportMessage> = rows
+                                .into_iter()
+                                .map(|r| ExportMessage {
+                                    role: r.role,
+                                    content: r.content,
+                                    image_path: r.image_path,
+                                })
+                                .collect();
+                            Ok(format_conversation_as_markdown(&title, &export_msgs))
+                        })();
+                        let _ = reply.send(result);
+                    }
+
                     CoreMsg::ReadEncryptedImage { message_id, reply } => {
                         // Decrypt image on the actor thread (single-user desktop: fine to block briefly).
                         // Plaintext bytes live only on the stack here — never stored in ActorState (T-ECE-04).
@@ -8036,6 +8164,31 @@ impl FfiApp {
         self.core_tx
             .send(CoreMsg::ReadEncryptedImage {
                 message_id,
+                reply: reply_tx,
+            })
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor channel error: {e}"),
+            })?;
+        reply_rx
+            .recv()
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor reply error: {e}"),
+            })?
+            .map_err(|reason| FfiError::Internal { reason })
+    }
+
+    /// Render the given conversation's message history as a Markdown string.
+    ///
+    /// The actor thread loads messages from SQLite, maps them to [`ExportMessage`],
+    /// and invokes the pure [`format_conversation_as_markdown`] renderer. The
+    /// native layer is responsible for writing the returned string to disk (via
+    /// `rfd::FileDialog` on desktop, `ShareLink`/`ACTION_CREATE_DOCUMENT` on mobile).
+    /// No network or telemetry — export is strictly local.
+    pub fn export_conversation_markdown(&self, conversation_id: String) -> Result<String, FfiError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.core_tx
+            .send(CoreMsg::ExportConversationMarkdown {
+                conversation_id,
                 reply: reply_tx,
             })
             .map_err(|e| FfiError::Internal {
