@@ -1,10 +1,16 @@
 package dev.disobey.mango.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import dev.disobey.mango.AppManager
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.Screen
@@ -26,6 +32,7 @@ fun MainApp(
     }
 
     val state = manager.state
+    val context = LocalContext.current
 
     // Intercept the Android system back gesture / button at the Compose root so it
     // dispatches PopScreen to the Rust router instead of falling through to the
@@ -65,7 +72,20 @@ fun MainApp(
                 onStop = { manager.dispatch(AppAction.StopGeneration) },
                 onRetry = { manager.dispatch(AppAction.RetryLastMessage) },
                 onEdit = { id, text -> manager.dispatch(AppAction.EditMessage(messageId = id, newText = text)) },
-                onCopy = { _ -> },
+                onCopy = { text ->
+                    // Copy message text to the system clipboard.
+                    // On Android 13+ (API 33+) the OS displays its own "copied" confirmation
+                    // UI automatically, so we suppress the Toast to avoid double-feedback.
+                    // On Android 9-12 (API 28-32) the OS shows nothing, so we Toast manually
+                    // to confirm the action succeeded.
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    if (clipboard != null) {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("message", text))
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                            Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
                 onAttach = { filename, content, size -> manager.dispatch(AppAction.AttachFile(filename = filename, content = content, sizeBytes = size)) },
                 onAttachImage = { filename, filePath, mimeType -> manager.dispatch(AppAction.AttachImage(filename = filename, filePath = filePath, mimeType = mimeType)) },
                 onClearAttachment = { manager.dispatch(AppAction.ClearAttachment) },

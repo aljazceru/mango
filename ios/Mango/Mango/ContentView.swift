@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Root content view: routes to Settings, Chat, or Home based on router state.
 struct ContentView: View {
@@ -62,7 +63,7 @@ struct ContentView: View {
                     onStop: { appManager.dispatch(.stopGeneration) },
                     onRetry: { appManager.dispatch(.retryLastMessage) },
                     onEdit: { id, text in appManager.dispatch(.editMessage(messageId: id, newText: text)) },
-                    onCopy: { _ in },
+                    onCopy: { text in UIPasteboard.general.string = text },
                     onAttach: {},
                     onClearAttachment: { appManager.dispatch(.clearAttachment) },
                     onSelectModel: { model in appManager.dispatch(.selectModel(modelId: model)) },
