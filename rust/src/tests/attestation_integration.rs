@@ -456,5 +456,8 @@ fn test_provider_fallback() {
         crate::CoreMsg::GetDirectoryBookmark { .. } => {
             panic!("Expected InternalEvent, got GetDirectoryBookmark")
         }
+        crate::CoreMsg::ExportConversationMarkdown { .. } => {
+            panic!("Expected InternalEvent, got ExportConversationMarkdown")
+        }
     }
 }

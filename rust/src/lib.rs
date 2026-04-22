@@ -4496,6 +4496,23 @@ impl FfiApp {
 
                             // ── Phase 5 action handlers ───────────────────────
                             AppAction::NewConversation => {
+                                // Defense in depth: the UI should gate the "New
+                                // Conversation" control on the app being unlocked
+                                // (Screen::Locked hides the sidebar on desktop, and
+                                // both mobile UIs do the same), but dispatch is an
+                                // async message send — a stray action enqueued before
+                                // UnlockWithPin completes, or while LockApp is in
+                                // flight, could otherwise reach this handler with
+                                // actor_state.db == None and crash the actor thread
+                                // (desktop-new-chat-db-panic). Drop the action quietly
+                                // instead of panicking; the UI will re-render with
+                                // the correct screen on the next state emit.
+                                if actor_state.db.is_none() {
+                                    log::warn!(
+                                        "[action] NewConversation dispatched while DB is locked; ignoring"
+                                    );
+                                    continue;
+                                }
                                 let conv_id = new_uuid();
                                 let now = now_secs();
                                 // Prefer default_backend_id from settings, fall back to active
