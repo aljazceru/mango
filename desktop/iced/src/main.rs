@@ -701,87 +701,93 @@ impl App {
                 match message {
                     Message::CoreUpdated => {
                         let latest = manager.state();
-                        if latest.rev > state.rev {
-                            // Parse new completed assistant messages for markdown rendering
-                            // (per iced docs: store Vec<markdown::Item> in app state)
-                            for msg in &latest.messages {
-                                if msg.role == "assistant" && !parsed_messages.contains_key(&msg.id)
-                                {
-                                    let items: Vec<iced::widget::markdown::Item> =
-                                        iced::widget::markdown::parse(&msg.content).collect();
-                                    parsed_messages.insert(msg.id.clone(), items);
-                                }
+                        // Parse new completed assistant messages for markdown rendering
+                        // (per iced docs: store Vec<markdown::Item> in app state)
+                        for msg in &latest.messages {
+                            if msg.role == "assistant" && !parsed_messages.contains_key(&msg.id)
+                            {
+                                let items: Vec<iced::widget::markdown::Item> =
+                                    iced::widget::markdown::parse(&msg.content).collect();
+                                parsed_messages.insert(msg.id.clone(), items);
                             }
-                            // Streaming delta extraction via prev_streaming_len
-                            match (&latest.streaming_text, &state.streaming_text) {
-                                (Some(new_text), _) => {
-                                    let new_len = new_text.len();
-                                    if new_len > *prev_streaming_len {
-                                        // Normal: append delta
-                                        let delta = &new_text[*prev_streaming_len..];
-                                        streaming_content.push_str(delta);
-                                        *prev_streaming_len = new_len;
-                                    } else if new_len <= *prev_streaming_len {
-                                        // Unexpected reset or restart: full re-parse
-                                        *streaming_content = iced::widget::markdown::Content::new();
-                                        streaming_content.push_str(new_text);
-                                        *prev_streaming_len = new_len;
-                                    }
-                                }
-                                (None, Some(_)) => {
-                                    // StreamDone: reset streaming content
+                        }
+                        // Streaming delta extraction via prev_streaming_len
+                        match (&latest.streaming_text, &state.streaming_text) {
+                            (Some(new_text), _) => {
+                                let new_len = new_text.len();
+                                if new_len > *prev_streaming_len {
+                                    // Normal: append delta
+                                    let delta = &new_text[*prev_streaming_len..];
+                                    streaming_content.push_str(delta);
+                                    *prev_streaming_len = new_len;
+                                } else if new_len <= *prev_streaming_len {
+                                    // Unexpected reset or restart: full re-parse
                                     *streaming_content = iced::widget::markdown::Content::new();
-                                    *prev_streaming_len = 0;
+                                    streaming_content.push_str(new_text);
+                                    *prev_streaming_len = new_len;
                                 }
-                                (None, None) => {}
                             }
-                            // Sync default instructions from core state on first load.
-                            if !*settings_default_instructions_initialized {
-                                if let Some(sp) = &latest.global_system_prompt {
-                                    *settings_default_instructions = sp.clone();
-                                }
-                                *settings_default_instructions_initialized = true;
+                            (None, Some(_)) => {
+                                // StreamDone: reset streaming content
+                                *streaming_content = iced::widget::markdown::Content::new();
+                                *prev_streaming_len = 0;
                             }
-                            // Mirror Brave API key validation toast into the inline
-                            // settings message, then clear it from the core state.
-                            if let Some(toast) = &latest.toast.clone() {
-                                *settings_brave_api_key_message = Some(toast.clone());
-                                manager.dispatch(AppAction::ClearToast);
+                            (None, None) => {}
+                        }
+                        // Sync default instructions from core state on first load.
+                        if !*settings_default_instructions_initialized {
+                            if let Some(sp) = &latest.global_system_prompt {
+                                *settings_default_instructions = sp.clone();
                             }
-                            // IMG-07: spawn Tasks to decrypt-on-read any new user messages
-                            // with image_path not yet in the cache.
-                            let mut thumb_tasks: Vec<Task<Message>> = Vec::new();
-                            for msg in &state.messages {
-                                if msg.image_path.is_some()
-                                    && !image_cache.contains_key(&msg.id)
-                                {
-                                    let msg_id = msg.id.clone();
-                                    let ffi = manager.ffi.clone();
-                                    thumb_tasks.push(Task::perform(
-                                        async move {
-                                            tokio::task::spawn_blocking(move || {
-                                                ffi.read_encrypted_image(msg_id.clone())
-                                                    .map(|bytes| (msg_id, bytes))
-                                            })
-                                            .await
-                                            .ok()
-                                            .and_then(|r| r.ok())
-                                        },
-                                        |result| match result {
-                                            Some((message_id, bytes)) => {
-                                                Message::ThumbnailLoaded {
-                                                    message_id,
-                                                    handle: iced::widget::image::Handle::from_bytes(bytes),
-                                                }
+                            *settings_default_instructions_initialized = true;
+                        }
+                        // Mirror Brave API key validation toast into the inline
+                        // settings message, then clear it from the core state.
+                        if let Some(toast) = &latest.toast.clone() {
+                            *settings_brave_api_key_message = Some(toast.clone());
+                            manager.dispatch(AppAction::ClearToast);
+                        }
+                        // IMG-07: spawn Tasks to decrypt-on-read any new user messages
+                        // with image_path not yet in the cache.
+                        let mut thumb_tasks: Vec<Task<Message>> = Vec::new();
+                        for msg in &latest.messages {
+                            if msg.image_path.is_some()
+                                && !image_cache.contains_key(&msg.id)
+                            {
+                                let msg_id = msg.id.clone();
+                                let ffi = manager.ffi.clone();
+                                thumb_tasks.push(Task::perform(
+                                    async move {
+                                        tokio::task::spawn_blocking(move || {
+                                            ffi.read_encrypted_image(msg_id.clone())
+                                                .map(|bytes| (msg_id, bytes))
+                                        })
+                                        .await
+                                        .ok()
+                                        .and_then(|r| r.ok())
+                                    },
+                                    |result| match result {
+                                        Some((message_id, bytes)) => {
+                                            Message::ThumbnailLoaded {
+                                                message_id,
+                                                handle: iced::widget::image::Handle::from_bytes(bytes),
                                             }
-                                            None => Message::CoreUpdated, // no-op on failure
-                                        },
-                                    ));
-                                }
+                                        }
+                                        None => Message::CoreUpdated, // no-op on failure
+                                    },
+                                ));
                             }
-                            if !thumb_tasks.is_empty() {
-                                return Task::batch(thumb_tasks);
-                            }
+                        }
+                        // CRITICAL: commit the latest core snapshot to UI state.
+                        // Without this, view() renders against a frozen default state
+                        // (Screen::Home, conversations=[]) and the lock screen,
+                        // onboarding, settings, and all live updates never appear.
+                        // Regression introduced in commit a7c204b (IMG-07) which
+                        // accidentally removed the `*state = latest` assignment
+                        // along with the (now redundant) `rev > state.rev` guard.
+                        *state = latest;
+                        if !thumb_tasks.is_empty() {
+                            return Task::batch(thumb_tasks);
                         }
                         return Task::none();
                     }
