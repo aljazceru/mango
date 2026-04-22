@@ -5,6 +5,7 @@ mod attestation_integration;
 mod attestation_types;
 mod backend_config;
 mod chat;
+mod desktop_locked_new_conv;
 mod chat_tools;
 mod crypto;
 mod directory_rag;
