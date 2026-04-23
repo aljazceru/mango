@@ -860,6 +860,8 @@ internal open class UniffiVTableCallbackInterfaceKeychainProvider(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -880,6 +882,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
 fun uniffi_mango_core_checksum_func_model_supports_vision(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_dispatch(
+): Short
+fun uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark(
 ): Short
@@ -973,6 +977,8 @@ fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`k
 ): Pointer
 fun uniffi_mango_core_fn_method_ffiapp_dispatch(`ptr`: Pointer,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(`ptr`: Pointer,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(`ptr`: Pointer,`backendId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1132,6 +1138,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_dispatch() != 49208.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown() != 12956.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() != 42562.toShort()) {
@@ -1674,6 +1683,17 @@ public interface FfiAppInterface {
     fun `dispatch`(`action`: AppAction)
     
     /**
+     * Render the given conversation's message history as a Markdown string.
+     *
+     * The actor thread loads messages from SQLite, maps them to [`ExportMessage`],
+     * and invokes the pure [`format_conversation_as_markdown`] renderer. The
+     * native layer is responsible for writing the returned string to disk (via
+     * `rfd::FileDialog` on desktop, `ShareLink`/`ACTION_CREATE_DOCUMENT` on mobile).
+     * No network or telemetry — export is strictly local.
+     */
+    fun `exportConversationMarkdown`(`conversationId`: kotlin.String): kotlin.String
+    
+    /**
      * Return the persisted bookmark BLOB for a directory source, or None if the
      * source doesn't exist or has no bookmark (Desktop/Android sources).
      * Used by iOS AppManager at init time to rehydrate the in-process
@@ -1836,6 +1856,28 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
 }
     }
     
+    
+
+    
+    /**
+     * Render the given conversation's message history as a Markdown string.
+     *
+     * The actor thread loads messages from SQLite, maps them to [`ExportMessage`],
+     * and invokes the pure [`format_conversation_as_markdown`] renderer. The
+     * native layer is responsible for writing the returned string to disk (via
+     * `rfd::FileDialog` on desktop, `ShareLink`/`ACTION_CREATE_DOCUMENT` on mobile).
+     * No network or telemetry — export is strictly local.
+     */
+    @Throws(FfiException::class)override fun `exportConversationMarkdown`(`conversationId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(
+        it, FfiConverterString.lower(`conversationId`),_status)
+}
+    }
+    )
+    }
     
 
     
@@ -2757,26 +2799,32 @@ public object FfiConverterTypeDirectoryFingerprint: FfiConverterRustBuffer<Direc
  * Per T-32-I2 (threat register): this struct intentionally omits `bookmark_data`
  * and `tree_uri` — those handles stay in SQLite and never cross the UniFFI
  * boundary.
+ *
+ * `path` is the human-readable filesystem path stored at add-time on Desktop
+ * (e.g. `/home/user/Notes`). On iOS and Android this is `None` because those
+ * platforms use opaque handles (security-scoped bookmarks / tree URIs) instead
+ * of plain filesystem paths. The native UI layers derive a display path from
+ * their own handle stores (DocumentsContract on Android, bookmark URL on iOS).
  */
 data class DirectorySourceSummary (
-    var `id`: kotlin.String,
-    var `displayName`: kotlin.String,
+    var `id`: kotlin.String, 
+    var `displayName`: kotlin.String, 
     /**
-     * Human-readable filesystem path. Populated on Desktop; null on iOS and Android.
+     * Human-readable filesystem path. Populated on Desktop; `None` on iOS and Android.
      */
-    var `path`: kotlin.String?,
-    var `fileCount`: kotlin.Long,
-    var `lastSyncedAt`: kotlin.Long?,
+    var `path`: kotlin.String?, 
+    var `fileCount`: kotlin.Long, 
+    var `lastSyncedAt`: kotlin.Long?, 
     /**
      * Pre-computed relative-time label (e.g. "Never", "Just now", "3m ago",
      * "2h ago", "Yesterday", "3d ago"). Centralised on the Rust side so
      * desktop/iOS/Android render identical strings (Phase 32 Plan 07).
      */
-    var `lastSyncedLabel`: kotlin.String,
-    var `exclusionGlobs`: List<kotlin.String>,
+    var `lastSyncedLabel`: kotlin.String, 
+    var `exclusionGlobs`: List<kotlin.String>, 
     var `syncStatus`: DirectorySyncStatus
 ) {
-
+    
     companion object
 }
 
@@ -3373,6 +3421,15 @@ sealed class AppAction {
     }
     
     /**
+     * Fork a conversation: copy its title + messages + metadata into a new
+     * conversation and navigate into it. Per quick/260423-93w.
+     */
+    data class ForkConversation(
+        val `id`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
      * Delete a conversation and all its messages (per D-13)
      */
     data class DeleteConversation(
@@ -3916,178 +3973,181 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            13 -> AppAction.DeleteConversation(
+            13 -> AppAction.ForkConversation(
                 FfiConverterString.read(buf),
                 )
-            14 -> AppAction.DeleteAllConversations
-            15 -> AppAction.DeleteAllData
-            16 -> AppAction.RetryLastMessage
-            17 -> AppAction.EditMessage(
+            14 -> AppAction.DeleteConversation(
+                FfiConverterString.read(buf),
+                )
+            15 -> AppAction.DeleteAllConversations
+            16 -> AppAction.DeleteAllData
+            17 -> AppAction.RetryLastMessage
+            18 -> AppAction.EditMessage(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            18 -> AppAction.AttachFile(
+            19 -> AppAction.AttachFile(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterULong.read(buf),
                 )
-            19 -> AppAction.ClearAttachment
-            20 -> AppAction.AttachImage(
+            20 -> AppAction.ClearAttachment
+            21 -> AppAction.AttachImage(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            21 -> AppAction.SelectModel(
+            22 -> AppAction.SelectModel(
                 FfiConverterString.read(buf),
                 )
-            22 -> AppAction.SetSystemPrompt(
+            23 -> AppAction.SetSystemPrompt(
                 FfiConverterOptionalString.read(buf),
                 )
-            23 -> AppAction.AddBackend(
+            24 -> AppAction.AddBackend(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterTypeTeeType.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            24 -> AppAction.RemoveBackend(
+            25 -> AppAction.RemoveBackend(
                 FfiConverterString.read(buf),
                 )
-            25 -> AppAction.ReorderBackend(
+            26 -> AppAction.ReorderBackend(
                 FfiConverterString.read(buf),
                 FfiConverterLong.read(buf),
                 )
-            26 -> AppAction.UpdateBackendModels(
+            27 -> AppAction.UpdateBackendModels(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            27 -> AppAction.SetDefaultBackend(
+            28 -> AppAction.SetDefaultBackend(
                 FfiConverterString.read(buf),
                 )
-            28 -> AppAction.SetDefaultModel(
+            29 -> AppAction.SetDefaultModel(
                 FfiConverterString.read(buf),
                 )
-            29 -> AppAction.OverrideConversationBackend(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            30 -> AppAction.NextOnboardingStep
-            31 -> AppAction.PreviousOnboardingStep
-            32 -> AppAction.UpdateBackendApiKey(
+            30 -> AppAction.OverrideConversationBackend(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            33 -> AppAction.ValidateApiKey(
-                FfiConverterString.read(buf),
-                )
-            34 -> AppAction.CompleteOnboarding
-            35 -> AppAction.SkipOnboarding
-            36 -> AppAction.AddBackendFromPreset(
+            31 -> AppAction.NextOnboardingStep
+            32 -> AppAction.PreviousOnboardingStep
+            33 -> AppAction.UpdateBackendApiKey(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            37 -> AppAction.IngestDocument(
+            34 -> AppAction.ValidateApiKey(
+                FfiConverterString.read(buf),
+                )
+            35 -> AppAction.CompleteOnboarding
+            36 -> AppAction.SkipOnboarding
+            37 -> AppAction.AddBackendFromPreset(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            38 -> AppAction.IngestDocument(
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            38 -> AppAction.DeleteDocument(
+            39 -> AppAction.DeleteDocument(
                 FfiConverterString.read(buf),
                 )
-            39 -> AppAction.AttachDocumentToConversation(
+            40 -> AppAction.AttachDocumentToConversation(
                 FfiConverterString.read(buf),
                 )
-            40 -> AppAction.DetachDocumentFromConversation(
+            41 -> AppAction.DetachDocumentFromConversation(
                 FfiConverterString.read(buf),
                 )
-            41 -> AppAction.LaunchAgentSession(
+            42 -> AppAction.LaunchAgentSession(
                 FfiConverterString.read(buf),
                 )
-            42 -> AppAction.PauseAgentSession(
+            43 -> AppAction.PauseAgentSession(
                 FfiConverterString.read(buf),
                 )
-            43 -> AppAction.ResumeAgentSession(
+            44 -> AppAction.ResumeAgentSession(
                 FfiConverterString.read(buf),
                 )
-            44 -> AppAction.CancelAgentSession(
+            45 -> AppAction.CancelAgentSession(
                 FfiConverterString.read(buf),
                 )
-            45 -> AppAction.LoadAgentSession(
+            46 -> AppAction.LoadAgentSession(
                 FfiConverterString.read(buf),
                 )
-            46 -> AppAction.ClearAgentDetail
-            47 -> AppAction.SetAttestationInterval(
+            47 -> AppAction.ClearAgentDetail
+            48 -> AppAction.SetAttestationInterval(
                 FfiConverterUInt.read(buf),
                 )
-            48 -> AppAction.SetGlobalSystemPrompt(
+            49 -> AppAction.SetGlobalSystemPrompt(
                 FfiConverterOptionalString.read(buf),
                 )
-            49 -> AppAction.ListMemories
-            50 -> AppAction.DeleteMemory(
+            50 -> AppAction.ListMemories
+            51 -> AppAction.DeleteMemory(
                 FfiConverterString.read(buf),
                 )
-            51 -> AppAction.UpdateMemory(
+            52 -> AppAction.UpdateMemory(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            52 -> AppAction.SetBraveApiKey(
+            53 -> AppAction.SetBraveApiKey(
                 FfiConverterString.read(buf),
                 )
-            53 -> AppAction.ValidateBraveApiKey(
+            54 -> AppAction.ValidateBraveApiKey(
                 FfiConverterString.read(buf),
                 )
-            54 -> AppAction.SetMemoriesEnabled(
+            55 -> AppAction.SetMemoriesEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            55 -> AppAction.SetConversationToolsEnabled(
+            56 -> AppAction.SetConversationToolsEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            56 -> AppAction.SetupPin(
+            57 -> AppAction.SetupPin(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            57 -> AppAction.SetDuressPin(
+            58 -> AppAction.SetDuressPin(
                 FfiConverterOptionalString.read(buf),
                 )
-            58 -> AppAction.UnlockWithDek(
+            59 -> AppAction.UnlockWithDek(
                 FfiConverterString.read(buf),
                 )
-            59 -> AppAction.UnlockWithPin(
+            60 -> AppAction.UnlockWithPin(
                 FfiConverterString.read(buf),
                 )
-            60 -> AppAction.LockApp
-            61 -> AppAction.AttemptBiometricUnlock
-            62 -> AppAction.SetBiometricLoginEnabled(
+            61 -> AppAction.LockApp
+            62 -> AppAction.AttemptBiometricUnlock
+            63 -> AppAction.SetBiometricLoginEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            63 -> AppAction.SetLockTimeout(
+            64 -> AppAction.SetLockTimeout(
                 FfiConverterLong.read(buf),
                 )
-            64 -> AppAction.AddDirectorySource(
+            65 -> AppAction.AddDirectorySource(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalByteArray.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            65 -> AppAction.SyncDirectoryFiles(
+            66 -> AppAction.SyncDirectoryFiles(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceTypeDirectoryFileEntry.read(buf),
                 FfiConverterSequenceString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            66 -> AppAction.RemoveDirectorySource(
+            67 -> AppAction.RemoveDirectorySource(
                 FfiConverterString.read(buf),
                 )
-            67 -> AppAction.SetDirectoryExclusions(
+            68 -> AppAction.SetDirectoryExclusions(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            68 -> AppAction.TriggerDirectorySync(
+            69 -> AppAction.TriggerDirectorySync(
                 FfiConverterString.read(buf),
                 )
-            69 -> AppAction.UpdateDirectorySourceBookmark(
+            70 -> AppAction.UpdateDirectorySourceBookmark(
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
@@ -4174,6 +4234,13 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 4UL
                 + FfiConverterString.allocationSize(value.`id`)
                 + FfiConverterString.allocationSize(value.`title`)
+            )
+        }
+        is AppAction.ForkConversation -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`id`)
             )
         }
         is AppAction.DeleteConversation -> {
@@ -4651,59 +4718,64 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.write(value.`title`, buf)
                 Unit
             }
-            is AppAction.DeleteConversation -> {
+            is AppAction.ForkConversation -> {
                 buf.putInt(13)
                 FfiConverterString.write(value.`id`, buf)
                 Unit
             }
-            is AppAction.DeleteAllConversations -> {
+            is AppAction.DeleteConversation -> {
                 buf.putInt(14)
+                FfiConverterString.write(value.`id`, buf)
                 Unit
             }
-            is AppAction.DeleteAllData -> {
+            is AppAction.DeleteAllConversations -> {
                 buf.putInt(15)
                 Unit
             }
-            is AppAction.RetryLastMessage -> {
+            is AppAction.DeleteAllData -> {
                 buf.putInt(16)
                 Unit
             }
-            is AppAction.EditMessage -> {
+            is AppAction.RetryLastMessage -> {
                 buf.putInt(17)
+                Unit
+            }
+            is AppAction.EditMessage -> {
+                buf.putInt(18)
                 FfiConverterString.write(value.`messageId`, buf)
                 FfiConverterString.write(value.`newText`, buf)
                 Unit
             }
             is AppAction.AttachFile -> {
-                buf.putInt(18)
+                buf.putInt(19)
                 FfiConverterString.write(value.`filename`, buf)
                 FfiConverterString.write(value.`content`, buf)
                 FfiConverterULong.write(value.`sizeBytes`, buf)
                 Unit
             }
             is AppAction.ClearAttachment -> {
-                buf.putInt(19)
+                buf.putInt(20)
                 Unit
             }
             is AppAction.AttachImage -> {
-                buf.putInt(20)
+                buf.putInt(21)
                 FfiConverterString.write(value.`filename`, buf)
                 FfiConverterString.write(value.`filePath`, buf)
                 FfiConverterString.write(value.`mimeType`, buf)
                 Unit
             }
             is AppAction.SelectModel -> {
-                buf.putInt(21)
+                buf.putInt(22)
                 FfiConverterString.write(value.`modelId`, buf)
                 Unit
             }
             is AppAction.SetSystemPrompt -> {
-                buf.putInt(22)
+                buf.putInt(23)
                 FfiConverterOptionalString.write(value.`prompt`, buf)
                 Unit
             }
             is AppAction.AddBackend -> {
-                buf.putInt(23)
+                buf.putInt(24)
                 FfiConverterString.write(value.`name`, buf)
                 FfiConverterString.write(value.`baseUrl`, buf)
                 FfiConverterString.write(value.`apiKey`, buf)
@@ -4712,209 +4784,209 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.RemoveBackend -> {
-                buf.putInt(24)
+                buf.putInt(25)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.ReorderBackend -> {
-                buf.putInt(25)
+                buf.putInt(26)
                 FfiConverterString.write(value.`backendId`, buf)
                 FfiConverterLong.write(value.`newDisplayOrder`, buf)
                 Unit
             }
             is AppAction.UpdateBackendModels -> {
-                buf.putInt(26)
+                buf.putInt(27)
                 FfiConverterString.write(value.`backendId`, buf)
                 FfiConverterSequenceString.write(value.`models`, buf)
                 Unit
             }
             is AppAction.SetDefaultBackend -> {
-                buf.putInt(27)
+                buf.putInt(28)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.SetDefaultModel -> {
-                buf.putInt(28)
+                buf.putInt(29)
                 FfiConverterString.write(value.`modelId`, buf)
                 Unit
             }
             is AppAction.OverrideConversationBackend -> {
-                buf.putInt(29)
+                buf.putInt(30)
                 FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.NextOnboardingStep -> {
-                buf.putInt(30)
-                Unit
-            }
-            is AppAction.PreviousOnboardingStep -> {
                 buf.putInt(31)
                 Unit
             }
-            is AppAction.UpdateBackendApiKey -> {
+            is AppAction.PreviousOnboardingStep -> {
                 buf.putInt(32)
+                Unit
+            }
+            is AppAction.UpdateBackendApiKey -> {
+                buf.putInt(33)
                 FfiConverterString.write(value.`backendId`, buf)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.ValidateApiKey -> {
-                buf.putInt(33)
+                buf.putInt(34)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.CompleteOnboarding -> {
-                buf.putInt(34)
-                Unit
-            }
-            is AppAction.SkipOnboarding -> {
                 buf.putInt(35)
                 Unit
             }
-            is AppAction.AddBackendFromPreset -> {
+            is AppAction.SkipOnboarding -> {
                 buf.putInt(36)
+                Unit
+            }
+            is AppAction.AddBackendFromPreset -> {
+                buf.putInt(37)
                 FfiConverterString.write(value.`presetId`, buf)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.IngestDocument -> {
-                buf.putInt(37)
+                buf.putInt(38)
                 FfiConverterString.write(value.`filename`, buf)
                 FfiConverterByteArray.write(value.`content`, buf)
                 Unit
             }
             is AppAction.DeleteDocument -> {
-                buf.putInt(38)
-                FfiConverterString.write(value.`documentId`, buf)
-                Unit
-            }
-            is AppAction.AttachDocumentToConversation -> {
                 buf.putInt(39)
                 FfiConverterString.write(value.`documentId`, buf)
                 Unit
             }
-            is AppAction.DetachDocumentFromConversation -> {
+            is AppAction.AttachDocumentToConversation -> {
                 buf.putInt(40)
                 FfiConverterString.write(value.`documentId`, buf)
                 Unit
             }
-            is AppAction.LaunchAgentSession -> {
+            is AppAction.DetachDocumentFromConversation -> {
                 buf.putInt(41)
+                FfiConverterString.write(value.`documentId`, buf)
+                Unit
+            }
+            is AppAction.LaunchAgentSession -> {
+                buf.putInt(42)
                 FfiConverterString.write(value.`taskDescription`, buf)
                 Unit
             }
             is AppAction.PauseAgentSession -> {
-                buf.putInt(42)
-                FfiConverterString.write(value.`sessionId`, buf)
-                Unit
-            }
-            is AppAction.ResumeAgentSession -> {
                 buf.putInt(43)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
-            is AppAction.CancelAgentSession -> {
+            is AppAction.ResumeAgentSession -> {
                 buf.putInt(44)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
-            is AppAction.LoadAgentSession -> {
+            is AppAction.CancelAgentSession -> {
                 buf.putInt(45)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
-            is AppAction.ClearAgentDetail -> {
+            is AppAction.LoadAgentSession -> {
                 buf.putInt(46)
+                FfiConverterString.write(value.`sessionId`, buf)
+                Unit
+            }
+            is AppAction.ClearAgentDetail -> {
+                buf.putInt(47)
                 Unit
             }
             is AppAction.SetAttestationInterval -> {
-                buf.putInt(47)
+                buf.putInt(48)
                 FfiConverterUInt.write(value.`minutes`, buf)
                 Unit
             }
             is AppAction.SetGlobalSystemPrompt -> {
-                buf.putInt(48)
+                buf.putInt(49)
                 FfiConverterOptionalString.write(value.`prompt`, buf)
                 Unit
             }
             is AppAction.ListMemories -> {
-                buf.putInt(49)
+                buf.putInt(50)
                 Unit
             }
             is AppAction.DeleteMemory -> {
-                buf.putInt(50)
+                buf.putInt(51)
                 FfiConverterString.write(value.`memoryId`, buf)
                 Unit
             }
             is AppAction.UpdateMemory -> {
-                buf.putInt(51)
+                buf.putInt(52)
                 FfiConverterString.write(value.`memoryId`, buf)
                 FfiConverterString.write(value.`content`, buf)
                 Unit
             }
             is AppAction.SetBraveApiKey -> {
-                buf.putInt(52)
-                FfiConverterString.write(value.`apiKey`, buf)
-                Unit
-            }
-            is AppAction.ValidateBraveApiKey -> {
                 buf.putInt(53)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
-            is AppAction.SetMemoriesEnabled -> {
+            is AppAction.ValidateBraveApiKey -> {
                 buf.putInt(54)
+                FfiConverterString.write(value.`apiKey`, buf)
+                Unit
+            }
+            is AppAction.SetMemoriesEnabled -> {
+                buf.putInt(55)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetConversationToolsEnabled -> {
-                buf.putInt(55)
+                buf.putInt(56)
                 FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetupPin -> {
-                buf.putInt(56)
+                buf.putInt(57)
                 FfiConverterString.write(value.`pin`, buf)
                 FfiConverterOptionalString.write(value.`duressPin`, buf)
                 FfiConverterBoolean.write(value.`enableBiometric`, buf)
                 Unit
             }
             is AppAction.SetDuressPin -> {
-                buf.putInt(57)
+                buf.putInt(58)
                 FfiConverterOptionalString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.UnlockWithDek -> {
-                buf.putInt(58)
+                buf.putInt(59)
                 FfiConverterString.write(value.`dekHex`, buf)
                 Unit
             }
             is AppAction.UnlockWithPin -> {
-                buf.putInt(59)
+                buf.putInt(60)
                 FfiConverterString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.LockApp -> {
-                buf.putInt(60)
-                Unit
-            }
-            is AppAction.AttemptBiometricUnlock -> {
                 buf.putInt(61)
                 Unit
             }
-            is AppAction.SetBiometricLoginEnabled -> {
+            is AppAction.AttemptBiometricUnlock -> {
                 buf.putInt(62)
+                Unit
+            }
+            is AppAction.SetBiometricLoginEnabled -> {
+                buf.putInt(63)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetLockTimeout -> {
-                buf.putInt(63)
+                buf.putInt(64)
                 FfiConverterLong.write(value.`seconds`, buf)
                 Unit
             }
             is AppAction.AddDirectorySource -> {
-                buf.putInt(64)
+                buf.putInt(65)
                 FfiConverterString.write(value.`displayName`, buf)
                 FfiConverterOptionalString.write(value.`path`, buf)
                 FfiConverterOptionalByteArray.write(value.`bookmarkData`, buf)
@@ -4923,7 +4995,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.SyncDirectoryFiles -> {
-                buf.putInt(65)
+                buf.putInt(66)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceTypeDirectoryFileEntry.write(value.`files`, buf)
                 FfiConverterSequenceString.write(value.`removedPaths`, buf)
@@ -4931,23 +5003,23 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.RemoveDirectorySource -> {
-                buf.putInt(66)
+                buf.putInt(67)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.SetDirectoryExclusions -> {
-                buf.putInt(67)
+                buf.putInt(68)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceString.write(value.`globs`, buf)
                 Unit
             }
             is AppAction.TriggerDirectorySync -> {
-                buf.putInt(68)
+                buf.putInt(69)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.UpdateDirectorySourceBookmark -> {
-                buf.putInt(69)
+                buf.putInt(70)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterByteArray.write(value.`bookmarkData`, buf)
                 Unit
