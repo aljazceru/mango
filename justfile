@@ -90,7 +90,7 @@ ios-full: bindings-swift build-ios ios-xcframework
 
 # ── Android ───────────────────────────────────────────────────────────────────
 
-# Cross-compile Rust for Android ABIs via cargo-ndk
+# Cross-compile Rust for Android ABIs via cargo-ndk (debug: arm64 + x86_64)
 build-android:
   #!/usr/bin/env bash
   set -e
@@ -109,9 +109,28 @@ build-android:
   cp "$SYSROOT/x86_64-linux-android/libc++_shared.so" \
     android/app/src/main/jniLibs/x86_64/
 
-# Full Android pipeline: bindings -> cross-compile -> assemble
+# Cross-compile Rust for Android release (arm64-v8a only, matches CI)
+build-android-release:
+  #!/usr/bin/env bash
+  set -e
+  rm -rf android/app/src/main/jniLibs
+  cargo ndk -o android/app/src/main/jniLibs -P 28 \
+    -t arm64-v8a \
+    build -p {{CORE_CRATE}} --release
+  NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_HOME:-${HOME}/Android/Sdk}/ndk/28.2.13676358}"
+  PREBUILT="$NDK_HOME/toolchains/llvm/prebuilt"
+  HOST_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+  SYSROOT="$PREBUILT/$HOST_TAG/sysroot/usr/lib"
+  cp "$SYSROOT/aarch64-linux-android/libc++_shared.so" \
+    android/app/src/main/jniLibs/arm64-v8a/
+
+# Full Android debug pipeline: bindings -> cross-compile -> assembleDebug
 android-full: bindings-kotlin build-android
   cd android && ./gradlew :app:assembleDebug
+
+# Full Android release pipeline (matches CI): bindings -> arm64-only -> assembleRelease
+android-release: bindings-kotlin build-android-release
+  cd android && ./gradlew :app:assembleRelease
 
 # Run the Android adb smoke test against an attached device
 android-smoke:
