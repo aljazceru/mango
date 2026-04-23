@@ -406,6 +406,110 @@ pub fn rename_conversation(
     Ok(())
 }
 
+/// Fork a conversation: duplicate its row (new id, " (fork)" title suffix) and
+/// every message row (new ids, preserved order + content + image_path) inside
+/// a single SQLite transaction. Per quick/260423-93w.
+///
+/// - `created_at` / `updated_at` on the new conversation row are set to `now`
+///   so the fork is marked as freshly created (sidebar sorting).
+/// - Message `created_at` timestamps are preserved from the source so the
+///   copied history renders with its original chronology.
+/// - `image_path` values are copied verbatim as strings — both conversations
+///   reference the same encrypted image file (MGO1 is immutable once written,
+///   per quick/260419-ece).
+///
+/// Returns `PersistenceError` (from `rusqlite::Error::QueryReturnedNoRows`)
+/// if `source_id` does not exist; transaction is rolled back on any error.
+pub fn fork_conversation(
+    conn: &mut rusqlite::Connection,
+    source_id: &str,
+    new_id: &str,
+    now: i64,
+) -> Result<(), PersistenceError> {
+    let tx = conn.transaction()?;
+
+    // 1. SELECT source conversation row.
+    let source: ConversationRow = tx
+        .prepare_cached(
+            "SELECT id, title, model_id, backend_id, system_prompt, created_at, updated_at, tools_enabled
+             FROM conversations WHERE id = ?1",
+        )?
+        .query_row(rusqlite::params![source_id], |row| {
+            Ok(ConversationRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                model_id: row.get(2)?,
+                backend_id: row.get(3)?,
+                system_prompt: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                tools_enabled: row.get::<_, i64>(7)? != 0,
+            })
+        })?;
+
+    // 2. INSERT new conversation row (copied metadata + " (fork)" title + fresh timestamps).
+    tx.prepare_cached(
+        "INSERT INTO conversations (id, title, model_id, backend_id, system_prompt, created_at, updated_at, tools_enabled)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?
+    .execute(rusqlite::params![
+        new_id,
+        format!("{} (fork)", source.title),
+        source.model_id,
+        source.backend_id,
+        source.system_prompt,
+        now,
+        now,
+        source.tools_enabled as i64,
+    ])?;
+
+    // 3. SELECT + copy all source messages in created_at ASC order (+ id ASC tiebreaker
+    //    so repeated-timestamp messages preserve a deterministic order).
+    let source_messages: Vec<MessageRow> = {
+        let mut stmt = tx.prepare_cached(
+            "SELECT id, conversation_id, role, content, created_at, token_count, image_path
+             FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![source_id], |row| {
+                Ok(MessageRow {
+                    id: row.get(0)?,
+                    conversation_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    created_at: row.get(4)?,
+                    token_count: row.get(5)?,
+                    image_path: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+
+    // 4. INSERT each copy with a fresh uuid and conversation_id = new_id.
+    {
+        let mut insert_stmt = tx.prepare_cached(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at, token_count, image_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
+        for src_msg in &source_messages {
+            let new_msg_id = uuid::Uuid::new_v4().to_string();
+            insert_stmt.execute(rusqlite::params![
+                new_msg_id,
+                new_id,
+                src_msg.role,
+                src_msg.content,
+                src_msg.created_at,
+                src_msg.token_count,
+                src_msg.image_path,
+            ])?;
+        }
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
 /// Update the model_id for a conversation, refreshing `updated_at`.
 pub fn update_conversation_model(
     conn: &Connection,
