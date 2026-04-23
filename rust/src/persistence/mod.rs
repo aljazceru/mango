@@ -93,6 +93,15 @@ impl Database {
         &self.conn
     }
 
+    /// Return a mutable reference to the underlying `rusqlite::Connection`.
+    ///
+    /// Needed by helpers that span multiple statements inside a
+    /// `rusqlite::Transaction` (e.g. `fork_conversation`). Keep usage narrow;
+    /// the actor thread is the only caller.
+    pub fn conn_mut(&mut self) -> &mut rusqlite::Connection {
+        &mut self.conn
+    }
+
     /// Open a SQLCipher-encrypted database at `path` using a 64-char hex DEK.
     ///
     /// The key pragma is issued as the very first operation after open (per SQLCipher
