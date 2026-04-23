@@ -14,9 +14,6 @@ android {
         targetSdk = 36
         versionCode = 2
         versionName = "0.2.2"
-        ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
-        }
     }
 
     signingConfigs {
@@ -35,10 +32,19 @@ android {
         debug {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
+            ndk {
+                // Debug builds support arm64 device + x86_64 emulator
+                abiFilters += listOf("arm64-v8a", "x86_64")
+            }
         }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            ndk {
+                // Release ships arm64-v8a only; x86_64 drops ~40% APK size
+                // and no real device uses it. Emulators use the debug APK.
+                abiFilters += listOf("arm64-v8a")
+            }
             signingConfig = if (System.getenv("KEYSTORE_PATH") != null) {
                 signingConfigs.getByName("release")
             } else {
