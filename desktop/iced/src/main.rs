@@ -342,6 +342,8 @@ enum Message {
     AttachFile,
     ClearAttachment,
     SelectModel(String),
+    /// Fork the currently-loaded conversation (quick/260423-93w).
+    ForkConversation,
     // System prompt (per CHAT-11 / D-09)
     ToggleSystemPromptInput,
     SystemPromptChanged(String),
@@ -792,6 +794,19 @@ impl App {
 
                     Message::ConfirmDelete(id) => {
                         manager.dispatch(AppAction::DeleteConversation { id });
+                    }
+
+                    Message::ForkConversation => {
+                        // quick/260423-93w: fork the currently-loaded conversation.
+                        // The core handler (AppAction::ForkConversation) does all the
+                        // work: db-locked guard, transactional copy, nav into the new
+                        // Screen::Chat. No-op if there is no current conversation —
+                        // the button's on_press_maybe guard in chat.rs already hides
+                        // this case for empty conversations, but we also re-check here
+                        // for defense-in-depth (e.g. hotkey bindings).
+                        if let Some(cid) = manager.state().current_conversation_id.clone() {
+                            manager.dispatch(AppAction::ForkConversation { id: cid });
+                        }
                     }
 
                     Message::CopyMessage(content) => {
