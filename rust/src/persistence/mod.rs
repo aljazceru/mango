@@ -7,7 +7,7 @@ pub use error::PersistenceError;
 pub use queries::{
     count_directory_files, delete_backend, delete_backend_health, delete_chunks_for_document,
     delete_conversation, delete_directory_file, delete_directory_source, delete_document,
-    delete_message, delete_messages_after, get_active_backend_id, get_chunk_text_by_rowids,
+    delete_message, delete_messages_after, fork_conversation, get_active_backend_id, get_chunk_text_by_rowids,
     get_conversation_attached_docs, get_directory_source, get_setting, insert_agent_session,
     insert_agent_step, insert_backend, insert_chunk, insert_conversation, insert_directory_source,
     insert_document, insert_message, list_agent_sessions, list_agent_steps, list_backend_health,
