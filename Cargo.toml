@@ -8,6 +8,6 @@ repository = "https://github.com/aljazceru/mango"
 
 [profile.release]
 lto = true
-strip = true
+strip = "debuginfo"
 codegen-units = 1
 opt-level = "z"
