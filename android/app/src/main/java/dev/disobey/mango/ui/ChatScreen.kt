@@ -558,6 +558,30 @@ private fun ChatTopBar(
                             showToolsSheet = true
                         },
                     )
+                    // Fork chat: duplicate the current conversation into a new
+                    // independent one. Only enabled when a conversation is
+                    // active AND has at least one message (mirrors Desktop).
+                    val canFork = state.currentConversationId != null &&
+                        state.messages.isNotEmpty()
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Fork chat",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (canFork)
+                                    MaterialTheme.colorScheme.onSurface
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        enabled = canFork,
+                        onClick = {
+                            showConvMenu = false
+                            state.currentConversationId?.let { cid ->
+                                onDispatchAction(AppAction.ForkConversation(id = cid))
+                            }
+                        },
+                    )
                 }
             }
         },
