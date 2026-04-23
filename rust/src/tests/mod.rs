@@ -11,6 +11,7 @@ mod crypto;
 mod directory_rag;
 mod embedding_degradation;
 mod error_mapping;
+mod fork_conversation;
 mod hpke_key_hygiene;
 mod live_brave;
 mod live_ppq_private;

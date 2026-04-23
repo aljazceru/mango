@@ -469,6 +469,9 @@ pub enum AppAction {
     LoadConversation { conversation_id: String },
     /// Rename a conversation title (per D-13)
     RenameConversation { id: String, title: String },
+    /// Fork a conversation: copy its title + messages + metadata into a new
+    /// conversation and navigate into it. Per quick/260423-93w.
+    ForkConversation { id: String },
     /// Delete a conversation and all its messages (per D-13)
     DeleteConversation { id: String },
     /// Delete all conversations and messages.
@@ -4611,6 +4614,56 @@ impl FfiApp {
                                         now,
                                     );
                                     refresh_conversations(&mut actor_state);
+                                }
+                            }
+
+                            AppAction::ForkConversation { id } => {
+                                // Defense in depth: mirror the NewConversation guard
+                                // (desktop-new-chat-db-panic pattern) — any AppAction that
+                                // touches db.expect("db unlocked") must early-exit when locked.
+                                if actor_state.db.is_none() {
+                                    log::warn!(
+                                        "[action] ForkConversation dispatched while DB is locked; ignoring"
+                                    );
+                                    continue;
+                                }
+                                let new_id = new_uuid();
+                                let now = now_secs();
+                                let result = persistence::queries::fork_conversation(
+                                    actor_state
+                                        .db
+                                        .as_mut()
+                                        .expect("db unlocked")
+                                        .conn_mut(),
+                                    &id,
+                                    &new_id,
+                                    now,
+                                );
+                                match result {
+                                    Ok(()) => {
+                                        refresh_conversations(&mut actor_state);
+                                        refresh_messages(&mut actor_state, &new_id);
+                                        actor_state.app_state.current_conversation_id =
+                                            Some(new_id.clone());
+                                        // Inherit tools_enabled from the newly-persisted row.
+                                        actor_state.current_conv_tools_enabled = actor_state
+                                            .app_state
+                                            .conversations
+                                            .iter()
+                                            .find(|c| c.id == new_id)
+                                            .map(|c| c.tools_enabled)
+                                            .unwrap_or(false);
+                                        push_nav_history(&mut actor_state.app_state.router);
+                                        actor_state.app_state.router.current_screen =
+                                            Screen::Chat {
+                                                conversation_id: new_id,
+                                            };
+                                        sync_visible_streaming_text(&mut actor_state);
+                                    }
+                                    Err(e) => {
+                                        log::warn!("[action] ForkConversation failed: {e}");
+                                        // Non-fatal — UI stays on the source conversation.
+                                    }
                                 }
                             }
 
