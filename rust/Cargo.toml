@@ -1,6 +1,6 @@
 [package]
 name = "mango_core"
-version = "0.1.0"
+version = "0.2.2"
 edition = "2021"
 description = "Confidential AI inference engine with TEE attestation and local RAG"
 license.workspace = true
