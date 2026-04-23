@@ -381,10 +381,33 @@ pub fn chat_view<'a>(
                 .into()
         };
 
+        // ── Fork button ──
+        // Enabled only when a conversation is loaded and has at least one message.
+        let fork_enabled =
+            state.current_conversation_id.is_some() && !state.messages.is_empty();
+        let fork_bg = vc.surface;
+        let fork_text_color = if fork_enabled { vc.text_dim } else { vc.muted };
+        let fork_btn = button(text("Fork").size(13).color(fork_text_color))
+            .on_press_maybe(if fork_enabled {
+                Some(Message::ForkConversation)
+            } else {
+                None
+            })
+            .padding(Padding::from([4u16, 8]))
+            .style(move |_theme, _status| button::Style {
+                background: Some(Background::Color(fork_bg)),
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                text_color: fork_text_color,
+                ..Default::default()
+            });
+
         let secondary_surface = vc.secondary_surface;
         let accent = vc.accent;
         let menu_row = container(
-            row![docs_btn, tools_btn, instructions_section_inner]
+            row![docs_btn, tools_btn, fork_btn, instructions_section_inner]
                 .spacing(12)
                 .align_y(Alignment::Center),
         )
