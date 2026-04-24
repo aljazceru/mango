@@ -1,6 +1,8 @@
 package dev.disobey.mango.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +20,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -53,6 +57,7 @@ fun ConversationListScreen(
     onNew: () -> Unit,
     onDelete: (String) -> Unit,
     onRename: (String, String) -> Unit,
+    onFork: (String) -> Unit,
     topBarActions: @Composable (RowScope.() -> Unit) = {},
 ) {
     var renameTarget by remember { mutableStateOf<ConversationSummary?>(null) }
@@ -134,6 +139,7 @@ fun ConversationListScreen(
                                 renameTarget = conversation
                                 renameText = conversation.title
                             },
+                            onFork = { onFork(conversation.id) },
                             onDelete = { deleteTarget = conversation.id },
                         )
                     }
@@ -194,22 +200,60 @@ fun ConversationListScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationRow(
     conversation: ConversationSummary,
     onClick: () -> Unit,
     onRename: () -> Unit,
+    onFork: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
     Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { menuOpen = true },
+            ),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Rename") },
+                    onClick = {
+                        menuOpen = false
+                        onRename()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Fork") },
+                    onClick = {
+                        menuOpen = false
+                        onFork()
+                    },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "Delete",
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    },
+                    onClick = {
+                        menuOpen = false
+                        onDelete()
+                    },
+                )
+            }
             Text(
                 conversation.title,
                 style = MaterialTheme.typography.bodyLarge,
