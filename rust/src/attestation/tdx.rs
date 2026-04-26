@@ -47,19 +47,34 @@ pub fn decode_quote(s: &str) -> Result<Vec<u8>, AttestationError> {
     Ok(decoded)
 }
 
+/// Where the per-request nonce lives inside the 64-byte TDX REPORTDATA.
+///
+/// Different TEE substrates use different conventions:
+/// - `NonceFirst32`: existing project pattern (Tinfoil, custom backends) — nonce occupies `report_data[..32]`.
+/// - `VeniceAddrPadNonce`: Venice / Phala dstack — `[20B keccak-addr][12B zero pad][32B raw nonce]`.
+///   Address + padding are checked separately in `attestation/venice.rs`; this enum only tells the
+///   nonce comparison where to look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportDataLayout {
+    NonceFirst32,
+    VeniceAddrPadNonce,
+}
+
 /// Verify an Intel TDX DCAP quote against Intel PCS collateral.
 ///
 /// Fetches collateral from Phala's hosted PCCS (primary) or Intel PCS (fallback),
 /// then runs cryptographic verification via `dcap_qvl::verify::verify`.
 ///
 /// Per D-13: validates the nonce embedded in the TDX report's `report_data` field.
-/// The first 32 bytes of `report_data` must match `expected_nonce`.
+/// The `layout` parameter selects which slice of `report_data` is compared to
+/// `expected_nonce` (see [`ReportDataLayout`]).
 ///
 /// Per D-08: returns `AttestationEvent::Verified` with `expires_at = now + 4 hours`.
 pub async fn verify_tdx_quote(
     quote_bytes: &[u8],
     expected_nonce: &[u8; 32],
     backend_id: &str,
+    layout: ReportDataLayout,
 ) -> Result<AttestationEvent, AttestationError> {
     log::debug!(target: "attestation", "[attestation] verify_tdx_quote backend={} quote_bytes={}", backend_id, quote_bytes.len());
     if quote_bytes.len() < MIN_QUOTE_LEN {
@@ -106,7 +121,20 @@ pub async fn verify_tdx_quote(
         dcap_qvl::quote::Report::SgxEnclave(enclave) => &enclave.report_data[..],
     };
 
-    let nonce_in_report = &report_data[..32.min(report_data.len())];
+    let nonce_in_report: &[u8] = match layout {
+        ReportDataLayout::NonceFirst32 => &report_data[..32.min(report_data.len())],
+        ReportDataLayout::VeniceAddrPadNonce => {
+            if report_data.len() < 64 {
+                return Err(AttestationError::QuoteVerification {
+                    reason: format!(
+                        "Venice REPORTDATA too short: {} < 64",
+                        report_data.len()
+                    ),
+                });
+            }
+            &report_data[32..64]
+        }
+    };
     if nonce_in_report != expected_nonce.as_slice() {
         log::warn!(target: "attestation", "[attestation] nonce mismatch backend={} expected={} actual={}", backend_id, hex::encode(expected_nonce), hex::encode(nonce_in_report));
         return Err(AttestationError::NonceMismatch {

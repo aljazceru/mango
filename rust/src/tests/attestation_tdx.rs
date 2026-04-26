@@ -3,7 +3,7 @@
 
 use crate::attestation::error::AttestationError;
 use crate::attestation::nonce::generate_nonce;
-use crate::attestation::tdx::decode_quote;
+use crate::attestation::tdx::{decode_quote, ReportDataLayout};
 
 #[test]
 fn test_decode_quote_hex() {
@@ -55,7 +55,13 @@ async fn test_verify_tdx_quote_short_input() {
     // 10-byte input is below minimum -- should return error, not panic
     let short_bytes = vec![0u8; 10];
     let nonce = [0u8; 32];
-    let result = verify_tdx_quote(&short_bytes, &nonce, "test-backend").await;
+    let result = verify_tdx_quote(
+        &short_bytes,
+        &nonce,
+        "test-backend",
+        ReportDataLayout::NonceFirst32,
+    )
+    .await;
     assert!(
         result.is_err(),
         "short input should return an error, not succeed"
