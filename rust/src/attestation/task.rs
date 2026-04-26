@@ -72,6 +72,9 @@ async fn run_attestation(
         ProviderKind::Venice => {
             crate::llm::venice::verify_backend_attestation(&backend, &policy.tdx).await?
         }
+        ProviderKind::Redpill => {
+            crate::llm::redpill::verify_backend_attestation(&backend, &policy.tdx).await?
+        }
     };
 
     log::info!(target: "attestation", "[attestation] success backend={}", backend.id);
