@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 32-07-PLAN.md
-last_updated: "2026-04-20T04:14:30.209Z"
-last_activity: 2026-04-20
+stopped_at: Completed 33-01-PLAN.md
+last_updated: "2026-04-26T04:07:04.201Z"
+last_activity: 2026-04-26
 progress:
-  total_phases: 13
+  total_phases: 14
   completed_phases: 12
-  total_plans: 45
-  completed_plans: 43
-  percent: 96
+  total_plans: 49
+  completed_plans: 45
+  percent: 92
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Every inference request is provably confidential -- verified via remote attestation, all data stays local
-**Current focus:** Phase 32 — directory-based-rag-ingestion-with-periodic-sync-and-file-fo
+**Current focus:** Phase 33 — Integrate Venice.ai as TEE-attested LLM provider
 
 ## Current Position
 
-Phase: 31
-Plan: Not started
+Phase: 33 (Integrate Venice.ai as TEE-attested LLM provider) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-04-23 - Completed quick task 260423-93w: fork chat
+Last activity: 2026-04-26
 
-Progress: [██░░░░░░░░] 25%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
@@ -77,6 +77,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase 32 P05 | 16min | 3 tasks | 7 files |
 | Phase 32 P06 | 12min | 3 tasks | 6 files |
 | Phase 32 P07 | 22min | 2 tasks | 10 files |
+| Phase 33 P33-01 | 10min | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -139,6 +140,8 @@ Key architectural context for v2.0:
 - [Phase 32]: Plan 06: AppState.directorySources init was missing from AppManager bootstrap after plan 32-05 binding regen — fixed under Rule 1
 - [Phase 32]: Plan 07: Centralised relative_time_label in Rust core + pre-computed last_synced_label field; native layers no longer compute relative-time locally (D-feels-done)
 - [Phase 32]: Plan 07: Settings → Directory Sources entry added between Defaults and Memory on all three platforms; home-level Folders/Sources buttons preserved from 32-04/05/06
+- Phase 33 Wave 0: MRSEAM in golden capture matches TdxPolicy::default index 1 — no policy change needed in Plan 02
+- Phase 33 Wave 0: 14 RED test stubs gated by #[ignore] with explicit 'RED — Plan NN (VEN-XX)' annotations; default cargo test stays green
 
 ### Roadmap Evolution
 
@@ -148,6 +151,7 @@ Key architectural context for v2.0:
 - Phase 27 added: Add optional tool use to chat — extend chat streaming with inline tool calling, reusing agent tool infrastructure
 - Phase 28 added: Local Data Encryption & Authentication — encrypt all local data (SQLite, vector indices, documents) with platform hardware (Keychain/Keystore/TPM), biometric/PIN unlock, duress PIN for data wipe, graceful degradation on older devices
 - Phase 32 added: Directory-based RAG ingestion with periodic sync and file/folder exclusion — add whole directories (e.g. Obsidian vault) as RAG sources with glob exclusions, automatic periodic re-sync (add/modify/delete diff), cross-platform folder permissions (iOS security-scoped bookmarks, Android persistable tree URIs, Desktop), UI for source list + exclusion editor + manual sync-now
+- Phase 33 added: Integrate Venice.ai as TEE-attested LLM provider with client-side TDX + NVIDIA NRAS verification and ECDH+AES-GCM E2EE handshake
 
 ### Pending Todos
 
@@ -172,6 +176,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-19T18:17:28.222Z
-Stopped at: Completed 32-07-PLAN.md
+Last session: 2026-04-26T04:07:04.197Z
+Stopped at: Completed 33-01-PLAN.md
 Resume file: None
+
+**Planned Phase:** 33 (Integrate Venice.ai as TEE-attested LLM provider) — 4 plans — 2026-04-25T18:22:36.843Z
