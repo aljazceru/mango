@@ -6,6 +6,7 @@ pub mod router;
 pub mod streaming;
 pub mod tinfoil_secure;
 pub mod transport;
+pub mod venice;
 
 pub use backend::known_provider_presets;
 pub use backend::{
