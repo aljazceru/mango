@@ -121,9 +121,57 @@ fn envelope_round_trip() {
 }
 
 #[test]
-#[ignore = "RED — Plan 03 (VEN-08) request body shape"]
 fn request_body_shape() {
-    panic!("not yet implemented");
+    use crate::llm::venice::build_venice_chat_body_for_test;
+    use async_openai::types::chat::{
+        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+        ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+    };
+
+    let user_msg: ChatCompletionRequestMessage = ChatCompletionRequestUserMessageArgs::default()
+        .content("hello")
+        .build()
+        .unwrap()
+        .into();
+    let system_msg: ChatCompletionRequestMessage =
+        ChatCompletionRequestSystemMessageArgs::default()
+            .content("you are helpful")
+            .build()
+            .unwrap()
+            .into();
+
+    let req = CreateChatCompletionRequestArgs::default()
+        .model("e2ee-venice-uncensored-24b-p")
+        .messages(vec![system_msg, user_msg])
+        .build()
+        .unwrap();
+
+    let aes_key = [0x42u8; 32];
+    let mut eph_pub = [0u8; 65];
+    eph_pub[0] = 0x04;
+    let body = build_venice_chat_body_for_test(&req, &aes_key, &eph_pub).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(v["enable_e2ee"], serde_json::Value::Bool(true));
+    assert_eq!(v["stream"], serde_json::Value::Bool(true));
+    assert_eq!(v["model"], "e2ee-venice-uncensored-24b-p");
+
+    // System message (index 0): content encrypted to hex envelope.
+    let sys_content = v["messages"][0]["content"].as_str().unwrap();
+    assert_ne!(sys_content, "you are helpful", "system content must be encrypted");
+    assert!(sys_content.chars().all(|c| c.is_ascii_hexdigit()));
+    // Min length: (65 + 12 + tag(16)) bytes hex-encoded = 2 * 93 = 186 hex chars
+    // for a 0-byte plaintext; "you are helpful" = 15 bytes plaintext.
+    assert!(sys_content.len() >= 2 * (65 + 12 + 16));
+
+    // User message (index 1): content encrypted.
+    let user_content = v["messages"][1]["content"].as_str().unwrap();
+    assert_ne!(user_content, "hello");
+    assert!(user_content.chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(user_content.len() >= 2 * (65 + 12 + 16));
+
+    // Two distinct messages → distinct envelopes (fresh-nonce per seal).
+    assert_ne!(sys_content, user_content);
 }
 
 #[test]
