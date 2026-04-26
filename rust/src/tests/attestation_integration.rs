@@ -66,6 +66,9 @@ fn test_attestation_verified_event_updates_state() {
             tls_public_key_fp: None,
             vcek_url: None,
             vcek_der: None,
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
         },
     ));
     wait_for_update();
@@ -123,6 +126,9 @@ fn test_attestation_nvidia_verified_event() {
             tls_public_key_fp: None,
             vcek_url: None,
             vcek_der: None,
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
         },
     ));
     wait_for_update();
@@ -155,6 +161,9 @@ fn test_raw_report_retrieval() {
             tls_public_key_fp: None,
             vcek_url: None,
             vcek_der: None,
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
         },
     ));
     wait_for_update();
@@ -194,6 +203,9 @@ fn test_attestation_verified_is_sticky_against_transient_failure() {
             tls_public_key_fp: None,
             vcek_url: None,
             vcek_der: None,
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
         },
     ));
     wait_for_update();
@@ -245,6 +257,9 @@ fn test_attestation_genuine_failure_downgrades_verified() {
             tls_public_key_fp: None,
             vcek_url: None,
             vcek_der: None,
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
         },
     ));
     wait_for_update();
@@ -299,6 +314,9 @@ fn test_attestation_failed_replaced_by_verified() {
             tls_public_key_fp: None,
             vcek_url: None,
             vcek_der: None,
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
         },
     ));
     wait_for_update();

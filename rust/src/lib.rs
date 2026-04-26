@@ -7418,6 +7418,16 @@ impl FfiApp {
                                             tls_public_key_fp,
                                             vcek_url,
                                             vcek_der,
+                                            // Phase 34 additive fields — currently
+                                            // recorded only into AttestationEvent for
+                                            // the actor-loop notification; the cached
+                                            // AttestationRecord (SQLite) doesn't yet
+                                            // carry them. RED-09/RED-11 surfacing
+                                            // happens via AttestationStatus + future
+                                            // cache columns.
+                                            shape: _,
+                                            freshness: _,
+                                            orchestrated_components: _,
                                         } => {
                                             let record = attestation::AttestationRecord {
                                                 backend_id: backend_id.clone(),

@@ -33,7 +33,7 @@ use super::error::LlmError;
 use crate::attestation::error::AttestationError;
 use crate::attestation::policy::TdxPolicy;
 use crate::attestation::redpill::{
-    ensure_verified_redpill_attestation, RedpillError,
+    ensure_verified_redpill_attestation, Freshness, RedpillError, RedpillShape,
 };
 use crate::attestation::AttestationEvent;
 
@@ -99,6 +99,33 @@ pub async fn verify_backend_attestation(
             reason: format!("Redpill attestation: {e:?}"),
         })?;
 
+    // Map shape + freshness + orchestrated_components into the additive
+    // AttestationEvent fields so the native UI can render the badge breakdown
+    // (RED-09 freshness sub-line, RED-11 three-way Orchestrated breakdown).
+    let shape_str: &'static str = match verified.shape {
+        RedpillShape::Flat => "Flat",
+        RedpillShape::Orchestrated { .. } => "Orchestrated",
+        RedpillShape::Chutes => "Chutes",
+    };
+    let freshness_str: &'static str = match verified.freshness {
+        Freshness::PerRequest => "PerRequest",
+        Freshness::PerEnclave => "PerEnclave",
+    };
+    let components: Option<Vec<(String, String)>> =
+        verified.orchestrated_components.as_ref().map(|c| {
+            vec![
+                (
+                    "gateway".to_string(),
+                    c.gateway_signing_address_hex.clone(),
+                ),
+                ("model".to_string(), c.model_signing_address_hex.clone()),
+                (
+                    "compose_manager".to_string(),
+                    c.compose_manager_actions_hash_hex.clone(),
+                ),
+            ]
+        });
+
     Ok(AttestationEvent::Verified {
         backend_id: backend.id.clone(),
         tee_type: "IntelTdx".to_string(),
@@ -107,6 +134,9 @@ pub async fn verify_backend_attestation(
         tls_public_key_fp: None,
         vcek_url: None,
         vcek_der: None,
+        shape: Some(shape_str.to_string()),
+        freshness: Some(freshness_str.to_string()),
+        orchestrated_components: components,
     })
 }
 

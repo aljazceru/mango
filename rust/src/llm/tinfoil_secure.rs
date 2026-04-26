@@ -126,6 +126,9 @@ pub async fn verify_backend_attestation(
         tls_public_key_fp: None,
         vcek_url: None,
         vcek_der: None,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     })
 }
 
