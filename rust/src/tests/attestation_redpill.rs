@@ -317,3 +317,30 @@ fn shape_c_client_nonce_not_bound() {
     let e2e_pubkey = entry["e2e_pubkey"].as_str().unwrap();
     verify_redpill_chutes_anti_tamper(&rd, baked_nonce, e2e_pubkey).unwrap();
 }
+
+// ----- NRAS shape sanity (RED-07 — deterministic, no network) -----
+
+#[test]
+fn nvidia_payload_double_parse_shape_a() {
+    // The nvidia_payload field is a JSON-stringified blob. The string itself must
+    // parse as JSON before forwarding to NRAS (Pitfall 2 from Phase 33).
+    let v = shape_a_value();
+    let payload_str = v["nvidia_payload"]
+        .as_str()
+        .expect("nvidia_payload must be a JSON-stringified field");
+    let inner: serde_json::Value = serde_json::from_str(payload_str).unwrap();
+    assert!(
+        inner.is_object() || inner.is_array(),
+        "inner NRAS payload must be a JSON object or array"
+    );
+}
+
+#[test]
+fn nvidia_per_gpu_loop_shape_c() {
+    let v = shape_c_value();
+    let entry = &v["all_attestations"][0];
+    let gpus = entry["gpu_evidence"]
+        .as_array()
+        .expect("gpu_evidence array");
+    assert!(!gpus.is_empty(), "Shape C must have ≥ 1 gpu_evidence entry");
+}
