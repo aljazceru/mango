@@ -6,10 +6,17 @@
 use crate::tests::common::venice_fixtures::*;
 
 #[test]
-#[ignore = "RED — Plan 04 (VEN-01) backend preset"]
 fn venice_preset_present() {
-    // Will assert: crate::llm::backend::known_provider_presets() contains id == "venice-ai"
-    panic!("not yet implemented");
+    use crate::llm::backend::known_provider_presets;
+    let presets = known_provider_presets();
+    let venice = presets
+        .iter()
+        .find(|p| p.id == "venice-ai")
+        .expect("venice-ai preset must be in known_provider_presets()");
+    assert_eq!(venice.name, "Venice.ai");
+    assert!(venice.base_url.starts_with("https://api.venice.ai/api/v1"));
+    assert!(matches!(venice.tee_type, crate::llm::TeeType::IntelTdx));
+    assert!(venice.description.contains("E2EE"));
 }
 
 #[test]
@@ -187,7 +194,29 @@ fn request_body_shape() {
 }
 
 #[test]
-#[ignore = "RED — Plan 04 (VEN-09) backend summary"]
 fn backend_summary_after_add() {
-    panic!("not yet implemented");
+    use crate::llm::backend::{BackendConfig, ProviderKind};
+    use crate::llm::transport::ProviderTransportKind;
+    use crate::llm::TeeType;
+
+    let cfg = BackendConfig {
+        id: "venice-ai".into(),
+        name: "Venice.ai".into(),
+        base_url: "https://api.venice.ai/api/v1/".into(),
+        api_key: "sk-test".into(),
+        models: vec!["e2ee-venice-uncensored-24b-p".into()],
+        tee_type: TeeType::IntelTdx,
+        max_concurrent_requests: 5,
+        supports_tool_use: false,
+    };
+    assert_eq!(cfg.provider_kind(), ProviderKind::Venice);
+    assert_eq!(
+        ProviderTransportKind::for_backend(&cfg),
+        ProviderTransportKind::VeniceE2ee
+    );
+
+    let summary = cfg.to_summary(true, crate::llm::HealthStatus::Unknown);
+    assert_eq!(summary.id, "venice-ai");
+    assert_eq!(summary.tee_type, TeeType::IntelTdx);
+    assert!(summary.has_api_key);
 }
