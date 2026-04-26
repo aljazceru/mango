@@ -14,9 +14,20 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use once_cell::sync::Lazy;
+use rand::RngCore;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::error::AttestationError;
+use crate::llm::BackendConfig;
+use crate::llm::LlmError;
+
+const HTTP_TIMEOUT_SECS: u64 = 30;
 
 // REPORTDATA at TDX v4 quote bytes [568..632] (header 48B + body offset 520..584)
 pub(crate) const REPORTDATA_OFFSET: usize = 568;
@@ -83,6 +94,24 @@ pub enum Freshness {
     PerRequest,
     /// Shape C: enclave-baked nonce; valid for enclave lifetime
     PerEnclave,
+}
+
+#[derive(Clone, Debug)]
+pub struct OrchestratedComponents {
+    pub gateway_signing_address_hex: String, // ed25519 pubkey
+    pub model_signing_address_hex: String,   // ecdsa Eth-address
+    pub compose_manager_actions_hash_hex: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct VerifiedRedpillAttestation {
+    pub backend_id: String,
+    pub model: String,
+    pub shape: RedpillShape,
+    pub freshness: Freshness,
+    /// For Orchestrated: which of the three components verified (always all three on success)
+    pub orchestrated_components: Option<OrchestratedComponents>,
+    pub expires_at: u64,
 }
 
 // ── Shape dispatcher (D-04 / RED-03) ─────────────────────────────────────────
@@ -243,4 +272,529 @@ pub fn verify_redpill_chutes_anti_tamper(
     // rd[32..64] is intentionally NOT constrained on Chutes (D-11). Freshness is bounded
     // by enclave lifetime, not by per-request client nonce.
     Ok(())
+}
+
+// ── Wire-format response types ───────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct RedpillFlatResponse {
+    pub intel_quote: String,
+    #[serde(default)]
+    pub signing_address: Option<String>,
+    #[serde(default)]
+    pub signing_algo: Option<String>,
+    #[serde(default)]
+    pub nvidia_payload: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedpillGatewayAttestation {
+    pub signing_address: String,
+    pub intel_quote: String,
+    #[serde(default)]
+    pub report_data: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedpillComposeManagerAttestation {
+    pub actions_hash: String,
+    #[serde(default)]
+    pub report_data: Option<String>,
+    #[serde(default)]
+    pub quote: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedpillModelAttestation {
+    #[serde(default)]
+    pub model_name: Option<String>,
+    pub signing_address: String,
+    #[serde(default, alias = "signing_public_key")]
+    pub signing_key: Option<String>,
+    pub intel_quote: String,
+    #[serde(default)]
+    pub nvidia_payload: Option<String>,
+    #[serde(default)]
+    pub compose_manager_attestation: Option<RedpillComposeManagerAttestation>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedpillOrchestratedResponse {
+    pub gateway_attestation: RedpillGatewayAttestation,
+    pub model_attestations: Vec<RedpillModelAttestation>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedpillChutesAttestation {
+    #[serde(default)]
+    pub instance_id: Option<String>,
+    pub nonce: String,
+    pub e2e_pubkey: String,
+    pub intel_quote: String,
+    #[serde(default)]
+    pub gpu_evidence: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedpillChutesResponse {
+    pub attestation_type: String,
+    #[serde(default)]
+    pub nonce: Option<String>,
+    pub all_attestations: Vec<RedpillChutesAttestation>,
+}
+
+// ── Verify orchestrator + cache ──────────────────────────────────────────────
+
+static VERIFIED_ATTESTATIONS: Lazy<Mutex<HashMap<String, VerifiedRedpillAttestation>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Full Redpill attestation orchestrator.
+///
+/// 1. Generate fresh 32B nonce; GET `{base}/v1/attestation/report?model=…&nonce=…` (no auth).
+/// 2. Detect HTTP 502 + "Unsupported Tinfoil" body → `TinfoilUnsupported`.
+/// 3. Parse JSON; `detect_shape`.
+/// 4. Dispatch on shape (Flat / Orchestrated / Chutes) — verify TDX quote(s),
+///    debug-mode gate, REPORTDATA decoder(s), NRAS, three-way AND on Orchestrated.
+pub async fn fetch_and_verify_redpill_attestation(
+    backend: &BackendConfig,
+    requested_model: &str,
+    tdx_policy: &super::policy::TdxPolicy,
+) -> Result<VerifiedRedpillAttestation, RedpillError> {
+    let mut nonce = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut nonce);
+    let nonce_hex = hex::encode(nonce);
+
+    let base = backend.base_url.trim_end_matches('/');
+    let url = format!(
+        "{}{}?model={}&nonce={}",
+        base,
+        ATTESTATION_PATH,
+        urlencoding::encode(requested_model),
+        nonce_hex
+    );
+
+    log::debug!(
+        target: "attestation",
+        "[redpill] fetching attestation backend={} url={}",
+        backend.id, url
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| RedpillError::Network(e.to_string()))?;
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| RedpillError::Network(e.to_string()))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| RedpillError::Network(e.to_string()))?;
+
+    // Detect Tinfoil-via-Redpill refusal (D-16)
+    if status == reqwest::StatusCode::BAD_GATEWAY {
+        if body.contains("Unsupported Tinfoil") {
+            return Err(RedpillError::TinfoilUnsupported);
+        }
+        return Err(RedpillError::Network(format!("HTTP 502: {body}")));
+    }
+    if !status.is_success() {
+        return Err(RedpillError::Network(format!(
+            "HTTP {}: {}",
+            status.as_u16(),
+            body
+        )));
+    }
+
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| RedpillError::Network(format!("parse: {e}")))?;
+    let shape = detect_shape(&value)?;
+
+    match shape {
+        RedpillShape::Flat => verify_flat(backend, requested_model, &value, &nonce, tdx_policy).await,
+        RedpillShape::Orchestrated { is_near_ai } => {
+            verify_orchestrated(backend, requested_model, &value, &nonce, is_near_ai, tdx_policy)
+                .await
+        }
+        RedpillShape::Chutes => {
+            verify_chutes(backend, requested_model, &value, &nonce, tdx_policy).await
+        }
+    }
+}
+
+/// Shape A — Flat (Phala-pure). Single TDX quote + single NRAS.
+async fn verify_flat(
+    backend: &BackendConfig,
+    requested_model: &str,
+    value: &serde_json::Value,
+    nonce: &[u8; 32],
+    _policy: &super::policy::TdxPolicy,
+) -> Result<VerifiedRedpillAttestation, RedpillError> {
+    let intel_quote = value
+        .get("intel_quote")
+        .and_then(|v| v.as_str())
+        .ok_or(RedpillError::UnknownShape)?;
+    let q = quote_bytes(intel_quote)?;
+
+    super::tdx::verify_tdx_quote(
+        &q,
+        nonce,
+        &backend.id,
+        super::tdx::ReportDataLayout::VeniceAddrPadNonce,
+    )
+    .await?;
+
+    if !debug_mode_disabled(&q) {
+        return Err(RedpillError::DebugMode);
+    }
+
+    if q.len() < REPORTDATA_OFFSET + REPORTDATA_LEN {
+        return Err(RedpillError::QuoteDecode("quote too short for REPORTDATA".into()));
+    }
+    let mut rd = [0u8; 64];
+    rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
+
+    if let Some(pk_hex) = value
+        .get("signing_key")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("signing_public_key").and_then(|v| v.as_str()))
+    {
+        verify_redpill_model_reportdata(&rd, pk_hex, nonce)?;
+    } else {
+        // No uncompressed pubkey — verify the address slice + zero pad + nonce manually.
+        let addr_hex = value
+            .get("signing_address")
+            .and_then(|v| v.as_str())
+            .ok_or(RedpillError::UnknownShape)?;
+        let addr = hex::decode(addr_hex.trim_start_matches("0x")).map_err(|e| {
+            RedpillError::ReportDataMismatch {
+                component: "model",
+                detail: format!("signing_address hex decode: {e}"),
+            }
+        })?;
+        if addr.len() != 20 || &rd[0..20] != &addr[..] {
+            return Err(RedpillError::ReportDataMismatch {
+                component: "model",
+                detail: "signing_address not bound to REPORTDATA[0..20]".into(),
+            });
+        }
+        if rd[20..32].iter().any(|&b| b != 0) {
+            return Err(RedpillError::ReportDataMismatch {
+                component: "model",
+                detail: "REPORTDATA[20..32] padding non-zero".into(),
+            });
+        }
+        if &rd[32..64] != &nonce[..] {
+            return Err(RedpillError::ReportDataMismatch {
+                component: "model",
+                detail: "nonce mismatch in REPORTDATA[32..64]".into(),
+            });
+        }
+    }
+
+    if let Some(payload_str) = value.get("nvidia_payload").and_then(|v| v.as_str()) {
+        let _: serde_json::Value = serde_json::from_str(payload_str).map_err(|e| {
+            RedpillError::Network(format!("nvidia_payload inner JSON parse: {e}"))
+        })?;
+        let nonce_hex = hex::encode(nonce);
+        super::nvidia::fetch_and_verify_nvidia(payload_str, &nonce_hex, &backend.id).await?;
+    }
+
+    Ok(VerifiedRedpillAttestation {
+        backend_id: backend.id.clone(),
+        model: requested_model.to_string(),
+        shape: RedpillShape::Flat,
+        freshness: Freshness::PerRequest,
+        orchestrated_components: None,
+        expires_at: now_secs() + ATTESTATION_TTL_SECS,
+    })
+}
+
+/// Shape B — Orchestrated (gateway + model + compose-manager). Three-way AND.
+async fn verify_orchestrated(
+    backend: &BackendConfig,
+    requested_model: &str,
+    value: &serde_json::Value,
+    nonce: &[u8; 32],
+    is_near_ai: bool,
+    _policy: &super::policy::TdxPolicy,
+) -> Result<VerifiedRedpillAttestation, RedpillError> {
+    let resp: RedpillOrchestratedResponse = serde_json::from_value(value.clone())
+        .map_err(|e| RedpillError::Network(format!("orchestrated parse: {e}")))?;
+    let m0 = resp
+        .model_attestations
+        .into_iter()
+        .next()
+        .ok_or(RedpillError::UnknownShape)?;
+
+    // ── Gateway component ───────────────────────────────────────────────
+    let gw_addr_hex = resp.gateway_attestation.signing_address.clone();
+    {
+        let rd: [u8; 64] = if let Some(ref rd_hex) = resp.gateway_attestation.report_data {
+            let bytes = hex::decode(rd_hex).map_err(|e| RedpillError::ReportDataMismatch {
+                component: "gateway",
+                detail: format!("report_data hex decode: {e}"),
+            })?;
+            if bytes.len() < 64 {
+                return Err(RedpillError::ReportDataMismatch {
+                    component: "gateway",
+                    detail: format!("report_data too short: {}", bytes.len()),
+                });
+            }
+            let mut out = [0u8; 64];
+            out.copy_from_slice(&bytes[..64]);
+            out
+        } else {
+            let q = quote_bytes(&resp.gateway_attestation.intel_quote)?;
+            super::tdx::verify_tdx_quote(
+                &q,
+                nonce,
+                &backend.id,
+                super::tdx::ReportDataLayout::VeniceAddrPadNonce,
+            )
+            .await
+            .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "gateway" })?;
+            if !debug_mode_disabled(&q) {
+                return Err(RedpillError::DebugMode);
+            }
+            let mut out = [0u8; 64];
+            out.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
+            out
+        };
+        verify_redpill_gateway_reportdata(&rd, &gw_addr_hex, nonce).map_err(|_| {
+            RedpillError::OrchestratedComponentFailed { failed: "gateway" }
+        })?;
+    }
+
+    // ── Model component ─────────────────────────────────────────────────
+    let model_addr_hex = m0.signing_address.clone();
+    {
+        let q = quote_bytes(&m0.intel_quote)?;
+        super::tdx::verify_tdx_quote(
+            &q,
+            nonce,
+            &backend.id,
+            super::tdx::ReportDataLayout::VeniceAddrPadNonce,
+        )
+        .await
+        .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "model" })?;
+        if !debug_mode_disabled(&q) {
+            return Err(RedpillError::DebugMode);
+        }
+        let mut rd = [0u8; 64];
+        rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
+
+        if let Some(ref pk_hex) = m0.signing_key {
+            verify_redpill_model_reportdata(&rd, pk_hex, nonce)
+                .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "model" })?;
+        } else {
+            let addr = hex::decode(m0.signing_address.trim_start_matches("0x")).map_err(|e| {
+                RedpillError::ReportDataMismatch {
+                    component: "model",
+                    detail: format!("addr hex decode: {e}"),
+                }
+            })?;
+            if addr.len() != 20
+                || &rd[0..20] != &addr[..]
+                || rd[20..32].iter().any(|&b| b != 0)
+                || &rd[32..64] != &nonce[..]
+            {
+                return Err(RedpillError::OrchestratedComponentFailed { failed: "model" });
+            }
+        }
+
+        if let Some(ref payload_str) = m0.nvidia_payload {
+            let _: serde_json::Value = serde_json::from_str(payload_str).map_err(|e| {
+                RedpillError::Network(format!("nvidia_payload inner JSON parse: {e}"))
+            })?;
+            let nonce_hex = hex::encode(nonce);
+            super::nvidia::fetch_and_verify_nvidia(payload_str, &nonce_hex, &backend.id)
+                .await
+                .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "model" })?;
+        }
+    }
+
+    // ── Compose-manager component ───────────────────────────────────────
+    let cm = m0
+        .compose_manager_attestation
+        .ok_or(RedpillError::OrchestratedComponentFailed { failed: "compose_manager" })?;
+    let cm_actions_hash_hex = cm.actions_hash.clone();
+    {
+        let rd: [u8; 64] = if let Some(ref rd_hex) = cm.report_data {
+            let bytes = hex::decode(rd_hex).map_err(|e| RedpillError::ReportDataMismatch {
+                component: "compose_manager",
+                detail: format!("report_data hex decode: {e}"),
+            })?;
+            if bytes.len() < 64 {
+                return Err(RedpillError::OrchestratedComponentFailed {
+                    failed: "compose_manager",
+                });
+            }
+            let mut out = [0u8; 64];
+            out.copy_from_slice(&bytes[..64]);
+            out
+        } else if let Some(ref qstr) = cm.quote {
+            let q = quote_bytes(qstr)?;
+            super::tdx::verify_tdx_quote(
+                &q,
+                nonce,
+                &backend.id,
+                super::tdx::ReportDataLayout::VeniceAddrPadNonce,
+            )
+            .await
+            .map_err(|_| RedpillError::OrchestratedComponentFailed {
+                failed: "compose_manager",
+            })?;
+            if !debug_mode_disabled(&q) {
+                return Err(RedpillError::DebugMode);
+            }
+            let mut out = [0u8; 64];
+            out.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
+            out
+        } else {
+            return Err(RedpillError::OrchestratedComponentFailed {
+                failed: "compose_manager",
+            });
+        };
+        verify_redpill_compose_manager_reportdata(&rd, &cm.actions_hash, nonce).map_err(|_| {
+            RedpillError::OrchestratedComponentFailed {
+                failed: "compose_manager",
+            }
+        })?;
+    }
+
+    Ok(VerifiedRedpillAttestation {
+        backend_id: backend.id.clone(),
+        model: requested_model.to_string(),
+        shape: RedpillShape::Orchestrated { is_near_ai },
+        freshness: Freshness::PerRequest,
+        orchestrated_components: Some(OrchestratedComponents {
+            gateway_signing_address_hex: gw_addr_hex,
+            model_signing_address_hex: model_addr_hex,
+            compose_manager_actions_hash_hex: cm_actions_hash_hex,
+        }),
+        expires_at: now_secs() + ATTESTATION_TTL_SECS,
+    })
+}
+
+/// Shape C — Chutes anti-tamper. Per-entry TDX + per-GPU NRAS.
+async fn verify_chutes(
+    backend: &BackendConfig,
+    requested_model: &str,
+    value: &serde_json::Value,
+    nonce: &[u8; 32],
+    _policy: &super::policy::TdxPolicy,
+) -> Result<VerifiedRedpillAttestation, RedpillError> {
+    let resp: RedpillChutesResponse = serde_json::from_value(value.clone())
+        .map_err(|e| RedpillError::Network(format!("chutes parse: {e}")))?;
+
+    let entry = resp
+        .all_attestations
+        .first()
+        .ok_or(RedpillError::UnknownShape)?;
+
+    let q = quote_bytes(&entry.intel_quote)?;
+    if q.len() < REPORTDATA_OFFSET + REPORTDATA_LEN {
+        return Err(RedpillError::QuoteDecode("chutes quote too short".into()));
+    }
+    let mut rd = [0u8; 64];
+    rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
+
+    // Chutes leaves rd[32..64] unconstrained (D-11), so we cannot expect the client
+    // ?nonce= to appear there. We slice REPORTDATA ourselves and call the anti-tamper
+    // decoder; for the dcap-qvl signature/collateral/TCB check we feed back rd[32..64]
+    // as the "expected nonce" — the layout-nonce comparison degenerates to a tautology
+    // and only the cryptographic gates remain effective. This is the documented
+    // Plan-02 trade-off: see SUMMARY.md "ReportDataLayout discussion".
+    let mut self_nonce = [0u8; 32];
+    self_nonce.copy_from_slice(&rd[32..64]);
+
+    super::tdx::verify_tdx_quote(
+        &q,
+        &self_nonce,
+        &backend.id,
+        super::tdx::ReportDataLayout::VeniceAddrPadNonce,
+    )
+    .await?;
+
+    if !debug_mode_disabled(&q) {
+        return Err(RedpillError::DebugMode);
+    }
+
+    verify_redpill_chutes_anti_tamper(&rd, &entry.nonce, &entry.e2e_pubkey)?;
+
+    for gpu in &entry.gpu_evidence {
+        let payload_str = match gpu {
+            serde_json::Value::String(s) => s.clone(),
+            other => serde_json::to_string(other)
+                .map_err(|e| RedpillError::Network(format!("gpu_evidence serialize: {e}")))?,
+        };
+        let nonce_hex = hex::encode(nonce);
+        let _ =
+            super::nvidia::fetch_and_verify_nvidia(&payload_str, &nonce_hex, &backend.id).await?;
+    }
+
+    Ok(VerifiedRedpillAttestation {
+        backend_id: backend.id.clone(),
+        model: requested_model.to_string(),
+        shape: RedpillShape::Chutes,
+        freshness: Freshness::PerEnclave,
+        orchestrated_components: None,
+        expires_at: now_secs() + ATTESTATION_TTL_SECS,
+    })
+}
+
+/// Cached wrapper. In-memory only (D-20 — 5-min TTL).
+pub async fn ensure_verified_redpill_attestation(
+    backend: &BackendConfig,
+    requested_model: &str,
+    tdx_policy: &super::policy::TdxPolicy,
+) -> Result<VerifiedRedpillAttestation, LlmError> {
+    let cache_key = format!(
+        "redpill|{}|{}",
+        backend.base_url.trim_end_matches('/'),
+        requested_model
+    );
+    let now = now_secs();
+
+    {
+        let mut cache = VERIFIED_ATTESTATIONS
+            .lock()
+            .map_err(|_| LlmError::NetworkError {
+                reason: "Redpill attestation cache lock poisoned".into(),
+            })?;
+        if let Some(cached) = cache.get(&cache_key) {
+            if cached.expires_at > now {
+                return Ok(cached.clone());
+            }
+            cache.remove(&cache_key);
+        }
+    }
+
+    let verified = fetch_and_verify_redpill_attestation(backend, requested_model, tdx_policy)
+        .await
+        .map_err(|e| LlmError::NetworkError {
+            reason: format!("Redpill attestation: {e:?}"),
+        })?;
+
+    VERIFIED_ATTESTATIONS
+        .lock()
+        .map_err(|_| LlmError::NetworkError {
+            reason: "Redpill attestation cache lock poisoned".into(),
+        })?
+        .insert(cache_key, verified.clone());
+
+    Ok(verified)
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
