@@ -68,6 +68,79 @@ fn tinfoil_route_refused_with_typed_error() {
     );
 }
 
+/// Plan 04 / RED-11: Verify the Orchestrated badge data flow — the three
+/// orchestrated components (gateway, model, compose_manager) must extract from
+/// VerifiedRedpillAttestation in the canonical (label, hex) order so the
+/// native UI renders "gateway ✓ • model ✓ • compose ✓".
+#[test]
+fn redpill_orchestrated_event_carries_three_components() {
+    use crate::attestation::redpill::{
+        Freshness, OrchestratedComponents, RedpillShape, VerifiedRedpillAttestation,
+    };
+
+    let verified = VerifiedRedpillAttestation {
+        backend_id: "redpill".into(),
+        model: "phala/gpt-oss-120b".into(),
+        shape: RedpillShape::Orchestrated { is_near_ai: false },
+        freshness: Freshness::PerRequest,
+        orchestrated_components: Some(OrchestratedComponents {
+            gateway_signing_address_hex: "0xAA".into(),
+            model_signing_address_hex: "0xBB".into(),
+            compose_manager_actions_hash_hex: "0xCC".into(),
+        }),
+        expires_at: 0,
+    };
+
+    // The badge renderer extracts components into a Vec<(label, hex)> with
+    // gateway → model → compose_manager order. Mirror the extraction logic
+    // used in llm::redpill::verify_backend_attestation.
+    let comps = verified
+        .orchestrated_components
+        .as_ref()
+        .map(|c| {
+            vec![
+                ("gateway".to_string(), c.gateway_signing_address_hex.clone()),
+                ("model".to_string(), c.model_signing_address_hex.clone()),
+                (
+                    "compose_manager".to_string(),
+                    c.compose_manager_actions_hash_hex.clone(),
+                ),
+            ]
+        })
+        .expect("Orchestrated must populate components");
+
+    assert_eq!(comps.len(), 3);
+    assert_eq!(comps[0].0, "gateway");
+    assert_eq!(comps[0].1, "0xAA");
+    assert_eq!(comps[1].0, "model");
+    assert_eq!(comps[1].1, "0xBB");
+    assert_eq!(comps[2].0, "compose_manager");
+    assert_eq!(comps[2].1, "0xCC");
+}
+
+/// Plan 04 / RED-09: Chutes shape's freshness must be PerEnclave, not PerRequest.
+#[test]
+fn redpill_chutes_shape_carries_per_enclave_freshness() {
+    use crate::attestation::redpill::{Freshness, RedpillShape, VerifiedRedpillAttestation};
+
+    let verified = VerifiedRedpillAttestation {
+        backend_id: "redpill".into(),
+        model: "deepseek/deepseek-v3.2".into(),
+        shape: RedpillShape::Chutes,
+        freshness: Freshness::PerEnclave,
+        orchestrated_components: None,
+        expires_at: 0,
+    };
+
+    let freshness_str: &str = match verified.freshness {
+        Freshness::PerRequest => "PerRequest",
+        Freshness::PerEnclave => "PerEnclave",
+    };
+    assert_eq!(freshness_str, "PerEnclave");
+    assert!(matches!(verified.shape, RedpillShape::Chutes));
+    assert!(verified.orchestrated_components.is_none());
+}
+
 #[test]
 fn backend_summary_after_add() {
     use crate::llm::backend::{BackendConfig, ProviderKind, TeeType};

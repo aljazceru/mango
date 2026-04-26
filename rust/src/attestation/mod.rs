@@ -78,6 +78,20 @@ pub enum AttestationEvent {
         /// The actor thread writes these to the vcek_cert_cache SQLite table.
         vcek_url: Option<String>,
         vcek_der: Option<Vec<u8>>,
+        /// Attestation response shape for aggregator-style providers (Phase 34
+        /// Redpill: "Flat" | "Orchestrated" | "Chutes"). `None` for single-shape
+        /// providers (Tinfoil, PPQ, Venice). RED-11 — surfaced in the badge sub-line.
+        shape: Option<String>,
+        /// Freshness semantics for the verified attestation. `"PerRequest"` for
+        /// shapes that bind a per-request client nonce (Tinfoil/PPQ/Venice/Redpill A+B);
+        /// `"PerEnclave"` for enclave-baked nonce (Redpill Shape C / Chutes). RED-09 —
+        /// drives the trust-UI sub-line (e.g. "Verified for this enclave instance").
+        freshness: Option<String>,
+        /// Per-component breakdown for Orchestrated shapes (Redpill Shape B):
+        /// `Vec<(label, value)>` where label is one of "gateway" | "model" | "compose_manager"
+        /// and value is the verified hex address / actions hash. `None` for non-Orchestrated.
+        /// RED-11 — drives the three-way breakdown ("gateway ✓ • model ✓ • compose ✓").
+        orchestrated_components: Option<Vec<(String, String)>>,
     },
     /// Verification attempted and failed.
     Failed {

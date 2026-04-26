@@ -231,5 +231,8 @@ pub async fn fetch_and_verify_nvidia(
         // NVIDIA CC verification uses JWT from NRAS — no AMD VCEK cert involved.
         vcek_url: None,
         vcek_der: None,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     })
 }

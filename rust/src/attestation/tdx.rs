@@ -21,6 +21,7 @@ const MIN_QUOTE_LEN: usize = 48;
 ///
 /// Returns `AttestationError::QuoteVerification` if neither encoding is valid
 /// or if the decoded bytes are shorter than the minimum TDX quote header size.
+#[allow(dead_code)]
 pub fn decode_quote(s: &str) -> Result<Vec<u8>, AttestationError> {
     // Try hex first, then fall back to base64
     let decoded = if let Ok(bytes) = hex::decode(s) {
@@ -56,6 +57,7 @@ pub fn decode_quote(s: &str) -> Result<Vec<u8>, AttestationError> {
 ///   nonce comparison where to look.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportDataLayout {
+    #[allow(dead_code)]
     NonceFirst32,
     VeniceAddrPadNonce,
 }
@@ -155,5 +157,8 @@ pub async fn verify_tdx_quote(
         // TDX verification does not use AMD KDS — no VCEK cert involved.
         vcek_url: None,
         vcek_der: None,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     })
 }

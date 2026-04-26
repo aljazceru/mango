@@ -269,6 +269,9 @@ async fn verify_tdx_attestation(
         tls_public_key_fp: Some(attested_fp),
         vcek_url: None,
         vcek_der: None,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     })
 }
 
@@ -348,6 +351,9 @@ async fn verify_snp_attestation(
         tls_public_key_fp: Some(attested_fp),
         vcek_url: Some(vcek_url),
         vcek_der: fresh_vcek_der,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     })
 }
 

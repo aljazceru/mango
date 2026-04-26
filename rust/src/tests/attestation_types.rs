@@ -158,6 +158,9 @@ fn test_attestation_event_variants() {
         tls_public_key_fp: None,
         vcek_url: None,
         vcek_der: None,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     };
 
     let nvidia_verified = AttestationEvent::Verified {
@@ -168,6 +171,9 @@ fn test_attestation_event_variants() {
         tls_public_key_fp: None,
         vcek_url: None,
         vcek_der: None,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     };
 
     let failed = AttestationEvent::Failed {
