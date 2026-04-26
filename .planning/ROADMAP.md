@@ -288,7 +288,12 @@ Plans:
 **Goal:** Redpill is selectable as a fourth TEE-attested LLM provider; every chat completion goes through fully verified TDX (and NRAS where present) attestation, with the client correctly dispatching the three Redpill response shapes (Phala-flat, Phala-orchestrated 3-quote, Chutes anti-tamper) and reusing the Venice REPORTDATA decoder for the model component. No new Rust crates. Attestation failures fail-closed. Redpill→Tinfoil routes are explicitly unsupported until Redpill upstream upgrades its relay.
 **Requirements**: RED-01, RED-02, RED-03, RED-04, RED-05, RED-06, RED-07, RED-08, RED-09, RED-10, RED-11
 **Depends on:** Phase 33
-**Plans:** TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 34-01-PLAN.md — Wave 0: golden fixtures + RED test stubs + REQUIREMENTS sanity + zero-new-deps verification
+- [ ] 34-02-PLAN.md — Attestation layer: attestation/redpill.rs (shape dispatcher + 4 REPORTDATA decoders + quote_bytes helper + debug-mode gate + verify orchestrator + cache integration)
+- [ ] 34-03-PLAN.md — LLM transport: llm/redpill.rs (HTTP fetch, OpenAI-compatible chat completions, Tinfoil-route refusal); ProviderKind::Redpill + preset
+- [ ] 34-04-PLAN.md — Wiring: transport/router/streaming dispatch + UniFFI bindings + Settings preset surfacing + verified-badge with shape breakdown + live integration tests
 **Success Criteria** (what must be TRUE):
   1. Redpill appears as a known provider preset in Add Backend on all three platforms
   2. The client fetches `GET https://api.redpill.ai/v1/attestation/report?model=&nonce=` without an API key and the response is verified end-to-end before any chat request is sent
