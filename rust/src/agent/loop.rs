@@ -155,6 +155,17 @@ pub async fn run_agent_step_for_backend(
             .await?;
             return agent_step_result_from_response(response);
         }
+        ProviderTransportKind::Redpill => {
+            let tools_opt = if tools.is_empty() { None } else { Some(tools) };
+            let response = crate::llm::redpill::create_chat_completion(
+                backend.clone(),
+                model.to_string(),
+                messages,
+                tools_opt,
+            )
+            .await?;
+            return agent_step_result_from_response(response);
+        }
         ProviderTransportKind::OpenAiCompatible => {}
     }
 

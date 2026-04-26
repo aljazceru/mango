@@ -16,6 +16,7 @@ pub enum ProviderTransportKind {
     TinfoilSecure,
     PpqPrivateE2ee,
     VeniceE2ee,
+    Redpill,
 }
 
 impl ProviderTransportKind {
@@ -26,6 +27,10 @@ impl ProviderTransportKind {
 
         if backend.provider_kind() == super::backend::ProviderKind::Venice {
             return Self::VeniceE2ee;
+        }
+
+        if backend.provider_kind() == super::backend::ProviderKind::Redpill {
+            return Self::Redpill;
         }
 
         let base_url = backend.base_url.trim_end_matches('/');
@@ -44,6 +49,18 @@ impl ProviderTransportKind {
             Self::TinfoilSecure => Err(tinfoil_secure_transport_error()),
             Self::PpqPrivateE2ee => Err(unsupported_private_transport_error()),
             Self::VeniceE2ee => Err(unsupported_venice_transport_error()),
+            // Redpill IS OpenAI-compatible (no E2EE wrapper) — expose the canonical
+            // /v1 api_base so the generic OpenAI client can be used. The transport
+            // dispatcher in streaming.rs short-circuits Redpill BEFORE reaching the
+            // generic OpenAI path, but if a future caller routes through it the api_base
+            // is correct.
+            Self::Redpill => {
+                let trimmed = backend
+                    .base_url
+                    .trim_end_matches('/')
+                    .trim_end_matches("/v1");
+                Ok(format!("{}/v1", trimmed))
+            }
         }
     }
 
@@ -55,6 +72,7 @@ impl ProviderTransportKind {
             Self::TinfoilSecure => super::tinfoil_secure::model_list_url(backend),
             Self::PpqPrivateE2ee => super::ppq_private::model_list_url(backend),
             Self::VeniceE2ee => super::venice::model_list_url(backend),
+            Self::Redpill => super::redpill::model_list_url(backend),
         }
     }
 
@@ -88,6 +106,7 @@ impl ProviderTransportKind {
             Self::TinfoilSecure => Ok((super::tinfoil_secure::build_http_client(timeout)?, false)),
             Self::PpqPrivateE2ee => Ok((super::ppq_private::build_http_client(timeout)?, false)),
             Self::VeniceE2ee => Ok((super::venice::build_http_client(timeout)?, false)),
+            Self::Redpill => Ok((super::redpill::build_http_client(timeout)?, false)),
         }
     }
 
