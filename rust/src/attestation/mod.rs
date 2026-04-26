@@ -14,6 +14,7 @@ pub mod nvidia;
 pub mod policy;
 pub mod task;
 pub mod tdx;
+pub mod venice;
 
 pub use error::AttestationError;
 pub use policy::{SnpPolicy, TdxPolicy, TeePolicy};
