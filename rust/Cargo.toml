@@ -70,6 +70,10 @@ k256 = { version = "0.13", default-features = false, features = ["ecdh", "arithm
 sha3 = { version = "0.10", default-features = false }
 urlencoding = "2.1"
 
+# Phase 34: Redpill TEE-attested aggregator — zero new deps; reuses Phase 33 stack
+# (dcap-qvl, sha2, sha3, base64, hex, reqwest, serde_json, plus attestation/venice.rs
+# model-ecdsa REPORTDATA decoder).
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 
