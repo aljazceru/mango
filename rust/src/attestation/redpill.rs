@@ -14,6 +14,8 @@
 
 #![allow(dead_code)]
 
+use sha2::{Digest, Sha256};
+
 use super::error::AttestationError;
 
 // REPORTDATA at TDX v4 quote bytes [568..632] (header 48B + body offset 520..584)
@@ -138,4 +140,107 @@ pub fn quote_bytes(s: &str) -> Result<Vec<u8>, RedpillError> {
 pub fn debug_mode_disabled(quote_bytes: &[u8]) -> bool {
     quote_bytes.len() > TD_ATTRIBUTES_OFFSET
         && (quote_bytes[TD_ATTRIBUTES_OFFSET] & 0x01) == 0
+}
+
+// ── REPORTDATA decoders (D-08 / D-09 / D-10 / D-11) ──────────────────────────
+//
+// The model decoder is `pub use`-d above as `verify_redpill_model_reportdata`.
+// Below: gateway (ed25519), compose-manager, Chutes anti-tamper.
+
+/// Gateway REPORTDATA layout (Shape B `gateway_attestation`):
+/// `[0..32] = raw ed25519 pubkey` | `[32..64] = client nonce`.
+pub fn verify_redpill_gateway_reportdata(
+    report_data: &[u8; 64],
+    gateway_signing_address_hex: &str,
+    submitted_nonce: &[u8; 32],
+) -> Result<(), RedpillError> {
+    let expected_addr = hex::decode(gateway_signing_address_hex.trim_start_matches("0x"))
+        .map_err(|e| RedpillError::ReportDataMismatch {
+            component: "gateway",
+            detail: format!("addr hex decode: {e}"),
+        })?;
+    if expected_addr.len() != 32 {
+        return Err(RedpillError::ReportDataMismatch {
+            component: "gateway",
+            detail: format!("ed25519 pubkey must be 32B, got {}", expected_addr.len()),
+        });
+    }
+    if &report_data[0..32] != &expected_addr[..] {
+        return Err(RedpillError::ReportDataMismatch {
+            component: "gateway",
+            detail: "ed25519 pubkey not bound to REPORTDATA[0..32]".into(),
+        });
+    }
+    if &report_data[32..64] != &submitted_nonce[..] {
+        return Err(RedpillError::ReportDataMismatch {
+            component: "gateway",
+            detail: format!(
+                "nonce mismatch: expected={} actual={}",
+                hex::encode(submitted_nonce),
+                hex::encode(&report_data[32..64])
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Compose-manager REPORTDATA (Shape B `model_attestations[i].compose_manager_attestation`):
+/// `[0..32] = actions_hash` | `[32..64] = client nonce`.
+pub fn verify_redpill_compose_manager_reportdata(
+    report_data: &[u8; 64],
+    actions_hash_hex: &str,
+    submitted_nonce: &[u8; 32],
+) -> Result<(), RedpillError> {
+    let expected = hex::decode(actions_hash_hex.trim_start_matches("0x")).map_err(|e| {
+        RedpillError::ReportDataMismatch {
+            component: "compose_manager",
+            detail: format!("actions_hash hex decode: {e}"),
+        }
+    })?;
+    if expected.len() != 32 {
+        return Err(RedpillError::ReportDataMismatch {
+            component: "compose_manager",
+            detail: format!("actions_hash must be 32B, got {}", expected.len()),
+        });
+    }
+    if &report_data[0..32] != &expected[..] {
+        return Err(RedpillError::ComposeManagerMismatch {
+            expected: hex::encode(&expected),
+            actual: hex::encode(&report_data[0..32]),
+        });
+    }
+    if &report_data[32..64] != &submitted_nonce[..] {
+        return Err(RedpillError::ReportDataMismatch {
+            component: "compose_manager",
+            detail: "nonce mismatch in REPORTDATA[32..64]".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Chutes anti-tamper REPORTDATA (Shape C `all_attestations[i]`):
+/// `[0..32] = SHA256(nonce_str ++ e2e_pubkey_str)` (STRING concat of as-emitted ASCII bytes).
+/// `[32..64]` is intentionally NOT constrained — Chutes does not bind the client `?nonce=` here.
+pub fn verify_redpill_chutes_anti_tamper(
+    report_data: &[u8; 64],
+    enclave_baked_nonce_str: &str,
+    e2e_pubkey_str: &str,
+) -> Result<(), RedpillError> {
+    let mut h = Sha256::new();
+    h.update(enclave_baked_nonce_str.as_bytes());
+    h.update(e2e_pubkey_str.as_bytes());
+    let digest = h.finalize();
+    if &report_data[0..32] != &digest[..] {
+        return Err(RedpillError::ReportDataMismatch {
+            component: "chutes_anti_tamper",
+            detail: format!(
+                "SHA256(nonce_str ++ e2e_pubkey_str) mismatch: expected={} actual={}",
+                hex::encode(&digest),
+                hex::encode(&report_data[0..32])
+            ),
+        });
+    }
+    // rd[32..64] is intentionally NOT constrained on Chutes (D-11). Freshness is bounded
+    // by enclave lifetime, not by per-request client nonce.
+    Ok(())
 }
