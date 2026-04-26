@@ -12,6 +12,7 @@ pub enum ProviderKind {
     Tinfoil,
     Ppq,
     Venice,
+    Redpill,
     Custom,
 }
 
@@ -102,6 +103,7 @@ impl BackendConfig {
             "tinfoil" => ProviderKind::Tinfoil,
             "ppq-ai" => ProviderKind::Ppq,
             "venice-ai" => ProviderKind::Venice,
+            "redpill" => ProviderKind::Redpill,
             _ => ProviderKind::Custom,
         }
     }
@@ -164,6 +166,13 @@ pub fn known_provider_presets() -> Vec<ProviderPreset> {
             base_url: "https://api.venice.ai/api/v1/".into(),
             tee_type: TeeType::IntelTdx,
             description: "Intel TDX + NVIDIA H100 CC \u{00b7} E2EE chat".into(),
+        },
+        ProviderPreset {
+            id: "redpill".into(),
+            name: "Redpill".into(),
+            base_url: "https://api.redpill.ai/v1/".into(),
+            tee_type: TeeType::IntelTdx,
+            description: "Intel TDX aggregator (Phala / NearAI / Chutes) \u{2014} multi-quote attestation".into(),
         },
     ]
 }

@@ -2,6 +2,7 @@ pub mod backend;
 pub mod capabilities;
 pub mod error;
 pub mod ppq_private;
+pub mod redpill;
 pub mod router;
 pub mod streaming;
 pub mod tinfoil_secure;
