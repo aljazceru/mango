@@ -9,8 +9,11 @@
 pub mod cache;
 pub mod endpoint;
 pub mod error;
+pub mod nonce;
+pub mod nvidia;
 pub mod policy;
 pub mod task;
+pub mod tdx;
 
 pub use error::AttestationError;
 pub use policy::{SnpPolicy, TdxPolicy, TeePolicy};

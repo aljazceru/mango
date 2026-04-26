@@ -1,6 +1,8 @@
 mod agent;
 mod attestation_cache;
 mod attestation_integration;
+mod attestation_nvidia;
+mod attestation_tdx;
 mod attestation_types;
 mod attestation_venice;
 mod backend_config;
