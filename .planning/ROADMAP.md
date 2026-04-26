@@ -268,3 +268,16 @@ Plans:
 - [x] 32-05-PLAN.md — iOS SwiftUI + UIDocumentPickerViewController + .minimalBookmark lifecycle + ScenePhase sync + iCloud placeholder skip
 - [x] 32-06-PLAN.md — Android Compose + OpenDocumentTree + takePersistableUriPermission + bulk DocumentsContract traversal + WorkManager 15-min + onResume sync
 - [x] 32-07-PLAN.md — Cross-platform UX polish: relative-time labels, sync-status pills, settings entry, reused IngestionProgress
+
+### Phase 33: Integrate Venice.ai as TEE-attested LLM provider with client-side TDX + NVIDIA NRAS verification and ECDH+AES-GCM E2EE handshake
+
+**Goal:** Venice.ai is selectable as a third TEE-attested LLM provider; every chat completion goes through verified TDX+NRAS attestation and a per-request ECDH(secp256k1)+HKDF+AES-256-GCM E2EE channel rooted in the attested signing key. No TLS pinning. Attestation failures fail-closed.
+**Requirements**: VEN-01, VEN-02, VEN-03, VEN-04, VEN-05, VEN-06, VEN-07, VEN-08, VEN-09
+**Depends on:** Phase 32
+**Plans:** 4 plans
+
+Plans:
+- [ ] 33-01-PLAN.md — Wave 0: REQUIREMENTS+Cargo deps+golden fixture+failing test stubs+MRSEAM reconcile
+- [ ] 33-02-PLAN.md — Attestation layer: TDX layout enum + attestation/venice.rs (REPORTDATA decoder + cache + verify orchestrator)
+- [ ] 33-03-PLAN.md — llm/venice.rs: ECDH+HKDF+AES-GCM E2EE crypto + HTTP transport + text-SSE streaming
+- [ ] 33-04-PLAN.md — Wiring (transport.rs, backend.rs, mod.rs) + integration tests + live #[ignore] test

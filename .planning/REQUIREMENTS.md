@@ -58,6 +58,18 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 - [x] **ENC-13**: Lock timeout configurable in Settings: Immediately, 1 min, 5 min (default), 15 min, Never
 - [x] **ENC-14**: All three platforms (iOS, Android, Desktop) support PIN/password as minimum auth; biometrics additive
 
+### Venice.ai TEE-Attested Provider
+
+- [ ] **VEN-01**: Add Venice.ai as a known provider preset on the Add Backend form
+- [ ] **VEN-02**: Fetch attestation from `GET /api/v1/tee/attestation?model=&nonce=` (public, no API key)
+- [ ] **VEN-03**: Verify Intel TDX quote signature, PCK chain, TCB, and CRLs client-side via `dcap-qvl`
+- [ ] **VEN-04**: Decode REPORTDATA with Venice layout (20B keccak-addr / 12B zeros / 32B nonce) and verify all three bindings
+- [ ] **VEN-05**: POST `nvidia_payload` to NRAS, verify returned JWT via existing `attestation/nvidia.rs`
+- [ ] **VEN-06**: Reject TDX quote in debug mode (`td_attributes[0] & 0x01 != 0`)
+- [ ] **VEN-07**: Establish ECDH(secp256k1) + HKDF-SHA256(`"ecdsa_encryption"`) + AES-256-GCM E2EE channel using attested signing key
+- [ ] **VEN-08**: Send and stream chat completions over the E2EE channel with `enable_e2ee: true` and three `X-Venice-TEE-*` headers
+- [ ] **VEN-09**: Display Venice as a backend in Settings → Providers with `Verified` attestation badge once attestation passes
+
 ## Future Requirements
 
 ### Memory Enhancements
@@ -123,13 +135,22 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 | ENC-12 | Phase 28 | Complete |
 | ENC-13 | Phase 28 | Complete |
 | ENC-14 | Phase 28 | Complete |
+| VEN-01 | Phase 33 | Pending |
+| VEN-02 | Phase 33 | Pending |
+| VEN-03 | Phase 33 | Pending |
+| VEN-04 | Phase 33 | Pending |
+| VEN-05 | Phase 33 | Pending |
+| VEN-06 | Phase 33 | Pending |
+| VEN-07 | Phase 33 | Pending |
+| VEN-08 | Phase 33 | Pending |
+| VEN-09 | Phase 33 | Pending |
 
 **Coverage:**
-- v2.0 requirements: 36 total
-- Mapped to phases: 36
+- v2.0 + Phase 33 requirements: 45 total
+- Mapped to phases: 45
 - Unmapped: 0
 - Complete: 36
-- Pending (gap closure): 0
+- Pending (Phase 33): 9
 
 ---
 *Requirements defined: 2026-04-02*
