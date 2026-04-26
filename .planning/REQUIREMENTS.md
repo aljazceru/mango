@@ -61,7 +61,8 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 ### Venice.ai TEE-Attested Provider
 
 - [ ] **VEN-01**: Add Venice.ai as a known provider preset on the Add Backend form
-- [ ] **VEN-02**: Fetch attestation from `GET /api/v1/tee/attestation?model=&nonce=` (public, no API key)
+- [x] **VEN-02
+**: Fetch attestation from `GET /api/v1/tee/attestation?model=&nonce=` (public, no API key)
 - [x] **VEN-03
 **: Verify Intel TDX quote signature, PCK chain, TCB, and CRLs client-side via `dcap-qvl`
 - [x] **VEN-04
@@ -70,8 +71,10 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 **: POST `nvidia_payload` to NRAS, verify returned JWT via existing `attestation/nvidia.rs`
 - [x] **VEN-06
 **: Reject TDX quote in debug mode (`td_attributes[0] & 0x01 != 0`)
-- [ ] **VEN-07**: Establish ECDH(secp256k1) + HKDF-SHA256(`"ecdsa_encryption"`) + AES-256-GCM E2EE channel using attested signing key
-- [ ] **VEN-08**: Send and stream chat completions over the E2EE channel with `enable_e2ee: true` and three `X-Venice-TEE-*` headers
+- [x] **VEN-07
+**: Establish ECDH(secp256k1) + HKDF-SHA256(`"ecdsa_encryption"`) + AES-256-GCM E2EE channel using attested signing key
+- [x] **VEN-08
+**: Send and stream chat completions over the E2EE channel with `enable_e2ee: true` and three `X-Venice-TEE-*` headers
 - [ ] **VEN-09**: Display Venice as a backend in Settings → Providers with `Verified` attestation badge once attestation passes
 
 ## Future Requirements
