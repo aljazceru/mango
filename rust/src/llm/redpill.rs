@@ -451,6 +451,39 @@ mod tests {
     }
 
     #[test]
+    fn tinfoil_user_facing_error_mentions_direct_tinfoil() {
+        let err = map_redpill_error_for_user(RedpillError::TinfoilUnsupported);
+        let msg = match err {
+            LlmError::NetworkError { reason } => reason,
+            other => panic!("expected NetworkError, got {other:?}"),
+        };
+        let lc = msg.to_lowercase();
+        // The user-facing message MUST hint at the direct-Tinfoil provider so
+        // the user knows where to go (T-34-08 mitigation surfaces in the UI).
+        assert!(lc.contains("tinfoil"), "missing 'tinfoil': {msg}");
+        assert!(
+            lc.contains("direct-tinfoil") || lc.contains("direct"),
+            "missing direct-Tinfoil hint: {msg}"
+        );
+        assert!(
+            lc.contains("settings") || lc.contains("provider"),
+            "missing UI navigation hint: {msg}"
+        );
+    }
+
+    #[test]
+    fn non_tinfoil_redpill_error_passes_through_with_prefix() {
+        let err = map_redpill_error_for_user(RedpillError::UnknownShape);
+        let msg = match err {
+            LlmError::NetworkError { reason } => reason,
+            other => panic!("expected NetworkError, got {other:?}"),
+        };
+        // Non-Tinfoil errors are forwarded with a 'Redpill:' prefix so the
+        // user can tell which provider failed.
+        assert!(msg.starts_with("Redpill:"), "missing prefix: {msg}");
+    }
+
+    #[test]
     fn format_attestation_url_urlencodes_model_id() {
         let url = format_redpill_attestation_url(
             "openai/gpt-oss-20b",
