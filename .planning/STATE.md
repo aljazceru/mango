@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 33-01-PLAN.md
-last_updated: "2026-04-26T04:07:04.201Z"
+stopped_at: Completed 33-02-PLAN.md
+last_updated: "2026-04-26T04:16:23.337Z"
 last_activity: 2026-04-26
 progress:
   total_phases: 14
   completed_phases: 12
   total_plans: 49
-  completed_plans: 45
-  percent: 92
+  completed_plans: 46
+  percent: 94
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 33 (Integrate Venice.ai as TEE-attested LLM provider) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-04-26
 
-Progress: [█████████░] 92%
+Progress: [█████████░] 94%
 
 ## Performance Metrics
 
@@ -78,6 +78,7 @@ Progress: [█████████░] 92%
 | Phase 32 P06 | 12min | 3 tasks | 6 files |
 | Phase 32 P07 | 22min | 2 tasks | 10 files |
 | Phase 33 P33-01 | 10min | 3 tasks | 13 files |
+| Phase 33 P33-02 | 12min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -142,6 +143,9 @@ Key architectural context for v2.0:
 - [Phase 32]: Plan 07: Settings → Directory Sources entry added between Defaults and Memory on all three platforms; home-level Folders/Sources buttons preserved from 32-04/05/06
 - Phase 33 Wave 0: MRSEAM in golden capture matches TdxPolicy::default index 1 — no policy change needed in Plan 02
 - Phase 33 Wave 0: 14 RED test stubs gated by #[ignore] with explicit 'RED — Plan NN (VEN-XX)' annotations; default cargo test stays green
+- [Phase 33]: Plan 02 — ReportDataLayout enum parameterises verify_tdx_quote (NonceFirst32 keeps Tinfoil/PPQ behaviour, VeniceAddrPadNonce reads nonce at report_data[32..64]); attestation::{tdx,nvidia,nonce} were orphaned modules — registered in attestation/mod.rs and tests/mod.rs as Rule 3 blocking work
+- [Phase 33]: Plan 02 — Venice attestation cache is in-memory Lazy<Mutex<HashMap>> with 4h TTL, ZeroizeOnDrop on eviction; never persisted (D3/Pitfall 5 enforced — no SQLite write path for Venice)
+- [Phase 33]: Plan 02 — MRSEAM verdict 'Present' applied as no-op: Venice MRSEAM at TdxPolicy::default index 1, policy.rs unchanged
 
 ### Roadmap Evolution
 
@@ -176,8 +180,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-26T04:07:04.197Z
-Stopped at: Completed 33-01-PLAN.md
+Last session: 2026-04-26T04:16:23.333Z
+Stopped at: Completed 33-02-PLAN.md
 Resume file: None
 
 **Planned Phase:** 33 (Integrate Venice.ai as TEE-attested LLM provider) — 4 plans — 2026-04-25T18:22:36.843Z
