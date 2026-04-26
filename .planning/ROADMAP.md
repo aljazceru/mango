@@ -290,10 +290,10 @@ Plans:
 **Depends on:** Phase 33
 **Plans:** 4 plans
 Plans:
-- [ ] 34-01-PLAN.md — Wave 0: golden fixtures + RED test stubs + REQUIREMENTS sanity + zero-new-deps verification
-- [ ] 34-02-PLAN.md — Attestation layer: attestation/redpill.rs (shape dispatcher + 4 REPORTDATA decoders + quote_bytes helper + debug-mode gate + verify orchestrator + cache integration)
-- [ ] 34-03-PLAN.md — LLM transport: llm/redpill.rs (HTTP fetch, OpenAI-compatible chat completions, Tinfoil-route refusal); ProviderKind::Redpill + preset
-- [ ] 34-04-PLAN.md — Wiring: transport/router/streaming dispatch + UniFFI bindings + Settings preset surfacing + verified-badge with shape breakdown + live integration tests
+- [x] 34-01-PLAN.md — Wave 0: golden fixtures + RED test stubs + REQUIREMENTS sanity + zero-new-deps verification
+- [x] 34-02-PLAN.md — Attestation layer: attestation/redpill.rs (shape dispatcher + 4 REPORTDATA decoders + quote_bytes helper + debug-mode gate + verify orchestrator + cache integration)
+- [x] 34-03-PLAN.md — LLM transport: llm/redpill.rs (HTTP fetch, OpenAI-compatible chat completions, Tinfoil-route refusal); ProviderKind::Redpill + preset
+- [x] 34-04-PLAN.md — Wiring: transport/router/streaming dispatch + UniFFI bindings + Settings preset surfacing + verified-badge with shape breakdown + live integration tests
 **Success Criteria** (what must be TRUE):
   1. Redpill appears as a known provider preset in Add Backend on all three platforms
   2. The client fetches `GET https://api.redpill.ai/v1/attestation/report?model=&nonce=` without an API key and the response is verified end-to-end before any chat request is sent
