@@ -40,9 +40,21 @@ fn attestation_url_format() {
 }
 
 #[test]
-#[ignore = "RED — Plan 02 (VEN-05) NRAS payload double-parse"]
 fn nvidia_payload_double_parse() {
-    panic!("not yet implemented");
+    // Pitfall 2 mitigation: Venice's `nvidia_payload` is a JSON-encoded String
+    // containing JSON, not a nested object. Our VeniceAttestationResponse types
+    // it as Option<String>, which is later serde_json::from_str-parsed before
+    // forwarding to NRAS.
+    let raw = r#"{"intel_quote":"00","signing_public_key":"04","signing_address":"0x0","nonce":"00","model":"m","nvidia_payload":"{\"nonce\":\"abc\",\"evidence_list\":[]}"}"#;
+    let resp: crate::attestation::venice::VeniceAttestationResponse =
+        serde_json::from_str(raw).unwrap();
+    let inner = resp.nvidia_payload.expect("nvidia_payload present");
+    assert!(inner.contains("evidence_list"));
+    let parsed: serde_json::Value = serde_json::from_str(&inner).unwrap();
+    assert_eq!(parsed["nonce"], "abc");
+
+    // signing_public_key alias resolves into signing_key field (Pitfall 3).
+    assert_eq!(resp.signing_key, "04");
 }
 
 #[test]
