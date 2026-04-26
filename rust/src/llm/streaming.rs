@@ -197,6 +197,17 @@ pub fn spawn_streaming_task(
             .await;
             return;
         }
+        if transport == super::transport::ProviderTransportKind::Redpill {
+            crate::llm::redpill::run_streaming_chat_completion(
+                backend,
+                model,
+                messages,
+                token_for_task,
+                core_tx,
+            )
+            .await;
+            return;
+        }
 
         // Convert ChatMessage types to async-openai request message types
         let mut openai_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
@@ -327,6 +338,18 @@ pub fn spawn_streaming_task_from_api_messages(
         }
         if transport == super::transport::ProviderTransportKind::VeniceE2ee {
             crate::llm::venice::run_streaming_chat_completion_from_api_messages(
+                backend,
+                model,
+                messages,
+                None,
+                token_for_task,
+                core_tx,
+            )
+            .await;
+            return;
+        }
+        if transport == super::transport::ProviderTransportKind::Redpill {
+            crate::llm::redpill::run_streaming_chat_completion_from_api_messages(
                 backend,
                 model,
                 messages,

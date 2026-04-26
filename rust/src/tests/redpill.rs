@@ -69,7 +69,37 @@ fn tinfoil_route_refused_with_typed_error() {
 }
 
 #[test]
-#[ignore = "RED — Plan 04 (RED-11) backend summary surfaces Verified badge with shape breakdown"]
 fn backend_summary_after_add() {
-    panic!("not yet implemented");
+    use crate::llm::backend::{BackendConfig, ProviderKind, TeeType};
+    use crate::llm::transport::ProviderTransportKind;
+
+    let cfg = BackendConfig {
+        id: "redpill".into(),
+        name: "Redpill".into(),
+        base_url: "https://api.redpill.ai/v1/".into(),
+        api_key: "test".into(),
+        models: vec!["openai/gpt-oss-20b".into()],
+        tee_type: TeeType::IntelTdx,
+        max_concurrent_requests: 5,
+        supports_tool_use: true,
+    };
+
+    // RED-11: provider_kind dispatches to Redpill.
+    assert_eq!(cfg.provider_kind(), ProviderKind::Redpill);
+
+    // Transport routing: BackendConfig::transport_kind() returns Redpill variant.
+    assert_eq!(
+        ProviderTransportKind::for_backend(&cfg),
+        ProviderTransportKind::Redpill
+    );
+    assert_eq!(cfg.transport_kind(), ProviderTransportKind::Redpill);
+
+    // Backend summary surfaces Redpill backend without leaking the api_key.
+    let summary = cfg.to_summary(true, crate::llm::backend::HealthStatus::Healthy);
+    assert_eq!(summary.id, "redpill");
+    assert_eq!(summary.name, "Redpill");
+    assert_eq!(summary.tee_type, TeeType::IntelTdx);
+    assert!(summary.is_active);
+    assert!(summary.has_api_key);
+    assert!(summary.supports_tool_use);
 }

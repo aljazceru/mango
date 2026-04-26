@@ -145,6 +145,42 @@ fn venice_routes_to_venice_e2ee() {
 }
 
 #[test]
+fn redpill_routes_to_redpill_transport() {
+    let redpill = backend("redpill", "https://api.redpill.ai/v1/");
+    assert_eq!(
+        redpill.transport_kind(),
+        ProviderTransportKind::Redpill,
+        "Redpill backend must route to the Redpill transport variant"
+    );
+
+    // model_list_url goes through llm::redpill::model_list_url
+    let url = redpill
+        .transport_kind()
+        .model_list_url(&redpill)
+        .expect("Redpill model_list_url must succeed");
+    assert_eq!(url, "https://api.redpill.ai/v1/models");
+
+    // openai_api_base IS supported for Redpill (no E2EE wrapper).
+    let api_base = redpill
+        .transport_kind()
+        .openai_api_base(&redpill)
+        .expect("Redpill openai_api_base must succeed (vanilla OpenAI-compatible)");
+    assert_eq!(api_base, "https://api.redpill.ai/v1");
+
+    // Existing routes must still resolve correctly (no regression).
+    let venice = backend("venice-ai", "https://api.venice.ai/api/v1/");
+    assert_eq!(
+        venice.transport_kind(),
+        ProviderTransportKind::VeniceE2ee
+    );
+    let tinfoil = backend("tinfoil", "https://inference.tinfoil.sh/v1/");
+    assert_eq!(
+        tinfoil.transport_kind(),
+        ProviderTransportKind::TinfoilSecure
+    );
+}
+
+#[test]
 fn test_openai_transport_fails_closed_when_pinned_client_cannot_be_built() {
     let custom = backend("custom", "https://example.com/v1/");
     let error = custom
