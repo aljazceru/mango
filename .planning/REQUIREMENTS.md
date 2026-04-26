@@ -60,7 +60,8 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 
 ### Venice.ai TEE-Attested Provider
 
-- [ ] **VEN-01**: Add Venice.ai as a known provider preset on the Add Backend form
+- [x] **VEN-01
+**: Add Venice.ai as a known provider preset on the Add Backend form
 - [x] **VEN-02
 **: Fetch attestation from `GET /api/v1/tee/attestation?model=&nonce=` (public, no API key)
 - [x] **VEN-03
@@ -75,7 +76,8 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 **: Establish ECDH(secp256k1) + HKDF-SHA256(`"ecdsa_encryption"`) + AES-256-GCM E2EE channel using attested signing key
 - [x] **VEN-08
 **: Send and stream chat completions over the E2EE channel with `enable_e2ee: true` and three `X-Venice-TEE-*` headers
-- [ ] **VEN-09**: Display Venice as a backend in Settings → Providers with `Verified` attestation badge once attestation passes
+- [x] **VEN-09
+**: Display Venice as a backend in Settings → Providers with `Verified` attestation badge once attestation passes
 
 ## Future Requirements
 
@@ -142,15 +144,15 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 | ENC-12 | Phase 28 | Complete |
 | ENC-13 | Phase 28 | Complete |
 | ENC-14 | Phase 28 | Complete |
-| VEN-01 | Phase 33 | Pending |
-| VEN-02 | Phase 33 | Pending |
-| VEN-03 | Phase 33 | Pending |
-| VEN-04 | Phase 33 | Pending |
-| VEN-05 | Phase 33 | Pending |
-| VEN-06 | Phase 33 | Pending |
-| VEN-07 | Phase 33 | Pending |
-| VEN-08 | Phase 33 | Pending |
-| VEN-09 | Phase 33 | Pending |
+| VEN-01 | Phase 33 | Complete |
+| VEN-02 | Phase 33 | Complete |
+| VEN-03 | Phase 33 | Complete |
+| VEN-04 | Phase 33 | Complete |
+| VEN-05 | Phase 33 | Complete |
+| VEN-06 | Phase 33 | Complete |
+| VEN-07 | Phase 33 | Complete |
+| VEN-08 | Phase 33 | Complete |
+| VEN-09 | Phase 33 | Complete |
 
 **Coverage:**
 - v2.0 + Phase 33 requirements: 45 total

@@ -277,7 +277,7 @@ Plans:
 **Plans:** 4 plans
 
 Plans:
-- [ ] 33-01-PLAN.md — Wave 0: REQUIREMENTS+Cargo deps+golden fixture+failing test stubs+MRSEAM reconcile
-- [ ] 33-02-PLAN.md — Attestation layer: TDX layout enum + attestation/venice.rs (REPORTDATA decoder + cache + verify orchestrator)
-- [ ] 33-03-PLAN.md — llm/venice.rs: ECDH+HKDF+AES-GCM E2EE crypto + HTTP transport + text-SSE streaming
-- [ ] 33-04-PLAN.md — Wiring (transport.rs, backend.rs, mod.rs) + integration tests + live #[ignore] test
+- [x] 33-01-PLAN.md — Wave 0: REQUIREMENTS+Cargo deps+golden fixture+failing test stubs+MRSEAM reconcile
+- [x] 33-02-PLAN.md — Attestation layer: TDX layout enum + attestation/venice.rs (REPORTDATA decoder + cache + verify orchestrator)
+- [x] 33-03-PLAN.md — llm/venice.rs: ECDH+HKDF+AES-GCM E2EE crypto + HTTP transport + text-SSE streaming
+- [x] 33-04-PLAN.md — Wiring (transport.rs, backend.rs, mod.rs) + integration tests + live #[ignore] test
