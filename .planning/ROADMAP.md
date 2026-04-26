@@ -63,6 +63,7 @@
 - [x] **Phase 30: Milestone Verification & Requirements Sync** - Close MEM-03 orphan, regenerate UniFFI bindings, sync REQUIREMENTS.md checkboxes (in progress) (completed 2026-04-20)
 - [x] **Phase 31: Multimodal image attachments** - Camera/gallery on iOS+Android, file picker on Desktop, base64 data URL encoding to LLM (completed 2026-04-19)
 - [ ] **Phase 32: Directory-based RAG ingestion** - Directory sources with periodic sync, glob exclusions, cross-platform folder permissions (in progress)
+- [ ] **Phase 34: Integrate Redpill (api.redpill.ai) as TEE-attested LLM aggregator** - Three response shapes (Phala-flat / Phala-orchestrated 3-quote / Chutes), reusing Venice REPORTDATA decoder, no new crates
 
 ## Phase Details
 
@@ -281,3 +282,23 @@ Plans:
 - [x] 33-02-PLAN.md — Attestation layer: TDX layout enum + attestation/venice.rs (REPORTDATA decoder + cache + verify orchestrator)
 - [x] 33-03-PLAN.md — llm/venice.rs: ECDH+HKDF+AES-GCM E2EE crypto + HTTP transport + text-SSE streaming
 - [x] 33-04-PLAN.md — Wiring (transport.rs, backend.rs, mod.rs) + integration tests + live #[ignore] test
+
+### Phase 34: Integrate Redpill (api.redpill.ai) as TEE-attested LLM aggregator with client-side TDX + NVIDIA NRAS verification across three response shapes
+
+**Goal:** Redpill is selectable as a fourth TEE-attested LLM provider; every chat completion goes through fully verified TDX (and NRAS where present) attestation, with the client correctly dispatching the three Redpill response shapes (Phala-flat, Phala-orchestrated 3-quote, Chutes anti-tamper) and reusing the Venice REPORTDATA decoder for the model component. No new Rust crates. Attestation failures fail-closed. Redpill→Tinfoil routes are explicitly unsupported until Redpill upstream upgrades its relay.
+**Requirements**: RED-01, RED-02, RED-03, RED-04, RED-05, RED-06, RED-07, RED-08, RED-09, RED-10, RED-11
+**Depends on:** Phase 33
+**Plans:** TBD
+**Success Criteria** (what must be TRUE):
+  1. Redpill appears as a known provider preset in Add Backend on all three platforms
+  2. The client fetches `GET https://api.redpill.ai/v1/attestation/report?model=&nonce=` without an API key and the response is verified end-to-end before any chat request is sent
+  3. The client correctly identifies the response shape (Flat / Orchestrated / Chutes) and applies the right REPORTDATA layout decoder(s) for each component
+  4. For Orchestrated responses, all three TDX quotes (gateway + model + compose-manager) verify before the session opens; failure of any one fails the whole attestation
+  5. TDX quote signature, PCK chain, TCB, and CRLs are verified locally via `dcap-qvl` against fresh Intel collateral — never via Phala's hosted verifier
+  6. NVIDIA GPU attestation (`nvidia_payload` for Shapes A/B; `gpu_evidence[]` for Shape C) is verified through the existing `attestation/nvidia.rs` NRAS path
+  7. TDX debug-mode bit is rejected (`td_attributes[0] & 0x01 != 0` fails closed)
+  8. Chutes-routed models display "freshness valid for enclave lifetime" in the trust UI; Flat and Orchestrated display per-request freshness
+  9. Tinfoil-routed Redpill models surface a clear error pointing the user to the existing direct-Tinfoil integration
+ 10. End-to-end live integration test (`#[ignore]`) passes against `api.redpill.ai` for at least one model per supported shape
+**Source spike:** `.planning/spikes/002-redpill-tee-verification-research/` (VALIDATED 2026-04-26) — captures usable as golden fixtures
+**Findings skill:** `Skill("spike-findings-confidential-app")` → `references/redpill-attestation.md`

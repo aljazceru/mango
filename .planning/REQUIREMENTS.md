@@ -79,6 +79,20 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 - [x] **VEN-09
 **: Display Venice as a backend in Settings → Providers with `Verified` attestation badge once attestation passes
 
+### Redpill TEE-Attested Provider
+
+- [ ] **RED-01**: Add Redpill (`api.redpill.ai`) as a known provider preset on the Add Backend form
+- [ ] **RED-02**: Fetch attestation from `GET https://api.redpill.ai/v1/attestation/report?model=&nonce=` (public, no API key)
+- [ ] **RED-03**: Dispatch on response shape: Flat (Phala-pure, Venice-identical) / Orchestrated (gateway + model + compose-manager) / Chutes (`attestation_type: "chutes"`)
+- [ ] **RED-04**: Verify Intel TDX quote signature, PCK chain, TCB, and CRLs client-side via `dcap-qvl` for every TDX quote in every shape (auto-detect base64 vs hex on quote bytes)
+- [ ] **RED-05**: Decode REPORTDATA with the four Redpill layouts (model-ecdsa Venice-identical, gateway-ed25519 `[32B pubkey][32B nonce]`, compose-manager `[32B actions_hash][32B nonce]`, chutes anti-tamper `SHA256(nonce_str ++ e2e_pubkey_str)`) and verify all bindings
+- [ ] **RED-06**: For Orchestrated responses, require all three TDX quotes (gateway + model + compose-manager) to verify before opening a session (three-way AND)
+- [ ] **RED-07**: POST `nvidia_payload` (Shape A/B) and per-attestation `gpu_evidence[]` (Shape C) to NRAS via existing `attestation/nvidia.rs`, verify returned JWTs
+- [ ] **RED-08**: Reject TDX quote in debug mode (`td_attributes[0] & 0x01 != 0`) across all shapes (replicates Chutes verifier's CRITICAL gate)
+- [ ] **RED-09**: For Chutes-routed responses, surface "freshness valid for enclave lifetime" in trust UI (Chutes embeds an enclave-baked nonce, not the client's `?nonce=`)
+- [ ] **RED-10**: Treat Redpill→Tinfoil routes as unsupported (relay returns HTTP 502 `Unsupported Tinfoil attestation format: sev-snp-guest/v2`); route Tinfoil models through the existing direct-Tinfoil integration
+- [ ] **RED-11**: Display Redpill as a backend in Settings → Providers with `Verified` attestation badge once attestation passes; orchestrated-shape models show three-quote verification status
+
 ## Future Requirements
 
 ### Memory Enhancements
@@ -153,13 +167,25 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 | VEN-07 | Phase 33 | Complete |
 | VEN-08 | Phase 33 | Complete |
 | VEN-09 | Phase 33 | Complete |
+| RED-01 | Phase 34 | Pending |
+| RED-02 | Phase 34 | Pending |
+| RED-03 | Phase 34 | Pending |
+| RED-04 | Phase 34 | Pending |
+| RED-05 | Phase 34 | Pending |
+| RED-06 | Phase 34 | Pending |
+| RED-07 | Phase 34 | Pending |
+| RED-08 | Phase 34 | Pending |
+| RED-09 | Phase 34 | Pending |
+| RED-10 | Phase 34 | Pending |
+| RED-11 | Phase 34 | Pending |
 
 **Coverage:**
-- v2.0 + Phase 33 requirements: 45 total
-- Mapped to phases: 45
+- v2.0 + Phase 33 + Phase 34 requirements: 56 total
+- Mapped to phases: 56
 - Unmapped: 0
 - Complete: 36
 - Pending (Phase 33): 9
+- Pending (Phase 34): 11
 
 ---
 *Requirements defined: 2026-04-02*
