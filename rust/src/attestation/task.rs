@@ -69,6 +69,9 @@ async fn run_attestation(
                     .await?
             }
         }
+        ProviderKind::Venice => {
+            crate::llm::venice::verify_backend_attestation(&backend, &policy.tdx).await?
+        }
     };
 
     log::info!(target: "attestation", "[attestation] success backend={}", backend.id);

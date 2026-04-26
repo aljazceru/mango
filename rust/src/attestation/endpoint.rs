@@ -66,6 +66,11 @@ pub async fn verify_attestation_endpoint(
         {
             Err(AttestationError::Unsupported)
         }
+        ProviderKind::Venice
+            if backend.transport_kind() == crate::llm::ProviderTransportKind::VeniceE2ee =>
+        {
+            Err(AttestationError::Unsupported)
+        }
         _ => verify_quote_endpoint(backend, certificate_cache, policy).await,
     }
 }

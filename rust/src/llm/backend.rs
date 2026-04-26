@@ -11,6 +11,7 @@ pub enum TeeType {
 pub enum ProviderKind {
     Tinfoil,
     Ppq,
+    Venice,
     Custom,
 }
 
@@ -100,6 +101,7 @@ impl BackendConfig {
         match self.id.as_str() {
             "tinfoil" => ProviderKind::Tinfoil,
             "ppq-ai" => ProviderKind::Ppq,
+            "venice-ai" => ProviderKind::Venice,
             _ => ProviderKind::Custom,
         }
     }
@@ -155,6 +157,13 @@ pub fn known_provider_presets() -> Vec<ProviderPreset> {
             base_url: "https://api.ppq.ai/private/v1/".into(),
             tee_type: TeeType::AmdSevSnp,
             description: "AMD SEV-SNP \u{00b7} Private TEE models".into(),
+        },
+        ProviderPreset {
+            id: "venice-ai".into(),
+            name: "Venice.ai".into(),
+            base_url: "https://api.venice.ai/api/v1/".into(),
+            tee_type: TeeType::IntelTdx,
+            description: "Intel TDX + NVIDIA H100 CC \u{00b7} E2EE chat".into(),
         },
     ]
 }

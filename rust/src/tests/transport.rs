@@ -112,6 +112,39 @@ fn test_openai_transport_without_pin_builds_standard_client() {
 }
 
 #[test]
+fn venice_routes_to_venice_e2ee() {
+    let venice = backend("venice-ai", "https://api.venice.ai/api/v1/");
+    assert_eq!(
+        venice.transport_kind(),
+        ProviderTransportKind::VeniceE2ee
+    );
+
+    // Existing routes still work
+    let tinfoil = backend("tinfoil", "https://inference.tinfoil.sh/v1/");
+    assert_eq!(
+        tinfoil.transport_kind(),
+        ProviderTransportKind::TinfoilSecure
+    );
+
+    // Venice transport must reject the OpenAI api_base path (forces use of venice::*).
+    let err = venice
+        .transport_kind()
+        .openai_api_base(&venice)
+        .expect_err("Venice E2EE transport must not pretend to be plain OpenAI");
+    assert!(
+        err.to_string().contains("Venice E2EE transport"),
+        "unexpected error: {err}"
+    );
+
+    // model_list_url should succeed via super::venice::model_list_url
+    let url = venice
+        .transport_kind()
+        .model_list_url(&venice)
+        .expect("model list URL should build for Venice");
+    assert!(url.ends_with("/api/v1/models"), "unexpected url: {url}");
+}
+
+#[test]
 fn test_openai_transport_fails_closed_when_pinned_client_cannot_be_built() {
     let custom = backend("custom", "https://example.com/v1/");
     let error = custom
