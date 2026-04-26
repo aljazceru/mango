@@ -12,6 +12,7 @@ pub mod error;
 pub mod nonce;
 pub mod nvidia;
 pub mod policy;
+pub mod redpill;
 pub mod task;
 pub mod tdx;
 pub mod venice;
