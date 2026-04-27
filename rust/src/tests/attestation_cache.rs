@@ -193,6 +193,121 @@ fn test_get_latest_for_backend_expiry() {
 }
 
 #[test]
+fn attestation_cache_v19_round_trip() {
+    use crate::attestation::OrchestratedComponent;
+
+    let db = Database::open(":memory:").expect("open db");
+    let cache = AttestationCache::new(db.conn());
+
+    let components_tuple = vec![
+        ("gateway".to_string(), "0xAA".to_string()),
+        ("model".to_string(), "0xBB".to_string()),
+        ("compose_manager".to_string(), "0xCC".to_string()),
+    ];
+    let components_uniffi: Vec<OrchestratedComponent> = components_tuple
+        .iter()
+        .map(|(l, v)| OrchestratedComponent {
+            label: l.clone(),
+            value: v.clone(),
+        })
+        .collect();
+
+    let now = now_secs();
+    let expires_at = now + 3600;
+
+    let record = AttestationRecord {
+        backend_id: "redpill-test".to_string(),
+        tee_type: "tdx".to_string(),
+        status: AttestationStatus::Verified {
+            shape: Some("Orchestrated".to_string()),
+            freshness: Some("PerRequest".to_string()),
+            orchestrated_components: Some(components_uniffi.clone()),
+        },
+        report_blob: vec![0xCA, 0xFE, 0xBA, 0xBE],
+        verified_at: 1_700_000_000,
+        expires_at,
+        shape: Some("Orchestrated".to_string()),
+        freshness: Some("PerRequest".to_string()),
+        orchestrated_components: Some(components_tuple.clone()),
+    };
+
+    cache.put(&record).expect("put");
+    let got = cache
+        .get_latest_for_backend("redpill-test")
+        .expect("get")
+        .expect("row present");
+
+    assert_eq!(got.shape.as_deref(), Some("Orchestrated"));
+    assert_eq!(got.freshness.as_deref(), Some("PerRequest"));
+    assert_eq!(
+        got.orchestrated_components.as_ref().expect("components"),
+        &components_tuple
+    );
+
+    match got.status {
+        AttestationStatus::Verified {
+            shape,
+            freshness,
+            orchestrated_components,
+        } => {
+            assert_eq!(shape.as_deref(), Some("Orchestrated"));
+            assert_eq!(freshness.as_deref(), Some("PerRequest"));
+            let comps = orchestrated_components.expect("components");
+            assert_eq!(comps.len(), 3);
+            assert_eq!(comps[0].label, "gateway");
+            assert_eq!(comps[0].value, "0xAA");
+            assert_eq!(comps[2].label, "compose_manager");
+            assert_eq!(comps[2].value, "0xCC");
+        }
+        other => panic!("expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn cache_pre_v19_row_returns_none_subfields() {
+    let db = Database::open(":memory:").expect("open db");
+    let now = now_secs();
+    let expires_at = (now + 3600) as i64;
+
+    // Direct INSERT with only the legacy 6 columns; new V19 columns default to NULL.
+    db.conn()
+        .execute(
+            "INSERT INTO attestation_cache (backend_id, tee_type, status, report_blob, verified_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "legacy-backend",
+                "tdx",
+                "verified",
+                vec![0u8; 4],
+                1_700_000_000_i64,
+                expires_at,
+            ],
+        )
+        .expect("insert legacy row");
+
+    let cache = AttestationCache::new(db.conn());
+    let got = cache
+        .get_latest_for_backend("legacy-backend")
+        .expect("get")
+        .expect("row present");
+
+    assert!(got.shape.is_none(), "shape should be None");
+    assert!(got.freshness.is_none(), "freshness should be None");
+    assert!(
+        got.orchestrated_components.is_none(),
+        "components should be None"
+    );
+    assert!(matches!(
+        got.status,
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None
+        }
+    ));
+}
+
+#[test]
 fn test_get_raw_report_bypasses_ttl() {
     // get_raw_report omits the TTL filter -- returns blob even when expired (by design).
     let db = Database::open(":memory:").unwrap();
