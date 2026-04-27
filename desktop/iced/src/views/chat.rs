@@ -149,7 +149,7 @@ pub fn chat_view<'a>(
     let attest_dot: Option<Element<'_, Message>> = attest_status.and_then(|s| {
         use mango_core::AttestationStatus;
         let dot_color = match s {
-            AttestationStatus::Verified => Some(Color::from_rgb(0.20, 0.75, 0.30)),
+            AttestationStatus::Verified { .. } => Some(Color::from_rgb(0.20, 0.75, 0.30)),
             AttestationStatus::Expired => Some(Color::from_rgb(0.98, 0.75, 0.14)),
             AttestationStatus::Failed { .. } => Some(Color::from_rgb(0.90, 0.24, 0.24)),
             AttestationStatus::Unverified => None,

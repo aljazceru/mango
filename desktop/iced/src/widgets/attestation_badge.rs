@@ -22,7 +22,7 @@ fn status_style(status: &AttestationStatus, is_dark: bool) -> BadgeStyle {
 
 fn status_label(status: &AttestationStatus) -> &'static str {
     match status {
-        AttestationStatus::Verified => "Verified",
+        AttestationStatus::Verified { .. } => "Verified",
         AttestationStatus::Unverified => "Not Verified",
         AttestationStatus::Expired => "Expired",
         AttestationStatus::Failed { .. } => "Failed",
@@ -31,7 +31,7 @@ fn status_label(status: &AttestationStatus) -> &'static str {
 
 fn detail_text(status: &AttestationStatus) -> &'static str {
     match status {
-        AttestationStatus::Verified => {
+        AttestationStatus::Verified { .. } => {
             "This conversation is routed to a Trusted Execution Environment. \
              The TEE attestation report has been independently verified by this app."
         }
