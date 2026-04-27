@@ -4,7 +4,8 @@ use iced::widget::{button, column, container, row, scrollable, text, text_input}
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
 
 use mango_core::{
-    known_provider_presets, AppAction, AppState, AttestationStatus, HealthStatus, TeeType,
+    known_provider_presets, AppAction, AppState, AttestationStatus, HealthStatus,
+    OrchestratedComponent, TeeType,
 };
 
 use crate::Message;
@@ -40,11 +41,30 @@ fn tee_label(t: &TeeType) -> &'static str {
 
 fn attest_label(s: &AttestationStatus, vc: crate::theme::ViewColors) -> (&'static str, Color) {
     match s {
-        AttestationStatus::Verified => ("Verified", vc.success),
+        AttestationStatus::Verified { .. } => ("Verified", vc.success),
         AttestationStatus::Unverified => ("Unverified", vc.muted),
         AttestationStatus::Failed { .. } => ("Failed", vc.destructive),
         AttestationStatus::Expired => ("Expired", vc.warning),
     }
+}
+
+/// Phase 34.1: Build the orchestrated breakdown sub-line text per UI-SPEC.md (LOCKED copy).
+/// Component label map: compose_manager → compose; unknown verbatim.
+/// Separator: " • "; success glyph: " ✓".
+fn orchestrated_breakdown_line(comps: &[OrchestratedComponent]) -> String {
+    comps
+        .iter()
+        .map(|c| {
+            let mapped = match c.label.as_str() {
+                "gateway" => "gateway",
+                "model" => "model",
+                "compose_manager" => "compose",
+                other => other,
+            };
+            format!("{} ✓", mapped)
+        })
+        .collect::<Vec<_>>()
+        .join(" • ")
 }
 
 fn pill<'a>(label: &'a str, fg: Color, bg: Color) -> Element<'a, Message> {
@@ -220,11 +240,13 @@ pub fn view<'a>(
                     })
                     .unwrap_or(("Unknown", vc.muted));
 
-                let (att_str, att_col) = state
+                let att_status: Option<&AttestationStatus> = state
                     .attestation_statuses
                     .iter()
                     .find(|a| a.backend_id == p.id)
-                    .map(|a| attest_label(&a.status, vc))
+                    .map(|a| &a.status);
+                let (att_str, att_col) = att_status
+                    .map(|s| attest_label(s, vc))
                     .unwrap_or(("—", vc.muted));
 
                 let is_active = state
@@ -290,27 +312,57 @@ pub fn view<'a>(
                 .spacing(5)
                 .align_y(Alignment::Center);
 
-                let right_col = column![
-                    row![
-                        pill(
-                            "Enabled",
-                            vc.success,
-                            Color {
-                                r: vc.success.r,
-                                g: vc.success.g,
-                                b: vc.success.b,
-                                a: 0.12
-                            }
-                        ),
-                        default_el,
-                        remove_el
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center),
-                    status_row,
-                ]
-                .spacing(5)
-                .align_x(iced::alignment::Horizontal::Right);
+                let mut right_col = iced::widget::Column::new()
+                    .spacing(5)
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .push(
+                        row![
+                            pill(
+                                "Enabled",
+                                vc.success,
+                                Color {
+                                    r: vc.success.r,
+                                    g: vc.success.g,
+                                    b: vc.success.b,
+                                    a: 0.12
+                                }
+                            ),
+                            default_el,
+                            remove_el
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    )
+                    .push(status_row);
+
+                // Phase 34.1: trust-UI sub-lines for Redpill freshness +
+                // orchestrated breakdown. Copy LOCKED in 34.1-UI-SPEC.md.
+                // Render conditions per UI-SPEC §"Interaction & State Contract".
+                if let Some(AttestationStatus::Verified {
+                    freshness,
+                    orchestrated_components,
+                    ..
+                }) = att_status
+                {
+                    if freshness.as_deref() == Some("PerEnclave") {
+                        right_col = right_col.push(
+                            text("Verified for this enclave instance")
+                                .size(11)
+                                .color(vc.muted),
+                        );
+                    }
+                    if let Some(comps) = orchestrated_components {
+                        if !comps.is_empty() {
+                            right_col = right_col.push(
+                                text(orchestrated_breakdown_line(comps))
+                                    .size(11)
+                                    .color(vc.muted),
+                            );
+                        }
+                    }
+                }
+
+                let right_col = right_col;
 
                 container(
                     row![
