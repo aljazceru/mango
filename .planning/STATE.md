@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 34.1-03-PLAN.md
-last_updated: "2026-04-27T06:40:27.340Z"
+stopped_at: Completed 34.1-04-PLAN.md
+last_updated: "2026-04-27T06:45:09.736Z"
 last_activity: 2026-04-27
 progress:
   total_phases: 16
   completed_phases: 14
   total_plans: 60
-  completed_plans: 55
-  percent: 92
+  completed_plans: 56
+  percent: 93
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 34.1 (close-red-09-and-red-11-actor-loop-drop) — EXECUTING
-Plan: 4 of 7
+Plan: 5 of 7
 Status: Ready to execute
 Last activity: 2026-04-27
 
-Progress: [█████████░] 92%
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -84,6 +84,7 @@ Progress: [█████████░] 92%
 | Phase 34.1 P01 | 8min | 3 tasks | 6 files |
 | Phase 34.1 P02 | 3min | 3 tasks | 10 files |
 | Phase 34.1 P03 | 6min | 3 tasks | 5 files |
+| Phase 34.1 P04 | 2min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -157,6 +158,7 @@ Key architectural context for v2.0:
 - [Phase 34.1] Plan 01 — extracted attestation::map_event_to_record_and_status helper; AttestationRecord gained shape/freshness/orchestrated_components Option fields. AttestationStatus::Verified stays unit in this plan; 34.1-02 promotes it to struct variant.
 - [Phase 34.1] Plan 02 — promoted AttestationStatus::Verified to struct variant carrying Option<shape/freshness/Vec<OrchestratedComponent>>; helper builds variant once and reuses for record.status + outer return so they stay self-consistent; Android/iOS app-module compile fixes deferred to 34.1-04/05/06 per plan revision
 - [Phase 34.1] Plan 03 — MIGRATION_V19 adds 3 nullable TEXT cols to attestation_cache; cache row-mapper builds AttestationStatus::Verified directly from columns (deserialize_status fallback retained for non-row paths); orchestrated_components persisted as JSON list-of-pairs to preserve duplicate labels; pre-V19 rows hydrate to None subfields
+- 34.1-04: Pre-existing collapsible-card refactor of SettingsProvidersScreen.kt was retained and bundled into the Task 2 commit; sub-lines built on top.
 
 ### Roadmap Evolution
 
@@ -192,8 +194,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-27T06:40:27.335Z
-Stopped at: Completed 34.1-03-PLAN.md
+Last session: 2026-04-27T06:45:09.731Z
+Stopped at: Completed 34.1-04-PLAN.md
 Resume file: None
 
 **Planned Phase:** 34.1 (close-red-09-and-red-11-actor-loop-drop) — 7 plans — 2026-04-27T06:21:31.064Z
