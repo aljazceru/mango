@@ -23,6 +23,15 @@ pub use task::spawn_attestation_task;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
+/// One verified component within an Orchestrated (3-quote) Redpill response.
+/// Label is one of "gateway" | "model" | "compose_manager".
+/// Value is the hex address or actions hash from the verified component.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct OrchestratedComponent {
+    pub label: String,
+    pub value: String,
+}
+
 /// Attestation verification status for a backend.
 ///
 /// Crosses the UniFFI boundary per D-10. Carried in AppState as
@@ -30,7 +39,17 @@ pub use task::spawn_attestation_task;
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
 pub enum AttestationStatus {
     /// Cryptographic verification passed (TDX quote, SNP report, or NRAS JWT verified).
-    Verified,
+    ///
+    /// For Redpill aggregator backends, carries the per-shape diagnostics:
+    /// - `shape`: "Flat" | "Orchestrated" | "Chutes" (Phase 34 RED-11).
+    /// - `freshness`: "PerRequest" | "PerEnclave" (RED-09).
+    /// - `orchestrated_components`: per-component hex/actions hashes for Shape B.
+    /// All three are `None` for non-aggregator providers.
+    Verified {
+        shape: Option<String>,
+        freshness: Option<String>,
+        orchestrated_components: Option<Vec<OrchestratedComponent>>,
+    },
     /// Not yet checked or no attestation endpoint available for this backend.
     Unverified,
     /// Verification was attempted and failed.
@@ -155,10 +174,22 @@ pub fn map_event_to_record_and_status(
             freshness,
             orchestrated_components,
         } => {
+            let status_uniffi = AttestationStatus::Verified {
+                shape: shape.clone(),
+                freshness: freshness.clone(),
+                orchestrated_components: orchestrated_components.as_ref().map(|v| {
+                    v.iter()
+                        .map(|(label, value)| OrchestratedComponent {
+                            label: label.clone(),
+                            value: value.clone(),
+                        })
+                        .collect()
+                }),
+            };
             let record = AttestationRecord {
                 backend_id: backend_id.clone(),
                 tee_type,
-                status: AttestationStatus::Verified,
+                status: status_uniffi.clone(),
                 report_blob: report_blob.clone(),
                 verified_at: now_secs,
                 expires_at,
@@ -168,7 +199,7 @@ pub fn map_event_to_record_and_status(
             };
             (
                 backend_id,
-                AttestationStatus::Verified,
+                status_uniffi,
                 Some((record, report_blob, tls_public_key_fp, vcek_url, vcek_der)),
                 false,
             )
