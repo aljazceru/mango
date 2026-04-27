@@ -81,7 +81,11 @@ fn test_attestation_verified_event_updates_state() {
     assert!(entry.is_some(), "Expected attestation entry for 'test_be'");
     assert_eq!(
         entry.unwrap().status,
-        AttestationStatus::Verified,
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
         "Expected Verified status"
     );
 }
@@ -141,7 +145,11 @@ fn test_attestation_nvidia_verified_event() {
     assert!(entry.is_some(), "Expected attestation entry for 'pv_be'");
     assert_eq!(
         entry.unwrap().status,
-        AttestationStatus::Verified,
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
         "Expected Verified status for NVIDIA H100 CC backend"
     );
 }
@@ -233,7 +241,11 @@ fn test_attestation_verified_is_sticky_against_transient_failure() {
     );
     assert_eq!(
         entries[0].status,
-        AttestationStatus::Verified,
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
         "Verified status must NOT be downgraded by a transient Failed event"
     );
 }
@@ -329,7 +341,11 @@ fn test_attestation_failed_replaced_by_verified() {
     assert!(entry.is_some(), "Entry should exist for recover_be");
     assert_eq!(
         entry.unwrap().status,
-        AttestationStatus::Verified,
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
         "Failed should be replaced when fresh Verified arrives"
     );
 }

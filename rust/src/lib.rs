@@ -7429,11 +7429,11 @@ impl FfiApp {
                                 {
                                     let should_update = match (&entry.status, &status) {
                                         // Always accept a new Verified result (updates expires_at).
-                                        (_, AttestationStatus::Verified) => true,
+                                        (_, AttestationStatus::Verified { .. }) => true,
                                         // Transient fetch/network error AND current status is Verified:
                                         // preserve the Verified status — the backend is probably fine,
                                         // we just couldn't reach AMD KDS / the attestation endpoint.
-                                        (AttestationStatus::Verified, _) if failed_is_transient => {
+                                        (AttestationStatus::Verified { .. }, _) if failed_is_transient => {
                                             false
                                         }
                                         // Genuine verification failure: always downgrade, even from Verified.
