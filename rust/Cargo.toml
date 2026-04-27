@@ -29,7 +29,7 @@ sev = { version = "7.1", default-features = false, features = ["snp", "crypto_no
 rusqlite = { version = "0.39", features = ["bundled-sqlcipher-vendored-openssl"] }
 argon2 = "0.5"
 subtle = "2"
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 rand = "0.8"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
