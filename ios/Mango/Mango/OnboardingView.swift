@@ -291,7 +291,7 @@ struct OnboardingView: View {
     @ViewBuilder
     private func attestationResultView(_ result: AttestationStatus) -> some View {
         switch result {
-        case .verified:
+        case .verified(_, _, _):
             VStack(alignment: .leading, spacing: 12) {
                 // Verified badge
                 HStack(spacing: 8) {

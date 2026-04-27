@@ -47,7 +47,7 @@ struct ModelPickerView: View {
     private var attestationDotColor: Color? {
         guard let status = attestationStatus else { return nil }
         switch status {
-        case .verified:  return Color(red: 0.2, green: 0.75, blue: 0.3)   // green
+        case .verified(_, _, _):  return Color(red: 0.2, green: 0.75, blue: 0.3)   // green
         case .expired:   return Color(red: 0.98, green: 0.75, blue: 0.14) // amber
         case .failed:    return Color(red: 0.9, green: 0.24, blue: 0.24)  // red
         case .unverified: return nil
@@ -57,7 +57,7 @@ struct ModelPickerView: View {
     private var attestationAccessibilityLabel: String {
         guard let status = attestationStatus else { return "" }
         switch status {
-        case .verified:   return "Verified"
+        case .verified(_, _, _):   return "Verified"
         case .unverified: return ""
         case .expired:    return "Attestation expired"
         case .failed:     return "Attestation failed"

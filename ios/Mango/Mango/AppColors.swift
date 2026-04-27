@@ -82,8 +82,8 @@ enum AppColors {
 
     static func attestBg(_ status: AttestationStatus, _ scheme: ColorScheme) -> Color {
         switch (status, scheme) {
-        case (.verified, .dark):    return Color(red: 0.102, green: 0.227, blue: 0.102)  // #1A3A1A
-        case (.verified, _):        return Color(red: 0.910, green: 0.961, blue: 0.914)  // #E8F5E9
+        case (.verified(_, _, _), .dark):    return Color(red: 0.102, green: 0.227, blue: 0.102)  // #1A3A1A
+        case (.verified(_, _, _), _):        return Color(red: 0.910, green: 0.961, blue: 0.914)  // #E8F5E9
         case (.unverified, .dark):  return Color(red: 0.165, green: 0.165, blue: 0.165)  // #2A2A2A
         case (.unverified, _):      return Color(red: 0.961, green: 0.961, blue: 0.961)  // #F5F5F5
         case (.expired, .dark):     return Color(red: 0.165, green: 0.165, blue: 0.102)  // #2A2A1A
@@ -96,8 +96,8 @@ enum AppColors {
 
     static func attestText(_ status: AttestationStatus, _ scheme: ColorScheme) -> Color {
         switch (status, scheme) {
-        case (.verified, .dark):    return Color(red: 0.290, green: 0.871, blue: 0.502)  // #4ADE80
-        case (.verified, _):        return Color(red: 0.106, green: 0.369, blue: 0.125)  // #1B5E20
+        case (.verified(_, _, _), .dark):    return Color(red: 0.290, green: 0.871, blue: 0.502)  // #4ADE80
+        case (.verified(_, _, _), _):        return Color(red: 0.106, green: 0.369, blue: 0.125)  // #1B5E20
         case (.unverified, .dark):  return Color(red: 0.612, green: 0.639, blue: 0.686)  // #9CA3AF
         case (.unverified, _):      return Color(red: 0.333, green: 0.333, blue: 0.333)  // #555555
         case (.expired, .dark):     return Color(red: 0.984, green: 0.749, blue: 0.141)  // #FBBF24
@@ -110,8 +110,8 @@ enum AppColors {
 
     static func attestBorder(_ status: AttestationStatus, _ scheme: ColorScheme) -> Color {
         switch (status, scheme) {
-        case (.verified, .dark):    return Color(red: 0.239, green: 0.612, blue: 0.239)  // #3D9C3D (corrected from #2D7A2D)
-        case (.verified, _):        return Color(red: 0.180, green: 0.490, blue: 0.196)  // #2E7D32
+        case (.verified(_, _, _), .dark):    return Color(red: 0.239, green: 0.612, blue: 0.239)  // #3D9C3D (corrected from #2D7A2D)
+        case (.verified(_, _, _), _):        return Color(red: 0.180, green: 0.490, blue: 0.196)  // #2E7D32
         case (.unverified, .dark):  return Color(red: 0.471, green: 0.471, blue: 0.471)  // #787878 on #2A2A2A = 3.25:1 (WCAG 1.4.11 pass)
         case (.unverified, _):      return Color(red: 0.459, green: 0.459, blue: 0.459)  // #757575
         case (.expired, .dark):     return Color(red: 0.600, green: 0.518, blue: 0.125)  // #998420 (corrected from #7A6A1A)

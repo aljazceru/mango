@@ -36,7 +36,7 @@ struct AttestationBadgeView: View {
 
     private var label: String {
         switch status {
-        case .verified:
+        case .verified(_, _, _):
             return "Verified"
         case .unverified:
             return "Not Verified"
@@ -49,7 +49,7 @@ struct AttestationBadgeView: View {
 
     private var iconName: String {
         switch status {
-        case .verified:
+        case .verified(_, _, _):
             return "checkmark.shield.fill"
         case .unverified:
             return "questionmark.circle"
@@ -100,7 +100,7 @@ private struct AttestationDetailSheet: View {
 
     private var detailText: String {
         switch status {
-        case .verified:
+        case .verified(_, _, _):
             return "This conversation is routed to a Trusted Execution Environment. The TEE attestation report has been independently verified by this app."
         case .unverified:
             return "Attestation has not been checked for this backend yet."
