@@ -89,9 +89,11 @@ Requirements for v2.0 Memory & Agents milestone. Each maps to roadmap phases.
 - [ ] **RED-06**: For Orchestrated responses, require all three TDX quotes (gateway + model + compose-manager) to verify before opening a session (three-way AND)
 - [ ] **RED-07**: POST `nvidia_payload` (Shape A/B) and per-attestation `gpu_evidence[]` (Shape C) to NRAS via existing `attestation/nvidia.rs`, verify returned JWTs
 - [ ] **RED-08**: Reject TDX quote in debug mode (`td_attributes[0] & 0x01 != 0`) across all shapes (replicates Chutes verifier's CRITICAL gate)
-- [ ] **RED-09**: For Chutes-routed responses, surface "freshness valid for enclave lifetime" in trust UI (Chutes embeds an enclave-baked nonce, not the client's `?nonce=`)
+- [x] **RED-09
+**: For Chutes-routed responses, surface "freshness valid for enclave lifetime" in trust UI (Chutes embeds an enclave-baked nonce, not the client's `?nonce=`)
 - [ ] **RED-10**: Treat Redpill→Tinfoil routes as unsupported (relay returns HTTP 502 `Unsupported Tinfoil attestation format: sev-snp-guest/v2`); route Tinfoil models through the existing direct-Tinfoil integration
-- [ ] **RED-11**: Display Redpill as a backend in Settings → Providers with `Verified` attestation badge once attestation passes; orchestrated-shape models show three-quote verification status
+- [x] **RED-11
+**: Display Redpill as a backend in Settings → Providers with `Verified` attestation badge once attestation passes; orchestrated-shape models show three-quote verification status
 
 ## Future Requirements
 

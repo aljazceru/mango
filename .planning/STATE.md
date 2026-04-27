@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: verifying
-stopped_at: Phase 34 plans 34-01..34-04 complete; verifier flagged 2 partial gaps (RED-09/RED-11 actor-loop drop)
-last_updated: "2026-04-26T16:15:00.000Z"
-last_activity: 2026-04-26 — Phase 34 execution complete, verifier returned human_needed
+status: executing
+stopped_at: Completed 34.1-01-PLAN.md
+last_updated: "2026-04-27T06:27:46.896Z"
+last_activity: 2026-04-27
 progress:
-  total_phases: 15
-  completed_phases: 13
-  total_plans: 53
-  completed_plans: 52
-  percent: 98
+  total_phases: 16
+  completed_phases: 14
+  total_plans: 60
+  completed_plans: 53
+  percent: 88
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Every inference request is provably confidential -- verified via remote attestation, all data stays local
-**Current focus:** Phase 34 — Integrate Redpill (api.redpill.ai) as TEE-attested LLM aggregator
+**Current focus:** Phase 34.1 — close-red-09-and-red-11-actor-loop-drop
 
 ## Current Position
 
-Phase: 34 (Integrate Redpill as TEE-attested LLM aggregator) — VERIFYING
-Plan: 4 of 4
-Status: Plans complete (382 tests pass, 0 fail); verifier returned human_needed — RED-09/RED-11 partial (AttestationEvent fields populated but dropped at actor-loop in lib.rs:7428-7430 before reaching UniFFI/UI)
-Last activity: 2026-04-26
+Phase: 34.1 (close-red-09-and-red-11-actor-loop-drop) — EXECUTING
+Plan: 2 of 7
+Status: Ready to execute
+Last activity: 2026-04-27
 
-Progress: [██████████] 98%
+Progress: [█████████░] 88%
 
 ## Performance Metrics
 
@@ -81,6 +81,7 @@ Progress: [██████████] 98%
 | Phase 33 P33-02 | 12min | 2 tasks | 5 files |
 | Phase 33 P33-03 | 25min | 3 tasks | 3 files |
 | Phase 33 P33-04 | 12min | 2 tasks | 9 files |
+| Phase 34.1 P01 | 8min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -151,6 +152,7 @@ Key architectural context for v2.0:
 - Phase 33 Plan 03: Promoted derive_session_key/seal_message/open_envelope to pub fn (was pub(super)) for cross-module test access — needed by tests/venice.rs since crate::tests is not under crate::llm
 - Phase 33 Plan 03: Single body builder build_venice_chat_body forces stream:true; create_chat_completion re-stamps stream:false on the serialized JSON to avoid duplicating the encryption logic
 - [Phase 33]: Plan 04 — Venice wired into transport+backend+streaming+agent_loop+attestation_task+attestation_endpoint; live test #[ignore]-gated awaiting user run with VENICE_API_KEY
+- [Phase 34.1] Plan 01 — extracted attestation::map_event_to_record_and_status helper; AttestationRecord gained shape/freshness/orchestrated_components Option fields. AttestationStatus::Verified stays unit in this plan; 34.1-02 promotes it to struct variant.
 
 ### Roadmap Evolution
 
@@ -161,6 +163,7 @@ Key architectural context for v2.0:
 - Phase 28 added: Local Data Encryption & Authentication — encrypt all local data (SQLite, vector indices, documents) with platform hardware (Keychain/Keystore/TPM), biometric/PIN unlock, duress PIN for data wipe, graceful degradation on older devices
 - Phase 32 added: Directory-based RAG ingestion with periodic sync and file/folder exclusion — add whole directories (e.g. Obsidian vault) as RAG sources with glob exclusions, automatic periodic re-sync (add/modify/delete diff), cross-platform folder permissions (iOS security-scoped bookmarks, Android persistable tree URIs, Desktop), UI for source list + exclusion editor + manual sync-now
 - Phase 33 added: Integrate Venice.ai as TEE-attested LLM provider with client-side TDX + NVIDIA NRAS verification and ECDH+AES-GCM E2EE handshake
+- Phase 34.1 inserted after Phase 34: close RED-09 and RED-11 actor-loop drop — plumb shape/freshness/orchestrated_components through UniFFI AttestationStatus, AttestationRecord, and native trust UI (URGENT)
 
 ### Pending Todos
 
@@ -185,8 +188,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-26T04:33:39.344Z
-Stopped at: Completed 33-04-PLAN.md (Phase 33 awaiting live-test sign-off)
+Last session: 2026-04-27T06:27:46.891Z
+Stopped at: Completed 34.1-01-PLAN.md
 Resume file: None
 
-**Planned Phase:** 33 (Integrate Venice.ai as TEE-attested LLM provider) — 4 plans — 2026-04-25T18:22:36.843Z
+**Planned Phase:** 34.1 (close-red-09-and-red-11-actor-loop-drop) — 7 plans — 2026-04-27T06:21:31.064Z
