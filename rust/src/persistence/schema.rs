@@ -338,6 +338,18 @@ CREATE TABLE IF NOT EXISTS directory_files (
 CREATE INDEX IF NOT EXISTS idx_dirfiles_source ON directory_files(source_id);
 ";
 
+/// Migration v19: add shape/freshness/orchestrated_components columns to attestation_cache.
+///
+/// Closes RED-09 / RED-11 by persisting Redpill attestation metadata across app
+/// restarts. All three columns are nullable TEXT — non-Redpill backends and
+/// pre-V19 rows store NULL. `orchestrated_components` is JSON-encoded
+/// `Vec<(String, String)>` (list-of-pairs preserves duplicate labels).
+pub const MIGRATION_V19: &str = "
+ALTER TABLE attestation_cache ADD COLUMN shape TEXT;
+ALTER TABLE attestation_cache ADD COLUMN freshness TEXT;
+ALTER TABLE attestation_cache ADD COLUMN orchestrated_components TEXT;
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -358,6 +370,7 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V16,
     MIGRATION_V17,
     MIGRATION_V18,
+    MIGRATION_V19,
 ];
 
 #[cfg(test)]
@@ -421,6 +434,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(after, 0, "files should be cascade-deleted when source removed");
+    }
+
+    #[test]
+    fn test_migration_v19_adds_three_columns() {
+        let db = Database::open(":memory:").expect("open in-memory db");
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("PRAGMA table_info('attestation_cache')")
+            .expect("pragma");
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            cols.contains(&"shape".to_string()),
+            "shape column missing; got {:?}",
+            cols
+        );
+        assert!(
+            cols.contains(&"freshness".to_string()),
+            "freshness column missing; got {:?}",
+            cols
+        );
+        assert!(
+            cols.contains(&"orchestrated_components".to_string()),
+            "orchestrated_components column missing; got {:?}",
+            cols
+        );
     }
 
     #[test]
