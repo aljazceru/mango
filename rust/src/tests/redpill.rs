@@ -176,3 +176,72 @@ fn backend_summary_after_add() {
     assert!(summary.has_api_key);
     assert!(summary.supports_tool_use);
 }
+
+/// RED-09 / RED-11 actor-loop drop closure (Phase 34.1 Plan 01).
+///
+/// Asserts that `attestation::map_event_to_record_and_status` threads
+/// shape / freshness / orchestrated_components from `AttestationEvent::Verified`
+/// into the persisted `AttestationRecord` for all three Redpill shapes
+/// (Flat / PerRequest, Orchestrated / PerRequest, Chutes / PerEnclave).
+///
+/// Pure-function test — does NOT spin up the Tokio actor.
+#[test]
+fn actor_loop_threads_redpill_fields() {
+    use crate::attestation::{
+        map_event_to_record_and_status, AttestationEvent, AttestationStatus,
+    };
+
+    let cases = vec![
+        (
+            "Flat / PerRequest",
+            Some("Flat".to_string()),
+            Some("PerRequest".to_string()),
+            None,
+        ),
+        (
+            "Orchestrated / PerRequest",
+            Some("Orchestrated".to_string()),
+            Some("PerRequest".to_string()),
+            Some(vec![
+                ("gateway".to_string(), "0xAA".to_string()),
+                ("model".to_string(), "0xBB".to_string()),
+                ("compose_manager".to_string(), "0xCC".to_string()),
+            ]),
+        ),
+        (
+            "Chutes / PerEnclave",
+            Some("Chutes".to_string()),
+            Some("PerEnclave".to_string()),
+            None,
+        ),
+    ];
+
+    for (name, shape, freshness, components) in cases {
+        let event = AttestationEvent::Verified {
+            backend_id: "redpill-test".to_string(),
+            tee_type: "tdx".to_string(),
+            report_blob: vec![0xDE, 0xAD, 0xBE, 0xEF],
+            expires_at: 1_700_000_300,
+            tls_public_key_fp: None,
+            vcek_url: None,
+            vcek_der: None,
+            shape: shape.clone(),
+            freshness: freshness.clone(),
+            orchestrated_components: components.clone(),
+        };
+
+        let (backend_id, status, record_opt, _transient) =
+            map_event_to_record_and_status(event, 1_700_000_000);
+
+        assert_eq!(backend_id, "redpill-test", "case={}", name);
+        assert!(matches!(status, AttestationStatus::Verified), "case={}", name);
+        let (record, _, _, _, _) = record_opt.expect(name);
+        assert_eq!(record.shape, shape, "case={}: shape", name);
+        assert_eq!(record.freshness, freshness, "case={}: freshness", name);
+        assert_eq!(
+            record.orchestrated_components, components,
+            "case={}: components",
+            name
+        );
+    }
+}
