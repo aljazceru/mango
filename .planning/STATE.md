@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 34.1-05-PLAN.md
-last_updated: "2026-04-27T06:49:33.613Z"
+stopped_at: Completed 34.1-06-PLAN.md
+last_updated: "2026-04-27T06:54:18.152Z"
 last_activity: 2026-04-27
 progress:
   total_phases: 16
   completed_phases: 14
   total_plans: 60
-  completed_plans: 57
-  percent: 95
+  completed_plans: 58
+  percent: 97
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 34.1 (close-red-09-and-red-11-actor-loop-drop) — EXECUTING
-Plan: 6 of 7
+Plan: 7 of 7
 Status: Ready to execute
 Last activity: 2026-04-27
 
-Progress: [██████████] 95%
+Progress: [██████████] 97%
 
 ## Performance Metrics
 
@@ -86,6 +86,7 @@ Progress: [██████████] 95%
 | Phase 34.1 P03 | 6min | 3 tasks | 5 files |
 | Phase 34.1 P04 | 2min | 2 tasks | 1 files |
 | Phase 34.1 P05 | 3min | 2 tasks | 5 files |
+| Phase 34.1 P06 | 4min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -160,6 +161,7 @@ Key architectural context for v2.0:
 - [Phase 34.1] Plan 02 — promoted AttestationStatus::Verified to struct variant carrying Option<shape/freshness/Vec<OrchestratedComponent>>; helper builds variant once and reuses for record.status + outer return so they stay self-consistent; Android/iOS app-module compile fixes deferred to 34.1-04/05/06 per plan revision
 - [Phase 34.1] Plan 03 — MIGRATION_V19 adds 3 nullable TEXT cols to attestation_cache; cache row-mapper builds AttestationStatus::Verified directly from columns (deserialize_status fallback retained for non-row paths); orchestrated_components persisted as JSON list-of-pairs to preserve duplicate labels; pre-V19 rows hydrate to None subfields
 - 34.1-04: Pre-existing collapsible-card refactor of SettingsProvidersScreen.kt was retained and bundled into the Task 2 commit; sub-lines built on top.
+- [Phase 34.1] Plan 06 — Desktop iced sub-lines + compile-fix sweep complete; OrchestratedComponent re-exported at lib.rs (Rule 3) so iced can name it; right_col switched from column![] macro to mutable Column accumulator for conditional pushes; cargo build -p mango-desktop succeeds.
 
 ### Roadmap Evolution
 
@@ -195,8 +197,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-27T06:49:33.608Z
-Stopped at: Completed 34.1-05-PLAN.md
+Last session: 2026-04-27T06:54:18.148Z
+Stopped at: Completed 34.1-06-PLAN.md
 Resume file: None
 
 **Planned Phase:** 34.1 (close-red-09-and-red-11-actor-loop-drop) — 7 plans — 2026-04-27T06:21:31.064Z
