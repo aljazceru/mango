@@ -693,7 +693,7 @@ async fn verify_chutes(
     backend: &BackendConfig,
     requested_model: &str,
     value: &serde_json::Value,
-    nonce: &[u8; 32],
+    _nonce: &[u8; 32],
     _policy: &super::policy::TdxPolicy,
 ) -> Result<VerifiedRedpillAttestation, RedpillError> {
     let resp: RedpillChutesResponse = serde_json::from_value(value.clone())
@@ -734,15 +734,17 @@ async fn verify_chutes(
 
     verify_redpill_chutes_anti_tamper(&rd, &entry.nonce, &entry.e2e_pubkey)?;
 
+    // Shape C: GPU evidence is bound to the per-enclave `entry.nonce`, NOT the
+    // outer client nonce. NRAS will reject the JWT if we send the client nonce
+    // here because the evidence's internal nonce won't match.
     for gpu in &entry.gpu_evidence {
         let payload_str = match gpu {
             serde_json::Value::String(s) => s.clone(),
             other => serde_json::to_string(other)
                 .map_err(|e| RedpillError::Network(format!("gpu_evidence serialize: {e}")))?,
         };
-        let nonce_hex = hex::encode(nonce);
-        let _ =
-            super::nvidia::fetch_and_verify_nvidia(&payload_str, &nonce_hex, &backend.id).await?;
+        let _ = super::nvidia::fetch_and_verify_nvidia(&payload_str, &entry.nonce, &backend.id)
+            .await?;
     }
 
     Ok(VerifiedRedpillAttestation {
