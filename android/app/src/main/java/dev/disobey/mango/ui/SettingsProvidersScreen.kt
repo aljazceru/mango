@@ -11,8 +11,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -51,6 +55,8 @@ import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.AttestationStatus
+import dev.disobey.mango.rust.AttestationStatusEntry
+import dev.disobey.mango.rust.BackendSummary
 import dev.disobey.mango.rust.HealthStatus
 import dev.disobey.mango.rust.TeeType
 import dev.disobey.mango.rust.knownProviderPresets
@@ -65,6 +71,7 @@ fun SettingsProvidersScreen(
 ) {
     val isDark = isSystemInDarkTheme()
     val presetKeys = remember { mutableStateMapOf<String, String>() }
+    val expanded = remember { mutableStateMapOf<String, Boolean>() }
     val presets = knownProviderPresets()
     var addName by remember { mutableStateOf("") }
     var addUrl by remember { mutableStateOf("") }
@@ -108,6 +115,7 @@ fun SettingsProvidersScreen(
                 val isEnabled = appState.backends.any { it.id == preset.id && it.hasApiKey }
                 val backend   = appState.backends.find { it.id == preset.id }
                 val att       = appState.attestationStatuses.find { it.backendId == preset.id }
+                val isOpen    = expanded[preset.id] == true
 
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
@@ -120,139 +128,173 @@ fun SettingsProvidersScreen(
                             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                     )
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        // Name + Enabled badge
+                    Column {
+                        // Compact header — always visible, tap to expand
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { expanded[preset.id] = !isOpen }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    preset.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium
-                                )
+                            Text(
+                                preset.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            ProviderStatusPill(
+                                isEnabled = isEnabled,
+                                backend = backend,
+                                att = att,
+                                isDark = isDark
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Icon(
+                                imageVector = if (isOpen) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                                contentDescription = if (isOpen) "Collapse" else "Expand",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        AnimatedVisibility(visible = isOpen) {
+                            Column(modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
                                 Text(
                                     teeTypeLabelProviders(preset.teeType),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                            }
-                            if (isEnabled) {
-                                Surface(
-                                    color = if (isDark) DarkHealthyDim else LightHealthyDim,
-                                    shape = RoundedCornerShape(20.dp)
-                                ) {
-                                    Text(
-                                        "Enabled",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = if (isDark) DarkHealthy else LightHealthy,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
-                                }
-                            }
-                        }
 
-                        if (isEnabled && backend != null) {
-                            Spacer(Modifier.height(6.dp))
-
-                            // Health + attestation row
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Surface(
-                                    color = healthColorProviders(backend.healthStatus, isDark).copy(alpha = 0.12f),
-                                    shape = RoundedCornerShape(20.dp)
-                                ) {
-                                    Text(
-                                        healthLabelProviders(backend.healthStatus),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Medium,
-                                        color = healthColorProviders(backend.healthStatus, isDark),
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                                if (att != null) {
-                                    val (label, color) = attestationStyleProviders(att.status, isDark)
-                                    Text(
-                                        label,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = color
-                                    )
-                                }
-                            }
-
-                            if (backend.models.isNotEmpty()) {
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    backend.models.take(3).joinToString(" · "),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-
-                            // Actions
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (backend.isActive) {
-                                    Surface(
-                                        color = if (isDark) DarkHealthyDim else LightHealthyDim,
-                                        shape = RoundedCornerShape(20.dp)
+                                if (isEnabled && backend != null) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
+                                        Surface(
+                                            color = healthColorProviders(backend.healthStatus, isDark).copy(alpha = 0.12f),
+                                            shape = RoundedCornerShape(20.dp)
+                                        ) {
+                                            Text(
+                                                healthLabelProviders(backend.healthStatus),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Medium,
+                                                color = healthColorProviders(backend.healthStatus, isDark),
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                        if (att != null) {
+                                            val (label, color) = attestationStyleProviders(att.status, isDark)
+                                            Text(
+                                                label,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = color
+                                            )
+                                        }
+                                    }
+
+                                    // Phase 34.1: trust-UI sub-lines for Redpill freshness + orchestrated breakdown.
+                                    // Copy LOCKED in 34.1-UI-SPEC.md. Sub-lines render only on Settings → Providers
+                                    // expanded row, only when status is Verified with the relevant fields populated.
+                                    val verified = att?.status as? AttestationStatus.Verified
+                                    if (verified != null) {
+                                        if (verified.freshness == "PerEnclave") {
+                                            Spacer(Modifier.height(4.dp))
+                                            Text(
+                                                "Verified for this enclave instance",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        val comps = verified.orchestratedComponents
+                                        if (!comps.isNullOrEmpty()) {
+                                            val labelMap = mapOf(
+                                                "gateway" to "gateway",
+                                                "model" to "model",
+                                                "compose_manager" to "compose",
+                                            )
+                                            val line = comps.joinToString(separator = " • ") { c ->
+                                                "${labelMap[c.label] ?: c.label} ✓"
+                                            }
+                                            Spacer(Modifier.height(4.dp))
+                                            Text(
+                                                line,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+
+                                    if (backend.models.isNotEmpty()) {
+                                        Spacer(Modifier.height(4.dp))
                                         Text(
-                                            "Default",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (isDark) DarkHealthy else LightHealthy,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                            backend.models.take(3).joinToString(" · "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
-                                } else {
-                                    TextButton(
-                                        onClick = { onDispatch(AppAction.SetDefaultBackend(backendId = preset.id)) }
-                                    ) { Text("Set Default", style = MaterialTheme.typography.labelMedium) }
-                                }
-                                Spacer(Modifier.weight(1f))
-                                TextButton(
-                                    onClick = { onDispatch(AppAction.RemoveBackend(backendId = preset.id)) },
-                                    colors = ButtonDefaults.textButtonColors(
-                                        contentColor = MaterialTheme.colorScheme.error
-                                    )
-                                ) { Text("Remove", style = MaterialTheme.typography.labelMedium) }
-                            }
 
-                        } else if (!isEnabled) {
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                preset.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = presetKeys[preset.id] ?: "",
-                                onValueChange = { presetKeys[preset.id] = it },
-                                label = { Text("API Key") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                shape = RoundedCornerShape(8.dp),
-                                visualTransformation = PasswordVisualTransformation()
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Button(
-                                onClick = {
-                                    val key = (presetKeys[preset.id] ?: "").trim()
-                                    if (key.isNotEmpty()) {
-                                        onDispatch(AppAction.AddBackendFromPreset(presetId = preset.id, apiKey = key))
-                                        presetKeys[preset.id] = ""
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (backend.isActive) {
+                                            Surface(
+                                                color = if (isDark) DarkHealthyDim else LightHealthyDim,
+                                                shape = RoundedCornerShape(20.dp)
+                                            ) {
+                                                Text(
+                                                    "Default",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = if (isDark) DarkHealthy else LightHealthy,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                        } else {
+                                            TextButton(
+                                                onClick = { onDispatch(AppAction.SetDefaultBackend(backendId = preset.id)) }
+                                            ) { Text("Set Default", style = MaterialTheme.typography.labelMedium) }
+                                        }
+                                        Spacer(Modifier.weight(1f))
+                                        TextButton(
+                                            onClick = { onDispatch(AppAction.RemoveBackend(backendId = preset.id)) },
+                                            colors = ButtonDefaults.textButtonColors(
+                                                contentColor = MaterialTheme.colorScheme.error
+                                            )
+                                        ) { Text("Remove", style = MaterialTheme.typography.labelMedium) }
                                     }
-                                },
-                                enabled = (presetKeys[preset.id] ?: "").isNotBlank(),
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = if (isDark) DarkHealthy else LightHealthy)
-                            ) { Text("Enable", color = Color.Black, fontWeight = FontWeight.Medium) }
+                                } else {
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        preset.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    OutlinedTextField(
+                                        value = presetKeys[preset.id] ?: "",
+                                        onValueChange = { presetKeys[preset.id] = it },
+                                        label = { Text("API Key") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(8.dp),
+                                        visualTransformation = PasswordVisualTransformation()
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    Button(
+                                        onClick = {
+                                            val key = (presetKeys[preset.id] ?: "").trim()
+                                            if (key.isNotEmpty()) {
+                                                onDispatch(AppAction.AddBackendFromPreset(presetId = preset.id, apiKey = key))
+                                                presetKeys[preset.id] = ""
+                                            }
+                                        },
+                                        enabled = (presetKeys[preset.id] ?: "").isNotBlank(),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = if (isDark) DarkHealthy else LightHealthy)
+                                    ) { Text("Enable", color = Color.Black, fontWeight = FontWeight.Medium) }
+                                }
+                            }
                         }
                     }
                 }
@@ -450,4 +492,46 @@ private fun parseTeeTypeProviders(value: String): TeeType = when (value) {
     "AmdSevSnp" -> TeeType.AMD_SEV_SNP
     "Unknown" -> TeeType.UNKNOWN
     else -> TeeType.INTEL_TDX
+}
+
+@Composable
+private fun ProviderStatusPill(
+    isEnabled: Boolean,
+    backend: BackendSummary?,
+    att: AttestationStatusEntry?,
+    isDark: Boolean,
+) {
+    if (!isEnabled || backend == null) {
+        Text(
+            "Disabled",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+    val (label, color) = when {
+        att?.status is AttestationStatus.Failed ->
+            "Attest Failed" to (if (isDark) DarkFailed else LightFailed)
+        att?.status is AttestationStatus.Expired ->
+            "Attest Expired" to (if (isDark) DarkDegraded else LightDegraded)
+        backend.healthStatus == HealthStatus.FAILED ->
+            "Failed" to (if (isDark) DarkFailed else LightFailed)
+        backend.healthStatus == HealthStatus.DEGRADED ->
+            "Degraded" to (if (isDark) DarkDegraded else LightDegraded)
+        att?.status is AttestationStatus.Verified ->
+            "Attested" to (if (isDark) DarkHealthy else LightHealthy)
+        backend.healthStatus == HealthStatus.HEALTHY ->
+            "Healthy" to (if (isDark) DarkHealthy else LightHealthy)
+        else ->
+            "Enabled" to (if (isDark) DarkHealthUnknown else LightHealthUnknown)
+    }
+    Surface(color = color.copy(alpha = 0.12f), shape = RoundedCornerShape(20.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+            color = color,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
+    }
 }
