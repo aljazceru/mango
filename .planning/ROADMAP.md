@@ -307,3 +307,20 @@ Plans:
  10. End-to-end live integration test (`#[ignore]`) passes against `api.redpill.ai` for at least one model per supported shape
 **Source spike:** `.planning/spikes/002-redpill-tee-verification-research/` (VALIDATED 2026-04-26) — captures usable as golden fixtures
 **Findings skill:** `Skill("spike-findings-confidential-app")` → `references/redpill-attestation.md`
+
+### Phase 34.1: close RED-09 and RED-11 actor-loop drop — plumb shape/freshness/orchestrated_components through UniFFI AttestationStatus, AttestationRecord, and native trust UI (INSERTED)
+
+**Goal:** Plumb shape/freshness/orchestrated_components from AttestationEvent::Verified through the actor-loop, UniFFI AttestationStatus (struct-variant promotion + new OrchestratedComponent record), SQLite V19 cache columns, and native trust UI on Android/iOS/Desktop iced — closing the RED-09 (PerEnclave freshness sub-line) and RED-11 (Orchestrated three-quote breakdown) PARTIAL gaps from Phase 34
+**Requirements**: RED-09, RED-11 (downstream wiring; cryptographic verification already complete in Phase 34)
+**Depends on:** Phase 34
+**Plans:** 7 plans
+
+Plans:
+- [ ] 34.1-01-PLAN.md — Actor-loop wiring: extract map_event_to_record_and_status helper, extend AttestationRecord with three new Option fields, stop dropping the values, unit test threading per shape
+- [ ] 34.1-02-PLAN.md — UniFFI AttestationStatus::Verified promoted to struct variant + OrchestratedComponent record + compile-driven sweep across ~15 Rust sites + regenerate Kotlin/Swift bindings
+- [ ] 34.1-03-PLAN.md — SQLite MIGRATION_V19 (three nullable TEXT columns) + AttestationCache put/get extensions + round-trip and pre-V19 backward-compat tests
+- [ ] 34.1-04-PLAN.md — Android: render freshness + orchestrated breakdown sub-lines in SettingsProvidersScreen.kt (UI-SPEC locked copy); compile-fix sweep in AttestationBadge/ChatScreen/OnboardingScreen
+- [ ] 34.1-05-PLAN.md — iOS: mirror in SettingsProvidersView.swift; compile-fix sweep in AttestationBadgeView/AppColors/ChatView/ModelPickerView/OnboardingView
+- [ ] 34.1-06-PLAN.md — Desktop iced: mirror in views/settings_providers.rs; compile-fix sweep in widgets/attestation_badge / views/chat / views/onboarding
+- [ ] 34.1-07-PLAN.md — Cleanup: confirm stale comment is gone, update Phase 34 SUMMARY with FULL closure note, update STATE.md
+**UI hint**: yes
