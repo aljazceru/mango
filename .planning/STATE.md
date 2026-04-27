@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
 status: executing
-stopped_at: Completed 34.1-02-PLAN.md
-last_updated: "2026-04-27T06:34:09.618Z"
+stopped_at: Completed 34.1-03-PLAN.md
+last_updated: "2026-04-27T06:40:27.340Z"
 last_activity: 2026-04-27
 progress:
   total_phases: 16
   completed_phases: 14
   total_plans: 60
-  completed_plans: 54
-  percent: 90
+  completed_plans: 55
+  percent: 92
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 34.1 (close-red-09-and-red-11-actor-loop-drop) — EXECUTING
-Plan: 3 of 7
+Plan: 4 of 7
 Status: Ready to execute
 Last activity: 2026-04-27
 
-Progress: [█████████░] 90%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
@@ -83,6 +83,7 @@ Progress: [█████████░] 90%
 | Phase 33 P33-04 | 12min | 2 tasks | 9 files |
 | Phase 34.1 P01 | 8min | 3 tasks | 6 files |
 | Phase 34.1 P02 | 3min | 3 tasks | 10 files |
+| Phase 34.1 P03 | 6min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -155,6 +156,7 @@ Key architectural context for v2.0:
 - [Phase 33]: Plan 04 — Venice wired into transport+backend+streaming+agent_loop+attestation_task+attestation_endpoint; live test #[ignore]-gated awaiting user run with VENICE_API_KEY
 - [Phase 34.1] Plan 01 — extracted attestation::map_event_to_record_and_status helper; AttestationRecord gained shape/freshness/orchestrated_components Option fields. AttestationStatus::Verified stays unit in this plan; 34.1-02 promotes it to struct variant.
 - [Phase 34.1] Plan 02 — promoted AttestationStatus::Verified to struct variant carrying Option<shape/freshness/Vec<OrchestratedComponent>>; helper builds variant once and reuses for record.status + outer return so they stay self-consistent; Android/iOS app-module compile fixes deferred to 34.1-04/05/06 per plan revision
+- [Phase 34.1] Plan 03 — MIGRATION_V19 adds 3 nullable TEXT cols to attestation_cache; cache row-mapper builds AttestationStatus::Verified directly from columns (deserialize_status fallback retained for non-row paths); orchestrated_components persisted as JSON list-of-pairs to preserve duplicate labels; pre-V19 rows hydrate to None subfields
 
 ### Roadmap Evolution
 
@@ -190,8 +192,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-27T06:34:09.614Z
-Stopped at: Completed 34.1-02-PLAN.md
+Last session: 2026-04-27T06:40:27.335Z
+Stopped at: Completed 34.1-03-PLAN.md
 Resume file: None
 
 **Planned Phase:** 34.1 (close-red-09-and-red-11-actor-loop-drop) — 7 plans — 2026-04-27T06:21:31.064Z
