@@ -245,3 +245,38 @@ fn actor_loop_threads_redpill_fields() {
         );
     }
 }
+
+/// RED-09 / RED-11 — Plan 34.1-02: AttestationStatus::Verified is now a struct
+/// variant carrying optional shape / freshness / orchestrated_components across
+/// the UniFFI boundary. This test mimics what UniFFI consumers do: construct
+/// the variant directly and read back the threaded fields.
+#[test]
+fn attestation_status_verified_carries_redpill_fields() {
+    use crate::attestation::{AttestationStatus, OrchestratedComponent};
+
+    let status = AttestationStatus::Verified {
+        shape: Some("Orchestrated".to_string()),
+        freshness: Some("PerRequest".to_string()),
+        orchestrated_components: Some(vec![
+            OrchestratedComponent { label: "gateway".to_string(), value: "0xAA".to_string() },
+            OrchestratedComponent { label: "model".to_string(), value: "0xBB".to_string() },
+            OrchestratedComponent { label: "compose_manager".to_string(), value: "0xCC".to_string() },
+        ]),
+    };
+
+    if let AttestationStatus::Verified { shape, freshness, orchestrated_components } = &status {
+        assert_eq!(shape.as_deref(), Some("Orchestrated"));
+        assert_eq!(freshness.as_deref(), Some("PerRequest"));
+        let comps = orchestrated_components.as_ref().expect("components present");
+        assert_eq!(comps.len(), 3);
+        assert_eq!(comps[0].label, "gateway");
+        assert_eq!(comps[0].value, "0xAA");
+        assert_eq!(comps[2].label, "compose_manager");
+    } else {
+        panic!("expected Verified");
+    }
+
+    // Round-trip clone (mimics UniFFI cross-boundary clone)
+    let cloned = status.clone();
+    assert_eq!(status, cloned);
+}

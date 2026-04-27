@@ -3157,6 +3157,43 @@ public object FfiConverterTypeOnboardingState: FfiConverterRustBuffer<Onboarding
 
 
 /**
+ * One verified component within an Orchestrated (3-quote) Redpill response.
+ * Label is one of "gateway" | "model" | "compose_manager".
+ * Value is the hex address or actions hash from the verified component.
+ */
+data class OrchestratedComponent (
+    var `label`: kotlin.String, 
+    var `value`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeOrchestratedComponent: FfiConverterRustBuffer<OrchestratedComponent> {
+    override fun read(buf: ByteBuffer): OrchestratedComponent {
+        return OrchestratedComponent(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: OrchestratedComponent) = (
+            FfiConverterString.allocationSize(value.`label`) +
+            FfiConverterString.allocationSize(value.`value`)
+    )
+
+    override fun write(value: OrchestratedComponent, buf: ByteBuffer) {
+            FfiConverterString.write(value.`label`, buf)
+            FfiConverterString.write(value.`value`, buf)
+    }
+}
+
+
+
+/**
  * A known provider preset for the Add Backend form.
  * UniFFI-exported so all platforms share the same preset data.
  */
@@ -5319,9 +5356,19 @@ sealed class AttestationStatus {
     
     /**
      * Cryptographic verification passed (TDX quote, SNP report, or NRAS JWT verified).
+     *
+     * For Redpill aggregator backends, carries the per-shape diagnostics:
+     * - `shape`: "Flat" | "Orchestrated" | "Chutes" (Phase 34 RED-11).
+     * - `freshness`: "PerRequest" | "PerEnclave" (RED-09).
+     * - `orchestrated_components`: per-component hex/actions hashes for Shape B.
+     * All three are `None` for non-aggregator providers.
      */
-    object Verified : AttestationStatus()
-    
+    data class Verified(
+        val `shape`: kotlin.String?, 
+        val `freshness`: kotlin.String?, 
+        val `orchestratedComponents`: List<OrchestratedComponent>?) : AttestationStatus() {
+        companion object
+    }
     
     /**
      * Not yet checked or no attestation endpoint available for this backend.
@@ -5354,7 +5401,11 @@ sealed class AttestationStatus {
 public object FfiConverterTypeAttestationStatus : FfiConverterRustBuffer<AttestationStatus>{
     override fun read(buf: ByteBuffer): AttestationStatus {
         return when(buf.getInt()) {
-            1 -> AttestationStatus.Verified
+            1 -> AttestationStatus.Verified(
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                FfiConverterOptionalSequenceTypeOrchestratedComponent.read(buf),
+                )
             2 -> AttestationStatus.Unverified
             3 -> AttestationStatus.Failed(
                 FfiConverterString.read(buf),
@@ -5369,6 +5420,9 @@ public object FfiConverterTypeAttestationStatus : FfiConverterRustBuffer<Attesta
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
+                + FfiConverterOptionalString.allocationSize(value.`shape`)
+                + FfiConverterOptionalString.allocationSize(value.`freshness`)
+                + FfiConverterOptionalSequenceTypeOrchestratedComponent.allocationSize(value.`orchestratedComponents`)
             )
         }
         is AttestationStatus.Unverified -> {
@@ -5396,6 +5450,9 @@ public object FfiConverterTypeAttestationStatus : FfiConverterRustBuffer<Attesta
         when(value) {
             is AttestationStatus.Verified -> {
                 buf.putInt(1)
+                FfiConverterOptionalString.write(value.`shape`, buf)
+                FfiConverterOptionalString.write(value.`freshness`, buf)
+                FfiConverterOptionalSequenceTypeOrchestratedComponent.write(value.`orchestratedComponents`, buf)
                 Unit
             }
             is AttestationStatus.Unverified -> {
@@ -6982,6 +7039,38 @@ public object FfiConverterOptionalTypeAttestationStatus: FfiConverterRustBuffer<
 /**
  * @suppress
  */
+public object FfiConverterOptionalSequenceTypeOrchestratedComponent: FfiConverterRustBuffer<List<OrchestratedComponent>?> {
+    override fun read(buf: ByteBuffer): List<OrchestratedComponent>? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterSequenceTypeOrchestratedComponent.read(buf)
+    }
+
+    override fun allocationSize(value: List<OrchestratedComponent>?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterSequenceTypeOrchestratedComponent.allocationSize(value)
+        }
+    }
+
+    override fun write(value: List<OrchestratedComponent>?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterSequenceTypeOrchestratedComponent.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceFloat: FfiConverterRustBuffer<List<kotlin.Float>> {
     override fun read(buf: ByteBuffer): List<kotlin.Float> {
         val len = buf.getInt()
@@ -7308,6 +7397,34 @@ public object FfiConverterSequenceTypeMemorySummary: FfiConverterRustBuffer<List
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeMemorySummary.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeOrchestratedComponent: FfiConverterRustBuffer<List<OrchestratedComponent>> {
+    override fun read(buf: ByteBuffer): List<OrchestratedComponent> {
+        val len = buf.getInt()
+        return List<OrchestratedComponent>(len) {
+            FfiConverterTypeOrchestratedComponent.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<OrchestratedComponent>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeOrchestratedComponent.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<OrchestratedComponent>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeOrchestratedComponent.write(it, buf)
         }
     }
 }
