@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: executing
-stopped_at: Completed 34.1-06-PLAN.md
-last_updated: "2026-04-27T06:54:18.152Z"
-last_activity: 2026-04-27
+status: complete
+stopped_at: Phase 34.1 closed RED-09/RED-11 actor-loop drop; UI sub-lines live on all 3 platforms
+last_updated: "2026-04-27T07:30:00.000Z"
+last_activity: 2026-04-27 — Phase 34.1 plans 34.1-01..34.1-07 complete
 progress:
   total_phases: 16
-  completed_phases: 14
+  completed_phases: 15
   total_plans: 60
-  completed_plans: 58
-  percent: 97
+  completed_plans: 65
+  percent: 100
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Every inference request is provably confidential -- verified via remote attestation, all data stays local
-**Current focus:** Phase 34.1 — close-red-09-and-red-11-actor-loop-drop
+**Current focus:** Phase 34.1 complete — all Phase 34/34.1 must-haves are FULL (RED-09 and RED-11 closed)
 
 ## Current Position
 
-Phase: 34.1 (close-red-09-and-red-11-actor-loop-drop) — EXECUTING
-Plan: 7 of 7
-Status: Ready to execute
+Phase: 34.1 (close-red-09-and-red-11-actor-loop-drop) — COMPLETE
+Plan: 7 of 7 — done
+Status: All Phase 34/34.1 must-haves FULL; RED-09 and RED-11 closed
 Last activity: 2026-04-27
 
-Progress: [██████████] 97%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -162,6 +162,7 @@ Key architectural context for v2.0:
 - [Phase 34.1] Plan 03 — MIGRATION_V19 adds 3 nullable TEXT cols to attestation_cache; cache row-mapper builds AttestationStatus::Verified directly from columns (deserialize_status fallback retained for non-row paths); orchestrated_components persisted as JSON list-of-pairs to preserve duplicate labels; pre-V19 rows hydrate to None subfields
 - 34.1-04: Pre-existing collapsible-card refactor of SettingsProvidersScreen.kt was retained and bundled into the Task 2 commit; sub-lines built on top.
 - [Phase 34.1] Plan 06 — Desktop iced sub-lines + compile-fix sweep complete; OrchestratedComponent re-exported at lib.rs (Rule 3) so iced can name it; right_col switched from column![] macro to mutable Column accumulator for conditional pushes; cargo build -p mango-desktop succeeds.
+- [Phase 34.1]: AttestationStatus::Verified promoted to struct variant carrying shape/freshness/orchestrated_components; SQLite V19 persists them; native UI renders sub-lines under locked UI-SPEC copy on all 3 platforms
 
 ### Roadmap Evolution
 
@@ -172,7 +173,7 @@ Key architectural context for v2.0:
 - Phase 28 added: Local Data Encryption & Authentication — encrypt all local data (SQLite, vector indices, documents) with platform hardware (Keychain/Keystore/TPM), biometric/PIN unlock, duress PIN for data wipe, graceful degradation on older devices
 - Phase 32 added: Directory-based RAG ingestion with periodic sync and file/folder exclusion — add whole directories (e.g. Obsidian vault) as RAG sources with glob exclusions, automatic periodic re-sync (add/modify/delete diff), cross-platform folder permissions (iOS security-scoped bookmarks, Android persistable tree URIs, Desktop), UI for source list + exclusion editor + manual sync-now
 - Phase 33 added: Integrate Venice.ai as TEE-attested LLM provider with client-side TDX + NVIDIA NRAS verification and ECDH+AES-GCM E2EE handshake
-- Phase 34.1 inserted after Phase 34: close RED-09 and RED-11 actor-loop drop — plumb shape/freshness/orchestrated_components through UniFFI AttestationStatus, AttestationRecord, and native trust UI (URGENT)
+- Phase 34.1 completed: closed RED-09/RED-11 actor-loop drop — plumbed shape/freshness/orchestrated_components through UniFFI AttestationStatus, AttestationRecord (SQLite V19), and native trust UI on all 3 platforms (Android, iOS, Desktop iced)
 
 ### Pending Todos
 
@@ -197,8 +198,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-27T06:54:18.148Z
-Stopped at: Completed 34.1-06-PLAN.md
+Last session: 2026-04-27T07:30:00.000Z
+Stopped at: Completed 34.1-07-PLAN.md — Phase 34.1 closed
 Resume file: None
 
-**Planned Phase:** 34.1 (close-red-09-and-red-11-actor-loop-drop) — 7 plans — 2026-04-27T06:21:31.064Z
+**Planned Phase:** 34.1 (close-red-09-and-red-11-actor-loop-drop) — 7 plans — COMPLETE 2026-04-27
