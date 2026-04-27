@@ -211,7 +211,7 @@ impl<'a> AttestationCache<'a> {
 /// Serialize AttestationStatus to a TEXT value for SQLite storage.
 fn serialize_status(s: &AttestationStatus) -> String {
     match s {
-        AttestationStatus::Verified => "verified".to_string(),
+        AttestationStatus::Verified { .. } => "verified".to_string(),
         AttestationStatus::Unverified => "unverified".to_string(),
         AttestationStatus::Failed { reason } => format!("failed:{}", reason),
         AttestationStatus::Expired => "expired".to_string(),
@@ -225,7 +225,13 @@ fn serialize_status(s: &AttestationStatus) -> String {
 #[allow(dead_code)]
 fn deserialize_status(s: &str) -> AttestationStatus {
     match s {
-        "verified" | "provider_verified" => AttestationStatus::Verified,
+        // Note: callers reconstructing from a SQLite row should populate these fields directly
+        // from row columns; this fallback is for non-row paths.
+        "verified" | "provider_verified" => AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
         "unverified" => AttestationStatus::Unverified,
         "expired" => AttestationStatus::Expired,
         other if other.starts_with("failed:") => AttestationStatus::Failed {

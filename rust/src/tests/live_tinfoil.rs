@@ -191,7 +191,7 @@ fn live_attestation_tinfoil() {
                 AttestationStatus::Unverified => {
                     // Still pending — keep waiting.
                 }
-                AttestationStatus::Verified => {
+                AttestationStatus::Verified { .. } => {
                     eprintln!("OK: Tinfoil attestation VERIFIED (AMD SEV-SNP cryptographic verification passed)");
                     return;
                 }

@@ -13,7 +13,11 @@ fn make_record(backend_id: &str, tee_type: &str, expires_at: u64) -> Attestation
     AttestationRecord {
         backend_id: backend_id.to_string(),
         tee_type: tee_type.to_string(),
-        status: AttestationStatus::Verified,
+        status: AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
         report_blob: vec![0xCA, 0xFE, 0xBA, 0xBE],
         verified_at: 1_700_000_000,
         expires_at,
@@ -54,7 +58,14 @@ fn test_cache_write_and_read() {
 
     assert_eq!(retrieved.backend_id, "tinfoil");
     assert_eq!(retrieved.tee_type, "IntelTdx");
-    assert_eq!(retrieved.status, AttestationStatus::Verified);
+    assert_eq!(
+        retrieved.status,
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        }
+    );
     assert_eq!(retrieved.report_blob, vec![0xCA, 0xFE, 0xBA, 0xBE]);
     assert_eq!(retrieved.verified_at, 1_700_000_000);
     assert_eq!(retrieved.expires_at, expires_at);
@@ -134,7 +145,11 @@ fn test_get_raw_report() {
     let record = AttestationRecord {
         backend_id: "tinfoil".to_string(),
         tee_type: "IntelTdx".to_string(),
-        status: AttestationStatus::Verified,
+        status: AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
         report_blob: report_blob.clone(),
         verified_at: 1_700_000_000,
         expires_at: now + 3600,

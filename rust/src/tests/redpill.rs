@@ -234,7 +234,7 @@ fn actor_loop_threads_redpill_fields() {
             map_event_to_record_and_status(event, 1_700_000_000);
 
         assert_eq!(backend_id, "redpill-test", "case={}", name);
-        assert!(matches!(status, AttestationStatus::Verified), "case={}", name);
+        assert!(matches!(status, AttestationStatus::Verified { .. }), "case={}", name);
         let (record, _, _, _, _) = record_opt.expect(name);
         assert_eq!(record.shape, shape, "case={}: shape", name);
         assert_eq!(record.freshness, freshness, "case={}: freshness", name);

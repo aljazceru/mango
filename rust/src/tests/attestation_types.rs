@@ -8,7 +8,11 @@ use crate::attestation::{
 #[test]
 fn test_attestation_status_variants() {
     // Construct all 4 variants
-    let verified = AttestationStatus::Verified;
+    let verified = AttestationStatus::Verified {
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
+    };
     let unverified = AttestationStatus::Unverified;
     let failed = AttestationStatus::Failed {
         reason: "cert expired".to_string(),
@@ -22,7 +26,18 @@ fn test_attestation_status_variants() {
     let _ = expired.clone();
 
     // PartialEq
-    assert_eq!(AttestationStatus::Verified, AttestationStatus::Verified);
+    assert_eq!(
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        }
+    );
     assert_eq!(AttestationStatus::Unverified, AttestationStatus::Unverified);
     assert_eq!(
         AttestationStatus::Failed {
@@ -33,7 +48,14 @@ fn test_attestation_status_variants() {
         }
     );
     assert_eq!(AttestationStatus::Expired, AttestationStatus::Expired);
-    assert_ne!(AttestationStatus::Verified, AttestationStatus::Expired);
+    assert_ne!(
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
+        AttestationStatus::Expired
+    );
 }
 
 #[test]
@@ -134,7 +156,11 @@ fn test_attestation_record_construction() {
     let record = AttestationRecord {
         backend_id: "tinfoil".to_string(),
         tee_type: "IntelTdx".to_string(),
-        status: AttestationStatus::Verified,
+        status: AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
         report_blob: vec![0x01, 0x02, 0x03],
         verified_at: 1_700_000_000,
         expires_at: 1_700_014_400, // +4 hours
@@ -145,7 +171,14 @@ fn test_attestation_record_construction() {
 
     assert_eq!(record.backend_id, "tinfoil");
     assert_eq!(record.tee_type, "IntelTdx");
-    assert_eq!(record.status, AttestationStatus::Verified);
+    assert_eq!(
+        record.status,
+        AttestationStatus::Verified {
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        }
+    );
     assert_eq!(record.report_blob, vec![0x01, 0x02, 0x03]);
     assert_eq!(record.verified_at, 1_700_000_000);
     assert_eq!(record.expires_at, 1_700_014_400);
