@@ -364,7 +364,13 @@ pub async fn fetch_and_verify_redpill_attestation(
     rand::thread_rng().fill_bytes(&mut nonce);
     let nonce_hex = hex::encode(nonce);
 
-    let base = backend.base_url.trim_end_matches('/');
+    // Strip both trailing slash and a `/v1` suffix so that backends configured
+    // with base_url `https://api.redpill.ai/v1/` (the canonical OpenAI-compatible
+    // root) don't double up the `/v1` segment when joined with ATTESTATION_PATH.
+    let base = backend
+        .base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1");
     let url = format!(
         "{}{}?model={}&nonce={}",
         base,

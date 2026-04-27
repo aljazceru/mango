@@ -524,4 +524,24 @@ mod tests {
         assert!(url.ends_with("&nonce=deadbeef"));
         assert!(url.contains("/v1/attestation/report?"));
     }
+
+    #[test]
+    fn format_attestation_url_does_not_double_v1() {
+        // Production BackendConfig stores base_url with a trailing `/v1/` (the
+        // OpenAI-compatible root). The fetch path must NOT produce
+        // `…/v1/v1/attestation/report`. Regression for the live test failure
+        // observed against api.redpill.ai (HTTP 400 "endpoint is not supported").
+        for base in [
+            "https://api.redpill.ai/v1",
+            "https://api.redpill.ai/v1/",
+            "https://api.redpill.ai",
+        ] {
+            let url = format_redpill_attestation_url("m", "n", base);
+            assert!(
+                !url.contains("/v1/v1/"),
+                "double /v1/ in {url} (from base {base})"
+            );
+            assert!(url.contains("/v1/attestation/report?"));
+        }
+    }
 }
