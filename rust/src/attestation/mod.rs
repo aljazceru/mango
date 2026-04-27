@@ -56,6 +56,12 @@ pub struct AttestationRecord {
     pub verified_at: u64,
     /// Unix timestamp when this cached result expires (per D-08).
     pub expires_at: u64,
+    /// "Flat" | "Orchestrated" | "Chutes" — Redpill aggregator shape; None for other backends.
+    pub shape: Option<String>,
+    /// "PerRequest" | "PerEnclave" — freshness semantic; None for backends that don't carry one.
+    pub freshness: Option<String>,
+    /// Per-component breakdown for Orchestrated shapes: Vec<(label, value)>; None otherwise.
+    pub orchestrated_components: Option<Vec<(String, String)>>,
 }
 
 /// Internal event sent from attestation tasks back to the actor loop.

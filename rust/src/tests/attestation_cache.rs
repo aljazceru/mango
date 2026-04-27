@@ -17,6 +17,9 @@ fn make_record(backend_id: &str, tee_type: &str, expires_at: u64) -> Attestation
         report_blob: vec![0xCA, 0xFE, 0xBA, 0xBE],
         verified_at: 1_700_000_000,
         expires_at,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     }
 }
 
@@ -100,6 +103,9 @@ fn test_cache_upsert() {
         report_blob: vec![0xFF],
         verified_at: 1_700_001_000,
         expires_at,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     };
     cache.put(&updated).expect("upsert should succeed");
 
@@ -132,6 +138,9 @@ fn test_get_raw_report() {
         report_blob: report_blob.clone(),
         verified_at: 1_700_000_000,
         expires_at: now + 3600,
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     };
     cache.put(&record).expect("put should succeed");
 

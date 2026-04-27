@@ -138,6 +138,9 @@ fn test_attestation_record_construction() {
         report_blob: vec![0x01, 0x02, 0x03],
         verified_at: 1_700_000_000,
         expires_at: 1_700_014_400, // +4 hours
+        shape: None,
+        freshness: None,
+        orchestrated_components: None,
     };
 
     assert_eq!(record.backend_id, "tinfoil");

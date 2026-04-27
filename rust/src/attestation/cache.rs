@@ -78,6 +78,9 @@ impl<'a> AttestationCache<'a> {
                 report_blob,
                 verified_at: verified_at as u64,
                 expires_at: expires_at as u64,
+                shape: None,
+                freshness: None,
+                orchestrated_components: None,
             })
         });
 
@@ -131,6 +134,9 @@ impl<'a> AttestationCache<'a> {
                 report_blob,
                 verified_at: verified_at as u64,
                 expires_at: expires_at as u64,
+                shape: None,
+                freshness: None,
+                orchestrated_components: None,
             })
         });
 
