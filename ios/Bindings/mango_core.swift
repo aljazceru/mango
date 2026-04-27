@@ -3126,6 +3126,81 @@ public func FfiConverterTypeOnboardingState_lower(_ value: OnboardingState) -> R
 
 
 /**
+ * One verified component within an Orchestrated (3-quote) Redpill response.
+ * Label is one of "gateway" | "model" | "compose_manager".
+ * Value is the hex address or actions hash from the verified component.
+ */
+public struct OrchestratedComponent {
+    public var label: String
+    public var value: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(label: String, value: String) {
+        self.label = label
+        self.value = value
+    }
+}
+
+#if compiler(>=6)
+extension OrchestratedComponent: Sendable {}
+#endif
+
+
+extension OrchestratedComponent: Equatable, Hashable {
+    public static func ==(lhs: OrchestratedComponent, rhs: OrchestratedComponent) -> Bool {
+        if lhs.label != rhs.label {
+            return false
+        }
+        if lhs.value != rhs.value {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(label)
+        hasher.combine(value)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOrchestratedComponent: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OrchestratedComponent {
+        return
+            try OrchestratedComponent(
+                label: FfiConverterString.read(from: &buf), 
+                value: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: OrchestratedComponent, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterString.write(value.value, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOrchestratedComponent_lift(_ buf: RustBuffer) throws -> OrchestratedComponent {
+    return try FfiConverterTypeOrchestratedComponent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOrchestratedComponent_lower(_ value: OrchestratedComponent) -> RustBuffer {
+    return FfiConverterTypeOrchestratedComponent.lower(value)
+}
+
+
+/**
  * A known provider preset for the Add Backend form.
  * UniFFI-exported so all platforms share the same preset data.
  */
@@ -4709,8 +4784,15 @@ public enum AttestationStatus {
     
     /**
      * Cryptographic verification passed (TDX quote, SNP report, or NRAS JWT verified).
+     *
+     * For Redpill aggregator backends, carries the per-shape diagnostics:
+     * - `shape`: "Flat" | "Orchestrated" | "Chutes" (Phase 34 RED-11).
+     * - `freshness`: "PerRequest" | "PerEnclave" (RED-09).
+     * - `orchestrated_components`: per-component hex/actions hashes for Shape B.
+     * All three are `None` for non-aggregator providers.
      */
-    case verified
+    case verified(shape: String?, freshness: String?, orchestratedComponents: [OrchestratedComponent]?
+    )
     /**
      * Not yet checked or no attestation endpoint available for this backend.
      */
@@ -4741,7 +4823,8 @@ public struct FfiConverterTypeAttestationStatus: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
         
-        case 1: return .verified
+        case 1: return .verified(shape: try FfiConverterOptionString.read(from: &buf), freshness: try FfiConverterOptionString.read(from: &buf), orchestratedComponents: try FfiConverterOptionSequenceTypeOrchestratedComponent.read(from: &buf)
+        )
         
         case 2: return .unverified
         
@@ -4758,9 +4841,12 @@ public struct FfiConverterTypeAttestationStatus: FfiConverterRustBuffer {
         switch value {
         
         
-        case .verified:
+        case let .verified(shape,freshness,orchestratedComponents):
             writeInt(&buf, Int32(1))
-        
+            FfiConverterOptionString.write(shape, into: &buf)
+            FfiConverterOptionString.write(freshness, into: &buf)
+            FfiConverterOptionSequenceTypeOrchestratedComponent.write(orchestratedComponents, into: &buf)
+            
         
         case .unverified:
             writeInt(&buf, Int32(2))
@@ -6736,6 +6822,30 @@ fileprivate struct FfiConverterOptionTypeAttestationStatus: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionSequenceTypeOrchestratedComponent: FfiConverterRustBuffer {
+    typealias SwiftType = [OrchestratedComponent]?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterSequenceTypeOrchestratedComponent.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterSequenceTypeOrchestratedComponent.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceFloat: FfiConverterRustBuffer {
     typealias SwiftType = [Float]
 
@@ -7028,6 +7138,31 @@ fileprivate struct FfiConverterSequenceTypeMemorySummary: FfiConverterRustBuffer
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeMemorySummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeOrchestratedComponent: FfiConverterRustBuffer {
+    typealias SwiftType = [OrchestratedComponent]
+
+    public static func write(_ value: [OrchestratedComponent], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeOrchestratedComponent.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [OrchestratedComponent] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [OrchestratedComponent]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeOrchestratedComponent.read(from: &buf))
         }
         return seq
     }
