@@ -156,6 +156,31 @@ struct SettingsProvidersView: View {
                     }
                 }
 
+                // Phase 34.1: trust-UI sub-lines for Redpill freshness + orchestrated breakdown.
+                // Copy LOCKED in 34.1-UI-SPEC.md.
+                if let att = appState.attestationStatuses.first(where: { $0.backendId == backend.id }) {
+                    if case let .verified(_, freshness, components) = att.status {
+                        if freshness == "PerEnclave" {
+                            Text("Verified for this enclave instance")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        if let comps = components, !comps.isEmpty {
+                            let labelMap: [String: String] = [
+                                "gateway": "gateway",
+                                "model": "model",
+                                "compose_manager": "compose",
+                            ]
+                            let line = comps
+                                .map { "\(labelMap[$0.label] ?? $0.label) ✓" }
+                                .joined(separator: " • ")
+                            Text(line)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
                 if !backend.models.isEmpty {
                     Text(backend.models.prefix(3).joined(separator: " · "))
                         .font(.caption2)
@@ -240,10 +265,10 @@ struct SettingsProvidersView: View {
 
     private func attestationStyle(_ s: AttestationStatus, _ scheme: ColorScheme) -> (String, Color) {
         switch s {
-        case .verified:   return ("Attested",       AppColors.healthSuccess(scheme))
-        case .unverified: return ("Unverified",     AppColors.healthMuted(scheme))
-        case .failed:     return ("Attest Failed",  AppColors.destructive(scheme))
-        case .expired:    return ("Attest Expired", AppColors.healthWarning(scheme))
+        case .verified(_, _, _): return ("Attested",       AppColors.healthSuccess(scheme))
+        case .unverified:        return ("Unverified",     AppColors.healthMuted(scheme))
+        case .failed:            return ("Attest Failed",  AppColors.destructive(scheme))
+        case .expired:           return ("Attest Expired", AppColors.healthWarning(scheme))
         }
     }
 
