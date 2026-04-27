@@ -18,7 +18,7 @@ mod net;
 mod persistence;
 pub mod rag;
 
-pub use attestation::{AttestationError, AttestationStatus};
+pub use attestation::{AttestationError, AttestationStatus, OrchestratedComponent};
 pub use embedding::{EmbeddingProvider, NullEmbeddingProvider};
 
 /// Embedding provider operational status (Phase 15 / SAFE-03).
