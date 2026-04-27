@@ -7399,68 +7399,18 @@ impl FfiApp {
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
                             llm::InternalEvent::AttestationResult(att_event) => {
-                                // Destructure the attestation event into components.
                                 let now_secs = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_secs())
                                     .unwrap_or(0);
 
-                                // record_opt: Some((record, report_blob, tls_public_key_fp, vcek_url, vcek_der)) on success
+                                // record_opt: Some((record, report_blob, tls_public_key_fp, vcek_url, vcek_der)) on success.
                                 // failed_is_transient: true when the failure was a network/fetch error
                                 // (not a genuine cryptographic verification failure).
+                                // Helper threads shape/freshness/orchestrated_components from
+                                // AttestationEvent::Verified into AttestationRecord (RED-09 / RED-11).
                                 let (backend_id, status, record_opt, failed_is_transient) =
-                                    match att_event {
-                                        attestation::AttestationEvent::Verified {
-                                            backend_id,
-                                            tee_type,
-                                            report_blob,
-                                            expires_at,
-                                            tls_public_key_fp,
-                                            vcek_url,
-                                            vcek_der,
-                                            // Phase 34 additive fields — currently
-                                            // recorded only into AttestationEvent for
-                                            // the actor-loop notification; the cached
-                                            // AttestationRecord (SQLite) doesn't yet
-                                            // carry them. RED-09/RED-11 surfacing
-                                            // happens via AttestationStatus + future
-                                            // cache columns.
-                                            shape: _,
-                                            freshness: _,
-                                            orchestrated_components: _,
-                                        } => {
-                                            let record = attestation::AttestationRecord {
-                                                backend_id: backend_id.clone(),
-                                                tee_type: tee_type.clone(),
-                                                status: AttestationStatus::Verified,
-                                                report_blob: report_blob.clone(),
-                                                verified_at: now_secs,
-                                                expires_at,
-                                            };
-                                            (
-                                                backend_id,
-                                                AttestationStatus::Verified,
-                                                Some((
-                                                    record,
-                                                    report_blob,
-                                                    tls_public_key_fp,
-                                                    vcek_url,
-                                                    vcek_der,
-                                                )),
-                                                false, // not relevant for Verified
-                                            )
-                                        }
-                                        attestation::AttestationEvent::Failed {
-                                            backend_id,
-                                            reason,
-                                            is_transient,
-                                        } => (
-                                            backend_id,
-                                            AttestationStatus::Failed { reason },
-                                            None,
-                                            is_transient,
-                                        ),
-                                    };
+                                    attestation::map_event_to_record_and_status(att_event, now_secs);
 
                                 // Upsert into AppState.attestation_statuses.
                                 //

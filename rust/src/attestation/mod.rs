@@ -114,3 +114,74 @@ pub enum AttestationEvent {
         is_transient: bool,
     },
 }
+
+/// Map an [`AttestationEvent`] into the actor-loop carrier tuple.
+///
+/// Threads `shape`, `freshness`, and `orchestrated_components` from
+/// [`AttestationEvent::Verified`] through to the persisted [`AttestationRecord`].
+/// (Closes RED-09 / RED-11 actor-loop drop — Phase 34.1.)
+///
+/// Return shape mirrors the inline destructure that previously lived at
+/// `lib.rs:7411-7464`:
+/// - `String` — backend_id
+/// - [`AttestationStatus`] — status (still unit `Verified` for now; struct-variant promotion is 34.1-02)
+/// - `Option<(AttestationRecord, report_blob, tls_public_key_fp, vcek_url, vcek_der)>` — `Some` on Verified, `None` on Failed
+/// - `bool` — `failed_is_transient`
+pub fn map_event_to_record_and_status(
+    event: AttestationEvent,
+    now_secs: u64,
+) -> (
+    String,
+    AttestationStatus,
+    Option<(
+        AttestationRecord,
+        Vec<u8>,
+        Option<String>,
+        Option<String>,
+        Option<Vec<u8>>,
+    )>,
+    bool,
+) {
+    match event {
+        AttestationEvent::Verified {
+            backend_id,
+            tee_type,
+            report_blob,
+            expires_at,
+            tls_public_key_fp,
+            vcek_url,
+            vcek_der,
+            shape,
+            freshness,
+            orchestrated_components,
+        } => {
+            let record = AttestationRecord {
+                backend_id: backend_id.clone(),
+                tee_type,
+                status: AttestationStatus::Verified,
+                report_blob: report_blob.clone(),
+                verified_at: now_secs,
+                expires_at,
+                shape: shape.clone(),
+                freshness: freshness.clone(),
+                orchestrated_components: orchestrated_components.clone(),
+            };
+            (
+                backend_id,
+                AttestationStatus::Verified,
+                Some((record, report_blob, tls_public_key_fp, vcek_url, vcek_der)),
+                false,
+            )
+        }
+        AttestationEvent::Failed {
+            backend_id,
+            reason,
+            is_transient,
+        } => (
+            backend_id,
+            AttestationStatus::Failed { reason },
+            None,
+            is_transient,
+        ),
+    }
+}
