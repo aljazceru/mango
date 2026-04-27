@@ -392,7 +392,7 @@ fn attestation_demo_step<'a>(
         &state.onboarding.attestation_result
     {
         match result {
-            AttestationStatus::Verified => {
+            AttestationStatus::Verified { .. } => {
                 let tee_label = state
                     .onboarding
                     .attestation_tee_label
