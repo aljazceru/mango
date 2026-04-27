@@ -14,7 +14,7 @@
 use rusqlite::Connection;
 
 use super::error::AttestationError;
-use super::{AttestationRecord, AttestationStatus};
+use super::{AttestationRecord, AttestationStatus, OrchestratedComponent};
 
 /// SQLite-backed attestation result cache.
 ///
@@ -58,7 +58,8 @@ impl<'a> AttestationCache<'a> {
         let mut stmt = self
             .conn
             .prepare_cached(
-                "SELECT status, report_blob, verified_at, expires_at
+                "SELECT status, report_blob, verified_at, expires_at,
+                        shape, freshness, orchestrated_components
                  FROM attestation_cache
                  WHERE backend_id = ?1 AND tee_type = ?2 AND expires_at > ?3",
             )
@@ -71,16 +72,40 @@ impl<'a> AttestationCache<'a> {
             let report_blob: Vec<u8> = row.get(1)?;
             let verified_at: i64 = row.get(2)?;
             let expires_at: i64 = row.get(3)?;
+            let shape: Option<String> = row.get(4)?;
+            let freshness: Option<String> = row.get(5)?;
+            let components_json: Option<String> = row.get(6)?;
+            let orchestrated_components: Option<Vec<(String, String)>> = components_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok());
+
+            let status = if status_str == "verified" || status_str == "provider_verified" {
+                AttestationStatus::Verified {
+                    shape: shape.clone(),
+                    freshness: freshness.clone(),
+                    orchestrated_components: orchestrated_components.as_ref().map(|v| {
+                        v.iter()
+                            .map(|(label, value)| OrchestratedComponent {
+                                label: label.clone(),
+                                value: value.clone(),
+                            })
+                            .collect()
+                    }),
+                }
+            } else {
+                deserialize_status(&status_str)
+            };
+
             Ok(AttestationRecord {
                 backend_id: backend_id.to_string(),
                 tee_type: tee_type.to_string(),
-                status: deserialize_status(&status_str),
+                status,
                 report_blob,
                 verified_at: verified_at as u64,
                 expires_at: expires_at as u64,
-                shape: None,
-                freshness: None,
-                orchestrated_components: None,
+                shape,
+                freshness,
+                orchestrated_components,
             })
         });
 
@@ -111,7 +136,8 @@ impl<'a> AttestationCache<'a> {
         let mut stmt = self
             .conn
             .prepare_cached(
-                "SELECT tee_type, status, report_blob, verified_at, expires_at
+                "SELECT tee_type, status, report_blob, verified_at, expires_at,
+                        shape, freshness, orchestrated_components
                  FROM attestation_cache
                  WHERE backend_id = ?1 AND expires_at > ?2
                  ORDER BY verified_at DESC
@@ -127,16 +153,40 @@ impl<'a> AttestationCache<'a> {
             let report_blob: Vec<u8> = row.get(2)?;
             let verified_at: i64 = row.get(3)?;
             let expires_at: i64 = row.get(4)?;
+            let shape: Option<String> = row.get(5)?;
+            let freshness: Option<String> = row.get(6)?;
+            let components_json: Option<String> = row.get(7)?;
+            let orchestrated_components: Option<Vec<(String, String)>> = components_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok());
+
+            let status = if status_str == "verified" || status_str == "provider_verified" {
+                AttestationStatus::Verified {
+                    shape: shape.clone(),
+                    freshness: freshness.clone(),
+                    orchestrated_components: orchestrated_components.as_ref().map(|v| {
+                        v.iter()
+                            .map(|(label, value)| OrchestratedComponent {
+                                label: label.clone(),
+                                value: value.clone(),
+                            })
+                            .collect()
+                    }),
+                }
+            } else {
+                deserialize_status(&status_str)
+            };
+
             Ok(AttestationRecord {
                 backend_id: backend_id.to_string(),
                 tee_type,
-                status: deserialize_status(&status_str),
+                status,
                 report_blob,
                 verified_at: verified_at as u64,
                 expires_at: expires_at as u64,
-                shape: None,
-                freshness: None,
-                orchestrated_components: None,
+                shape,
+                freshness,
+                orchestrated_components,
             })
         });
 
@@ -157,8 +207,9 @@ impl<'a> AttestationCache<'a> {
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO attestation_cache
-                 (backend_id, tee_type, status, report_blob, verified_at, expires_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (backend_id, tee_type, status, report_blob, verified_at, expires_at,
+                  shape, freshness, orchestrated_components)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 rusqlite::params![
                     record.backend_id,
                     record.tee_type,
@@ -166,6 +217,12 @@ impl<'a> AttestationCache<'a> {
                     record.report_blob,
                     record.verified_at as i64,
                     record.expires_at as i64,
+                    record.shape.as_deref(),
+                    record.freshness.as_deref(),
+                    record
+                        .orchestrated_components
+                        .as_ref()
+                        .and_then(|v| serde_json::to_string(v).ok()),
                 ],
             )
             .map_err(|e| AttestationError::CacheFailed {
@@ -222,6 +279,10 @@ fn serialize_status(s: &AttestationStatus) -> String {
 ///
 /// Backward compat: "provider_verified" rows from existing SQLite databases
 /// are mapped to `Verified` (the distinction no longer exists).
+///
+/// Non-row-mapper fallback: returns Verified with None subfields. Row-mapper
+/// paths in get/get_latest_for_backend construct Verified directly from columns
+/// (shape, freshness, orchestrated_components) so the fields survive round-trip.
 #[allow(dead_code)]
 fn deserialize_status(s: &str) -> AttestationStatus {
     match s {
