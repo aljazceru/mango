@@ -426,6 +426,108 @@ fn test_get_directory_bookmark_null_blob_returns_none() {
     );
 }
 
+// ── Phase 32 Plan 09 tests — file-format extractors + size cap ───────────────
+//
+// Behavioural tests for `extract_text_from_file` covering the formats added
+// by gap-closure plan 32-09: .docx, .epub, .html, .rtf, plus the 20 MiB size
+// cap that short-circuits before any parser allocates.
+//
+// Fixtures live in `rust/src/tests/fixtures/`:
+// - sample.docx — generated via docx-rs at fixture-build time, contains the
+//   canary "directory sync canary" inside a single paragraph run.
+// - sample.epub — minimal hand-built EPUB 3.0 with one chapter whose body
+//   contains "<p>directory sync canary</p>".
+// - sample.html — exact bytes:
+//     <html><body><p>directory sync <b>canary</b></p><script>alert(1)</script></body></html>
+// - sample.rtf  — exact bytes: {\rtf1\ansi directory sync canary }
+
+const FIXTURE_DOCX: &[u8] = include_bytes!("fixtures/sample.docx");
+const FIXTURE_EPUB: &[u8] = include_bytes!("fixtures/sample.epub");
+const FIXTURE_HTML: &[u8] = include_bytes!("fixtures/sample.html");
+const FIXTURE_RTF: &[u8] = include_bytes!("fixtures/sample.rtf");
+
+#[test]
+fn test_extract_docx_returns_body_text() {
+    let out = crate::rag::extract_text_from_file("sample.docx", FIXTURE_DOCX)
+        .expect("docx extract must succeed");
+    assert!(
+        out.contains("directory sync canary"),
+        "docx output missing canary text: <<{}>>",
+        out
+    );
+}
+
+#[test]
+fn test_extract_epub_returns_chapter_text() {
+    let out = crate::rag::extract_text_from_file("sample.epub", FIXTURE_EPUB)
+        .expect("epub extract must succeed");
+    assert!(
+        out.contains("directory sync canary"),
+        "epub output missing canary text: <<{}>>",
+        out
+    );
+}
+
+#[test]
+fn test_extract_html_strips_tags() {
+    let out = crate::rag::extract_text_from_file("sample.html", FIXTURE_HTML)
+        .expect("html extract must succeed");
+    assert!(
+        out.contains("directory sync") && out.contains("canary"),
+        "html output missing canary text: <<{}>>",
+        out
+    );
+    assert!(
+        !out.contains("<p>"),
+        "html output must not contain raw <p> tag: <<{}>>",
+        out
+    );
+    assert!(
+        !out.contains("<script>"),
+        "html output must not contain raw <script> tag: <<{}>>",
+        out
+    );
+    assert!(
+        !out.contains("alert(1)"),
+        "html output must not leak script body alert(1): <<{}>>",
+        out
+    );
+}
+
+#[test]
+fn test_extract_rtf_returns_plain_text() {
+    let out = crate::rag::extract_text_from_file("sample.rtf", FIXTURE_RTF)
+        .expect("rtf extract must succeed");
+    assert!(
+        out.contains("directory sync canary"),
+        "rtf output missing canary text: <<{}>>",
+        out
+    );
+}
+
+#[test]
+fn test_extract_size_cap_returns_error() {
+    // Synthetic 25 MiB payload — size cap (20 MiB) must reject before any
+    // parser is invoked. We pretend the file is .docx so that, absent the
+    // cap, the docx parser would otherwise be exercised.
+    let huge = vec![0u8; 25 * 1024 * 1024];
+    let result = crate::rag::extract_text_from_file("huge.docx", &huge);
+    assert!(result.is_err(), "size-cap must reject 25 MiB input");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("too large") || msg.contains("size cap"),
+        "size-cap error message must mention size: <<{}>>",
+        msg
+    );
+}
+
+#[test]
+fn test_extract_size_cap_constant_value() {
+    // Compile-time pin: any future tweak to MAX_EXTRACT_INPUT_BYTES should
+    // be a deliberate decision reflected here too.
+    assert_eq!(crate::rag::MAX_EXTRACT_INPUT_BYTES, 20 * 1024 * 1024);
+}
+
 /// Phase 32 Plan 07: centralised relative-time labels render identically
 /// across desktop/iOS/Android. Pure function — no actor, no DB.
 #[test]
