@@ -62,8 +62,11 @@
 - [x] **Phase 29: Wire VectorIndex DEK End-to-End** - DEK wired from auth handlers through ActorState to all VectorIndex call sites (completed 2026-04-09)
 - [x] **Phase 30: Milestone Verification & Requirements Sync** - Close MEM-03 orphan, regenerate UniFFI bindings, sync REQUIREMENTS.md checkboxes (in progress) (completed 2026-04-20)
 - [x] **Phase 31: Multimodal image attachments** - Camera/gallery on iOS+Android, file picker on Desktop, base64 data URL encoding to LLM (completed 2026-04-19)
-- [ ] **Phase 32: Directory-based RAG ingestion** - Directory sources with periodic sync, glob exclusions, cross-platform folder permissions (in progress)
-- [ ] **Phase 34: Integrate Redpill (api.redpill.ai) as TEE-attested LLM aggregator** - Three response shapes (Phala-flat / Phala-orchestrated 3-quote / Chutes), reusing Venice REPORTDATA decoder, no new crates
+- [x] **Phase 32: Directory-based RAG ingestion** - Directory sources with periodic sync, glob exclusions, cross-platform folder permissions, .docx/.epub/.html/.rtf extractors with 20MiB size cap (completed 2026-05-07)
+- [x] **Phase 33: Integrate Venice.ai as TEE-attested LLM provider** - TDX+NRAS attestation + ECDH(secp256k1)+HKDF+AES-256-GCM E2EE channel (completed 2026-04-26)
+- [x] **Phase 34: Integrate Redpill (api.redpill.ai) as TEE-attested LLM aggregator** - Three response shapes (Phala-flat / Phala-orchestrated 3-quote / Chutes), reusing Venice REPORTDATA decoder, no new crates (completed 2026-04-26)
+- [x] **Phase 34.1: Plumb shape/freshness/orchestrated_components through UniFFI + native trust UI** - Closes RED-09 + RED-11 actor-loop drop on Android, iOS, Desktop iced (completed 2026-04-27)
+- [ ] **Phase 35: Add contextvm-sdk for Nostr-based tool discovery** - Integrate contextvm-sdk crate to discover and use tools advertised over Nostr
 
 ## Phase Details
 
@@ -259,7 +262,7 @@ Plans:
 **Goal:** Users can add a whole directory (e.g. an Obsidian vault) as a RAG source with glob-based exclusion patterns, automatic incremental re-sync across launches (added/modified/deleted files picked up via mtime+size fingerprints), and cross-platform folder-permission lifecycle (iOS security-scoped bookmarks, Android persistable SAF tree URIs, Desktop paths with notify watcher + 5-min fallback). UI delivers source list with relative last-synced time, add/remove source with confirmation, exclusion editor with live validation, and manual Sync Now.
 **Requirements**: DIR-01, DIR-02, DIR-03, DIR-04, DIR-05, DIR-06
 **Depends on:** Phase 31
-**Plans:** 7/7 plans complete
+**Plans:** 9/9 plans complete
 
 Plans:
 - [x] 32-01-PLAN.md — Migration V18 (directory_sources + directory_files) + CRUD queries
@@ -269,6 +272,8 @@ Plans:
 - [x] 32-05-PLAN.md — iOS SwiftUI + UIDocumentPickerViewController + .minimalBookmark lifecycle + ScenePhase sync + iCloud placeholder skip
 - [x] 32-06-PLAN.md — Android Compose + OpenDocumentTree + takePersistableUriPermission + bulk DocumentsContract traversal + WorkManager 15-min + onResume sync
 - [x] 32-07-PLAN.md — Cross-platform UX polish: relative-time labels, sync-status pills, settings entry, reused IngestionProgress
+- [x] 32-08-PLAN.md — Cold-launch bookmark rehydration: CoreMsg::GetDirectoryBookmark + FfiApp::get_directory_bookmark, AppManager wiring (closes HI-01)
+- [x] 32-09-PLAN.md — File format extractors: .docx (docx-rs), .epub (epub), .html (scraper+html2text), .rtf (rtf-parser) + 20MiB MAX_EXTRACT_INPUT_BYTES size cap (DIR-05 gap closure)
 
 ### Phase 33: Integrate Venice.ai as TEE-attested LLM provider with client-side TDX + NVIDIA NRAS verification and ECDH+AES-GCM E2EE handshake
 
@@ -316,11 +321,21 @@ Plans:
 **Plans:** 7 plans
 
 Plans:
-- [ ] 34.1-01-PLAN.md — Actor-loop wiring: extract map_event_to_record_and_status helper, extend AttestationRecord with three new Option fields, stop dropping the values, unit test threading per shape
-- [ ] 34.1-02-PLAN.md — UniFFI AttestationStatus::Verified promoted to struct variant + OrchestratedComponent record + compile-driven sweep across ~15 Rust sites + regenerate Kotlin/Swift bindings
-- [ ] 34.1-03-PLAN.md — SQLite MIGRATION_V19 (three nullable TEXT columns) + AttestationCache put/get extensions + round-trip and pre-V19 backward-compat tests
-- [ ] 34.1-04-PLAN.md — Android: render freshness + orchestrated breakdown sub-lines in SettingsProvidersScreen.kt (UI-SPEC locked copy); compile-fix sweep in AttestationBadge/ChatScreen/OnboardingScreen
-- [ ] 34.1-05-PLAN.md — iOS: mirror in SettingsProvidersView.swift; compile-fix sweep in AttestationBadgeView/AppColors/ChatView/ModelPickerView/OnboardingView
-- [ ] 34.1-06-PLAN.md — Desktop iced: mirror in views/settings_providers.rs; compile-fix sweep in widgets/attestation_badge / views/chat / views/onboarding
-- [ ] 34.1-07-PLAN.md — Cleanup: confirm stale comment is gone, update Phase 34 SUMMARY with FULL closure note, update STATE.md
+- [x] 34.1-01-PLAN.md — Actor-loop wiring: extract map_event_to_record_and_status helper, extend AttestationRecord with three new Option fields, stop dropping the values, unit test threading per shape
+- [x] 34.1-02-PLAN.md — UniFFI AttestationStatus::Verified promoted to struct variant + OrchestratedComponent record + compile-driven sweep across ~15 Rust sites + regenerate Kotlin/Swift bindings
+- [x] 34.1-03-PLAN.md — SQLite MIGRATION_V19 (three nullable TEXT columns) + AttestationCache put/get extensions + round-trip and pre-V19 backward-compat tests
+- [x] 34.1-04-PLAN.md — Android: render freshness + orchestrated breakdown sub-lines in SettingsProvidersScreen.kt (UI-SPEC locked copy); compile-fix sweep in AttestationBadge/ChatScreen/OnboardingScreen
+- [x] 34.1-05-PLAN.md — iOS: mirror in SettingsProvidersView.swift; compile-fix sweep in AttestationBadgeView/AppColors/ChatView/ModelPickerView/OnboardingView
+- [x] 34.1-06-PLAN.md — Desktop iced: mirror in views/settings_providers.rs; compile-fix sweep in widgets/attestation_badge / views/chat / views/onboarding
+- [x] 34.1-07-PLAN.md — Cleanup: confirm stale comment is gone, update Phase 34 SUMMARY with FULL closure note, update STATE.md
 **UI hint**: yes
+
+### Phase 35: Add contextvm-sdk for Nostr-based tool discovery
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 34
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 35 to break down)
