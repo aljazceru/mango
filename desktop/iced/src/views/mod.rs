@@ -8,3 +8,4 @@ pub mod onboarding;
 pub mod settings;
 pub mod settings_defaults;
 pub mod settings_providers;
+pub mod tool_discovery;
