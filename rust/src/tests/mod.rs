@@ -10,6 +10,7 @@ mod backend_config;
 mod chat;
 mod chat_tools;
 pub mod common;
+mod contextvm;
 mod crypto;
 mod desktop_locked_new_conv;
 mod directory_rag;
