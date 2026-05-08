@@ -224,6 +224,25 @@ pub fn build_chat_tools(
         .collect()
 }
 
+/// Phase 35 (CTX-05) extension of `build_chat_tools` that appends remote
+/// contextvm tool descriptors to the OpenAI-compatible `tools` array.
+///
+/// The caller (the actor in Plan 35-05) is responsible for having already
+/// run `crate::contextvm::finalise_for_turn` over `remote_descriptors` so
+/// that reserved-name collisions are filtered, the 8-tool cap is honoured,
+/// and the descriptor list is sorted by `last_seen_at DESC` then alphabetic.
+/// This function does NOT re-filter; it is a pure append helper.
+pub fn build_chat_tools_with_contextvm(
+    include_doc_search: bool,
+    brave_api_key_set: bool,
+    remote_descriptors: &[crate::contextvm::ContextvmToolDescriptor],
+) -> Vec<ChatCompletionTools> {
+    let mut tools = build_chat_tools(include_doc_search, brave_api_key_set);
+    let remote = crate::contextvm::descriptors_to_chat_tools(remote_descriptors);
+    tools.extend(remote);
+    tools
+}
+
 /// Dispatch tool calls synchronously on the actor thread.
 ///
 /// Returns a Vec of `(tool_call_id, result_text)` pairs. One pair per call in `calls`.
@@ -254,6 +273,8 @@ pub fn dispatch_tools(
     runtime: &tokio::runtime::Runtime,
     data_dir: &str,
     brave_api_key: &str,
+    contextvm_map: &std::collections::HashMap<String, crate::contextvm::ContextvmToolDescriptor>,
+    secret_key_hex: &str,
 ) -> Vec<(String, String)> {
     let mut results = Vec::with_capacity(calls.len());
 
@@ -272,6 +293,20 @@ pub fn dispatch_tools(
             "fetch_url" => dispatch_fetch_url(args_str, runtime),
             "file" => dispatch_file(args_str, data_dir),
             "calculate" => dispatch_calculate(args_str),
+            // Phase 35: remote tool fallback runs AFTER local arms,
+            // BEFORE the unknown error. Locals always win on collision
+            // by virtue of match-arm precedence; finalise_for_turn also
+            // filters reserved names at assembly time so a remote tool
+            // with a shadowed name can never reach this fallback.
+            name if contextvm_map.contains_key(name) => {
+                let desc = contextvm_map.get(name).expect("contains_key");
+                runtime.block_on(crate::contextvm::invoke_tool(
+                    secret_key_hex,
+                    &desc.provider_pubkey_hex,
+                    name,
+                    args_str,
+                ))
+            }
             unknown => {
                 format!("Error: unknown tool '{}'", unknown)
             }

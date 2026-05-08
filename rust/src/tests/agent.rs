@@ -437,7 +437,17 @@ fn test_dispatch_all_known_tools() {
                 arguments: "{}".to_string(),
             },
         };
-        let results = dispatch_tools(&[call], db.conn(), &index, &provider, &rt, "", "");
+        let results = dispatch_tools(
+            &[call],
+            db.conn(),
+            &index,
+            &provider,
+            &rt,
+            "",
+            "",
+            &std::collections::HashMap::new(),
+            "",
+        );
         assert_eq!(results.len(), 1);
         // Should NOT contain "unknown tool"
         assert!(
@@ -762,7 +772,17 @@ fn test_dispatch_tools_malformed_args_no_panic() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     // Must not panic -- malformed JSON must produce an error string
-    let results = dispatch_tools(&[malformed_call], db.conn(), &index, &provider, &rt, "", "");
+    let results = dispatch_tools(
+        &[malformed_call],
+        db.conn(),
+        &index,
+        &provider,
+        &rt,
+        "",
+        "",
+        &std::collections::HashMap::new(),
+        "",
+    );
 
     assert_eq!(
         results.len(),
