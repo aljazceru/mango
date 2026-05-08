@@ -335,7 +335,16 @@ Plans:
 **Goal:** Users can discover and invoke remote tools advertised over Nostr via the `contextvm-sdk` crate — a "tool marketplace" extension of the existing local tool dispatch (Phase 22 / Phase 27). Settings → Tools gains a "Discover tools" button (opens a list of currently-announced tools with per-tool enable toggles, persisted across launches) and an "Automatically discover and use tools" checkbox (defaults off; when on, the app pulls announcements and offers them to the LLM without manual selection). Discovered tools route through the same OpenAI-compatible `tools` array and dispatch path as local tools — no parallel subsystem. Ships on Android (Compose) and Desktop (iced); iOS deferred. Relay set = contextvm-sdk defaults plus `relay.nostr.net`. All deps pure-Rust, no OpenSSL. Failures (relay unreachable, malformed announcement, invocation error) degrade gracefully — never crash the conversation.
 **Requirements**: CTX-01 (contextvm-sdk integrated, pure-Rust, no OpenSSL), CTX-02 (Settings → Tools "Discover tools" row + screen on Android & Desktop), CTX-03 (per-tool enable persisted across launches), CTX-04 (Settings → Tools "Automatically discover and use tools" toggle, defaults off, persisted), CTX-05 (enabled tools surface in OpenAI-compatible `tools` array via existing dispatch path), CTX-06 (invocation routes through Nostr; result returned to LLM as a tool-call response), CTX-07 (relay set = contextvm-sdk defaults + `relay.nostr.net`), CTX-08 (graceful degradation on relay/announcement/invocation failure), CTX-09 (UniFFI bindings regenerated for all 3 platforms; iOS Swift UI deferred but bindings updated), CTX-10 (tool-call provenance — agent step summary surfaces remote-vs-local origin)
 **Depends on:** Phase 34 (architectural baseline; functional dependency is on Phase 22 agent tools + Phase 24 Settings TOOLS section + Phase 27 per-conversation tools toggle)
-**Plans:** 0 plans
+**Plans:** 10 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 35 to break down)
+- [ ] 35-00-PLAN.md — Wave 0: Cargo dep + openssl-sys audit + 10 ignored test stubs (one per CTX-NN)
+- [ ] 35-01-PLAN.md — Wave 1: MIGRATION_V20 (contextvm_tools table + agent_steps.tool_origin) + 6 CRUD queries
+- [ ] 35-02-PLAN.md — Wave 1: Discovery service (DEFAULT_CONTEXTVM_RELAYS, discover_servers/_tools_for_server/_all, ContextvmError)
+- [ ] 35-03-PLAN.md — Wave 1: Invocation service via NostrMCPProxy + persistent Nostr key + truncation/timeout/error formatting
+- [ ] 35-04-PLAN.md — Wave 2: Dispatch routing (ContextvmToolDescriptor, RESERVED_LOCAL_NAMES, 8-tool cap, 500-char description cap, build_chat_tools_with_contextvm, dispatch_tools fallback arm)
+- [ ] 35-05-PLAN.md — Wave 2: AppActions (4) + handlers + AppState fields + ActorState hydration + auto-discover hook + AgentStepSummary.tool_origin + UniFFI types
+- [ ] 35-06-PLAN.md — Wave 3: Android (Compose) — Settings rows + SettingsToolDiscoveryScreen.kt with 5 states + Remote provenance badge in AgentScreen
+- [ ] 35-07-PLAN.md — Wave 3: Desktop (iced) — Settings rows + views/tool_discovery.rs with 5 states + Remote provenance label in agents.rs build_step_row
+- [ ] 35-08-PLAN.md — Wave 3: UniFFI Swift bindings regenerated (iOS UI deferred per CONTEXT D-06; bindings still ship)
+- [ ] 35-09-PLAN.md — Wave 4: Live discovery integration test + full cargo test regression + Android NDK + iOS cross-compile + openssl-sys re-audit
