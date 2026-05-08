@@ -503,6 +503,12 @@ fn build_step_row<'a>(
 
     if let Some(tool_name) = &step.tool_name {
         header_row = header_row.push(text(tool_name).size(13).color(text_dim));
+        // Phase 35 (CTX-10) — provenance label for remote (Nostr-discovered)
+        // tools. Local tools render no badge per UI-SPEC §I.
+        if step.tool_origin.as_deref() == Some("contextvm") {
+            header_row = header_row.push(iced::widget::Space::new().width(6));
+            header_row = header_row.push(text("Remote").size(11).color(muted));
+        }
     }
 
     let destructive = vc.destructive;
