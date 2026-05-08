@@ -10,6 +10,7 @@ use zeroize::Zeroizing;
 
 pub mod agent;
 mod attestation;
+mod contextvm;
 pub mod crypto;
 pub mod embedding;
 mod llm;
