@@ -351,10 +351,14 @@ Plans:
 
 ### Phase 36: Cache discovered contextvm tools, tap-for-detail (npub + metadata), search across cached tools, and surface previously-invoked tools — Android primary, Desktop secondary
 
-**Goal:** [To be planned]
-**Requirements**: TBD
+**Goal:** Tool Discovery sub-screen renders cached contextvm tools instantly on open (cache-first hydration before background refresh), supports an always-visible live search across name/description/provider, surfaces a "Used N×" muted badge on previously-invoked tools (computed from agent_steps), and adds a tappable detail screen showing npub bech32, full description, USAGE section, pretty-printed schema expander, and Tool ID — all on Android (Compose primary) and Desktop (iced secondary). iOS UI deferred; UniFFI Swift bindings still ship.
+**Requirements**: CTX36-CACHE-01, CTX36-SEARCH-01, CTX36-DETAIL-01, CTX36-USED-01, CTX36-NPUB-01, CTX36-LABELS-01, CTX36-NAV-01
 **Depends on:** Phase 35
-**Plans:** 0 plans
+**Plans:** 2/4 plans executed
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 36 to break down)
+- [x] 36-00-PLAN.md — Wave 0: add nostr direct dep + 6 ignored RED test stubs (aggregate, npub, fields shape) + relative_time_label weeks RED cases + cargo-tree openssl audit
+- [x] 36-01-PLAN.md — Wave 1: Rust core — npub.rs encoder, weeks branch in relative_time_label, fetch_contextvm_tool_usage_rows query + aggregate_contextvm_tool_usage helper, DiscoverableTool +7 fields, row_to_discoverable_tool refactor, agent-loop hook, Screen::ContextvmToolDetail variant, UniFFI Kotlin/Swift bindings regen
+- [ ] 36-02-PLAN.md — Wave 2a: Android Compose — extend SettingsToolDiscoveryScreen.kt (search field, cache-first render, Used N× badge, chevron, whole-row click) + new SettingsToolDetailScreen.kt + MainApp.kt nav arm + Snackbar copy confirmations
+- [ ] 36-03-PLAN.md — Wave 2b: Desktop iced — extend tool_discovery.rs (text_input search, cache-first, badge, chevron, whole-row button) + new tool_detail.rs + main.rs UI-state fields + Messages + overlay arm + inline status copy confirmations
+**UI hint**: yes

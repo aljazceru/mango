@@ -1,5 +1,6 @@
 package dev.disobey.mango.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,9 +14,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -24,12 +28,19 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -39,12 +50,22 @@ import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.ContextvmDiscoveryState
 import dev.disobey.mango.rust.DiscoverableTool
+import dev.disobey.mango.rust.Screen
 
 /**
- * Phase 35 — Tool Discovery sub-screen.
+ * Phase 35 + Phase 36 — Tool Discovery sub-screen.
  *
- * Renders all 5 UI-SPEC states (Idle, Loading, Empty, Error, Loaded) per
- * 35-UI-SPEC §C–§G. All copy strings are locked verbatim from UI-SPEC.
+ * Phase 35 baseline: 5 UI-SPEC states (Idle, Loading, Empty, Error, Loaded)
+ * with locked copy strings.
+ *
+ * Phase 36 additions (UI-SPEC §Layout / §States J–M):
+ * - Always-visible search field below the TopAppBar (placeholder "Search tools").
+ * - Cache-first render: while a refresh is in flight, the cached list is
+ *   shown immediately; the spinner only renders when the cache is empty.
+ * - "Used N×" muted pill on rows where `tool.usageCount > 0`.
+ * - Trailing chevron on every row.
+ * - Whole-row tap (excluding the Switch) navigates to the new
+ *   `Screen.ContextvmToolDetail(toolId)` detail screen.
  *
  * Threat model:
  * - Untrusted tool descriptions (sourced from Nostr announcements) are
@@ -54,6 +75,9 @@ import dev.disobey.mango.rust.DiscoverableTool
  * - "Try again" / Refresh actions dispatch `RetryContextvmDiscovery`; the
  *   Rust core dedups concurrent discovery requests so spam-tapping is a
  *   no-op while a query is in flight.
+ * - Search filter is a pure in-memory `String.contains` over the
+ *   already-loaded `AppState.contextvmTools` vector — no DB query, no
+ *   substitution surface for SQL meta-chars (T-36-02-V1).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,11 +86,36 @@ fun SettingsToolDiscoveryScreen(
     onDispatch: (AppAction) -> Unit,
     onBack: () -> Unit = { onDispatch(AppAction.PopScreen) },
 ) {
+    // Phase 36: search query state, hoisted at the top so it survives
+    // recomposition across discovery state transitions.
+    var query by remember { mutableStateOf("") }
+
     // Auto-fire discovery on first composition (UI-SPEC §C "pull on open").
+    // The Rust core preserves the cached `contextvm_tools` list across the
+    // Loading transition, so the UI can render cached rows immediately.
     LaunchedEffect(Unit) {
         onDispatch(AppAction.DiscoverContextvmTools)
     }
+
     val isLoading = appState.contextvmDiscoveryState is ContextvmDiscoveryState.Loading
+
+    // Phase 36: live filter, no debounce. Cardinality is bounded by Nostr
+    // discovery (tens, not thousands) — O(N) substring scan per keystroke
+    // is trivially fast (T-36-02-D1 accepted).
+    val filteredTools by remember(appState.contextvmTools, query) {
+        derivedStateOf {
+            val q = query.trim().lowercase()
+            if (q.isEmpty()) {
+                appState.contextvmTools
+            } else {
+                appState.contextvmTools.filter { tool ->
+                    tool.name.lowercase().contains(q) ||
+                        tool.description.lowercase().contains(q) ||
+                        (tool.providerDisplayName ?: "").lowercase().contains(q)
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -88,33 +137,82 @@ fun SettingsToolDiscoveryScreen(
             )
         },
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-            contentAlignment = Alignment.Center,
         ) {
-            when (appState.contextvmDiscoveryState) {
-                is ContextvmDiscoveryState.Idle,
-                is ContextvmDiscoveryState.Loading -> LoadingState()
-                is ContextvmDiscoveryState.Error -> ErrorState(
-                    onRetry = { onDispatch(AppAction.RetryContextvmDiscovery) },
-                )
-                is ContextvmDiscoveryState.Loaded -> {
-                    if (appState.contextvmTools.isEmpty()) {
-                        EmptyState(onRetry = { onDispatch(AppAction.RetryContextvmDiscovery) })
-                    } else {
-                        ToolList(
-                            tools = appState.contextvmTools,
-                            onToggle = { tool, enabled ->
-                                onDispatch(
-                                    AppAction.SetContextvmToolEnabled(
-                                        toolId = tool.id,
-                                        enabled = enabled,
+            // Phase 36 §L — search field rendered in EVERY discovery state.
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("Search tools") },
+                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                when (appState.contextvmDiscoveryState) {
+                    is ContextvmDiscoveryState.Idle,
+                    is ContextvmDiscoveryState.Loading -> {
+                        // Phase 36 cache-first: render cached rows during in-flight
+                        // refresh. Only show the spinner when the cache is empty.
+                        if (appState.contextvmTools.isEmpty()) {
+                            LoadingState()
+                        } else {
+                            ToolListOrEmptySearch(
+                                tools = filteredTools,
+                                query = query,
+                                onToggle = { tool, enabled ->
+                                    onDispatch(
+                                        AppAction.SetContextvmToolEnabled(
+                                            toolId = tool.id,
+                                            enabled = enabled,
+                                        )
                                     )
-                                )
-                            },
-                        )
+                                },
+                                onRowTap = { tool ->
+                                    onDispatch(
+                                        AppAction.PushScreen(
+                                            screen = Screen.ContextvmToolDetail(toolId = tool.id),
+                                        )
+                                    )
+                                },
+                            )
+                        }
+                    }
+                    is ContextvmDiscoveryState.Error -> ErrorState(
+                        onRetry = { onDispatch(AppAction.RetryContextvmDiscovery) },
+                    )
+                    is ContextvmDiscoveryState.Loaded -> {
+                        if (appState.contextvmTools.isEmpty()) {
+                            EmptyState(onRetry = { onDispatch(AppAction.RetryContextvmDiscovery) })
+                        } else {
+                            ToolListOrEmptySearch(
+                                tools = filteredTools,
+                                query = query,
+                                onToggle = { tool, enabled ->
+                                    onDispatch(
+                                        AppAction.SetContextvmToolEnabled(
+                                            toolId = tool.id,
+                                            enabled = enabled,
+                                        )
+                                    )
+                                },
+                                onRowTap = { tool ->
+                                    onDispatch(
+                                        AppAction.PushScreen(
+                                            screen = Screen.ContextvmToolDetail(toolId = tool.id),
+                                        )
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -181,20 +279,44 @@ private fun ErrorState(onRetry: () -> Unit) {
     }
 }
 
+/**
+ * Phase 36 §M — renders either the filtered tool list or the centered
+ * "No tools match \"{query}\"" caption when a non-empty query yields no
+ * results.
+ */
 @Composable
-private fun ToolList(
+private fun ToolListOrEmptySearch(
     tools: List<DiscoverableTool>,
+    query: String,
     onToggle: (DiscoverableTool, Boolean) -> Unit,
+    onRowTap: (DiscoverableTool) -> Unit,
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-        contentPadding = PaddingValues(vertical = 8.dp),
-    ) {
-        items(tools, key = { it.id }) { tool ->
-            ToolRow(tool = tool, onToggle = onToggle)
+    if (tools.isEmpty() && query.trim().isNotEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            // Locked copy per UI-SPEC §States M.
+            // Straight ASCII quotes (not curly) — UI-SPEC §Copywriting Contract.
+            Text(
+                "No tools match \"${query}\"",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    } else {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            contentPadding = PaddingValues(vertical = 8.dp),
+        ) {
+            items(tools, key = { it.id }) { tool ->
+                ToolRow(tool = tool, onToggle = onToggle, onRowTap = onRowTap)
+            }
         }
     }
 }
@@ -203,45 +325,86 @@ private fun ToolList(
 private fun ToolRow(
     tool: DiscoverableTool,
     onToggle: (DiscoverableTool, Boolean) -> Unit,
+    onRowTap: (DiscoverableTool) -> Unit,
 ) {
     val providerLabel =
         tool.providerDisplayName ?: (tool.providerPubkey.take(8) + "…")
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            // Phase 36: whole-row tap navigates to the detail screen.
+            // The Switch absorbs its own click via Compose default — toggling
+            // enabled does NOT navigate.
+            .clickable { onRowTap(tool) },
+    ) {
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
                     tool.name,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                if (tool.usageCount > 0u) {
+                    UsedBadge(tool.usageCount)
+                }
+                // Phase 36 §K — trailing chevron on every row.
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Switch(
+                    checked = tool.enabled,
+                    onCheckedChange = { checked -> onToggle(tool, checked) },
+                )
+            }
+            Spacer(Modifier.size(2.dp))
+            Text(
+                providerLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (tool.description.isNotBlank()) {
                 Text(
-                    providerLabel,
+                    tool.description,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                if (tool.description.isNotBlank()) {
-                    Text(
-                        tool.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
             }
-            Spacer(Modifier.width(16.dp))
-            Switch(
-                checked = tool.enabled,
-                onCheckedChange = { checked -> onToggle(tool, checked) },
-            )
         }
+    }
+}
+
+/**
+ * Phase 36 §J — "Used N×" muted pill. Singular "Used 1×", plural
+ * "Used {N}×" with U+00D7 multiplication sign. Visual matches the
+ * Phase 35 `Remote` provenance badge.
+ */
+@Composable
+private fun UsedBadge(count: UInt) {
+    val label = if (count == 1u) "Used 1×" else "Used ${count}×"
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
     }
 }

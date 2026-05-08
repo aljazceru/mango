@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: complete
-stopped_at: Phase 34.1 closed RED-09/RED-11 actor-loop drop; UI sub-lines live on all 3 platforms
-last_updated: "2026-04-27T07:30:00.000Z"
-last_activity: 2026-04-27 — Phase 34.1 plans 34.1-01..34.1-07 complete
+status: verifying
+stopped_at: Phase 36 UI-SPEC approved
+last_updated: "2026-05-08T16:13:13.358Z"
+last_activity: 2026-05-08
 progress:
-  total_phases: 16
-  completed_phases: 15
-  total_plans: 60
+  total_phases: 18
+  completed_phases: 16
+  total_plans: 74
   completed_plans: 65
-  percent: 100
+  percent: 88
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 Phase: 34.1 (close-red-09-and-red-11-actor-loop-drop) — COMPLETE
 Plan: 7 of 7 — done
-Status: All Phase 34/34.1 must-haves FULL; RED-09 and RED-11 closed
-Last activity: 2026-04-27
+Status: Phase complete — ready for verification
+Last activity: 2026-05-08
 
-Progress: [██████████] 100%
+Progress: [█████████░] 88%
 
 ## Performance Metrics
 
@@ -87,6 +87,8 @@ Progress: [██████████] 100%
 | Phase 34.1 P04 | 2min | 2 tasks | 1 files |
 | Phase 34.1 P05 | 3min | 2 tasks | 5 files |
 | Phase 34.1 P06 | 4min | 2 tasks | 5 files |
+| Phase 36 P00 | 7min | 3 tasks | 3 files |
+| Phase 36 P01 | 45min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -163,6 +165,10 @@ Key architectural context for v2.0:
 - 34.1-04: Pre-existing collapsible-card refactor of SettingsProvidersScreen.kt was retained and bundled into the Task 2 commit; sub-lines built on top.
 - [Phase 34.1] Plan 06 — Desktop iced sub-lines + compile-fix sweep complete; OrchestratedComponent re-exported at lib.rs (Rule 3) so iced can name it; right_col switched from column![] macro to mutable Column accumulator for conditional pushes; cargo build -p mango-desktop succeeds.
 - [Phase 34.1]: AttestationStatus::Verified promoted to struct variant carrying shape/freshness/orchestrated_components; SQLite V19 persists them; native UI renders sub-lines under locked UI-SPEC copy on all 3 platforms
+- [Phase ?]: Picked direct nostr 0.43 dep over bech32 0.11 — already transitive, zero new edges
+- [Phase ?]: Wave 0 stub-and-gate pattern: 8 #[ignore] tests panic, Wave 1 un-ignores after implementing
+- [Phase ?]: Phase 36-01: aggregate via pull-and-parse (CONTEXT D-Area-4 SQL not implementable; agent_steps has no tool_name column)
+- [Phase ?]: Phase 36-01: chat-tool path does NOT write agent_steps in v1 - Used N× reflects agent-session uses only; deferred follow-up filed
 
 ### Roadmap Evolution
 
@@ -200,8 +206,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-27T07:30:00.000Z
-Stopped at: Completed 34.1-07-PLAN.md — Phase 34.1 closed
+Last session: 2026-05-08T16:12:56.144Z
+Stopped at: Phase 36 UI-SPEC approved
 Resume file: None
 
 **Planned Phase:** 34.1 (close-red-09-and-red-11-actor-loop-drop) — 7 plans — COMPLETE 2026-04-27
