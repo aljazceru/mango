@@ -66,9 +66,140 @@ fn ctx_05_enabled_tools_appear_in_openai_tools_array() {
 }
 
 #[test]
-#[ignore = "owned by Plan 35-03 (invocation) + Plan 35-04 (dispatch)"]
+#[ignore = "owned by Plan 35-04 (dispatch wiring) — invocation primitive itself \
+            is now covered by the helper-function tests below; un-ignored \
+            when dispatch_tools routes a remote name to invoke_tool"]
 fn ctx_06_invocation_routes_through_nostr_returns_tool_result() {
     unimplemented!("dispatch_tools routes remote name to NostrMCPProxy and returns string");
+}
+
+// ── Plan 35-03 helper unit tests ──────────────────────────────────────
+
+#[test]
+fn test_truncate_result_under_limit_unchanged() {
+    let s = "hello".repeat(100); // ~500 bytes
+    let out = crate::contextvm::invocation::truncate_result(s.clone());
+    assert_eq!(out, s);
+}
+
+#[test]
+fn test_truncate_result_over_limit_appends_marker() {
+    let s = "x".repeat(20_000);
+    let out = crate::contextvm::invocation::truncate_result(s);
+    assert!(
+        out.ends_with("... [truncated]"),
+        "got tail: {:?}",
+        &out[out.len().saturating_sub(40)..]
+    );
+    // Body cap (16 KiB) + marker (15 bytes) is the exact upper bound;
+    // the slack guards against future char-boundary walk-back.
+    assert!(out.len() <= crate::contextvm::MAX_TOOL_RESULT_BYTES + "... [truncated]".len() + 4);
+}
+
+#[test]
+fn test_truncate_result_respects_utf8_boundary() {
+    // Build a string whose exact 16_384th byte sits inside a multi-byte
+    // codepoint. "é" = 2 bytes; pad to push the boundary inside it.
+    let mut s = String::with_capacity(20_000);
+    for _ in 0..(crate::contextvm::MAX_TOOL_RESULT_BYTES / 2) {
+        s.push('é');
+    }
+    s.push_str("tail-payload-tail-payload");
+    // Pre-truncation must not be a valid char_boundary at the cap.
+    let out = crate::contextvm::invocation::truncate_result(s);
+    assert!(out.ends_with("... [truncated]"));
+}
+
+#[test]
+fn test_format_timeout_locked_copy() {
+    let s = crate::contextvm::invocation::format_timeout("get_weather");
+    assert_eq!(s, "Error: tool 'get_weather' timed out (15s)");
+}
+
+#[test]
+fn test_format_jsonrpc_error_locked_copy() {
+    let s = crate::contextvm::invocation::format_jsonrpc_error(-32000, "boom");
+    assert_eq!(s, "Error: -32000: boom");
+}
+
+#[test]
+fn test_load_or_create_secret_key_creates_then_returns_same() {
+    let db = crate::persistence::Database::open(":memory:").unwrap();
+    let k1 =
+        crate::contextvm::invocation::load_or_create_secret_key(db.conn()).unwrap();
+    assert!(!k1.is_empty());
+    // 32-byte secret hex = 64 chars.
+    assert_eq!(k1.len(), 64, "expected 64-char hex secret, got {}", k1.len());
+    // Persisted under the documented key.
+    let raw = crate::persistence::queries::get_setting(db.conn(), "contextvm_secret_key")
+        .unwrap();
+    assert_eq!(raw.as_deref(), Some(k1.as_str()));
+    // Second call must return the SAME hex.
+    let k2 =
+        crate::contextvm::invocation::load_or_create_secret_key(db.conn()).unwrap();
+    assert_eq!(k1, k2);
+}
+
+#[test]
+fn test_decode_response_jsonrpc_error_envelope() {
+    use contextvm_sdk::{JsonRpcError, JsonRpcErrorResponse, JsonRpcMessage};
+    let msg = JsonRpcMessage::ErrorResponse(JsonRpcErrorResponse {
+        jsonrpc: "2.0".to_string(),
+        id: serde_json::json!(1),
+        error: JsonRpcError {
+            code: -32601,
+            message: "method not found".to_string(),
+            data: None,
+        },
+    });
+    let s = crate::contextvm::invocation::decode_response(&msg, "whatever");
+    assert_eq!(s, "Error: -32601: method not found");
+}
+
+#[test]
+fn test_decode_response_success_text_content() {
+    use contextvm_sdk::{JsonRpcMessage, JsonRpcResponse};
+    let msg = JsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        id: serde_json::json!(1),
+        result: serde_json::json!({
+            "content": [{"type": "text", "text": "the answer is 42"}],
+            "isError": false,
+        }),
+    });
+    let s = crate::contextvm::invocation::decode_response(&msg, "x");
+    assert_eq!(s, "the answer is 42");
+}
+
+#[test]
+fn test_decode_response_oversize_text_truncated() {
+    use contextvm_sdk::{JsonRpcMessage, JsonRpcResponse};
+    let big = "y".repeat(20_000);
+    let msg = JsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        id: serde_json::json!(1),
+        result: serde_json::json!({
+            "content": [{"type": "text", "text": big}],
+        }),
+    });
+    let s = crate::contextvm::invocation::decode_response(&msg, "x");
+    assert!(s.ends_with("... [truncated]"));
+    assert!(s.len() <= crate::contextvm::MAX_TOOL_RESULT_BYTES + 32);
+}
+
+#[tokio::test]
+#[ignore = "live network — no public always-on contextvm test tool exists; \
+            skipped by default. Un-ignore manually with a known-good \
+            provider_pubkey + tool_name to smoke-test against real relays."]
+async fn live_invoke_tool_against_known_provider() {
+    let db = crate::persistence::Database::open(":memory:").unwrap();
+    let sk = crate::contextvm::invocation::load_or_create_secret_key(db.conn()).unwrap();
+    // Replace these with a real test fixture before un-ignoring:
+    let provider = "0000000000000000000000000000000000000000000000000000000000000000";
+    let result =
+        crate::contextvm::invocation::invoke_tool(&sk, provider, "echo", "{}").await;
+    // We don't assert content (depends on remote); just non-panic.
+    let _ = result;
 }
 
 #[test]
