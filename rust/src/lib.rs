@@ -2807,6 +2807,12 @@ fn handle_agent_step_complete(
             .unwrap_or(None)
             .unwrap_or_default();
 
+            // TODO(Phase 35-05): replace placeholders with actor-state
+            // `current_conv_contextvm_tools` map and persisted secret key.
+            let _contextvm_map: std::collections::HashMap<
+                String,
+                crate::contextvm::ContextvmToolDescriptor,
+            > = std::collections::HashMap::new();
             let tool_results = agent::dispatch_tools(
                 &calls,
                 actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -2815,6 +2821,8 @@ fn handle_agent_step_complete(
                 &actor_state.runtime,
                 &actor_state.data_dir,
                 &brave_api_key,
+                &_contextvm_map,
+                "",
             );
 
             // Get mutable exec_state
@@ -7820,6 +7828,13 @@ impl FfiApp {
                                 .unwrap_or(None)
                                 .unwrap_or_default();
 
+                                // TODO(Phase 35-05): replace placeholders with
+                                // actor-state `current_conv_contextvm_tools`
+                                // map and persisted secret key.
+                                let _contextvm_map: std::collections::HashMap<
+                                    String,
+                                    crate::contextvm::ContextvmToolDescriptor,
+                                > = std::collections::HashMap::new();
                                 let tool_results = agent::dispatch_tools(
                                     &tool_calls,
                                     actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -7828,6 +7843,8 @@ impl FfiApp {
                                     &actor_state.runtime,
                                     &actor_state.data_dir,
                                     &brave_api_key,
+                                    &_contextvm_map,
+                                    "",
                                 );
 
                                 // Build full message history: original messages + assistant

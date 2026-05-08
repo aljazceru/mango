@@ -60,17 +60,91 @@ fn ctx_04_auto_discover_tools_toggle_persists() {
 }
 
 #[test]
-#[ignore = "owned by Plan 35-04 (build_chat_tools extension)"]
 fn ctx_05_enabled_tools_appear_in_openai_tools_array() {
-    unimplemented!("build_chat_tools_with_contextvm appends enabled remote tools");
+    use async_openai::types::chat::ChatCompletionTools;
+    let desc = crate::contextvm::ContextvmToolDescriptor {
+        tool_name: "translate".into(),
+        description: "x".into(),
+        schema: serde_json::json!({"type": "object"}),
+        provider_pubkey_hex: "pkA".into(),
+        provider_display_name: None,
+        last_seen_at: 1,
+    };
+    let tools = crate::agent::tools::build_chat_tools_with_contextvm(false, false, &[desc]);
+    let names: Vec<String> = tools
+        .iter()
+        .filter_map(|t| match t {
+            ChatCompletionTools::Function(f) => Some(f.function.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        names.contains(&"translate".to_string()),
+        "remote tool 'translate' missing from chat_tools array: {:?}",
+        names
+    );
 }
 
 #[test]
-#[ignore = "owned by Plan 35-04 (dispatch wiring) — invocation primitive itself \
-            is now covered by the helper-function tests below; un-ignored \
-            when dispatch_tools routes a remote name to invoke_tool"]
 fn ctx_06_invocation_routes_through_nostr_returns_tool_result() {
-    unimplemented!("dispatch_tools routes remote name to NostrMCPProxy and returns string");
+    // Acceptance proxy: the dispatch fallback arm in `dispatch_tools`
+    // routes any name present in `contextvm_map` to
+    // `crate::contextvm::invoke_tool`. We assert the routing decision
+    // (i.e., the unknown-tool error string is NOT produced when the
+    // name is in the map) without spinning up a real Nostr relay.
+    //
+    // The invoke_tool path will fail to connect (empty secret key,
+    // unreachable relays) and surface a typed error string — what we
+    // care about here is precedence: the unknown-tool arm is bypassed.
+    use async_openai::types::chat::{ChatCompletionMessageToolCall, FunctionCall};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = crate::persistence::Database::open(":memory:").unwrap();
+    let index =
+        crate::rag::VectorIndex::new(tmp.path().to_str().unwrap(), None).unwrap();
+    let provider = crate::NullEmbeddingProvider;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        "translate".to_string(),
+        crate::contextvm::ContextvmToolDescriptor {
+            tool_name: "translate".into(),
+            description: "x".into(),
+            schema: serde_json::json!({"type": "object"}),
+            // Bogus pubkey so invoke_tool fails fast at proxy build.
+            provider_pubkey_hex: "00".repeat(32),
+            provider_display_name: None,
+            last_seen_at: 1,
+        },
+    );
+
+    let call = ChatCompletionMessageToolCall {
+        id: "call-1".to_string(),
+        function: FunctionCall {
+            name: "translate".to_string(),
+            arguments: "{}".to_string(),
+        },
+    };
+    // Use a dummy 32-byte hex secret key so signer::from_sk parses.
+    let secret = "11".repeat(32);
+    let results = crate::agent::tools::dispatch_tools(
+        &[call],
+        db.conn(),
+        &index,
+        &provider,
+        &rt,
+        "",
+        "",
+        &map,
+        &secret,
+    );
+    assert_eq!(results.len(), 1);
+    assert!(
+        !results[0].1.contains("unknown tool"),
+        "remote tool was misrouted to unknown-tool arm: {}",
+        results[0].1
+    );
 }
 
 // ── Plan 35-03 helper unit tests ──────────────────────────────────────
@@ -269,4 +343,223 @@ fn ctx_09_uniffi_bindings_regenerated_for_all_three_platforms() {
 #[ignore = "owned by Plan 35-05 (AgentStepSummary.tool_origin)"]
 fn ctx_10_agent_step_summary_carries_tool_origin_for_remote_tool_calls() {
     unimplemented!("AgentStepSummary {{ tool_origin: Some(\"contextvm\".into()), .. }}");
+}
+
+// ── Plan 35-04 dispatch helper unit tests ─────────────────────────────
+
+fn fixture_descriptor(name: &str, ts: i64) -> crate::contextvm::ContextvmToolDescriptor {
+    crate::contextvm::ContextvmToolDescriptor {
+        tool_name: name.into(),
+        description: format!("desc {}", name),
+        schema: serde_json::json!({"type": "object"}),
+        provider_pubkey_hex: "pkA".into(),
+        provider_display_name: None,
+        last_seen_at: ts,
+    }
+}
+
+#[test]
+fn test_finalise_for_turn_filters_reserved_local_names() {
+    let input = vec![
+        fixture_descriptor("calculate", 1),
+        fixture_descriptor("get_weather", 2),
+        fixture_descriptor("web_search", 3),
+        fixture_descriptor("translate", 4),
+    ];
+    let out = crate::contextvm::finalise_for_turn(input);
+    let names: Vec<&str> = out.iter().map(|d| d.tool_name.as_str()).collect();
+    assert_eq!(names, vec!["translate", "get_weather"]);
+    assert!(!names.contains(&"calculate"));
+    assert!(!names.contains(&"web_search"));
+}
+
+#[test]
+fn test_finalise_for_turn_caps_at_8_sorted_desc_by_last_seen() {
+    let mut input: Vec<_> = (0..20)
+        .map(|i| fixture_descriptor(&format!("tool_{:02}", i), i as i64))
+        .collect();
+    input.reverse();
+    let out = crate::contextvm::finalise_for_turn(input);
+    assert_eq!(out.len(), 8);
+    let names: Vec<String> = out.iter().map(|d| d.tool_name.clone()).collect();
+    assert_eq!(names[0], "tool_19");
+    assert_eq!(names[7], "tool_12");
+}
+
+#[test]
+fn test_finalise_for_turn_alphabetical_tiebreak_on_equal_last_seen() {
+    let input = vec![
+        fixture_descriptor("zebra", 5),
+        fixture_descriptor("apple", 5),
+        fixture_descriptor("mango", 5),
+    ];
+    let out = crate::contextvm::finalise_for_turn(input);
+    let names: Vec<&str> = out.iter().map(|d| d.tool_name.as_str()).collect();
+    assert_eq!(names, vec!["apple", "mango", "zebra"]);
+}
+
+#[test]
+fn test_descriptor_caps_description_at_500_chars() {
+    let row = crate::persistence::queries::ContextvmToolRow {
+        id: "pkA:big".into(),
+        tool_name: "big".into(),
+        display_name: None,
+        description: "x".repeat(1000),
+        provider_pubkey: "pkA".into(),
+        provider_display_name: None,
+        schema_json: "{\"type\":\"object\"}".into(),
+        enabled: true,
+        last_seen_at: 1,
+    };
+    let d = crate::contextvm::ContextvmToolDescriptor::from_row(&row).unwrap();
+    let chars = d.description.chars().count();
+    assert_eq!(chars, 501, "got {} chars (expected 500 + ellipsis)", chars);
+    assert!(d.description.ends_with('…'));
+}
+
+#[test]
+fn test_descriptor_under_cap_unchanged() {
+    let row = crate::persistence::queries::ContextvmToolRow {
+        id: "pkA:small".into(),
+        tool_name: "small".into(),
+        display_name: None,
+        description: "short".into(),
+        provider_pubkey: "pkA".into(),
+        provider_display_name: None,
+        schema_json: "{\"type\":\"object\"}".into(),
+        enabled: true,
+        last_seen_at: 1,
+    };
+    let d = crate::contextvm::ContextvmToolDescriptor::from_row(&row).unwrap();
+    assert_eq!(d.description, "short");
+}
+
+#[test]
+fn test_descriptors_to_chat_tools_round_trip() {
+    use async_openai::types::chat::ChatCompletionTools;
+    let descs = vec![fixture_descriptor("translate", 1)];
+    let tools = crate::contextvm::descriptors_to_chat_tools(&descs);
+    assert_eq!(tools.len(), 1);
+    match &tools[0] {
+        ChatCompletionTools::Function(f) => {
+            assert_eq!(f.function.name, "translate");
+            assert_eq!(f.function.description.as_deref(), Some("desc translate"));
+        }
+        _ => panic!("expected Function variant"),
+    }
+}
+
+#[test]
+fn test_build_dispatch_map_keyed_by_tool_name() {
+    let descs = vec![fixture_descriptor("a", 1), fixture_descriptor("b", 2)];
+    let m = crate::contextvm::build_dispatch_map(&descs);
+    assert_eq!(m.len(), 2);
+    assert!(m.contains_key("a"));
+    assert!(m.contains_key("b"));
+}
+
+#[test]
+fn test_finalise_for_turn_filtered_collisions_handled() {
+    // Contract: the actor (Plan 35-05) MUST run finalise_for_turn so
+    // collisions are filtered before reaching build_chat_tools_with_contextvm.
+    let collide = fixture_descriptor("calculate", 1);
+    let filtered = crate::contextvm::finalise_for_turn(vec![collide]);
+    assert!(
+        filtered.is_empty(),
+        "finalise_for_turn must drop reserved-name collisions"
+    );
+}
+
+#[test]
+fn test_locals_win_on_collision_via_match_arm_precedence() {
+    // Even if a remote descriptor for "calculate" leaks into the map
+    // (e.g., test injection bypassing finalise_for_turn), the local
+    // match-arm in dispatch_tools fires first.
+    use async_openai::types::chat::{ChatCompletionMessageToolCall, FunctionCall};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = crate::persistence::Database::open(":memory:").unwrap();
+    let index =
+        crate::rag::VectorIndex::new(tmp.path().to_str().unwrap(), None).unwrap();
+    let provider = crate::NullEmbeddingProvider;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        "calculate".to_string(),
+        crate::contextvm::ContextvmToolDescriptor {
+            tool_name: "calculate".into(),
+            description: "remote calc".into(),
+            schema: serde_json::json!({"type": "object"}),
+            provider_pubkey_hex: "00".repeat(32),
+            provider_display_name: None,
+            last_seen_at: 1,
+        },
+    );
+
+    let call = ChatCompletionMessageToolCall {
+        id: "c1".into(),
+        function: FunctionCall {
+            name: "calculate".into(),
+            arguments: "{\"expression\": \"2+2\"}".into(),
+        },
+    };
+    let secret = "11".repeat(32);
+    let results = crate::agent::tools::dispatch_tools(
+        &[call],
+        db.conn(),
+        &index,
+        &provider,
+        &rt,
+        "",
+        "",
+        &map,
+        &secret,
+    );
+    assert_eq!(results.len(), 1);
+    // Local calculate produced "4" — proves local arm fired, not the
+    // remote fallback (which would have yielded a relay/network error).
+    assert_eq!(
+        results[0].1, "4",
+        "local calculator must win over remote 'calculate' descriptor; got: {}",
+        results[0].1
+    );
+}
+
+#[test]
+fn test_build_chat_tools_with_contextvm_appends_remote() {
+    use async_openai::types::chat::ChatCompletionTools;
+    let desc = crate::contextvm::ContextvmToolDescriptor {
+        tool_name: "translate".into(),
+        description: "translate text".into(),
+        schema: serde_json::json!({"type": "object"}),
+        provider_pubkey_hex: "pkA".into(),
+        provider_display_name: None,
+        last_seen_at: 1,
+    };
+    let tools_no_remote = crate::agent::tools::build_chat_tools(false, false);
+    let tools_with_remote =
+        crate::agent::tools::build_chat_tools_with_contextvm(false, false, &[desc]);
+    assert_eq!(tools_with_remote.len(), tools_no_remote.len() + 1);
+    let last = tools_with_remote.last().expect("at least one tool");
+    match last {
+        ChatCompletionTools::Function(f) => {
+            assert_eq!(f.function.name, "translate");
+        }
+        _ => panic!("expected Function variant"),
+    }
+}
+
+#[test]
+fn test_build_chat_tools_with_contextvm_caps_at_8_via_finalise() {
+    // Caller must run finalise_for_turn first; we exercise the full path.
+    let descs: Vec<_> = (0..20)
+        .map(|i| fixture_descriptor(&format!("remote_tool_{:02}", i), i as i64))
+        .collect();
+    let finalised = crate::contextvm::finalise_for_turn(descs);
+    assert_eq!(finalised.len(), 8);
+    let baseline = crate::agent::tools::build_chat_tools(false, false);
+    let with_remote =
+        crate::agent::tools::build_chat_tools_with_contextvm(false, false, &finalised);
+    assert_eq!(with_remote.len(), baseline.len() + 8);
 }
