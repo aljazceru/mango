@@ -613,6 +613,7 @@ fn test_agent_session_survives_reopen() {
                 result: Some("found results".into()),
                 status: "completed".into(),
                 created_at: 1500,
+                tool_origin: None,
             },
         )
         .unwrap();

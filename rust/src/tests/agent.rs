@@ -44,6 +44,7 @@ fn make_step(id: &str, session_id: &str, step_number: i64, action_type: &str) ->
         result: None,
         status: "completed".into(),
         created_at: 1000,
+        tool_origin: None,
     }
 }
 
