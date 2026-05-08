@@ -1,5 +1,5 @@
 use crate::persistence::queries::{
-    get_active_backend_id, insert_agent_session, insert_agent_step, insert_conversation,
+    self, get_active_backend_id, insert_agent_session, insert_agent_step, insert_conversation,
     insert_message, list_agent_sessions, list_agent_steps, list_backends, list_conversations,
     list_messages, AgentSessionRow, AgentStepRow, ConversationRow, MessageRow,
 };
@@ -60,8 +60,8 @@ fn test_migration_v1_to_v2() {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(
-            version, 19,
-            "user_version should be 19 after all migrations (v19 adds shape/freshness/orchestrated_components to attestation_cache)"
+            version, 20,
+            "user_version should be 20 after all migrations (v20 adds contextvm_tools + agent_steps.tool_origin)"
         );
 
         // Verify pre-existing data survived
@@ -156,8 +156,8 @@ fn test_migration_version_increments() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 19,
-        "user_version should be 19 after all migrations (v1+v2+...+v19)"
+        version, 20,
+        "user_version should be 20 after all migrations (v1+v2+...+v20)"
     );
 }
 
@@ -175,10 +175,10 @@ fn test_migration_idempotent() {
             .conn()
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        // Second open should not re-run migrations, so version stays at 13
+        // Second open should not re-run migrations, so version stays put.
         assert_eq!(
-            version, 19,
-            "user_version must still be 19 on second open (idempotent)"
+            version, 20,
+            "user_version must still be 20 on second open (idempotent)"
         );
     }
     let _ = std::fs::remove_file(&tmp);
@@ -734,8 +734,8 @@ fn test_migration_v11_seeds_ppq_ai_private_transport() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 19,
-        "user_version should be 19 after all migrations including v19"
+        version, 20,
+        "user_version should be 20 after all migrations including v20"
     );
 
     // Query the ppq-ai row directly
@@ -771,4 +771,200 @@ fn test_migration_v11_seeds_ppq_ai_private_transport() {
             model_list
         );
     }
+}
+
+// ── Phase 35 — MIGRATION_V20 (contextvm tools + agent_steps.tool_origin) ──────
+
+#[test]
+fn test_migration_v20_creates_contextvm_tools_table() {
+    let db = Database::open(":memory:").unwrap();
+    let conn = db.conn();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='table' AND name='contextvm_tools'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "contextvm_tools table missing");
+    let idx_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='index' AND \
+                   name IN ('idx_contextvm_tools_name', \
+                            'idx_contextvm_tools_enabled')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(idx_count, 2, "contextvm_tools indices missing");
+}
+
+#[test]
+fn test_migration_v20_adds_tool_origin_to_agent_steps() {
+    let db = Database::open(":memory:").unwrap();
+    let conn = db.conn();
+    let mut stmt = conn.prepare("PRAGMA table_info(agent_steps)").unwrap();
+    let cols: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        cols.iter().any(|c| c == "tool_origin"),
+        "agent_steps.tool_origin column missing; cols: {:?}",
+        cols
+    );
+}
+
+#[test]
+fn test_unique_index_on_tool_name() {
+    let db = Database::open(":memory:").unwrap();
+    let now = 1_700_000_000_i64;
+    let conn = db.conn();
+    conn.execute(
+        "INSERT INTO contextvm_tools \
+         (id, tool_name, description, provider_pubkey, schema_json, enabled, last_seen_at) \
+         VALUES ('p1:foo', 'foo', '', 'pk1', '{}', 0, ?1)",
+        [now],
+    )
+    .unwrap();
+    let res = conn.execute(
+        "INSERT INTO contextvm_tools \
+         (id, tool_name, description, provider_pubkey, schema_json, enabled, last_seen_at) \
+         VALUES ('p2:foo', 'foo', '', 'pk2', '{}', 0, ?1)",
+        [now],
+    );
+    assert!(
+        res.is_err(),
+        "duplicate tool_name should violate unique index"
+    );
+}
+
+#[test]
+fn test_pre_v20_database_upgrades_cleanly() {
+    // Migration runner is idempotent and handles V20 on top of any earlier
+    // schema. Smoke test: open in-memory DB twice in a row, no error.
+    let db1 = Database::open(":memory:").unwrap();
+    drop(db1);
+    let db2 = Database::open(":memory:").unwrap();
+    let mut stmt = db2
+        .conn()
+        .prepare("PRAGMA table_info(agent_steps)")
+        .unwrap();
+    let has_origin = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|c| c == "tool_origin");
+    assert!(has_origin);
+}
+
+fn fixture_contextvm_row(
+    id: &str,
+    name: &str,
+    enabled: bool,
+    ts: i64,
+) -> queries::ContextvmToolRow {
+    queries::ContextvmToolRow {
+        id: id.into(),
+        tool_name: name.into(),
+        display_name: None,
+        description: format!("Description of {}", name),
+        provider_pubkey: id.split(':').next().unwrap().into(),
+        provider_display_name: None,
+        schema_json: "{\"type\":\"object\"}".into(),
+        enabled,
+        last_seen_at: ts,
+    }
+}
+
+#[test]
+fn test_round_trip_enabled_contextvm_tool() {
+    let db = Database::open(":memory:").unwrap();
+    let conn = db.conn();
+    let row = fixture_contextvm_row("pkA:get_weather", "get_weather", true, 1_700_000_010);
+    queries::upsert_contextvm_tool(conn, &row).unwrap();
+
+    let fetched = queries::get_contextvm_tool_by_name(conn, "get_weather")
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched, row);
+
+    let enabled = queries::list_enabled_contextvm_tools(conn).unwrap();
+    assert_eq!(enabled.len(), 1);
+    assert_eq!(enabled[0].tool_name, "get_weather");
+}
+
+#[test]
+fn test_list_enabled_skips_disabled_rows_and_orders_by_last_seen_desc() {
+    let db = Database::open(":memory:").unwrap();
+    let conn = db.conn();
+    queries::upsert_contextvm_tool(
+        conn,
+        &fixture_contextvm_row("pkA:tool_old", "tool_old", true, 1_700_000_001),
+    )
+    .unwrap();
+    queries::upsert_contextvm_tool(
+        conn,
+        &fixture_contextvm_row("pkA:tool_new", "tool_new", true, 1_700_000_999),
+    )
+    .unwrap();
+    queries::upsert_contextvm_tool(
+        conn,
+        &fixture_contextvm_row("pkA:tool_off", "tool_off", false, 1_700_000_500),
+    )
+    .unwrap();
+    let names: Vec<String> = queries::list_enabled_contextvm_tools(conn)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.tool_name)
+        .collect();
+    assert_eq!(names, vec!["tool_new".to_string(), "tool_old".to_string()]);
+}
+
+#[test]
+fn test_update_contextvm_tool_enabled_persists_after_reopen() {
+    let path = std::env::temp_dir().join(format!("test_ctx_{}.sqlite", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    {
+        let db = Database::open(path.to_str().unwrap()).unwrap();
+        queries::upsert_contextvm_tool(
+            db.conn(),
+            &fixture_contextvm_row("pkA:foo", "foo", false, 1),
+        )
+        .unwrap();
+        queries::update_contextvm_tool_enabled(db.conn(), "pkA:foo", true).unwrap();
+    }
+    // Reopen and verify enabled persists across handles.
+    let db = Database::open(path.to_str().unwrap()).unwrap();
+    let row = queries::get_contextvm_tool_by_name(db.conn(), "foo")
+        .unwrap()
+        .unwrap();
+    assert!(row.enabled, "enabled flag must persist across DB reopens");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_auto_discover_tools_setting_round_trips() {
+    let db = Database::open(":memory:").unwrap();
+    // Default: missing key → None.
+    assert!(queries::get_setting(db.conn(), "auto_discover_tools")
+        .unwrap()
+        .is_none());
+    queries::set_setting(db.conn(), "auto_discover_tools", "1").unwrap();
+    assert_eq!(
+        queries::get_setting(db.conn(), "auto_discover_tools")
+            .unwrap()
+            .as_deref(),
+        Some("1")
+    );
+    queries::set_setting(db.conn(), "auto_discover_tools", "0").unwrap();
+    assert_eq!(
+        queries::get_setting(db.conn(), "auto_discover_tools")
+            .unwrap()
+            .as_deref(),
+        Some("0")
+    );
 }

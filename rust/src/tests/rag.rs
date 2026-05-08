@@ -46,8 +46,8 @@ fn test_migration_v6_version() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 19,
-        "user_version should be 19 after all migrations including MIGRATION_V19"
+        version, 20,
+        "user_version should be 20 after all migrations including MIGRATION_V20"
     );
 }
 

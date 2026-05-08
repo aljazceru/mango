@@ -350,6 +350,36 @@ ALTER TABLE attestation_cache ADD COLUMN freshness TEXT;
 ALTER TABLE attestation_cache ADD COLUMN orchestrated_components TEXT;
 ";
 
+/// Phase 35 — contextvm-sdk Nostr tool discovery state.
+///
+/// `contextvm_tools` holds one row per (provider_pubkey, tool_name) pair the
+/// user has discovered. Rows persist while enabled = 1 (CTX-03). Auto-
+/// discovered rows MAY be inserted with enabled = 0 to refresh
+/// last_seen_at; the actor is free to prune disabled rows older than N days
+/// in a future plan (out-of-scope here).
+///
+/// `agent_steps.tool_origin` carries the provenance string ("local" |
+/// "contextvm") for each tool-call step. NULL on pre-V20 rows; the UI
+/// renders NULL as "local" (no badge — see Plan 35-05).
+pub const MIGRATION_V20: &str = "
+CREATE TABLE IF NOT EXISTS contextvm_tools (
+    id                    TEXT PRIMARY KEY NOT NULL,
+    tool_name             TEXT NOT NULL,
+    display_name          TEXT,
+    description           TEXT NOT NULL DEFAULT '',
+    provider_pubkey       TEXT NOT NULL,
+    provider_display_name TEXT,
+    schema_json           TEXT NOT NULL,
+    enabled               INTEGER NOT NULL DEFAULT 0,
+    last_seen_at          INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contextvm_tools_name
+    ON contextvm_tools(tool_name);
+CREATE INDEX IF NOT EXISTS idx_contextvm_tools_enabled
+    ON contextvm_tools(enabled);
+ALTER TABLE agent_steps ADD COLUMN tool_origin TEXT;
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -371,6 +401,7 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V17,
     MIGRATION_V18,
     MIGRATION_V19,
+    MIGRATION_V20,
 ];
 
 #[cfg(test)]
