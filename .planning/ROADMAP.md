@@ -66,7 +66,7 @@
 - [x] **Phase 33: Integrate Venice.ai as TEE-attested LLM provider** - TDX+NRAS attestation + ECDH(secp256k1)+HKDF+AES-256-GCM E2EE channel (completed 2026-04-26)
 - [x] **Phase 34: Integrate Redpill (api.redpill.ai) as TEE-attested LLM aggregator** - Three response shapes (Phala-flat / Phala-orchestrated 3-quote / Chutes), reusing Venice REPORTDATA decoder, no new crates (completed 2026-04-26)
 - [x] **Phase 34.1: Plumb shape/freshness/orchestrated_components through UniFFI + native trust UI** - Closes RED-09 + RED-11 actor-loop drop on Android, iOS, Desktop iced (completed 2026-04-27)
-- [ ] **Phase 35: Add contextvm-sdk for Nostr-based tool discovery + invocation** - "Tool marketplace" via contextvm-sdk: Settings → Tools "Discover tools" + auto-discover toggle; reuses existing tool dispatch; Android + Desktop (iOS deferred); contextvm defaults + relay.nostr.net
+- [x] **Phase 35: Add contextvm-sdk for Nostr-based tool discovery + invocation** - "Tool marketplace" via contextvm-sdk: Settings → Tools "Discover tools" + auto-discover toggle; reuses existing tool dispatch; Android + Desktop (iOS bindings only — UI deferred); contextvm defaults + relay.nostr.net (completed 2026-05-08)
 
 ## Phase Details
 
@@ -338,13 +338,13 @@ Plans:
 **Plans:** 10 plans
 
 Plans:
-- [ ] 35-00-PLAN.md — Wave 0: Cargo dep + openssl-sys audit + 10 ignored test stubs (one per CTX-NN)
-- [ ] 35-01-PLAN.md — Wave 1: MIGRATION_V20 (contextvm_tools table + agent_steps.tool_origin) + 6 CRUD queries
-- [ ] 35-02-PLAN.md — Wave 1: Discovery service (DEFAULT_CONTEXTVM_RELAYS, discover_servers/_tools_for_server/_all, ContextvmError)
-- [ ] 35-03-PLAN.md — Wave 1: Invocation service via NostrMCPProxy + persistent Nostr key + truncation/timeout/error formatting
-- [ ] 35-04-PLAN.md — Wave 2: Dispatch routing (ContextvmToolDescriptor, RESERVED_LOCAL_NAMES, 8-tool cap, 500-char description cap, build_chat_tools_with_contextvm, dispatch_tools fallback arm)
-- [ ] 35-05-PLAN.md — Wave 2: AppActions (4) + handlers + AppState fields + ActorState hydration + auto-discover hook + AgentStepSummary.tool_origin + UniFFI types
-- [ ] 35-06-PLAN.md — Wave 3: Android (Compose) — Settings rows + SettingsToolDiscoveryScreen.kt with 5 states + Remote provenance badge in AgentScreen
-- [ ] 35-07-PLAN.md — Wave 3: Desktop (iced) — Settings rows + views/tool_discovery.rs with 5 states + Remote provenance label in agents.rs build_step_row
-- [ ] 35-08-PLAN.md — Wave 3: UniFFI Swift bindings regenerated (iOS UI deferred per CONTEXT D-06; bindings still ship)
-- [ ] 35-09-PLAN.md — Wave 4: Live discovery integration test + full cargo test regression + Android NDK + iOS cross-compile + openssl-sys re-audit
+- [x] 35-00-PLAN.md — Wave 0: Cargo dep + openssl-sys audit + 10 ignored test stubs (one per CTX-NN)
+- [x] 35-01-PLAN.md — Wave 1: MIGRATION_V20 (contextvm_tools table + agent_steps.tool_origin) + 6 CRUD queries
+- [x] 35-02-PLAN.md — Wave 1: Discovery service (DEFAULT_CONTEXTVM_RELAYS, discover_servers/_tools_for_server/_all, ContextvmError)
+- [x] 35-03-PLAN.md — Wave 1: Invocation service via NostrMCPProxy + persistent Nostr key + truncation/timeout/error formatting
+- [x] 35-04-PLAN.md — Wave 2: Dispatch routing (ContextvmToolDescriptor, RESERVED_LOCAL_NAMES, 8-tool cap, 500-char description cap, build_chat_tools_with_contextvm, dispatch_tools fallback arm)
+- [x] 35-05-PLAN.md — Wave 2: AppActions (4) + handlers + AppState fields + ActorState hydration + auto-discover hook + AgentStepSummary.tool_origin + UniFFI types
+- [x] 35-06-PLAN.md — Wave 3: Android (Compose) — Settings rows + SettingsToolDiscoveryScreen.kt with 5 states + Remote provenance badge in AgentScreen
+- [x] 35-07-PLAN.md — Wave 3: Desktop (iced) — Settings rows + views/tool_discovery.rs with 5 states + Remote provenance label in agents.rs build_step_row
+- [x] 35-08-PLAN.md — Wave 3: UniFFI Swift bindings regenerated (iOS UI deferred per CONTEXT D-06; bindings still ship)
+- [x] 35-09-PLAN.md — Wave 4: Live discovery integration test + full cargo test regression + Android NDK + iOS cross-compile + openssl-sys re-audit
