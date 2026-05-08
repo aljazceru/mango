@@ -1035,6 +1035,11 @@ public struct AgentStepSummary {
      * One of: "pending", "completed", "failed"
      */
     public var status: String
+    /**
+     * Phase 35 — provenance of the tool call. None for non-tool_call steps.
+     * "local" for built-in tools, "contextvm" for tools invoked via Nostr.
+     */
+    public var toolOrigin: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1053,7 +1058,11 @@ public struct AgentStepSummary {
          */resultSnippet: String?, 
         /**
          * One of: "pending", "completed", "failed"
-         */status: String) {
+         */status: String, 
+        /**
+         * Phase 35 — provenance of the tool call. None for non-tool_call steps.
+         * "local" for built-in tools, "contextvm" for tools invoked via Nostr.
+         */toolOrigin: String?) {
         self.id = id
         self.stepNumber = stepNumber
         self.actionType = actionType
@@ -1061,6 +1070,7 @@ public struct AgentStepSummary {
         self.toolInput = toolInput
         self.resultSnippet = resultSnippet
         self.status = status
+        self.toolOrigin = toolOrigin
     }
 }
 
@@ -1092,6 +1102,9 @@ extension AgentStepSummary: Equatable, Hashable {
         if lhs.status != rhs.status {
             return false
         }
+        if lhs.toolOrigin != rhs.toolOrigin {
+            return false
+        }
         return true
     }
 
@@ -1103,6 +1116,7 @@ extension AgentStepSummary: Equatable, Hashable {
         hasher.combine(toolInput)
         hasher.combine(resultSnippet)
         hasher.combine(status)
+        hasher.combine(toolOrigin)
     }
 }
 
@@ -1121,7 +1135,8 @@ public struct FfiConverterTypeAgentStepSummary: FfiConverterRustBuffer {
                 toolName: FfiConverterOptionString.read(from: &buf), 
                 toolInput: FfiConverterOptionString.read(from: &buf), 
                 resultSnippet: FfiConverterOptionString.read(from: &buf), 
-                status: FfiConverterString.read(from: &buf)
+                status: FfiConverterString.read(from: &buf), 
+                toolOrigin: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -1133,6 +1148,7 @@ public struct FfiConverterTypeAgentStepSummary: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.toolInput, into: &buf)
         FfiConverterOptionString.write(value.resultSnippet, into: &buf)
         FfiConverterString.write(value.status, into: &buf)
+        FfiConverterOptionString.write(value.toolOrigin, into: &buf)
     }
 }
 
@@ -1319,6 +1335,23 @@ public struct AppState {
      * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
      */
     public var directorySources: [DirectorySourceSummary]
+    /**
+     * Phase 35 — discovered tools (announcements merged with persisted
+     * enabled state). Populated by AppAction::DiscoverContextvmTools and
+     * AppAction::SetContextvmToolEnabled.
+     */
+    public var contextvmTools: [DiscoverableTool]
+    /**
+     * Phase 35 — Settings → TOOLS → "Automatically discover and use tools"
+     * toggle. Defaults to false. Persisted under settings key
+     * `auto_discover_tools`.
+     */
+    public var autoDiscoverToolsEnabled: Bool
+    /**
+     * Phase 35 — current discovery query state for the Tool Discovery
+     * screen. Updated by AppAction::DiscoverContextvmTools handler.
+     */
+    public var contextvmDiscoveryState: ContextvmDiscoveryState
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1451,7 +1484,21 @@ public struct AppState {
          * Directory-source summaries loaded from SQLite on startup / after mutations
          * (DIR-04). Populated by `load_directory_sources_summary`; never includes
          * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
-         */directorySources: [DirectorySourceSummary]) {
+         */directorySources: [DirectorySourceSummary], 
+        /**
+         * Phase 35 — discovered tools (announcements merged with persisted
+         * enabled state). Populated by AppAction::DiscoverContextvmTools and
+         * AppAction::SetContextvmToolEnabled.
+         */contextvmTools: [DiscoverableTool], 
+        /**
+         * Phase 35 — Settings → TOOLS → "Automatically discover and use tools"
+         * toggle. Defaults to false. Persisted under settings key
+         * `auto_discover_tools`.
+         */autoDiscoverToolsEnabled: Bool, 
+        /**
+         * Phase 35 — current discovery query state for the Tool Discovery
+         * screen. Updated by AppAction::DiscoverContextvmTools handler.
+         */contextvmDiscoveryState: ContextvmDiscoveryState) {
         self.rev = rev
         self.router = router
         self.busyState = busyState
@@ -1489,6 +1536,9 @@ public struct AppState {
         self.authInitialized = authInitialized
         self.encryptionEnabled = encryptionEnabled
         self.directorySources = directorySources
+        self.contextvmTools = contextvmTools
+        self.autoDiscoverToolsEnabled = autoDiscoverToolsEnabled
+        self.contextvmDiscoveryState = contextvmDiscoveryState
     }
 }
 
@@ -1610,6 +1660,15 @@ extension AppState: Equatable, Hashable {
         if lhs.directorySources != rhs.directorySources {
             return false
         }
+        if lhs.contextvmTools != rhs.contextvmTools {
+            return false
+        }
+        if lhs.autoDiscoverToolsEnabled != rhs.autoDiscoverToolsEnabled {
+            return false
+        }
+        if lhs.contextvmDiscoveryState != rhs.contextvmDiscoveryState {
+            return false
+        }
         return true
     }
 
@@ -1651,6 +1710,9 @@ extension AppState: Equatable, Hashable {
         hasher.combine(authInitialized)
         hasher.combine(encryptionEnabled)
         hasher.combine(directorySources)
+        hasher.combine(contextvmTools)
+        hasher.combine(autoDiscoverToolsEnabled)
+        hasher.combine(contextvmDiscoveryState)
     }
 }
 
@@ -1699,7 +1761,10 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 lockTimeoutSeconds: FfiConverterInt64.read(from: &buf), 
                 authInitialized: FfiConverterBool.read(from: &buf), 
                 encryptionEnabled: FfiConverterBool.read(from: &buf), 
-                directorySources: FfiConverterSequenceTypeDirectorySourceSummary.read(from: &buf)
+                directorySources: FfiConverterSequenceTypeDirectorySourceSummary.read(from: &buf), 
+                contextvmTools: FfiConverterSequenceTypeDiscoverableTool.read(from: &buf), 
+                autoDiscoverToolsEnabled: FfiConverterBool.read(from: &buf), 
+                contextvmDiscoveryState: FfiConverterTypeContextvmDiscoveryState.read(from: &buf)
         )
     }
 
@@ -1741,6 +1806,9 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.authInitialized, into: &buf)
         FfiConverterBool.write(value.encryptionEnabled, into: &buf)
         FfiConverterSequenceTypeDirectorySourceSummary.write(value.directorySources, into: &buf)
+        FfiConverterSequenceTypeDiscoverableTool.write(value.contextvmTools, into: &buf)
+        FfiConverterBool.write(value.autoDiscoverToolsEnabled, into: &buf)
+        FfiConverterTypeContextvmDiscoveryState.write(value.contextvmDiscoveryState, into: &buf)
     }
 }
 
@@ -2553,6 +2621,132 @@ public func FfiConverterTypeDirectorySourceSummary_lift(_ buf: RustBuffer) throw
 #endif
 public func FfiConverterTypeDirectorySourceSummary_lower(_ value: DirectorySourceSummary) -> RustBuffer {
     return FfiConverterTypeDirectorySourceSummary.lower(value)
+}
+
+
+/**
+ * Phase 35 — one tool surfaced by Nostr discovery, bound to AppState
+ * for the Tool Discovery sub-screen.
+ */
+public struct DiscoverableTool {
+    /**
+     * Stable id: `<provider_pubkey_hex>:<tool_name>`.
+     */
+    public var id: String
+    /**
+     * LLM-facing tool name (e.g. "get_weather").
+     */
+    public var name: String
+    public var description: String
+    public var providerPubkey: String
+    /**
+     * `server_info.name` from the announcement, or None.
+     * UI falls back to `pubkey[..8]…` per UI-SPEC §F.
+     */
+    public var providerDisplayName: String?
+    public var enabled: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Stable id: `<provider_pubkey_hex>:<tool_name>`.
+         */id: String, 
+        /**
+         * LLM-facing tool name (e.g. "get_weather").
+         */name: String, description: String, providerPubkey: String, 
+        /**
+         * `server_info.name` from the announcement, or None.
+         * UI falls back to `pubkey[..8]…` per UI-SPEC §F.
+         */providerDisplayName: String?, enabled: Bool) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.providerPubkey = providerPubkey
+        self.providerDisplayName = providerDisplayName
+        self.enabled = enabled
+    }
+}
+
+#if compiler(>=6)
+extension DiscoverableTool: Sendable {}
+#endif
+
+
+extension DiscoverableTool: Equatable, Hashable {
+    public static func ==(lhs: DiscoverableTool, rhs: DiscoverableTool) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.description != rhs.description {
+            return false
+        }
+        if lhs.providerPubkey != rhs.providerPubkey {
+            return false
+        }
+        if lhs.providerDisplayName != rhs.providerDisplayName {
+            return false
+        }
+        if lhs.enabled != rhs.enabled {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(description)
+        hasher.combine(providerPubkey)
+        hasher.combine(providerDisplayName)
+        hasher.combine(enabled)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DiscoverableTool {
+        return
+            try DiscoverableTool(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                description: FfiConverterString.read(from: &buf), 
+                providerPubkey: FfiConverterString.read(from: &buf), 
+                providerDisplayName: FfiConverterOptionString.read(from: &buf), 
+                enabled: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DiscoverableTool, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.description, into: &buf)
+        FfiConverterString.write(value.providerPubkey, into: &buf)
+        FfiConverterOptionString.write(value.providerDisplayName, into: &buf)
+        FfiConverterBool.write(value.enabled, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDiscoverableTool_lift(_ buf: RustBuffer) throws -> DiscoverableTool {
+    return try FfiConverterTypeDiscoverableTool.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDiscoverableTool_lower(_ value: DiscoverableTool) -> RustBuffer {
+    return FfiConverterTypeDiscoverableTool.lower(value)
 }
 
 
@@ -3942,6 +4136,30 @@ public enum AppAction {
      */
     case updateDirectorySourceBookmark(sourceId: String, bookmarkData: Data
     )
+    /**
+     * Phase 35 — kick off a one-shot discovery query against the
+     * hardcoded relay set. Spawns a background task; results land via
+     * InternalEvent::ContextvmDiscoveryComplete.
+     */
+    case discoverContextvmTools
+    /**
+     * Phase 35 — toggle a single discovered tool on/off (CTX-03).
+     * `tool_id` matches `DiscoverableTool.id` =
+     * `<provider_pubkey>:<tool_name>`.
+     */
+    case setContextvmToolEnabled(toolId: String, enabled: Bool
+    )
+    /**
+     * Phase 35 — flip the auto-discover toggle (CTX-04). Persisted in
+     * settings table under `auto_discover_tools`.
+     */
+    case setAutoDiscoverTools(enabled: Bool
+    )
+    /**
+     * Phase 35 — re-run a discovery query (UI-SPEC §E "Try again" button).
+     * Same effect as DiscoverContextvmTools but explicit for telemetry.
+     */
+    case retryContextvmDiscovery
 }
 
 
@@ -4151,6 +4369,16 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         
         case 70: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
         )
+        
+        case 71: return .discoverContextvmTools
+        
+        case 72: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 73: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 74: return .retryContextvmDiscovery
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4521,6 +4749,25 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterData.write(bookmarkData, into: &buf)
             
+        
+        case .discoverContextvmTools:
+            writeInt(&buf, Int32(71))
+        
+        
+        case let .setContextvmToolEnabled(toolId,enabled):
+            writeInt(&buf, Int32(72))
+            FfiConverterString.write(toolId, into: &buf)
+            FfiConverterBool.write(enabled, into: &buf)
+            
+        
+        case let .setAutoDiscoverTools(enabled):
+            writeInt(&buf, Int32(73))
+            FfiConverterBool.write(enabled, into: &buf)
+            
+        
+        case .retryContextvmDiscovery:
+            writeInt(&buf, Int32(74))
+        
         }
     }
 }
@@ -4973,6 +5220,113 @@ public func FfiConverterTypeBusyState_lower(_ value: BusyState) -> RustBuffer {
 
 
 extension BusyState: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Phase 35 — discovery query lifecycle state for the Tool Discovery
+ * sub-screen. Maps 1-to-1 to UI-SPEC states C/D/E/F.
+ */
+
+public enum ContextvmDiscoveryState {
+    
+    /**
+     * Initial state before any query has run for this AppState lifecycle.
+     */
+    case idle
+    /**
+     * A discovery query is in flight; UI shows the loading spinner /
+     * "Searching Nostr relays…" subtitle.
+     */
+    case loading
+    /**
+     * Last query completed successfully (may have returned 0 tools).
+     */
+    case loaded
+    /**
+     * Last query failed; `message` is human-readable and may be
+     * rendered verbatim by the UI in the error state. UI-SPEC §E
+     * uses the locked headline "Couldn't reach relays" — `message`
+     * is logged but the UI uses the locked headline regardless.
+     */
+    case error(message: String
+    )
+}
+
+
+#if compiler(>=6)
+extension ContextvmDiscoveryState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeContextvmDiscoveryState: FfiConverterRustBuffer {
+    typealias SwiftType = ContextvmDiscoveryState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ContextvmDiscoveryState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .idle
+        
+        case 2: return .loading
+        
+        case 3: return .loaded
+        
+        case 4: return .error(message: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ContextvmDiscoveryState, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .idle:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .loading:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .loaded:
+            writeInt(&buf, Int32(3))
+        
+        
+        case let .error(message):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(message, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContextvmDiscoveryState_lift(_ buf: RustBuffer) throws -> ContextvmDiscoveryState {
+    return try FfiConverterTypeContextvmDiscoveryState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContextvmDiscoveryState_lower(_ value: ContextvmDiscoveryState) -> RustBuffer {
+    return FfiConverterTypeContextvmDiscoveryState.lower(value)
+}
+
+
+extension ContextvmDiscoveryState: Equatable, Hashable {}
 
 
 
@@ -5641,6 +5995,10 @@ public enum Screen {
      */
     case settingsTools
     /**
+     * Phase 35 — Tool Discovery sub-screen (pushed from SettingsTools).
+     */
+    case toolDiscovery
+    /**
      * Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
      */
     case locked
@@ -5695,9 +6053,11 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         
         case 14: return .settingsTools
         
-        case 15: return .locked
+        case 15: return .toolDiscovery
         
-        case 16: return .pinSetup
+        case 16: return .locked
+        
+        case 17: return .pinSetup
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -5765,12 +6125,16 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
             writeInt(&buf, Int32(14))
         
         
-        case .locked:
+        case .toolDiscovery:
             writeInt(&buf, Int32(15))
         
         
-        case .pinSetup:
+        case .locked:
             writeInt(&buf, Int32(16))
+        
+        
+        case .pinSetup:
+            writeInt(&buf, Int32(17))
         
         }
     }
@@ -7088,6 +7452,31 @@ fileprivate struct FfiConverterSequenceTypeDirectorySourceSummary: FfiConverterR
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeDirectorySourceSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeDiscoverableTool: FfiConverterRustBuffer {
+    typealias SwiftType = [DiscoverableTool]
+
+    public static func write(_ value: [DiscoverableTool], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeDiscoverableTool.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [DiscoverableTool] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [DiscoverableTool]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeDiscoverableTool.read(from: &buf))
         }
         return seq
     }
