@@ -335,9 +335,79 @@ async fn live_discover_servers_against_default_relays() {
 }
 
 #[test]
-#[ignore = "owned by Plan 35-08 (UniFFI binding regen)"]
 fn ctx_09_uniffi_bindings_regenerated_for_all_three_platforms() {
-    unimplemented!("Bindings regenerated; smoke test: kotlin/swift files contain DiscoverableTool");
+    // Phase 35-08 — verify both Swift and Kotlin binding files carry
+    // the Phase 35 surface (DiscoverableTool, ContextvmDiscoveryState).
+    // Bindings live OUTSIDE the rust/ crate so we use std::fs at runtime —
+    // this is a smoke check that the last `just bindings-{swift,kotlin}`
+    // invocation produced sane output.
+    let workspace_root = std::env::var("CARGO_MANIFEST_DIR")
+        .map(|s| {
+            std::path::PathBuf::from(s)
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf()
+        })
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Swift bindings — tolerant on Linux dev hosts where iOS-side files
+    // may be absent in a stripped checkout.
+    let swift_path = workspace_root.join("ios/Bindings/mango_core.swift");
+    if let Ok(content) = std::fs::read_to_string(&swift_path) {
+        assert!(
+            content.contains("DiscoverableTool"),
+            "Swift bindings missing DiscoverableTool — re-run `just bindings-swift`"
+        );
+        assert!(
+            content.contains("ContextvmDiscoveryState"),
+            "Swift bindings missing ContextvmDiscoveryState — re-run `just bindings-swift`"
+        );
+    }
+
+    // Kotlin bindings — Linux is the canonical Android dev target, so
+    // Kotlin bindings must exist and contain the Phase 35 types.
+    let kotlin_root = workspace_root.join("android/app/src/main/java");
+    let mut kotlin_ok = false;
+    if kotlin_root.exists() {
+        for entry in walkdir_compat(&kotlin_root) {
+            if entry
+                .file_name()
+                .map(|n| n == "mango_core.kt")
+                .unwrap_or(false)
+            {
+                if let Ok(content) = std::fs::read_to_string(&entry) {
+                    if content.contains("DiscoverableTool")
+                        && content.contains("ContextvmDiscoveryState")
+                    {
+                        kotlin_ok = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        kotlin_ok,
+        "Kotlin bindings missing Phase 35 types — re-run `just bindings-kotlin`"
+    );
+}
+
+fn walkdir_compat(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&p) {
+            for e in entries.filter_map(Result::ok) {
+                let path = e.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    out.push(path);
+                }
+            }
+        }
+    }
+    out
 }
 
 #[test]
