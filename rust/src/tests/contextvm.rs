@@ -21,15 +21,42 @@ fn ctx_02_settings_discover_tools_row_and_screen() {
 }
 
 #[test]
-#[ignore = "owned by Plan 35-01 (persistence) and 35-05 (actor)"]
 fn ctx_03_per_tool_enable_persists_across_launches() {
-    unimplemented!("set enabled=true → reopen DB → query → assert enabled");
+    // Real coverage:
+    // tests::persistence::test_update_contextvm_tool_enabled_persists_after_reopen.
+    // This integration checkpoint runs a minimal smoke version against the
+    // real Database / queries layer landed in Plan 35-01.
+    let db = crate::persistence::Database::open(":memory:").unwrap();
+    let row = crate::persistence::queries::ContextvmToolRow {
+        id: "pkA:smoke".into(),
+        tool_name: "smoke".into(),
+        display_name: None,
+        description: String::new(),
+        provider_pubkey: "pkA".into(),
+        provider_display_name: None,
+        schema_json: "{}".into(),
+        enabled: false,
+        last_seen_at: 1,
+    };
+    crate::persistence::queries::upsert_contextvm_tool(db.conn(), &row).unwrap();
+    crate::persistence::queries::update_contextvm_tool_enabled(db.conn(), "pkA:smoke", true)
+        .unwrap();
+    let r = crate::persistence::queries::get_contextvm_tool_by_name(db.conn(), "smoke")
+        .unwrap()
+        .unwrap();
+    assert!(r.enabled);
 }
 
 #[test]
-#[ignore = "owned by Plan 35-01 + 35-05"]
 fn ctx_04_auto_discover_tools_toggle_persists() {
-    unimplemented!("settings key auto_discover_tools round-trips");
+    let db = crate::persistence::Database::open(":memory:").unwrap();
+    crate::persistence::queries::set_setting(db.conn(), "auto_discover_tools", "1").unwrap();
+    assert_eq!(
+        crate::persistence::queries::get_setting(db.conn(), "auto_discover_tools")
+            .unwrap()
+            .as_deref(),
+        Some("1")
+    );
 }
 
 #[test]
@@ -45,15 +72,60 @@ fn ctx_06_invocation_routes_through_nostr_returns_tool_result() {
 }
 
 #[test]
-#[ignore = "owned by Plan 35-02 (DEFAULT_RELAYS const)"]
 fn ctx_07_default_relay_set_includes_relay_nostr_net() {
-    unimplemented!("DEFAULT_CONTEXTVM_RELAYS contains \"wss://relay.nostr.net\"");
+    let relays = crate::contextvm::DEFAULT_CONTEXTVM_RELAYS;
+    assert!(
+        relays.contains(&"wss://relay.nostr.net"),
+        "DEFAULT_CONTEXTVM_RELAYS missing relay.nostr.net: {:?}",
+        relays
+    );
+    assert!(
+        !relays.is_empty(),
+        "DEFAULT_CONTEXTVM_RELAYS must not be empty"
+    );
+    assert!(
+        relays.contains(&"wss://relay.damus.io"),
+        "DEFAULT_CONTEXTVM_RELAYS missing relay.damus.io"
+    );
+    assert!(
+        relays.contains(&"wss://nos.lol"),
+        "DEFAULT_CONTEXTVM_RELAYS missing nos.lol"
+    );
 }
 
 #[test]
-#[ignore = "owned by Plan 35-02 + 35-03 (error mapping)"]
 fn ctx_08_graceful_degradation_on_relay_failure() {
-    unimplemented!("unreachable relay → ContextvmDiscoveryState::Error, no panic");
+    // Verify the error vocabulary is in place: discovery surfaces typed
+    // ContextvmError variants that the actor will stash into AppState
+    // (full actor-state assertion lives in Plan 35-05). The Display impl
+    // is the public contract for the user-facing error_message string.
+    let e = crate::contextvm::ContextvmError::RelayUnreachable {
+        detail: "connection refused".into(),
+    };
+    let msg = e.to_string();
+    assert!(
+        msg.starts_with("Couldn't reach relays"),
+        "RelayUnreachable display mismatch: {}",
+        msg
+    );
+
+    let e2 = crate::contextvm::ContextvmError::Timeout {
+        tool_name: "search".into(),
+        secs: 30,
+    };
+    assert!(
+        e2.to_string().contains("'search'"),
+        "Timeout display missing tool name"
+    );
+}
+
+#[tokio::test]
+#[ignore = "live network — un-ignored by Plan 35-09"]
+async fn live_discover_servers_against_default_relays() {
+    let relays = crate::contextvm::default_relays_owned();
+    let result = crate::contextvm::discover_servers(&relays).await;
+    // Whatever the result, it must not panic and must return Result.
+    let _ = result;
 }
 
 #[test]
