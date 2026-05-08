@@ -158,7 +158,7 @@ pub struct UiMessage {
 }
 
 /// Phase 35 — one tool surfaced by Nostr discovery, bound to AppState
-/// for the Tool Discovery sub-screen.
+/// for the Tool Discovery sub-screen. Phase 36 adds usage + display fields.
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct DiscoverableTool {
     /// Stable id: `<provider_pubkey_hex>:<tool_name>`.
@@ -171,6 +171,24 @@ pub struct DiscoverableTool {
     /// UI falls back to `pubkey[..8]…` per UI-SPEC §F.
     pub provider_display_name: Option<String>,
     pub enabled: bool,
+    // ── Phase 36 additions (CTX36-USED-01, CTX36-NPUB-01, CTX36-LABELS-01) ──
+    /// Times the user has invoked this tool via the agent loop. 0 if never used.
+    pub usage_count: u32,
+    /// Unix seconds of the most recent invocation, or None if never used.
+    pub last_used_at: Option<i64>,
+    /// Pre-computed "3d ago" / "Just now" label (relative to now at projection
+    /// time). None when usage_count == 0.
+    pub last_used_label: Option<String>,
+    /// Unix seconds when this announcement was last seen on the Nostr relay set.
+    pub last_seen_at: i64,
+    /// Pre-computed relative-time label for last_seen_at (always populated).
+    pub last_seen_label: String,
+    /// bech32 npub1… encoding of provider_pubkey. Falls back to "invalid:<prefix>"
+    /// on malformed hex (never panics).
+    pub npub: String,
+    /// `serde_json::to_string_pretty` of the parsed schema_json, or raw schema_json
+    /// if parse fails. Used by the Tool Detail SCHEMA expander.
+    pub schema_pretty: String,
 }
 
 /// Phase 35 — discovery query lifecycle state for the Tool Discovery
@@ -479,6 +497,10 @@ pub enum Screen {
     SettingsTools,
     /// Phase 35 — Tool Discovery sub-screen (pushed from SettingsTools).
     ToolDiscovery,
+    /// Phase 36 — per-tool detail screen reached by tapping a row on
+    /// ToolDiscovery. Carries the `DiscoverableTool.id` ("<pubkey>:<name>")
+    /// so the native UI can look the row up in `app_state.contextvm_tools`.
+    ContextvmToolDetail { tool_id: String },
     /// Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
     Locked,
     /// PIN/password setup screen -- shown on first launch after onboarding (Phase 28, D-14).
@@ -933,7 +955,8 @@ pub struct DirectorySourceSummary {
 /// - 60..=3599s → "{m}m ago"
 /// - 3600..=86399s → "{h}h ago"
 /// - 86400..=172799s → "Yesterday"
-/// - ≥172800s → "{d}d ago"
+/// - 172800..=604799s → "{d}d ago"  (2..=6 days)
+/// - ≥604800s → "{w}w ago"  (≥ 1 week, Phase 36 addition)
 pub fn relative_time_label(last: Option<i64>, now_secs: i64) -> String {
     let Some(t) = last else {
         return "Never".into();
@@ -942,12 +965,14 @@ pub fn relative_time_label(last: Option<i64>, now_secs: i64) -> String {
     if delta < 0 {
         return "Just now".into();
     }
+    const WEEK_SECS: i64 = 7 * 86400;
     match delta {
         0..=59 => "Just now".into(),
         60..=3599 => format!("{}m ago", delta / 60),
         3600..=86399 => format!("{}h ago", delta / 3600),
         86400..=172799 => "Yesterday".into(),
-        _ => format!("{}d ago", delta / 86400),
+        172800..=604_799 => format!("{}d ago", delta / 86400),
+        _ => format!("{}w ago", delta / WEEK_SECS),
     }
 }
 
@@ -2531,9 +2556,14 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                 if let Ok(rows) =
                     persistence::queries::list_all_contextvm_tools(conn)
                 {
+                    let usage_map = aggregate_contextvm_tool_usage(conn);
+                    let now_secs_proj = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
                     actor_state.app_state.contextvm_tools = rows
                         .into_iter()
-                        .map(row_to_discoverable_tool)
+                        .map(|r| row_to_discoverable_tool(r, &usage_map, now_secs_proj))
                         .collect();
                 }
             }
@@ -2984,6 +3014,27 @@ fn handle_agent_step_complete(
                 actor_state.db.as_ref().expect("db unlocked").conn(),
                 &step_row,
             );
+
+            // Phase 36 (CTX36-USED-01): if this step recorded a contextvm
+            // tool call, re-aggregate usage and re-project AppState.contextvm_tools
+            // so the "Used N×" badge updates without waiting for the next
+            // discovery refresh.
+            if step_row.tool_origin.as_deref() == Some("contextvm") {
+                let conn_for_agg = actor_state.db.as_ref().expect("db unlocked").conn();
+                let usage_map = aggregate_contextvm_tool_usage(conn_for_agg);
+                let now_secs_proj = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let refreshed: Vec<DiscoverableTool> =
+                    persistence::queries::list_all_contextvm_tools(conn_for_agg)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|r| row_to_discoverable_tool(r, &usage_map, now_secs_proj))
+                        .collect();
+                actor_state.app_state.contextvm_tools = refreshed;
+                emit_state(&actor_state.app_state, shared, update_tx);
+            }
 
             // Check step limit (max 20 steps per D-02)
             let current_count = persistence::queries::count_agent_steps(
@@ -3530,15 +3581,72 @@ fn load_directory_sources_summary(actor_state: &ActorState) -> Vec<DirectorySour
 
 // ── Phase 35 helpers ────────────────────────────────────────────────────────
 
+/// Phase 36 (CTX36-USED-01) — group agent_steps with tool_origin='contextvm' by
+/// tool_name, returning (count, max_created_at) per name. Pure projection; no DB
+/// writes. Each `agent_steps.action_payload` is a JSON array of `{name, ...}`
+/// objects; every entry counts once.
+///
+/// v1 limitation: only the agent-loop path (this lib.rs ~line 2961) writes
+/// agent_steps with tool_origin='contextvm'. The chat-tool round (Phase 27)
+/// dispatches contextvm tools without writing agent_steps, so "Used N×" reflects
+/// agent-session usage only. See 36-01-SUMMARY.md for the deferred follow-up.
+pub(crate) fn aggregate_contextvm_tool_usage(
+    conn: &rusqlite::Connection,
+) -> std::collections::HashMap<String, (u32, i64)> {
+    use std::collections::HashMap;
+    let mut acc: HashMap<String, (u32, i64)> = HashMap::new();
+    let rows = persistence::queries::fetch_contextvm_tool_usage_rows(conn).unwrap_or_default();
+    for (payload, created_at) in rows {
+        let calls: Vec<serde_json::Value> = serde_json::from_str(&payload).unwrap_or_default();
+        for call in calls {
+            if let Some(name) = call.get("name").and_then(|n| n.as_str()) {
+                let entry = acc.entry(name.to_string()).or_insert((0, 0));
+                entry.0 += 1;
+                if created_at > entry.1 {
+                    entry.1 = created_at;
+                }
+            }
+        }
+    }
+    acc
+}
+
 /// Project a persisted ContextvmToolRow into the UniFFI DiscoverableTool record.
-fn row_to_discoverable_tool(r: persistence::queries::ContextvmToolRow) -> DiscoverableTool {
+///
+/// Phase 36: signature gained `(usage_map, now_secs)` so all 7 derivative
+/// display fields (usage_count, last_used_at, last_used_label, last_seen_label,
+/// npub, schema_pretty) are pre-computed by the actor. UI never branches on
+/// integers (RMP rule, mirrors DirectorySourceSummary.last_synced_label).
+pub(crate) fn row_to_discoverable_tool(
+    row: persistence::queries::ContextvmToolRow,
+    usage_map: &std::collections::HashMap<String, (u32, i64)>,
+    now_secs: i64,
+) -> DiscoverableTool {
+    let (usage_count, last_used_at) = match usage_map.get(&row.tool_name) {
+        Some((c, t)) => (*c, Some(*t)),
+        None => (0u32, None),
+    };
+    let last_used_label = last_used_at.map(|t| relative_time_label(Some(t), now_secs));
+    let last_seen_label = relative_time_label(Some(row.last_seen_at), now_secs);
+    let npub = crate::contextvm::npub::encode_npub(&row.provider_pubkey);
+    let schema_pretty = serde_json::from_str::<serde_json::Value>(&row.schema_json)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| row.schema_json.clone());
     DiscoverableTool {
-        id: r.id,
-        name: r.tool_name,
-        description: r.description,
-        provider_pubkey: r.provider_pubkey,
-        provider_display_name: r.provider_display_name,
-        enabled: r.enabled,
+        id: row.id,
+        name: row.tool_name,
+        description: row.description,
+        provider_pubkey: row.provider_pubkey,
+        provider_display_name: row.provider_display_name,
+        enabled: row.enabled,
+        usage_count,
+        last_used_at,
+        last_used_label,
+        last_seen_at: row.last_seen_at,
+        last_seen_label,
+        npub,
+        schema_pretty,
     }
 }
 
@@ -4205,12 +4313,19 @@ fn load_post_unlock(
             .flatten()
             .map(|v| v == "1")
             .unwrap_or(false);
-    let contextvm_tools_for_state: Vec<DiscoverableTool> =
-        persistence::queries::list_all_contextvm_tools(db.conn())
+    let contextvm_tools_for_state: Vec<DiscoverableTool> = {
+        let conn = db.conn();
+        let usage_map = aggregate_contextvm_tool_usage(conn);
+        let now_secs_proj = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        persistence::queries::list_all_contextvm_tools(conn)
             .unwrap_or_default()
             .into_iter()
-            .map(row_to_discoverable_tool)
-            .collect();
+            .map(|r| row_to_discoverable_tool(r, &usage_map, now_secs_proj))
+            .collect()
+    };
     let lock_timeout_seconds: i64 =
         persistence::queries::get_setting(db.conn(), "lock_timeout_seconds")
             .ok()
@@ -6209,9 +6324,20 @@ impl FfiApp {
                                     if let Ok(rows) =
                                         persistence::queries::list_all_contextvm_tools(conn)
                                     {
+                                        let usage_map = aggregate_contextvm_tool_usage(conn);
+                                        let now_secs_proj = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .map(|d| d.as_secs() as i64)
+                                            .unwrap_or(0);
                                         actor_state.app_state.contextvm_tools = rows
                                             .into_iter()
-                                            .map(row_to_discoverable_tool)
+                                            .map(|r| {
+                                                row_to_discoverable_tool(
+                                                    r,
+                                                    &usage_map,
+                                                    now_secs_proj,
+                                                )
+                                            })
                                             .collect();
                                     }
                                     // Re-hydrate the active conversation's dispatch map.
@@ -6241,6 +6367,11 @@ impl FfiApp {
                                         actor_state.contextvm_secret_key = k;
                                     }
                                 }
+                                // Phase 36 cache-first guard: do NOT clear
+                                // app_state.contextvm_tools while transitioning
+                                // to Loading — UI relies on the cached list
+                                // staying rendered across the in-flight refresh
+                                // (UI-SPEC §Interaction → Optimistic render).
                                 actor_state.app_state.contextvm_discovery_state =
                                     ContextvmDiscoveryState::Loading;
                                 emit_state(
@@ -8485,9 +8616,21 @@ impl FfiApp {
                                                     conn,
                                                 )
                                             {
+                                                let usage_map =
+                                                    aggregate_contextvm_tool_usage(conn);
+                                                let now_secs_proj = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .map(|d| d.as_secs() as i64)
+                                                    .unwrap_or(0);
                                                 actor_state.app_state.contextvm_tools = rows
                                                     .into_iter()
-                                                    .map(row_to_discoverable_tool)
+                                                    .map(|r| {
+                                                        row_to_discoverable_tool(
+                                                            r,
+                                                            &usage_map,
+                                                            now_secs_proj,
+                                                        )
+                                                    })
                                                     .collect();
                                             }
                                             actor_state.app_state.contextvm_discovery_state =

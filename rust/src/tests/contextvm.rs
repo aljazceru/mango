@@ -710,81 +710,222 @@ fn test_build_chat_tools_with_contextvm_caps_at_8_via_finalise() {
     assert_eq!(with_remote.len(), baseline.len() + 8);
 }
 
-// ── Phase 36 RED stubs (Wave 0) ─────────────────────────────────────────
-// Each stub locks a contract Wave 1 must satisfy. Un-ignored in Wave 1
-// after the helpers/fields land. Compile-only today.
+// ── Phase 36 GREEN tests (Wave 1) ───────────────────────────────────────
 
 #[cfg(test)]
 mod phase_36_red_stubs {
-    #[allow(unused_imports)]
-    use super::*;
+    use crate::aggregate_contextvm_tool_usage;
+    use crate::contextvm::npub::encode_npub;
+    use crate::persistence::queries::{insert_agent_step, AgentStepRow};
+    use crate::persistence::Database;
+    use crate::row_to_discoverable_tool;
 
-    /// CTX36-AGG-01: aggregate_contextvm_tool_usage groups agent_steps rows
-    /// by tool_name and returns (count, max_created_at).
+    fn make_step(
+        id: &str,
+        session: &str,
+        step_no: i64,
+        payload: &str,
+        origin: &str,
+        created: i64,
+    ) -> AgentStepRow {
+        AgentStepRow {
+            id: id.to_string(),
+            session_id: session.to_string(),
+            step_number: step_no,
+            action_type: "tool_call".to_string(),
+            action_payload: payload.to_string(),
+            result: None,
+            status: "completed".to_string(),
+            created_at: created,
+            tool_origin: Some(origin.to_string()),
+        }
+    }
+
+    /// Helper: insert a parent agent_session so the FK-style schema is valid.
+    fn seed_session(db: &Database, sid: &str) {
+        use crate::persistence::queries::{insert_agent_session, AgentSessionRow};
+        let _ = insert_agent_session(
+            db.conn(),
+            &AgentSessionRow {
+                id: sid.to_string(),
+                title: "t".into(),
+                status: "running".into(),
+                backend_id: "b".into(),
+                created_at: 1,
+                updated_at: 1,
+            },
+        );
+    }
+
+    /// CTX36-AGG-01: aggregate_contextvm_tool_usage groups by tool_name.
     #[test]
-    #[ignore = "RED — Phase 36 Wave 1 (CTX36-AGG-01): aggregate_contextvm_tool_usage not yet implemented"]
     fn test_aggregate_contextvm_usage_groups_by_name() {
-        // Wave 1 contract:
-        //   - Insert 3 agent_steps rows: 2 with action_payload calling "tool_a" and tool_origin="contextvm",
-        //     1 calling "tool_b" with tool_origin="contextvm".
-        //   - Call aggregate_contextvm_tool_usage(conn).
-        //   - Expect HashMap { "tool_a" => (2, max_created_at_of_two), "tool_b" => (1, …) }.
-        panic!("STUB — Wave 1 must implement aggregate_contextvm_tool_usage and un-ignore this test");
+        let db = Database::open(":memory:").unwrap();
+        seed_session(&db, "s1");
+        insert_agent_step(
+            db.conn(),
+            &make_step("a1", "s1", 1, r#"[{"name":"tool_a"}]"#, "contextvm", 100),
+        )
+        .unwrap();
+        insert_agent_step(
+            db.conn(),
+            &make_step("a2", "s1", 2, r#"[{"name":"tool_a"}]"#, "contextvm", 200),
+        )
+        .unwrap();
+        insert_agent_step(
+            db.conn(),
+            &make_step("a3", "s1", 3, r#"[{"name":"tool_b"}]"#, "contextvm", 150),
+        )
+        .unwrap();
+
+        let m = aggregate_contextvm_tool_usage(db.conn());
+        assert_eq!(m.get("tool_a"), Some(&(2u32, 200i64)));
+        assert_eq!(m.get("tool_b"), Some(&(1u32, 150i64)));
     }
 
-    /// CTX36-AGG-02: action_payload may be a JSON array with multiple tool calls.
-    /// Each name in the array counts once.
+    /// CTX36-AGG-02: multi-tool payload counts each entry.
     #[test]
-    #[ignore = "RED — Phase 36 Wave 1 (CTX36-AGG-02): multi-tool payload aggregation"]
     fn test_aggregate_handles_multi_tool_payload() {
-        // Wave 1 contract:
-        //   - Insert one agent_steps row with action_payload =
-        //     '[{"name":"tool_a"},{"name":"tool_a"},{"name":"tool_b"}]', tool_origin="contextvm".
-        //   - Expect HashMap { "tool_a" => (2, _), "tool_b" => (1, _) }.
-        panic!("STUB — Wave 1");
+        let db = Database::open(":memory:").unwrap();
+        seed_session(&db, "s1");
+        insert_agent_step(
+            db.conn(),
+            &make_step(
+                "a1",
+                "s1",
+                1,
+                r#"[{"name":"tool_a"},{"name":"tool_a"},{"name":"tool_b"}]"#,
+                "contextvm",
+                500,
+            ),
+        )
+        .unwrap();
+
+        let m = aggregate_contextvm_tool_usage(db.conn());
+        assert_eq!(m.get("tool_a"), Some(&(2u32, 500i64)));
+        assert_eq!(m.get("tool_b"), Some(&(1u32, 500i64)));
     }
 
-    /// CTX36-AGG-03: rows with tool_origin="local" are excluded from the aggregate.
+    /// CTX36-AGG-03: rows with tool_origin='local' are excluded.
     #[test]
-    #[ignore = "RED — Phase 36 Wave 1 (CTX36-AGG-03): exclude tool_origin='local'"]
     fn test_aggregate_excludes_local_origin() {
-        // Wave 1 contract:
-        //   - Insert 2 rows with tool_origin="contextvm" (tool_a × 2)
-        //     plus 5 rows with tool_origin="local" (tool_a × 5).
-        //   - aggregate result for "tool_a" must be (2, _), NOT 7.
-        panic!("STUB — Wave 1");
+        let db = Database::open(":memory:").unwrap();
+        seed_session(&db, "s1");
+        // 2 contextvm rows for tool_a
+        insert_agent_step(
+            db.conn(),
+            &make_step("c1", "s1", 1, r#"[{"name":"tool_a"}]"#, "contextvm", 100),
+        )
+        .unwrap();
+        insert_agent_step(
+            db.conn(),
+            &make_step("c2", "s1", 2, r#"[{"name":"tool_a"}]"#, "contextvm", 200),
+        )
+        .unwrap();
+        // 5 local rows for tool_a — should NOT be counted
+        for i in 0..5 {
+            insert_agent_step(
+                db.conn(),
+                &make_step(
+                    &format!("l{}", i),
+                    "s1",
+                    10 + i,
+                    r#"[{"name":"tool_a"}]"#,
+                    "local",
+                    300 + i,
+                ),
+            )
+            .unwrap();
+        }
+
+        let m = aggregate_contextvm_tool_usage(db.conn());
+        assert_eq!(m.get("tool_a"), Some(&(2u32, 200i64)));
     }
+
+    /// Stable known-vector pubkey (32 hex bytes). Pinned bech32 output verified
+    /// via `nostr::nips::nip19::ToBech32` on `contextvm_sdk::signer::PublicKey`.
+    const KNOWN_HEX: &str = "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245";
+    const KNOWN_NPUB: &str = "npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s";
 
     /// CTX36-NPUB-01: encode_npub produces correct npub1… for a known hex pubkey.
     #[test]
-    #[ignore = "RED — Phase 36 Wave 1 (CTX36-NPUB-01): encode_npub helper"]
     fn test_encode_npub_known_vector() {
-        // Wave 1 contract: encode_npub(<known 64-hex>) returns npub1<expected>
-        // Use a public Nostr known vector — e.g. the well-publicised damus dev pubkey
-        // (Wave 1 picks a stable test vector; pin it in the test).
-        panic!("STUB — Wave 1");
+        let r = encode_npub(KNOWN_HEX);
+        assert_eq!(r, KNOWN_NPUB);
     }
 
-    /// CTX36-NPUB-02: encode_npub never panics on invalid hex; returns "invalid:<prefix>" fallback.
+    /// CTX36-NPUB-02: encode_npub never panics on invalid hex; returns
+    /// "invalid:<prefix>" fallback.
     #[test]
-    #[ignore = "RED — Phase 36 Wave 1 (CTX36-NPUB-02): encode_npub invalid-hex fallback"]
     fn test_encode_npub_fallback_on_invalid() {
-        // Wave 1 contract:
-        //   - encode_npub("not-hex") returns format!("invalid:{}", "not-hex"[..8.min(len)]).
-        //   - encode_npub("") returns format!("invalid:") (or similar — Wave 1 picks exact fallback).
-        //   - No panic under any input.
-        panic!("STUB — Wave 1");
+        // not-hex → fallback to "invalid:not-hex" (input < 8 chars yields shorter prefix)
+        let r1 = encode_npub("not-hex");
+        assert_eq!(r1, "invalid:not-hex");
+
+        // empty input → "invalid:"
+        let r2 = encode_npub("");
+        assert_eq!(r2, "invalid:");
+
+        // long invalid hex → first 8 chars only
+        let r3 = encode_npub("ZZZZZZZZAAAAAAAA1111");
+        assert_eq!(r3, "invalid:ZZZZZZZZ");
+
+        // malformed hex of correct length but invalid characters
+        let r4 = encode_npub(&"Z".repeat(64));
+        assert!(r4.starts_with("invalid:"), "got: {}", r4);
     }
 
     /// CTX36-FIELDS-01: row_to_discoverable_tool projects all 7 new fields.
     #[test]
-    #[ignore = "RED — Phase 36 Wave 1 (CTX36-FIELDS-01): DiscoverableTool extended fields"]
     fn test_row_to_discoverable_tool_phase36_fields() {
-        // Wave 1 contract:
-        //   - DiscoverableTool gains: usage_count, last_used_at, last_used_label,
-        //     last_seen_at, last_seen_label, npub, schema_pretty.
-        //   - Wave 1 refactors row_to_discoverable_tool to take (row, usage_map, now_secs)
-        //     and projects all 7 fields.
-        panic!("STUB — Wave 1");
+        use crate::persistence::queries::ContextvmToolRow;
+        use std::collections::HashMap;
+
+        let now = 10_000_000_i64;
+        let row = ContextvmToolRow {
+            id: format!("{}:weather", KNOWN_HEX),
+            tool_name: "weather".into(),
+            display_name: Some("Weather".into()),
+            description: "Get weather".into(),
+            provider_pubkey: KNOWN_HEX.into(),
+            provider_display_name: Some("Demo Server".into()),
+            schema_json: r#"{"type":"object","properties":{"q":{"type":"string"}}}"#.into(),
+            enabled: true,
+            last_seen_at: now - 86400, // 1 day ago → "Yesterday"
+        };
+        let mut usage_map: HashMap<String, (u32, i64)> = HashMap::new();
+        usage_map.insert("weather".to_string(), (3u32, now - 3600));
+
+        let dt = row_to_discoverable_tool(row, &usage_map, now);
+
+        assert_eq!(dt.usage_count, 3);
+        assert_eq!(dt.last_used_at, Some(now - 3600));
+        assert_eq!(dt.last_used_label, Some("1h ago".into()));
+        assert_eq!(dt.last_seen_at, now - 86400);
+        assert_eq!(dt.last_seen_label, "Yesterday".to_string());
+        assert_eq!(dt.npub, KNOWN_NPUB);
+        // schema_pretty must be multi-line when input is a JSON object
+        assert!(
+            dt.schema_pretty.contains('\n'),
+            "schema_pretty not pretty-printed: {:?}",
+            dt.schema_pretty
+        );
+
+        // Tool with no usage entry → usage_count=0, last_used_at=None
+        let row2 = ContextvmToolRow {
+            id: format!("{}:other", KNOWN_HEX),
+            tool_name: "other".into(),
+            display_name: None,
+            description: String::new(),
+            provider_pubkey: KNOWN_HEX.into(),
+            provider_display_name: None,
+            schema_json: "{}".into(),
+            enabled: false,
+            last_seen_at: now,
+        };
+        let dt2 = row_to_discoverable_tool(row2, &usage_map, now);
+        assert_eq!(dt2.usage_count, 0);
+        assert_eq!(dt2.last_used_at, None);
+        assert_eq!(dt2.last_used_label, None);
     }
 }
