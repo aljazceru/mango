@@ -709,3 +709,82 @@ fn test_build_chat_tools_with_contextvm_caps_at_8_via_finalise() {
         crate::agent::tools::build_chat_tools_with_contextvm(false, false, &finalised);
     assert_eq!(with_remote.len(), baseline.len() + 8);
 }
+
+// ── Phase 36 RED stubs (Wave 0) ─────────────────────────────────────────
+// Each stub locks a contract Wave 1 must satisfy. Un-ignored in Wave 1
+// after the helpers/fields land. Compile-only today.
+
+#[cfg(test)]
+mod phase_36_red_stubs {
+    #[allow(unused_imports)]
+    use super::*;
+
+    /// CTX36-AGG-01: aggregate_contextvm_tool_usage groups agent_steps rows
+    /// by tool_name and returns (count, max_created_at).
+    #[test]
+    #[ignore = "RED — Phase 36 Wave 1 (CTX36-AGG-01): aggregate_contextvm_tool_usage not yet implemented"]
+    fn test_aggregate_contextvm_usage_groups_by_name() {
+        // Wave 1 contract:
+        //   - Insert 3 agent_steps rows: 2 with action_payload calling "tool_a" and tool_origin="contextvm",
+        //     1 calling "tool_b" with tool_origin="contextvm".
+        //   - Call aggregate_contextvm_tool_usage(conn).
+        //   - Expect HashMap { "tool_a" => (2, max_created_at_of_two), "tool_b" => (1, …) }.
+        panic!("STUB — Wave 1 must implement aggregate_contextvm_tool_usage and un-ignore this test");
+    }
+
+    /// CTX36-AGG-02: action_payload may be a JSON array with multiple tool calls.
+    /// Each name in the array counts once.
+    #[test]
+    #[ignore = "RED — Phase 36 Wave 1 (CTX36-AGG-02): multi-tool payload aggregation"]
+    fn test_aggregate_handles_multi_tool_payload() {
+        // Wave 1 contract:
+        //   - Insert one agent_steps row with action_payload =
+        //     '[{"name":"tool_a"},{"name":"tool_a"},{"name":"tool_b"}]', tool_origin="contextvm".
+        //   - Expect HashMap { "tool_a" => (2, _), "tool_b" => (1, _) }.
+        panic!("STUB — Wave 1");
+    }
+
+    /// CTX36-AGG-03: rows with tool_origin="local" are excluded from the aggregate.
+    #[test]
+    #[ignore = "RED — Phase 36 Wave 1 (CTX36-AGG-03): exclude tool_origin='local'"]
+    fn test_aggregate_excludes_local_origin() {
+        // Wave 1 contract:
+        //   - Insert 2 rows with tool_origin="contextvm" (tool_a × 2)
+        //     plus 5 rows with tool_origin="local" (tool_a × 5).
+        //   - aggregate result for "tool_a" must be (2, _), NOT 7.
+        panic!("STUB — Wave 1");
+    }
+
+    /// CTX36-NPUB-01: encode_npub produces correct npub1… for a known hex pubkey.
+    #[test]
+    #[ignore = "RED — Phase 36 Wave 1 (CTX36-NPUB-01): encode_npub helper"]
+    fn test_encode_npub_known_vector() {
+        // Wave 1 contract: encode_npub(<known 64-hex>) returns npub1<expected>
+        // Use a public Nostr known vector — e.g. the well-publicised damus dev pubkey
+        // (Wave 1 picks a stable test vector; pin it in the test).
+        panic!("STUB — Wave 1");
+    }
+
+    /// CTX36-NPUB-02: encode_npub never panics on invalid hex; returns "invalid:<prefix>" fallback.
+    #[test]
+    #[ignore = "RED — Phase 36 Wave 1 (CTX36-NPUB-02): encode_npub invalid-hex fallback"]
+    fn test_encode_npub_fallback_on_invalid() {
+        // Wave 1 contract:
+        //   - encode_npub("not-hex") returns format!("invalid:{}", "not-hex"[..8.min(len)]).
+        //   - encode_npub("") returns format!("invalid:") (or similar — Wave 1 picks exact fallback).
+        //   - No panic under any input.
+        panic!("STUB — Wave 1");
+    }
+
+    /// CTX36-FIELDS-01: row_to_discoverable_tool projects all 7 new fields.
+    #[test]
+    #[ignore = "RED — Phase 36 Wave 1 (CTX36-FIELDS-01): DiscoverableTool extended fields"]
+    fn test_row_to_discoverable_tool_phase36_fields() {
+        // Wave 1 contract:
+        //   - DiscoverableTool gains: usage_count, last_used_at, last_used_label,
+        //     last_seen_at, last_seen_label, npub, schema_pretty.
+        //   - Wave 1 refactors row_to_discoverable_tool to take (row, usage_map, now_secs)
+        //     and projects all 7 fields.
+        panic!("STUB — Wave 1");
+    }
+}
