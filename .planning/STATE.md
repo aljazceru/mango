@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Memory & Agents
-status: verifying
-stopped_at: Phase 36 UI-SPEC approved
-last_updated: "2026-05-08T16:13:13.358Z"
+status: completed
+stopped_at: Phase 36 Plan 03 complete (Desktop iced UI)
+last_updated: "2026-05-08T18:30:00.000Z"
 last_activity: 2026-05-08
 progress:
   total_phases: 18
-  completed_phases: 16
+  completed_phases: 17
   total_plans: 74
-  completed_plans: 65
-  percent: 88
+  completed_plans: 68
+  percent: 92
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Every inference request is provably confidential -- verified via remote attestation, all data stays local
-**Current focus:** Phase 34.1 complete — all Phase 34/34.1 must-haves are FULL (RED-09 and RED-11 closed)
+**Current focus:** Phase 36 — Cache discovered contextvm tools, tap-for-detail, search, Used N× badge
 
 ## Current Position
 
-Phase: 34.1 (close-red-09-and-red-11-actor-loop-drop) — COMPLETE
-Plan: 7 of 7 — done
-Status: Phase complete — ready for verification
+Phase: 36 (cache-discovered-contextvm-tools) — IN PROGRESS
+Plan: 03 of 04 — DONE (Desktop iced UI: cache-first render, search, Used N× badge, tap-for-detail Tool Detail sub-screen, inline copy confirmations)
+Status: Plan 36-03 complete; all four user-visible Phase 36 features ship on Android (36-02) + Desktop (36-03) with locked-copy parity
 Last activity: 2026-05-08
 
-Progress: [█████████░] 88%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
@@ -89,6 +89,8 @@ Progress: [█████████░] 88%
 | Phase 34.1 P06 | 4min | 2 tasks | 5 files |
 | Phase 36 P00 | 7min | 3 tasks | 3 files |
 | Phase 36 P01 | 45min | 3 tasks | 8 files |
+| Phase 36 P02 | 10min | 2 tasks | 3 files |
+| Phase 36 P03 | 45min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -169,6 +171,9 @@ Key architectural context for v2.0:
 - [Phase ?]: Wave 0 stub-and-gate pattern: 8 #[ignore] tests panic, Wave 1 un-ignores after implementing
 - [Phase ?]: Phase 36-01: aggregate via pull-and-parse (CONTEXT D-Area-4 SQL not implementable; agent_steps has no tool_name column)
 - [Phase ?]: Phase 36-01: chat-tool path does NOT write agent_steps in v1 - Used N× reflects agent-session uses only; deferred follow-up filed
+- [Phase ?]: [Phase 36]: Plan 02 — Compose Material3 Switch absorbs its own pointer event so a Card.Modifier.clickable on the row dispatches PushScreen only on row-tap and never when the user toggles the Switch
+- [Phase ?]: [Phase 36]: Plan 02 — Schema expander defaults collapsed + heightIn(max=320.dp) + verticalScroll so multi-kilobyte JSON cannot blow scroll position; Show button hidden entirely when schema_pretty is blank
+- [Phase ?]: [Phase 36]: Plan 02 — Used N× muted pill reuses Phase 35-06 Remote provenance pill style for visual parity across Phase 35/36 badges
 
 ### Roadmap Evolution
 
@@ -206,7 +211,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-05-08T16:12:56.144Z
+Last session: 2026-05-08T16:26:56.914Z
 Stopped at: Phase 36 UI-SPEC approved
 Resume file: None
 
