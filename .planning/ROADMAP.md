@@ -66,7 +66,7 @@
 - [x] **Phase 33: Integrate Venice.ai as TEE-attested LLM provider** - TDX+NRAS attestation + ECDH(secp256k1)+HKDF+AES-256-GCM E2EE channel (completed 2026-04-26)
 - [x] **Phase 34: Integrate Redpill (api.redpill.ai) as TEE-attested LLM aggregator** - Three response shapes (Phala-flat / Phala-orchestrated 3-quote / Chutes), reusing Venice REPORTDATA decoder, no new crates (completed 2026-04-26)
 - [x] **Phase 34.1: Plumb shape/freshness/orchestrated_components through UniFFI + native trust UI** - Closes RED-09 + RED-11 actor-loop drop on Android, iOS, Desktop iced (completed 2026-04-27)
-- [ ] **Phase 35: Add contextvm-sdk for Nostr-based tool discovery** - Integrate contextvm-sdk crate to discover and use tools advertised over Nostr
+- [ ] **Phase 35: Add contextvm-sdk for Nostr-based tool discovery + invocation** - "Tool marketplace" via contextvm-sdk: Settings → Tools "Discover tools" + auto-discover toggle; reuses existing tool dispatch; Android + Desktop (iOS deferred); contextvm defaults + relay.nostr.net
 
 ## Phase Details
 
@@ -330,11 +330,11 @@ Plans:
 - [x] 34.1-07-PLAN.md — Cleanup: confirm stale comment is gone, update Phase 34 SUMMARY with FULL closure note, update STATE.md
 **UI hint**: yes
 
-### Phase 35: Add contextvm-sdk for Nostr-based tool discovery
+### Phase 35: Add contextvm-sdk for Nostr-based tool discovery and invocation (Android + Desktop)
 
-**Goal:** [To be planned]
-**Requirements**: TBD
-**Depends on:** Phase 34
+**Goal:** Users can discover and invoke remote tools advertised over Nostr via the `contextvm-sdk` crate — a "tool marketplace" extension of the existing local tool dispatch (Phase 22 / Phase 27). Settings → Tools gains a "Discover tools" button (opens a list of currently-announced tools with per-tool enable toggles, persisted across launches) and an "Automatically discover and use tools" checkbox (defaults off; when on, the app pulls announcements and offers them to the LLM without manual selection). Discovered tools route through the same OpenAI-compatible `tools` array and dispatch path as local tools — no parallel subsystem. Ships on Android (Compose) and Desktop (iced); iOS deferred. Relay set = contextvm-sdk defaults plus `relay.nostr.net`. All deps pure-Rust, no OpenSSL. Failures (relay unreachable, malformed announcement, invocation error) degrade gracefully — never crash the conversation.
+**Requirements**: CTX-01 (contextvm-sdk integrated, pure-Rust, no OpenSSL), CTX-02 (Settings → Tools "Discover tools" row + screen on Android & Desktop), CTX-03 (per-tool enable persisted across launches), CTX-04 (Settings → Tools "Automatically discover and use tools" toggle, defaults off, persisted), CTX-05 (enabled tools surface in OpenAI-compatible `tools` array via existing dispatch path), CTX-06 (invocation routes through Nostr; result returned to LLM as a tool-call response), CTX-07 (relay set = contextvm-sdk defaults + `relay.nostr.net`), CTX-08 (graceful degradation on relay/announcement/invocation failure), CTX-09 (UniFFI bindings regenerated for all 3 platforms; iOS Swift UI deferred but bindings updated), CTX-10 (tool-call provenance — agent step summary surfaces remote-vs-local origin)
+**Depends on:** Phase 34 (architectural baseline; functional dependency is on Phase 22 agent tools + Phase 24 Settings TOOLS section + Phase 27 per-conversation tools toggle)
 **Plans:** 0 plans
 
 Plans:
