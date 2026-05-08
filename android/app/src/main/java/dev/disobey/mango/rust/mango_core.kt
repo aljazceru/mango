@@ -2906,7 +2906,7 @@ public object FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer<Dir
 
 /**
  * Phase 35 — one tool surfaced by Nostr discovery, bound to AppState
- * for the Tool Discovery sub-screen.
+ * for the Tool Discovery sub-screen. Phase 36 adds usage + display fields.
  */
 data class DiscoverableTool (
     /**
@@ -2924,7 +2924,38 @@ data class DiscoverableTool (
      * UI falls back to `pubkey[..8]…` per UI-SPEC §F.
      */
     var `providerDisplayName`: kotlin.String?, 
-    var `enabled`: kotlin.Boolean
+    var `enabled`: kotlin.Boolean, 
+    /**
+     * Times the user has invoked this tool via the agent loop. 0 if never used.
+     */
+    var `usageCount`: kotlin.UInt, 
+    /**
+     * Unix seconds of the most recent invocation, or None if never used.
+     */
+    var `lastUsedAt`: kotlin.Long?, 
+    /**
+     * Pre-computed "3d ago" / "Just now" label (relative to now at projection
+     * time). None when usage_count == 0.
+     */
+    var `lastUsedLabel`: kotlin.String?, 
+    /**
+     * Unix seconds when this announcement was last seen on the Nostr relay set.
+     */
+    var `lastSeenAt`: kotlin.Long, 
+    /**
+     * Pre-computed relative-time label for last_seen_at (always populated).
+     */
+    var `lastSeenLabel`: kotlin.String, 
+    /**
+     * bech32 npub1… encoding of provider_pubkey. Falls back to "invalid:<prefix>"
+     * on malformed hex (never panics).
+     */
+    var `npub`: kotlin.String, 
+    /**
+     * `serde_json::to_string_pretty` of the parsed schema_json, or raw schema_json
+     * if parse fails. Used by the Tool Detail SCHEMA expander.
+     */
+    var `schemaPretty`: kotlin.String
 ) {
     
     companion object
@@ -2942,6 +2973,13 @@ public object FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer<Discovera
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
         )
     }
 
@@ -2951,7 +2989,14 @@ public object FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer<Discovera
             FfiConverterString.allocationSize(value.`description`) +
             FfiConverterString.allocationSize(value.`providerPubkey`) +
             FfiConverterOptionalString.allocationSize(value.`providerDisplayName`) +
-            FfiConverterBoolean.allocationSize(value.`enabled`)
+            FfiConverterBoolean.allocationSize(value.`enabled`) +
+            FfiConverterUInt.allocationSize(value.`usageCount`) +
+            FfiConverterOptionalLong.allocationSize(value.`lastUsedAt`) +
+            FfiConverterOptionalString.allocationSize(value.`lastUsedLabel`) +
+            FfiConverterLong.allocationSize(value.`lastSeenAt`) +
+            FfiConverterString.allocationSize(value.`lastSeenLabel`) +
+            FfiConverterString.allocationSize(value.`npub`) +
+            FfiConverterString.allocationSize(value.`schemaPretty`)
     )
 
     override fun write(value: DiscoverableTool, buf: ByteBuffer) {
@@ -2961,6 +3006,13 @@ public object FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer<Discovera
             FfiConverterString.write(value.`providerPubkey`, buf)
             FfiConverterOptionalString.write(value.`providerDisplayName`, buf)
             FfiConverterBoolean.write(value.`enabled`, buf)
+            FfiConverterUInt.write(value.`usageCount`, buf)
+            FfiConverterOptionalLong.write(value.`lastUsedAt`, buf)
+            FfiConverterOptionalString.write(value.`lastUsedLabel`, buf)
+            FfiConverterLong.write(value.`lastSeenAt`, buf)
+            FfiConverterString.write(value.`lastSeenLabel`, buf)
+            FfiConverterString.write(value.`npub`, buf)
+            FfiConverterString.write(value.`schemaPretty`, buf)
     }
 }
 
@@ -6426,6 +6478,16 @@ sealed class Screen {
     
     
     /**
+     * Phase 36 — per-tool detail screen reached by tapping a row on
+     * ToolDiscovery. Carries the `DiscoverableTool.id` ("<pubkey>:<name>")
+     * so the native UI can look the row up in `app_state.contextvm_tools`.
+     */
+    data class ContextvmToolDetail(
+        val `toolId`: kotlin.String) : Screen() {
+        companion object
+    }
+    
+    /**
      * Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
      */
     object Locked : Screen()
@@ -6467,8 +6529,11 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             13 -> Screen.SettingsSecurity
             14 -> Screen.SettingsTools
             15 -> Screen.ToolDiscovery
-            16 -> Screen.Locked
-            17 -> Screen.PinSetup
+            16 -> Screen.ContextvmToolDetail(
+                FfiConverterString.read(buf),
+                )
+            17 -> Screen.Locked
+            18 -> Screen.PinSetup
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -6566,6 +6631,13 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 4UL
             )
         }
+        is Screen.ContextvmToolDetail -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`toolId`)
+            )
+        }
         is Screen.Locked -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -6644,12 +6716,17 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 buf.putInt(15)
                 Unit
             }
-            is Screen.Locked -> {
+            is Screen.ContextvmToolDetail -> {
                 buf.putInt(16)
+                FfiConverterString.write(value.`toolId`, buf)
+                Unit
+            }
+            is Screen.Locked -> {
+                buf.putInt(17)
                 Unit
             }
             is Screen.PinSetup -> {
-                buf.putInt(17)
+                buf.putInt(18)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }

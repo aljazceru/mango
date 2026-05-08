@@ -2626,7 +2626,7 @@ public func FfiConverterTypeDirectorySourceSummary_lower(_ value: DirectorySourc
 
 /**
  * Phase 35 — one tool surfaced by Nostr discovery, bound to AppState
- * for the Tool Discovery sub-screen.
+ * for the Tool Discovery sub-screen. Phase 36 adds usage + display fields.
  */
 public struct DiscoverableTool {
     /**
@@ -2645,6 +2645,37 @@ public struct DiscoverableTool {
      */
     public var providerDisplayName: String?
     public var enabled: Bool
+    /**
+     * Times the user has invoked this tool via the agent loop. 0 if never used.
+     */
+    public var usageCount: UInt32
+    /**
+     * Unix seconds of the most recent invocation, or None if never used.
+     */
+    public var lastUsedAt: Int64?
+    /**
+     * Pre-computed "3d ago" / "Just now" label (relative to now at projection
+     * time). None when usage_count == 0.
+     */
+    public var lastUsedLabel: String?
+    /**
+     * Unix seconds when this announcement was last seen on the Nostr relay set.
+     */
+    public var lastSeenAt: Int64
+    /**
+     * Pre-computed relative-time label for last_seen_at (always populated).
+     */
+    public var lastSeenLabel: String
+    /**
+     * bech32 npub1… encoding of provider_pubkey. Falls back to "invalid:<prefix>"
+     * on malformed hex (never panics).
+     */
+    public var npub: String
+    /**
+     * `serde_json::to_string_pretty` of the parsed schema_json, or raw schema_json
+     * if parse fails. Used by the Tool Detail SCHEMA expander.
+     */
+    public var schemaPretty: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2658,13 +2689,44 @@ public struct DiscoverableTool {
         /**
          * `server_info.name` from the announcement, or None.
          * UI falls back to `pubkey[..8]…` per UI-SPEC §F.
-         */providerDisplayName: String?, enabled: Bool) {
+         */providerDisplayName: String?, enabled: Bool, 
+        /**
+         * Times the user has invoked this tool via the agent loop. 0 if never used.
+         */usageCount: UInt32, 
+        /**
+         * Unix seconds of the most recent invocation, or None if never used.
+         */lastUsedAt: Int64?, 
+        /**
+         * Pre-computed "3d ago" / "Just now" label (relative to now at projection
+         * time). None when usage_count == 0.
+         */lastUsedLabel: String?, 
+        /**
+         * Unix seconds when this announcement was last seen on the Nostr relay set.
+         */lastSeenAt: Int64, 
+        /**
+         * Pre-computed relative-time label for last_seen_at (always populated).
+         */lastSeenLabel: String, 
+        /**
+         * bech32 npub1… encoding of provider_pubkey. Falls back to "invalid:<prefix>"
+         * on malformed hex (never panics).
+         */npub: String, 
+        /**
+         * `serde_json::to_string_pretty` of the parsed schema_json, or raw schema_json
+         * if parse fails. Used by the Tool Detail SCHEMA expander.
+         */schemaPretty: String) {
         self.id = id
         self.name = name
         self.description = description
         self.providerPubkey = providerPubkey
         self.providerDisplayName = providerDisplayName
         self.enabled = enabled
+        self.usageCount = usageCount
+        self.lastUsedAt = lastUsedAt
+        self.lastUsedLabel = lastUsedLabel
+        self.lastSeenAt = lastSeenAt
+        self.lastSeenLabel = lastSeenLabel
+        self.npub = npub
+        self.schemaPretty = schemaPretty
     }
 }
 
@@ -2693,6 +2755,27 @@ extension DiscoverableTool: Equatable, Hashable {
         if lhs.enabled != rhs.enabled {
             return false
         }
+        if lhs.usageCount != rhs.usageCount {
+            return false
+        }
+        if lhs.lastUsedAt != rhs.lastUsedAt {
+            return false
+        }
+        if lhs.lastUsedLabel != rhs.lastUsedLabel {
+            return false
+        }
+        if lhs.lastSeenAt != rhs.lastSeenAt {
+            return false
+        }
+        if lhs.lastSeenLabel != rhs.lastSeenLabel {
+            return false
+        }
+        if lhs.npub != rhs.npub {
+            return false
+        }
+        if lhs.schemaPretty != rhs.schemaPretty {
+            return false
+        }
         return true
     }
 
@@ -2703,6 +2786,13 @@ extension DiscoverableTool: Equatable, Hashable {
         hasher.combine(providerPubkey)
         hasher.combine(providerDisplayName)
         hasher.combine(enabled)
+        hasher.combine(usageCount)
+        hasher.combine(lastUsedAt)
+        hasher.combine(lastUsedLabel)
+        hasher.combine(lastSeenAt)
+        hasher.combine(lastSeenLabel)
+        hasher.combine(npub)
+        hasher.combine(schemaPretty)
     }
 }
 
@@ -2720,7 +2810,14 @@ public struct FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer {
                 description: FfiConverterString.read(from: &buf), 
                 providerPubkey: FfiConverterString.read(from: &buf), 
                 providerDisplayName: FfiConverterOptionString.read(from: &buf), 
-                enabled: FfiConverterBool.read(from: &buf)
+                enabled: FfiConverterBool.read(from: &buf), 
+                usageCount: FfiConverterUInt32.read(from: &buf), 
+                lastUsedAt: FfiConverterOptionInt64.read(from: &buf), 
+                lastUsedLabel: FfiConverterOptionString.read(from: &buf), 
+                lastSeenAt: FfiConverterInt64.read(from: &buf), 
+                lastSeenLabel: FfiConverterString.read(from: &buf), 
+                npub: FfiConverterString.read(from: &buf), 
+                schemaPretty: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -2731,6 +2828,13 @@ public struct FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer {
         FfiConverterString.write(value.providerPubkey, into: &buf)
         FfiConverterOptionString.write(value.providerDisplayName, into: &buf)
         FfiConverterBool.write(value.enabled, into: &buf)
+        FfiConverterUInt32.write(value.usageCount, into: &buf)
+        FfiConverterOptionInt64.write(value.lastUsedAt, into: &buf)
+        FfiConverterOptionString.write(value.lastUsedLabel, into: &buf)
+        FfiConverterInt64.write(value.lastSeenAt, into: &buf)
+        FfiConverterString.write(value.lastSeenLabel, into: &buf)
+        FfiConverterString.write(value.npub, into: &buf)
+        FfiConverterString.write(value.schemaPretty, into: &buf)
     }
 }
 
@@ -5999,6 +6103,13 @@ public enum Screen {
      */
     case toolDiscovery
     /**
+     * Phase 36 — per-tool detail screen reached by tapping a row on
+     * ToolDiscovery. Carries the `DiscoverableTool.id` ("<pubkey>:<name>")
+     * so the native UI can look the row up in `app_state.contextvm_tools`.
+     */
+    case contextvmToolDetail(toolId: String
+    )
+    /**
      * Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
      */
     case locked
@@ -6055,9 +6166,12 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         
         case 15: return .toolDiscovery
         
-        case 16: return .locked
+        case 16: return .contextvmToolDetail(toolId: try FfiConverterString.read(from: &buf)
+        )
         
-        case 17: return .pinSetup
+        case 17: return .locked
+        
+        case 18: return .pinSetup
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -6129,12 +6243,17 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
             writeInt(&buf, Int32(15))
         
         
-        case .locked:
+        case let .contextvmToolDetail(toolId):
             writeInt(&buf, Int32(16))
+            FfiConverterString.write(toolId, into: &buf)
+            
+        
+        case .locked:
+            writeInt(&buf, Int32(17))
         
         
         case .pinSetup:
-            writeInt(&buf, Int32(17))
+            writeInt(&buf, Int32(18))
         
         }
     }
