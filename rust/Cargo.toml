@@ -84,6 +84,9 @@ urlencoding = "2.1"
 # (dcap-qvl, sha2, sha3, base64, hex, reqwest, serde_json, plus attestation/venice.rs
 # model-ecdsa REPORTDATA decoder).
 
+# Phase 35: Nostr-based tool discovery + invocation (pure-Rust, rustls only)
+contextvm-sdk = "0.1.0"
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 
