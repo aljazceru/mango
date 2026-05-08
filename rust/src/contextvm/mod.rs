@@ -11,11 +11,17 @@
 //! `wss://relay.nostr.net`".
 
 pub mod discovery;
+pub mod dispatch;
 pub mod error;
 pub mod invocation;
 
 pub use discovery::{
     discover_all, discover_servers, discover_tools_for_server, DiscoveredServer, DiscoveredTool,
+};
+pub use dispatch::{
+    build_dispatch_map, descriptors_to_chat_tools, finalise_for_turn, hydrate_from_db,
+    ContextvmToolDescriptor, DESCRIPTION_CAP_CHARS, MAX_REMOTE_TOOLS_PER_TURN,
+    RESERVED_LOCAL_NAMES,
 };
 pub use error::ContextvmError;
 pub use invocation::{invoke_tool, INVOCATION_TIMEOUT_SECS, MAX_TOOL_RESULT_BYTES};
