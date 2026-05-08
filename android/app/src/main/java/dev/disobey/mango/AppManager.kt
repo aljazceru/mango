@@ -15,6 +15,7 @@ import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.AppUpdate
 import dev.disobey.mango.rust.BiometricProvider
 import dev.disobey.mango.rust.BusyState
+import dev.disobey.mango.rust.ContextvmDiscoveryState
 import dev.disobey.mango.rust.DirectoryFingerprint
 import dev.disobey.mango.rust.EmbeddingProvider
 import dev.disobey.mango.rust.EmbeddingStatus
@@ -91,6 +92,9 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             authInitialized = false,
             encryptionEnabled = false,
             directorySources = emptyList(),
+            contextvmTools = emptyList(),
+            autoDiscoverToolsEnabled = false,
+            contextvmDiscoveryState = ContextvmDiscoveryState.Idle,
         ),
     )
         private set
