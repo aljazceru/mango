@@ -186,6 +186,13 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) }
             )
         }
+        is Screen.ToolDiscovery -> {
+            SettingsToolDiscoveryScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
         // Phase 28: lock gate and PIN setup screens
         is Screen.Locked -> {
             LockScreen(
