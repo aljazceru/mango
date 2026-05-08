@@ -193,6 +193,15 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) }
             )
         }
+        // Phase 36: tool detail sub-screen reached via row tap.
+        is Screen.ContextvmToolDetail -> {
+            SettingsToolDetailScreen(
+                appState = state,
+                toolId = screen.toolId,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
         // Phase 28: lock gate and PIN setup screens
         is Screen.Locked -> {
             LockScreen(
