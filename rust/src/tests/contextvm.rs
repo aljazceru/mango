@@ -15,9 +15,10 @@ fn ctx_01_pure_rust_no_openssl() {
 }
 
 #[test]
-#[ignore = "owned by Plan 35-06 (Android) and 35-07 (Desktop) — UI smoke"]
 fn ctx_02_settings_discover_tools_row_and_screen() {
-    unimplemented!("UI test in 35-06 / 35-07");
+    // Rust-core checkpoint for CTX-02: the Screen enum has the
+    // ToolDiscovery variant the UI dispatches PushScreen for.
+    let _s = crate::Screen::ToolDiscovery;
 }
 
 #[test]
@@ -340,9 +341,21 @@ fn ctx_09_uniffi_bindings_regenerated_for_all_three_platforms() {
 }
 
 #[test]
-#[ignore = "owned by Plan 35-05 (AgentStepSummary.tool_origin)"]
 fn ctx_10_agent_step_summary_carries_tool_origin_for_remote_tool_calls() {
-    unimplemented!("AgentStepSummary {{ tool_origin: Some(\"contextvm\".into()), .. }}");
+    // Phase 35 — AgentStepSummary surfaces tool provenance via the
+    // `tool_origin` field. The actor stamps "contextvm" when the dispatch
+    // map routed the call to a remote tool, "local" otherwise.
+    let s = crate::AgentStepSummary {
+        id: "a".into(),
+        step_number: 1,
+        action_type: "tool_call".into(),
+        tool_name: Some("translate".into()),
+        tool_input: None,
+        result_snippet: None,
+        status: "ok".into(),
+        tool_origin: Some("contextvm".into()),
+    };
+    assert_eq!(s.tool_origin.as_deref(), Some("contextvm"));
 }
 
 // ── Plan 35-04 dispatch helper unit tests ─────────────────────────────

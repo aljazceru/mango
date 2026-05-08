@@ -109,6 +109,9 @@ pub struct AgentStepSummary {
     pub result_snippet: Option<String>,
     /// One of: "pending", "completed", "failed"
     pub status: String,
+    /// Phase 35 — provenance of the tool call. None for non-tool_call steps.
+    /// "local" for built-in tools, "contextvm" for tools invoked via Nostr.
+    pub tool_origin: Option<String>,
 }
 
 /// A memory entry for the UI memory management screen (per D-14).
@@ -152,6 +155,40 @@ pub struct UiMessage {
     /// Non-null when the user sent an image. Decrypt via read_encrypted_image(message_id).
     /// Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
     pub image_path: Option<String>,
+}
+
+/// Phase 35 — one tool surfaced by Nostr discovery, bound to AppState
+/// for the Tool Discovery sub-screen.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DiscoverableTool {
+    /// Stable id: `<provider_pubkey_hex>:<tool_name>`.
+    pub id: String,
+    /// LLM-facing tool name (e.g. "get_weather").
+    pub name: String,
+    pub description: String,
+    pub provider_pubkey: String,
+    /// `server_info.name` from the announcement, or None.
+    /// UI falls back to `pubkey[..8]…` per UI-SPEC §F.
+    pub provider_display_name: Option<String>,
+    pub enabled: bool,
+}
+
+/// Phase 35 — discovery query lifecycle state for the Tool Discovery
+/// sub-screen. Maps 1-to-1 to UI-SPEC states C/D/E/F.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq)]
+pub enum ContextvmDiscoveryState {
+    /// Initial state before any query has run for this AppState lifecycle.
+    Idle,
+    /// A discovery query is in flight; UI shows the loading spinner /
+    /// "Searching Nostr relays…" subtitle.
+    Loading,
+    /// Last query completed successfully (may have returned 0 tools).
+    Loaded,
+    /// Last query failed; `message` is human-readable and may be
+    /// rendered verbatim by the UI in the error state. UI-SPEC §E
+    /// uses the locked headline "Couldn't reach relays" — `message`
+    /// is logged but the UI uses the locked headline regardless.
+    Error { message: String },
 }
 
 /// Info about a pending file attachment (shown in the composer bar before send).
@@ -299,6 +336,18 @@ pub struct AppState {
     /// (DIR-04). Populated by `load_directory_sources_summary`; never includes
     /// opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
     pub directory_sources: Vec<DirectorySourceSummary>,
+    // Phase 35 additions:
+    /// Phase 35 — discovered tools (announcements merged with persisted
+    /// enabled state). Populated by AppAction::DiscoverContextvmTools and
+    /// AppAction::SetContextvmToolEnabled.
+    pub contextvm_tools: Vec<DiscoverableTool>,
+    /// Phase 35 — Settings → TOOLS → "Automatically discover and use tools"
+    /// toggle. Defaults to false. Persisted under settings key
+    /// `auto_discover_tools`.
+    pub auto_discover_tools_enabled: bool,
+    /// Phase 35 — current discovery query state for the Tool Discovery
+    /// screen. Updated by AppAction::DiscoverContextvmTools handler.
+    pub contextvm_discovery_state: ContextvmDiscoveryState,
 }
 
 impl Default for AppState {
@@ -344,6 +393,9 @@ impl Default for AppState {
             auth_initialized: false,
             encryption_enabled: false,
             directory_sources: vec![],
+            contextvm_tools: vec![],
+            auto_discover_tools_enabled: false,
+            contextvm_discovery_state: ContextvmDiscoveryState::Idle,
         }
     }
 }
@@ -425,6 +477,8 @@ pub enum Screen {
     SettingsSecurity,
     /// Tools settings sub-screen (Phase 30).
     SettingsTools,
+    /// Phase 35 — Tool Discovery sub-screen (pushed from SettingsTools).
+    ToolDiscovery,
     /// Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
     Locked,
     /// PIN/password setup screen -- shown on first launch after onboarding (Phase 28, D-14).
@@ -691,6 +745,21 @@ pub enum AppAction {
         source_id: String,
         bookmark_data: Vec<u8>,
     },
+    // Phase 35 additions: contextvm-sdk Nostr-based tool discovery.
+    /// Phase 35 — kick off a one-shot discovery query against the
+    /// hardcoded relay set. Spawns a background task; results land via
+    /// InternalEvent::ContextvmDiscoveryComplete.
+    DiscoverContextvmTools,
+    /// Phase 35 — toggle a single discovered tool on/off (CTX-03).
+    /// `tool_id` matches `DiscoverableTool.id` =
+    /// `<provider_pubkey>:<tool_name>`.
+    SetContextvmToolEnabled { tool_id: String, enabled: bool },
+    /// Phase 35 — flip the auto-discover toggle (CTX-04). Persisted in
+    /// settings table under `auto_discover_tools`.
+    SetAutoDiscoverTools { enabled: bool },
+    /// Phase 35 — re-run a discovery query (UI-SPEC §E "Try again" button).
+    /// Same effect as DiscoverContextvmTools but explicit for telemetry.
+    RetryContextvmDiscovery,
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -1168,6 +1237,16 @@ struct ActorState {
     /// Data Encryption Key for VectorIndex file encryption (Phase 29, ENC-02).
     /// None until unlock; zeroed on drop via Zeroizing wrapper.
     dek: Option<Zeroizing<[u8; 32]>>,
+    /// Phase 35 — descriptors for tools enabled in the active conversation,
+    /// hydrated from `contextvm_tools` table at LoadConversation /
+    /// NewConversation, plus auto-discovered descriptors when
+    /// auto_discover_tools_enabled is true. Reset on conversation switch.
+    current_conv_contextvm_tools:
+        std::collections::HashMap<String, crate::contextvm::ContextvmToolDescriptor>,
+    /// Phase 35 — persistent Nostr secret key (hex). Lazy-loaded on first
+    /// contextvm operation via load_or_create_secret_key. Empty string until
+    /// then; the dispatch path treats empty as "load on demand".
+    contextvm_secret_key: String,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -2358,7 +2437,119 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
             .current_conversation_attached_docs
             .is_empty();
 
-        let tools = agent::build_chat_tools(has_docs, brave_key_set);
+        // Phase 35 auto-discover hook (CTX-04 / CTX-05): if the user has the
+        // toggle on and the per-conversation dispatch map is empty, run a
+        // single blocking discovery sweep, persist new announcements, build
+        // a turn-only dispatch map combining persisted-enabled + auto-
+        // discovered descriptors. Failure degrades silently.
+        if actor_state.app_state.auto_discover_tools_enabled
+            && actor_state.current_conv_contextvm_tools.is_empty()
+        {
+            let conn = actor_state.db.as_ref().expect("db unlocked").conn();
+            if actor_state.contextvm_secret_key.is_empty() {
+                if let Ok(k) =
+                    crate::contextvm::invocation::load_or_create_secret_key(conn)
+                {
+                    actor_state.contextvm_secret_key = k;
+                }
+            }
+            let relays = crate::contextvm::default_relays_owned();
+            let discovery_res = actor_state
+                .runtime
+                .block_on(crate::contextvm::discovery::discover_all(&relays));
+            if let Ok(discovered) = discovery_res {
+                let now = now_secs();
+                for t in &discovered {
+                    let id = format!("{}:{}", t.provider_pubkey_hex, t.tool_name);
+                    let preserved_enabled =
+                        persistence::queries::get_contextvm_tool_by_name(conn, &t.tool_name)
+                            .ok()
+                            .flatten()
+                            .map(|r| r.enabled)
+                            .unwrap_or(false);
+                    let _ = persistence::queries::upsert_contextvm_tool(
+                        conn,
+                        &persistence::queries::ContextvmToolRow {
+                            id,
+                            tool_name: t.tool_name.clone(),
+                            display_name: None,
+                            description: t.description.clone(),
+                            provider_pubkey: t.provider_pubkey_hex.clone(),
+                            provider_display_name: t.provider_display_name.clone(),
+                            schema_json: t.schema_json.clone(),
+                            // Auto-discover does NOT auto-enable. The
+                            // descriptor overlay below is what surfaces
+                            // it to the LLM this turn.
+                            enabled: preserved_enabled,
+                            last_seen_at: now,
+                        },
+                    );
+                }
+                // Build a turn-only dispatch map: enabled rows + the
+                // auto-discovered descriptors, dedup by tool_name (enabled
+                // wins on tie since iterated first).
+                let mut combined: Vec<_> =
+                    persistence::queries::list_enabled_contextvm_tools(conn)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|r| {
+                            crate::contextvm::ContextvmToolDescriptor::from_row(r).ok()
+                        })
+                        .collect();
+                for t in discovered {
+                    if combined.iter().any(|d| d.tool_name == t.tool_name) {
+                        continue;
+                    }
+                    let schema = serde_json::from_str(&t.schema_json)
+                        .unwrap_or(serde_json::json!({"type": "object"}));
+                    let chars: String = t
+                        .description
+                        .chars()
+                        .take(crate::contextvm::DESCRIPTION_CAP_CHARS)
+                        .collect();
+                    let description = if chars.chars().count()
+                        < t.description.chars().count()
+                    {
+                        format!("{}…", chars)
+                    } else {
+                        chars
+                    };
+                    combined.push(crate::contextvm::ContextvmToolDescriptor {
+                        tool_name: t.tool_name,
+                        description,
+                        schema,
+                        provider_pubkey_hex: t.provider_pubkey_hex,
+                        provider_display_name: t.provider_display_name,
+                        last_seen_at: now,
+                    });
+                }
+                let finalised = crate::contextvm::finalise_for_turn(combined);
+                actor_state.current_conv_contextvm_tools =
+                    crate::contextvm::build_dispatch_map(&finalised);
+                // Refresh AppState.contextvm_tools so any UI bound to the
+                // list reflects newly-seen announcements.
+                if let Ok(rows) =
+                    persistence::queries::list_all_contextvm_tools(conn)
+                {
+                    actor_state.app_state.contextvm_tools = rows
+                        .into_iter()
+                        .map(row_to_discoverable_tool)
+                        .collect();
+                }
+            }
+        }
+
+        // Phase 35: append remote contextvm descriptors to the OpenAI tools array.
+        let remote_descriptors: Vec<_> = actor_state
+            .current_conv_contextvm_tools
+            .values()
+            .cloned()
+            .collect();
+        let tools = agent::build_chat_tools_with_contextvm(
+            has_docs,
+            brave_key_set,
+            &remote_descriptors,
+        );
 
         if !tools.is_empty() {
             // Convert ChatMessage vec to ChatCompletionRequestMessage vec
@@ -2761,6 +2952,23 @@ fn handle_agent_step_complete(
             )
             .unwrap_or_else(|_| "[]".to_string());
 
+            // Phase 35 (CTX-10): tag step with tool_origin. If any of the
+            // tool calls in this step targets a name in the current
+            // conversation's contextvm dispatch map, mark the whole step
+            // as "contextvm". Otherwise, mark it "local".
+            let tool_origin = if calls
+                .iter()
+                .any(|c| {
+                    actor_state
+                        .current_conv_contextvm_tools
+                        .contains_key(c.function.name.as_str())
+                })
+            {
+                Some("contextvm".to_string())
+            } else {
+                Some("local".to_string())
+            };
+
             let step_row = persistence::queries::AgentStepRow {
                 id: step_id.clone(),
                 session_id: session_id.clone(),
@@ -2770,6 +2978,7 @@ fn handle_agent_step_complete(
                 result: None,
                 status: "completed".to_string(),
                 created_at: now,
+                tool_origin,
             };
             let _ = persistence::queries::insert_agent_step(
                 actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -2807,12 +3016,8 @@ fn handle_agent_step_complete(
             .unwrap_or(None)
             .unwrap_or_default();
 
-            // TODO(Phase 35-05): replace placeholders with actor-state
-            // `current_conv_contextvm_tools` map and persisted secret key.
-            let _contextvm_map: std::collections::HashMap<
-                String,
-                crate::contextvm::ContextvmToolDescriptor,
-            > = std::collections::HashMap::new();
+            // Phase 35: route remote (contextvm) tool calls through the
+            // dispatch fallback in agent::dispatch_tools.
             let tool_results = agent::dispatch_tools(
                 &calls,
                 actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -2821,8 +3026,8 @@ fn handle_agent_step_complete(
                 &actor_state.runtime,
                 &actor_state.data_dir,
                 &brave_api_key,
-                &_contextvm_map,
-                "",
+                &actor_state.current_conv_contextvm_tools,
+                &actor_state.contextvm_secret_key,
             );
 
             // Get mutable exec_state
@@ -2944,6 +3149,8 @@ fn handle_agent_step_complete(
                 result: Some(text.clone()),
                 status: "completed".to_string(),
                 created_at: now,
+                // Phase 35: final_answer is not a tool call; tool_origin = None.
+                tool_origin: None,
             };
             let _ = persistence::queries::insert_agent_step(
                 actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -3220,6 +3427,19 @@ fn handle_load_agent_session(actor_state: &mut ActorState, session_id: &str) {
                 None
             };
 
+            // Phase 35: Surface tool_origin from agent_steps row when present.
+            // Default to "local" for tool_call steps without an explicit origin
+            // (rows written before MIGRATION_V20).
+            let tool_origin = if step.action_type == "tool_call" {
+                Some(
+                    step.tool_origin
+                        .clone()
+                        .unwrap_or_else(|| "local".to_string()),
+                )
+            } else {
+                None
+            };
+
             AgentStepSummary {
                 id: step.id.clone(),
                 step_number: step.step_number as u32,
@@ -3228,6 +3448,7 @@ fn handle_load_agent_session(actor_state: &mut ActorState, session_id: &str) {
                 tool_input,
                 result_snippet,
                 status: step.status.clone(),
+                tool_origin,
             }
         })
         .collect();
@@ -3305,6 +3526,35 @@ fn load_directory_sources_summary(actor_state: &ActorState) -> Vec<DirectorySour
             }
         })
         .collect()
+}
+
+// ── Phase 35 helpers ────────────────────────────────────────────────────────
+
+/// Project a persisted ContextvmToolRow into the UniFFI DiscoverableTool record.
+fn row_to_discoverable_tool(r: persistence::queries::ContextvmToolRow) -> DiscoverableTool {
+    DiscoverableTool {
+        id: r.id,
+        name: r.tool_name,
+        description: r.description,
+        provider_pubkey: r.provider_pubkey,
+        provider_display_name: r.provider_display_name,
+        enabled: r.enabled,
+    }
+}
+
+/// Phase 35 — load + finalise the dispatch descriptor list from SQLite.
+/// Reads all enabled rows from `contextvm_tools`, parses to descriptors,
+/// then runs `finalise_for_turn` so reserved-name collisions are dropped,
+/// the 8-tool cap is honoured, and the list is sorted last_seen_at DESC.
+fn load_enabled_descriptors(
+    conn: &rusqlite::Connection,
+) -> Vec<crate::contextvm::ContextvmToolDescriptor> {
+    let rows = persistence::queries::list_enabled_contextvm_tools(conn).unwrap_or_default();
+    let descs: Vec<_> = rows
+        .iter()
+        .filter_map(|r| crate::contextvm::ContextvmToolDescriptor::from_row(r).ok())
+        .collect();
+    crate::contextvm::finalise_for_turn(descs)
 }
 
 /// Emit state snapshot to shared RwLock and update channel.
@@ -3948,6 +4198,19 @@ fn load_post_unlock(
         .flatten()
         .map(|v| v != "0")
         .unwrap_or(true);
+    // Phase 35: load auto-discover toggle and known contextvm tools.
+    let auto_discover_tools_enabled =
+        persistence::queries::get_setting(db.conn(), "auto_discover_tools")
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false);
+    let contextvm_tools_for_state: Vec<DiscoverableTool> =
+        persistence::queries::list_all_contextvm_tools(db.conn())
+            .unwrap_or_default()
+            .into_iter()
+            .map(row_to_discoverable_tool)
+            .collect();
     let lock_timeout_seconds: i64 =
         persistence::queries::get_setting(db.conn(), "lock_timeout_seconds")
             .ok()
@@ -4028,6 +4291,12 @@ fn load_post_unlock(
     actor_state.app_state.memory_count = memory_count;
     actor_state.app_state.brave_api_key_set = brave_api_key_set;
     actor_state.app_state.memories_enabled = memories_enabled;
+    // Phase 35: contextvm AppState hydration.
+    actor_state.app_state.auto_discover_tools_enabled = auto_discover_tools_enabled;
+    actor_state.app_state.contextvm_tools = contextvm_tools_for_state;
+    let initial_descs = load_enabled_descriptors(actor_state.db.as_ref().expect("db unlocked").conn());
+    actor_state.current_conv_contextvm_tools =
+        crate::contextvm::build_dispatch_map(&initial_descs);
     actor_state.app_state.lock_timeout_seconds = lock_timeout_seconds;
     actor_state.app_state.biometric_login_enabled = biometric_login_enabled;
     actor_state.app_state.duress_pin_configured = duress_pin_configured;
@@ -4350,6 +4619,9 @@ impl FfiApp {
                 db_path: db_path.clone(),
                 // Quick 260421-bys: populate DEK immediately when cold-launch bypass succeeded.
                 dek: bypass_dek,
+                // Phase 35: contextvm dispatch state.
+                current_conv_contextvm_tools: std::collections::HashMap::new(),
+                contextvm_secret_key: String::new(),
             };
 
             // If DB is available (auto-open path), load all state from it.
@@ -4574,6 +4846,12 @@ impl FfiApp {
                                 };
                                 // Phase 27: new conversations start with tools disabled.
                                 actor_state.current_conv_tools_enabled = false;
+                                // Phase 35: hydrate per-conversation contextvm dispatch map.
+                                let descs = load_enabled_descriptors(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                );
+                                actor_state.current_conv_contextvm_tools =
+                                    crate::contextvm::build_dispatch_map(&descs);
                                 sync_visible_streaming_text(&mut actor_state);
                             }
 
@@ -4603,6 +4881,12 @@ impl FfiApp {
                                 push_nav_history(&mut actor_state.app_state.router);
                                 actor_state.app_state.router.current_screen =
                                     Screen::Chat { conversation_id };
+                                // Phase 35: hydrate per-conversation contextvm dispatch map.
+                                let descs = load_enabled_descriptors(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                );
+                                actor_state.current_conv_contextvm_tools =
+                                    crate::contextvm::build_dispatch_map(&descs);
                                 sync_visible_streaming_text(&mut actor_state);
                             }
 
@@ -5901,6 +6185,82 @@ impl FfiApp {
                                     if enabled { "1" } else { "0" },
                                 );
                                 actor_state.app_state.memories_enabled = enabled;
+                            }
+
+                            // ── Phase 35: contextvm-sdk Nostr-based tool discovery ───
+                            AppAction::SetAutoDiscoverTools { enabled } => {
+                                if let Some(db) = actor_state.db.as_ref() {
+                                    let _ = persistence::queries::set_setting(
+                                        db.conn(),
+                                        "auto_discover_tools",
+                                        if enabled { "1" } else { "0" },
+                                    );
+                                }
+                                actor_state.app_state.auto_discover_tools_enabled = enabled;
+                            }
+
+                            AppAction::SetContextvmToolEnabled { tool_id, enabled } => {
+                                if let Some(db) = actor_state.db.as_ref() {
+                                    let conn = db.conn();
+                                    let _ =
+                                        persistence::queries::update_contextvm_tool_enabled(
+                                            conn, &tool_id, enabled,
+                                        );
+                                    if let Ok(rows) =
+                                        persistence::queries::list_all_contextvm_tools(conn)
+                                    {
+                                        actor_state.app_state.contextvm_tools = rows
+                                            .into_iter()
+                                            .map(row_to_discoverable_tool)
+                                            .collect();
+                                    }
+                                    // Re-hydrate the active conversation's dispatch map.
+                                    let descs = load_enabled_descriptors(conn);
+                                    actor_state.current_conv_contextvm_tools =
+                                        crate::contextvm::build_dispatch_map(&descs);
+                                }
+                            }
+
+                            AppAction::DiscoverContextvmTools
+                            | AppAction::RetryContextvmDiscovery => {
+                                if actor_state.db.is_none() {
+                                    log::warn!(
+                                        "[action] DiscoverContextvmTools dispatched while DB locked; ignoring"
+                                    );
+                                    continue;
+                                }
+                                // Lazy-load the secret key.
+                                if actor_state.contextvm_secret_key.is_empty() {
+                                    let conn =
+                                        actor_state.db.as_ref().expect("db unlocked").conn();
+                                    if let Ok(k) =
+                                        crate::contextvm::invocation::load_or_create_secret_key(
+                                            conn,
+                                        )
+                                    {
+                                        actor_state.contextvm_secret_key = k;
+                                    }
+                                }
+                                actor_state.app_state.contextvm_discovery_state =
+                                    ContextvmDiscoveryState::Loading;
+                                emit_state(
+                                    &actor_state.app_state,
+                                    &shared_for_core,
+                                    &update_tx,
+                                );
+
+                                let core_tx_disc = core_tx_for_thread.clone();
+                                actor_state.runtime.spawn(async move {
+                                    let relays = crate::contextvm::default_relays_owned();
+                                    let res =
+                                        crate::contextvm::discovery::discover_all(&relays).await;
+                                    let payload = res.map_err(|e| e.to_string());
+                                    let _ = core_tx_disc.send(CoreMsg::InternalEvent(Box::new(
+                                        llm::InternalEvent::ContextvmDiscoveryComplete {
+                                            result: payload,
+                                        },
+                                    )));
+                                });
                             }
 
                             AppAction::SetConversationToolsEnabled {
@@ -7828,13 +8188,8 @@ impl FfiApp {
                                 .unwrap_or(None)
                                 .unwrap_or_default();
 
-                                // TODO(Phase 35-05): replace placeholders with
-                                // actor-state `current_conv_contextvm_tools`
-                                // map and persisted secret key.
-                                let _contextvm_map: std::collections::HashMap<
-                                    String,
-                                    crate::contextvm::ContextvmToolDescriptor,
-                                > = std::collections::HashMap::new();
+                                // Phase 35: route remote (contextvm) tool calls through
+                                // the dispatch fallback in agent::dispatch_tools.
                                 let tool_results = agent::dispatch_tools(
                                     &tool_calls,
                                     actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -7843,8 +8198,8 @@ impl FfiApp {
                                     &actor_state.runtime,
                                     &actor_state.data_dir,
                                     &brave_api_key,
-                                    &_contextvm_map,
-                                    "",
+                                    &actor_state.current_conv_contextvm_tools,
+                                    &actor_state.contextvm_secret_key,
                                 );
 
                                 // Build full message history: original messages + assistant
@@ -8075,6 +8430,77 @@ impl FfiApp {
                                 } else {
                                     actor_state.app_state.toast =
                                         Some("Biometric authentication failed.".to_string());
+                                }
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
+                            llm::InternalEvent::ContextvmDiscoveryComplete { result } => {
+                                // Phase 35 — discovery query completion handler.
+                                // Merge fresh announcements with persisted enabled state,
+                                // refresh AppState.contextvm_tools, and re-hydrate the
+                                // active conversation's dispatch map.
+                                if let Some(db) = actor_state.db.as_ref() {
+                                    let conn = db.conn();
+                                    match result {
+                                        Ok(discovered) => {
+                                            let now = now_secs();
+                                            for tool in &discovered {
+                                                let id = format!(
+                                                    "{}:{}",
+                                                    tool.provider_pubkey_hex, tool.tool_name
+                                                );
+                                                let preserved_enabled =
+                                                    persistence::queries::get_contextvm_tool_by_name(
+                                                        conn,
+                                                        &tool.tool_name,
+                                                    )
+                                                    .ok()
+                                                    .flatten()
+                                                    .map(|r| r.enabled)
+                                                    .unwrap_or(false);
+                                                let row =
+                                                    persistence::queries::ContextvmToolRow {
+                                                        id,
+                                                        tool_name: tool.tool_name.clone(),
+                                                        display_name: None,
+                                                        description: tool.description.clone(),
+                                                        provider_pubkey: tool
+                                                            .provider_pubkey_hex
+                                                            .clone(),
+                                                        provider_display_name: tool
+                                                            .provider_display_name
+                                                            .clone(),
+                                                        schema_json: tool.schema_json.clone(),
+                                                        enabled: preserved_enabled,
+                                                        last_seen_at: now,
+                                                    };
+                                                let _ =
+                                                    persistence::queries::upsert_contextvm_tool(
+                                                        conn, &row,
+                                                    );
+                                            }
+                                            if let Ok(rows) =
+                                                persistence::queries::list_all_contextvm_tools(
+                                                    conn,
+                                                )
+                                            {
+                                                actor_state.app_state.contextvm_tools = rows
+                                                    .into_iter()
+                                                    .map(row_to_discoverable_tool)
+                                                    .collect();
+                                            }
+                                            actor_state.app_state.contextvm_discovery_state =
+                                                ContextvmDiscoveryState::Loaded;
+                                            let descs = load_enabled_descriptors(conn);
+                                            actor_state.current_conv_contextvm_tools =
+                                                crate::contextvm::build_dispatch_map(&descs);
+                                        }
+                                        Err(message) => {
+                                            actor_state.app_state.contextvm_discovery_state =
+                                                ContextvmDiscoveryState::Error { message };
+                                        }
+                                    }
                                 }
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
@@ -8697,6 +9123,8 @@ mod image_red_tests {
             pre_lock_screen: None,
             db_path: ":memory:".to_string(),
             dek: None,
+            current_conv_contextvm_tools: HashMap::new(),
+            contextvm_secret_key: String::new(),
         }
     }
 

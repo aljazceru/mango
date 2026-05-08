@@ -106,6 +106,12 @@ pub enum InternalEvent {
     /// prompt resolves. Processed in the InternalEvent branch so the actor loop
     /// is not blocked while the system biometric UI is displayed (CR-03).
     BiometricResult { success: bool },
+    /// Phase 35 — discovery query completed. Carries the merged result
+    /// (announcements list or error message) for AppState update.
+    /// Spawned by AppAction::DiscoverContextvmTools / RetryContextvmDiscovery.
+    ContextvmDiscoveryComplete {
+        result: Result<Vec<crate::contextvm::DiscoveredTool>, String>,
+    },
 }
 
 /// Spawn an async-openai streaming task on the given Tokio runtime.
