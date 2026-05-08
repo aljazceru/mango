@@ -326,12 +326,75 @@ fn ctx_08_graceful_degradation_on_relay_failure() {
 }
 
 #[tokio::test]
-#[ignore = "live network — un-ignored by Plan 35-09"]
 async fn live_discover_servers_against_default_relays() {
     let relays = crate::contextvm::default_relays_owned();
-    let result = crate::contextvm::discover_servers(&relays).await;
-    // Whatever the result, it must not panic and must return Result.
-    let _ = result;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crate::contextvm::discover_servers(&relays),
+    )
+    .await;
+
+    // Outer timeout reached: relays are unreachable from this CI runner;
+    // skip-pass to keep the suite green.
+    let result = match result {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!(
+                "live_discover_servers_against_default_relays: timed out — \
+                 network unreachable, skipping assertion"
+            );
+            return;
+        }
+    };
+
+    match result {
+        Ok(servers) => {
+            // Don't assert non-empty — public relays may have 0 announcements
+            // at any given moment. The test passes if the call itself
+            // succeeds. Best-effort try discover_all + invoke_tool against
+            // the first announced tool, but never fail the test on the
+            // remote leg — the point is to exercise the full pipeline.
+            eprintln!("Discovered {} servers", servers.len());
+            let all_result = tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                crate::contextvm::discover_all(&relays),
+            )
+            .await;
+            if let Ok(Ok(tools)) = all_result {
+                eprintln!("discover_all: {} tools announced", tools.len());
+                if let Some(first) = tools.first() {
+                    let db = crate::persistence::Database::open(":memory:").unwrap();
+                    let sk =
+                        crate::contextvm::invocation::load_or_create_secret_key(db.conn())
+                            .unwrap();
+                    let invoke = tokio::time::timeout(
+                        std::time::Duration::from_secs(20),
+                        crate::contextvm::invocation::invoke_tool(
+                            &sk,
+                            &first.provider_pubkey_hex,
+                            &first.tool_name,
+                            "{}",
+                        ),
+                    )
+                    .await;
+                    eprintln!(
+                        "invoke_tool({}@{}): {:?}",
+                        first.tool_name, first.provider_pubkey_hex, invoke
+                    );
+                }
+            }
+        }
+        Err(crate::contextvm::ContextvmError::RelayUnreachable { detail }) => {
+            eprintln!(
+                "live_discover_servers_against_default_relays: \
+                 RelayUnreachable: {} — skipping",
+                detail
+            );
+        }
+        Err(e) => {
+            panic!("unexpected error from discover_servers: {}", e);
+        }
+    }
 }
 
 #[test]
