@@ -1319,6 +1319,154 @@ pub fn count_directory_files(
     Ok(count)
 }
 
+// ── Phase 35 — contextvm_tools queries (CTX-03 / CTX-04) ──────────────────────
+
+/// Phase 35 — one row in `contextvm_tools`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextvmToolRow {
+    /// Composite key: "<provider_pubkey>:<tool_name>".
+    pub id: String,
+    pub tool_name: String,
+    pub display_name: Option<String>,
+    pub description: String,
+    pub provider_pubkey: String,
+    pub provider_display_name: Option<String>,
+    pub schema_json: String,
+    pub enabled: bool,
+    pub last_seen_at: i64,
+}
+
+/// Insert OR REPLACE — used by discovery to refresh announcements without
+/// flipping a manually-toggled enabled flag back to 0. Callers MUST pass
+/// the existing `enabled` value (read it via `get_contextvm_tool_by_name`
+/// first); this helper does NOT preserve enabled across upserts on its
+/// own — that responsibility lives in the actor handler.
+pub fn upsert_contextvm_tool(
+    conn: &Connection,
+    row: &ContextvmToolRow,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "INSERT OR REPLACE INTO contextvm_tools \
+         (id, tool_name, display_name, description, provider_pubkey, \
+          provider_display_name, schema_json, enabled, last_seen_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?
+    .execute(rusqlite::params![
+        row.id,
+        row.tool_name,
+        row.display_name,
+        row.description,
+        row.provider_pubkey,
+        row.provider_display_name,
+        row.schema_json,
+        row.enabled as i64,
+        row.last_seen_at,
+    ])?;
+    Ok(())
+}
+
+/// Flip the `enabled` flag for a tool row by composite id.
+pub fn update_contextvm_tool_enabled(
+    conn: &Connection,
+    id: &str,
+    enabled: bool,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached("UPDATE contextvm_tools SET enabled = ?2 WHERE id = ?1")?
+        .execute(rusqlite::params![id, enabled as i64])?;
+    Ok(())
+}
+
+/// Fetch a single tool row by `tool_name` (unique). Returns `None` if absent.
+pub fn get_contextvm_tool_by_name(
+    conn: &Connection,
+    tool_name: &str,
+) -> Result<Option<ContextvmToolRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, tool_name, display_name, description, provider_pubkey, \
+                provider_display_name, schema_json, enabled, last_seen_at \
+         FROM contextvm_tools WHERE tool_name = ?1 LIMIT 1",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![tool_name])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(ContextvmToolRow {
+            id: r.get(0)?,
+            tool_name: r.get(1)?,
+            display_name: r.get(2)?,
+            description: r.get(3)?,
+            provider_pubkey: r.get(4)?,
+            provider_display_name: r.get(5)?,
+            schema_json: r.get(6)?,
+            enabled: r.get::<_, i64>(7)? != 0,
+            last_seen_at: r.get(8)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// All currently-enabled tools, newest first by `last_seen_at`.
+pub fn list_enabled_contextvm_tools(
+    conn: &Connection,
+) -> Result<Vec<ContextvmToolRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, tool_name, display_name, description, provider_pubkey, \
+                provider_display_name, schema_json, enabled, last_seen_at \
+         FROM contextvm_tools WHERE enabled = 1 ORDER BY last_seen_at DESC",
+    )?;
+    let rows: Result<Vec<_>, _> = stmt
+        .query_map([], |r| {
+            Ok(ContextvmToolRow {
+                id: r.get(0)?,
+                tool_name: r.get(1)?,
+                display_name: r.get(2)?,
+                description: r.get(3)?,
+                provider_pubkey: r.get(4)?,
+                provider_display_name: r.get(5)?,
+                schema_json: r.get(6)?,
+                enabled: r.get::<_, i64>(7)? != 0,
+                last_seen_at: r.get(8)?,
+            })
+        })?
+        .collect();
+    Ok(rows?)
+}
+
+/// All known announcements (enabled or not). Used by the Tool Discovery
+/// screen to merge fresh announcements with persisted enabled state.
+pub fn list_all_contextvm_tools(
+    conn: &Connection,
+) -> Result<Vec<ContextvmToolRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, tool_name, display_name, description, provider_pubkey, \
+                provider_display_name, schema_json, enabled, last_seen_at \
+         FROM contextvm_tools ORDER BY last_seen_at DESC",
+    )?;
+    let rows: Result<Vec<_>, _> = stmt
+        .query_map([], |r| {
+            Ok(ContextvmToolRow {
+                id: r.get(0)?,
+                tool_name: r.get(1)?,
+                display_name: r.get(2)?,
+                description: r.get(3)?,
+                provider_pubkey: r.get(4)?,
+                provider_display_name: r.get(5)?,
+                schema_json: r.get(6)?,
+                enabled: r.get::<_, i64>(7)? != 0,
+                last_seen_at: r.get(8)?,
+            })
+        })?
+        .collect();
+    Ok(rows?)
+}
+
+/// Bulk delete — used when the user toggles a tool off and we want to
+/// keep the table compact. Optional in v1; included for cleanup paths.
+pub fn delete_contextvm_tool(conn: &Connection, id: &str) -> Result<(), PersistenceError> {
+    conn.prepare_cached("DELETE FROM contextvm_tools WHERE id = ?1")?
+        .execute(rusqlite::params![id])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod directory_tests {
     use super::*;
