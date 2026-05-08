@@ -1474,6 +1474,31 @@ pub fn delete_contextvm_tool(conn: &Connection, id: &str) -> Result<(), Persiste
     Ok(())
 }
 
+
+/// Phase 36 (CTX36-USED-01) — read all contextvm tool-call agent_steps rows so
+/// the caller can aggregate by tool_name. Returns `(action_payload_json, created_at)`
+/// per row. The action_payload is a JSON array `[{"id":..,"name":..,"arguments":..}, ...]`
+/// and may contain multiple tool invocations per row, hence the parse-and-aggregate
+/// step is performed in Rust (see `aggregate_contextvm_tool_usage` in lib.rs).
+///
+/// Note: agent_steps has no `tool_name` column — the literal CONTEXT D-Area-4 query
+/// `SELECT tool_name, COUNT(*), MAX(timestamp) FROM agent_steps GROUP BY tool_name`
+/// is not implementable as written; this pull-and-parse approach is the
+/// semantically-equivalent v1 implementation (RESEARCH §Common Pitfalls Pitfall 1).
+pub fn fetch_contextvm_tool_usage_rows(
+    conn: &Connection,
+) -> Result<Vec<(String, i64)>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT action_payload, created_at \
+         FROM agent_steps \
+         WHERE tool_origin = 'contextvm' AND action_type = 'tool_call'",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod directory_tests {
     use super::*;
