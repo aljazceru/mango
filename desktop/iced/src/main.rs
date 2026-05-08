@@ -356,6 +356,14 @@ enum App {
         /// → path). Populated whenever the core emits an updated source list.
         dir_watched_paths: Arc<Mutex<HashMap<String, String>>>,
 
+        // ── Phase 36 — Tool Discovery / Tool Detail UI-state ──
+        /// Live search query for the Tool Discovery list (no debounce).
+        contextvm_search_query: String,
+        /// Inline copy-confirmation status line shown on the Tool Detail
+        /// screen for ~2 seconds after a Copy action.
+        contextvm_copy_status: Option<String>,
+        /// Whether the SCHEMA expander on the Tool Detail screen is open.
+        contextvm_schema_expanded: bool,
     },
 }
 
@@ -439,6 +447,17 @@ enum Message {
     ContextvmRetryClicked,
     // Phase 35 — per-tool Switch toggled in Tool Discovery list.
     ContextvmToolToggled { tool_id: String, enabled: bool },
+    // Phase 36 — Tool Discovery search filter input changed.
+    ContextvmSearchChanged(String),
+    // Phase 36 — Copy actions on the Tool Detail sub-screen.
+    CopyNpub(String),
+    CopyHex(String),
+    CopyToolId(String),
+    // Phase 36 — Toggle the SCHEMA expander on the Tool Detail sub-screen.
+    ToggleSchemaExpanded,
+    // Phase 36 — Clear the inline copy-confirmation status line (fires ~2s
+    // after a CopyNpub / CopyHex / CopyToolId Message via Task::perform).
+    ClearCopyStatus,
     // Theme override preference changed (per D-07)
     SettingsThemeOverrideChanged(ThemeOverride),
     // Onboarding wizard messages
@@ -593,6 +612,10 @@ impl App {
                     dir_trigger_tx: dir_trigger_tx.clone(),
                     dir_in_flight: dir_in_flight.clone(),
                     dir_watched_paths: dir_watched_paths.clone(),
+                    // Phase 36
+                    contextvm_search_query: String::new(),
+                    contextvm_copy_status: None,
+                    contextvm_schema_expanded: false,
                 }
             }
             Err(error) => Self::BootError { error },
@@ -707,6 +730,9 @@ impl App {
                 dir_trigger_tx,
                 dir_in_flight,
                 dir_watched_paths,
+                contextvm_search_query,
+                contextvm_copy_status,
+                contextvm_schema_expanded,
             } => {
                 match message {
                     Message::CoreUpdated => {
@@ -1173,6 +1199,49 @@ impl App {
                     // Phase 35 — per-tool toggler in Tool Discovery list.
                     Message::ContextvmToolToggled { tool_id, enabled } => {
                         manager.dispatch(AppAction::SetContextvmToolEnabled { tool_id, enabled });
+                    }
+                    // Phase 36 — Tool Discovery search filter (no debounce).
+                    Message::ContextvmSearchChanged(q) => {
+                        *contextvm_search_query = q;
+                    }
+                    // Phase 36 — Tool Detail Copy actions. Each writes the
+                    // FULL value to the clipboard, surfaces the locked status
+                    // string, and schedules a ClearCopyStatus 2s later.
+                    Message::CopyNpub(value) => {
+                        *contextvm_copy_status = Some("npub copied".to_string());
+                        return Task::batch([
+                            iced::clipboard::write(value),
+                            Task::perform(
+                                tokio::time::sleep(std::time::Duration::from_secs(2)),
+                                |_| Message::ClearCopyStatus,
+                            ),
+                        ]);
+                    }
+                    Message::CopyHex(value) => {
+                        *contextvm_copy_status = Some("Pubkey copied".to_string());
+                        return Task::batch([
+                            iced::clipboard::write(value),
+                            Task::perform(
+                                tokio::time::sleep(std::time::Duration::from_secs(2)),
+                                |_| Message::ClearCopyStatus,
+                            ),
+                        ]);
+                    }
+                    Message::CopyToolId(value) => {
+                        *contextvm_copy_status = Some("Tool ID copied".to_string());
+                        return Task::batch([
+                            iced::clipboard::write(value),
+                            Task::perform(
+                                tokio::time::sleep(std::time::Duration::from_secs(2)),
+                                |_| Message::ClearCopyStatus,
+                            ),
+                        ]);
+                    }
+                    Message::ToggleSchemaExpanded => {
+                        *contextvm_schema_expanded = !*contextvm_schema_expanded;
+                    }
+                    Message::ClearCopyStatus => {
+                        *contextvm_copy_status = None;
                     }
 
                     // Onboarding wizard handlers
@@ -1811,6 +1880,9 @@ impl App {
                 dir_exclusion_validation,
                 dir_pending_remove_id,
                 dir_watcher_warning,
+                contextvm_search_query,
+                contextvm_copy_status,
+                contextvm_schema_expanded,
                 ..
             } => {
                 // Phase 28: Lock screen -- shown on cold launch when auth is required.
@@ -1903,7 +1975,22 @@ impl App {
 
                 // Phase 35 — Tool Discovery screen: full-screen overlay (no sidebar)
                 if matches!(&state.router.current_screen, Screen::ToolDiscovery) {
-                    return views::tool_discovery::view(state, *is_dark);
+                    return views::tool_discovery::view(
+                        state,
+                        contextvm_search_query,
+                        *is_dark,
+                    );
+                }
+
+                // Phase 36 — Tool Detail screen: full-screen overlay (no sidebar)
+                if let Screen::ContextvmToolDetail { tool_id } = &state.router.current_screen {
+                    return views::tool_detail::view(
+                        state,
+                        tool_id,
+                        contextvm_copy_status.as_deref(),
+                        *contextvm_schema_expanded,
+                        *is_dark,
+                    );
                 }
 
                 // Agents screen: full-screen overlay (no sidebar)
