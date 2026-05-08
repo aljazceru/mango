@@ -570,3 +570,29 @@ fn test_relative_time_labels() {
     // 30 days ago → "30d ago"
     assert_eq!(relative_time_label(Some(now - 30 * 86400), now), "30d ago");
 }
+
+/// CTX36-RTL-01: 7d delta should render as "1w ago" once Wave 1 extends the helper.
+#[test]
+#[ignore = "RED — Phase 36 Wave 1 (CTX36-RTL-01): relative_time_label needs weeks branch"]
+fn test_relative_time_labels_weeks_one() {
+    // 7 * 86400 = 604_800 seconds
+    let now = 10_000_000_i64;
+    let seven_days_ago = now - 7 * 86400;
+    // Wave 1 contract: helper emits "{w}w ago" for delta >= 7d.
+    assert_eq!(
+        crate::relative_time_label(Some(seven_days_ago), now),
+        "1w ago"
+    );
+}
+
+/// CTX36-RTL-02: 14d delta should render as "2w ago".
+#[test]
+#[ignore = "RED — Phase 36 Wave 1 (CTX36-RTL-02): weeks-branch plural"]
+fn test_relative_time_labels_weeks_two() {
+    let now = 10_000_000_i64;
+    let fourteen_days_ago = now - 14 * 86400;
+    assert_eq!(
+        crate::relative_time_label(Some(fourteen_days_ago), now),
+        "2w ago"
+    );
+}
