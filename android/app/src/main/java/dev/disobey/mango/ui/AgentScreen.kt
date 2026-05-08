@@ -2,6 +2,7 @@ package dev.disobey.mango.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -356,6 +357,21 @@ private fun AgentStepItem(step: AgentStepSummary) {
                         Text("Step ${step.stepNumber}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.width(8.dp))
                         step.toolName?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
+                        // Phase 35 — Remote provenance badge for ContextVM-discovered tools (UI-SPEC §I).
+                        if (step.toolOrigin == "contextvm") {
+                            Spacer(Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            ) {
+                                Text(
+                                    text = "Remote",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                )
+                            }
+                        }
                         Spacer(modifier = Modifier.weight(1f))
                         Text(step.status, style = MaterialTheme.typography.labelSmall,
                             color = when(step.status) { "completed" -> Color.Green; "failed" -> Color.Red; else -> Color(0xFFFFA500) })
