@@ -174,6 +174,10 @@ Key architectural context for v2.0:
 - [Phase ?]: [Phase 36]: Plan 02 — Compose Material3 Switch absorbs its own pointer event so a Card.Modifier.clickable on the row dispatches PushScreen only on row-tap and never when the user toggles the Switch
 - [Phase ?]: [Phase 36]: Plan 02 — Schema expander defaults collapsed + heightIn(max=320.dp) + verticalScroll so multi-kilobyte JSON cannot blow scroll position; Show button hidden entirely when schema_pretty is blank
 - [Phase ?]: [Phase 36]: Plan 02 — Used N× muted pill reuses Phase 35-06 Remote provenance pill style for visual parity across Phase 35/36 badges
+- [Phase 36] Plan 03 — Desktop iced split-row toggler-outside-button mitigates W-08 (toggler retains its own click absorption when whole-row click navigates to detail)
+- [Phase 36] Plan 03 — Inline copy-confirmation status line replaces Snackbar on Desktop (iced 0.13 has no native Snackbar; vc.success affirmative + COPY_FAILED const reserved for future iced 0.14+ error routing)
+- [Phase 36] Plan 03 — Cache-first guard implemented inline in tool_discovery.rs::view body match; no separate state field because the actor preserves contextvm_tools across Idle → Loading transition (verified in Plan 36-01 SUMMARY)
+- [Phase 36] Plan 03 — All 23 locked Phase 36 copy strings appear verbatim in desktop iced sources (grep-verified across tool_detail.rs / tool_discovery.rs / main.rs)
 
 ### Roadmap Evolution
 
@@ -211,8 +215,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-05-08T16:26:56.914Z
-Stopped at: Phase 36 UI-SPEC approved
+Last session: 2026-05-08T18:30:00.000Z
+Stopped at: Completed 36-03-PLAN.md (Wave 2b Desktop iced UI)
 Resume file: None
 
 **Planned Phase:** 34.1 (close-red-09-and-red-11-actor-loop-drop) — 7 plans — COMPLETE 2026-04-27
