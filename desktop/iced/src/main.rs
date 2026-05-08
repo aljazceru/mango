@@ -431,6 +431,14 @@ enum Message {
     SettingsSaveBraveApiKey,
     // Toggle the memories enabled setting (Phase 25, MEM-TOGGLE-04)
     SettingsMemoriesEnabledToggled(bool),
+    // Phase 35 — Settings → TOOLS → Auto-discover toggle flipped.
+    SettingsAutoDiscoverToolsToggled(bool),
+    // Phase 35 — Tool Discovery screen "Discover" / first-open trigger.
+    ContextvmDiscoverToolsClicked,
+    // Phase 35 — Tool Discovery "Try again" / refresh tap.
+    ContextvmRetryClicked,
+    // Phase 35 — per-tool Switch toggled in Tool Discovery list.
+    ContextvmToolToggled { tool_id: String, enabled: bool },
     // Theme override preference changed (per D-07)
     SettingsThemeOverrideChanged(ThemeOverride),
     // Onboarding wizard messages
@@ -1145,6 +1153,26 @@ impl App {
 
                     Message::SettingsMemoriesEnabledToggled(enabled) => {
                         manager.dispatch(AppAction::SetMemoriesEnabled { enabled });
+                    }
+
+                    // Phase 35 — Settings → TOOLS → Auto-discover toggle.
+                    Message::SettingsAutoDiscoverToolsToggled(enabled) => {
+                        manager.dispatch(AppAction::SetAutoDiscoverTools { enabled });
+                    }
+                    // Phase 35 — push Tool Discovery screen + kick off discovery.
+                    Message::ContextvmDiscoverToolsClicked => {
+                        manager.dispatch(AppAction::PushScreen {
+                            screen: Screen::ToolDiscovery,
+                        });
+                        manager.dispatch(AppAction::DiscoverContextvmTools);
+                    }
+                    // Phase 35 — Refresh / Try again button on Tool Discovery.
+                    Message::ContextvmRetryClicked => {
+                        manager.dispatch(AppAction::RetryContextvmDiscovery);
+                    }
+                    // Phase 35 — per-tool toggler in Tool Discovery list.
+                    Message::ContextvmToolToggled { tool_id, enabled } => {
+                        manager.dispatch(AppAction::SetContextvmToolEnabled { tool_id, enabled });
                     }
 
                     // Onboarding wizard handlers
@@ -1871,6 +1899,11 @@ impl App {
                 // Memories screen: full-screen overlay (no sidebar)
                 if matches!(&state.router.current_screen, Screen::Memories) {
                     return views::memories::view(state, memory_edit_state, *is_dark);
+                }
+
+                // Phase 35 — Tool Discovery screen: full-screen overlay (no sidebar)
+                if matches!(&state.router.current_screen, Screen::ToolDiscovery) {
+                    return views::tool_discovery::view(state, *is_dark);
                 }
 
                 // Agents screen: full-screen overlay (no sidebar)
