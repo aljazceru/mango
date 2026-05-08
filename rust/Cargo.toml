@@ -87,6 +87,10 @@ urlencoding = "2.1"
 # Phase 35: Nostr-based tool discovery + invocation (pure-Rust, rustls only)
 contextvm-sdk = "0.1.0"
 
+# Phase 36: npub bech32 encoding via nostr::nips::nip19::ToBech32 trait.
+# Already a transitive (via contextvm-sdk → nostr-sdk) — direct dep adds 0 new edges.
+nostr = { version = "0.43", default-features = false, features = ["std"] }
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 

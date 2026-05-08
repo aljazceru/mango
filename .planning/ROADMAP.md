@@ -348,3 +348,13 @@ Plans:
 - [x] 35-07-PLAN.md — Wave 3: Desktop (iced) — Settings rows + views/tool_discovery.rs with 5 states + Remote provenance label in agents.rs build_step_row
 - [x] 35-08-PLAN.md — Wave 3: UniFFI Swift bindings regenerated (iOS UI deferred per CONTEXT D-06; bindings still ship)
 - [x] 35-09-PLAN.md — Wave 4: Live discovery integration test + full cargo test regression + Android NDK + iOS cross-compile + openssl-sys re-audit
+
+### Phase 36: Cache discovered contextvm tools, tap-for-detail (npub + metadata), search across cached tools, and surface previously-invoked tools — Android primary, Desktop secondary
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 35
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 36 to break down)

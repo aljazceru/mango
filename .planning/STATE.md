@@ -173,7 +173,9 @@ Key architectural context for v2.0:
 - Phase 28 added: Local Data Encryption & Authentication — encrypt all local data (SQLite, vector indices, documents) with platform hardware (Keychain/Keystore/TPM), biometric/PIN unlock, duress PIN for data wipe, graceful degradation on older devices
 - Phase 32 added: Directory-based RAG ingestion with periodic sync and file/folder exclusion — add whole directories (e.g. Obsidian vault) as RAG sources with glob exclusions, automatic periodic re-sync (add/modify/delete diff), cross-platform folder permissions (iOS security-scoped bookmarks, Android persistable tree URIs, Desktop), UI for source list + exclusion editor + manual sync-now
 - Phase 33 added: Integrate Venice.ai as TEE-attested LLM provider with client-side TDX + NVIDIA NRAS verification and ECDH+AES-GCM E2EE handshake
+- Phase 35 added: Add contextvm-sdk for Nostr-based tool discovery — integrate https://crates.io/crates/contextvm-sdk to discover and use tools advertised over Nostr
 - Phase 34.1 completed: closed RED-09/RED-11 actor-loop drop — plumbed shape/freshness/orchestrated_components through UniFFI AttestationStatus, AttestationRecord (SQLite V19), and native trust UI on all 3 platforms (Android, iOS, Desktop iced)
+- Phase 36 added: Cache discovered contextvm tools, tap-for-detail (npub + metadata), search across cached tools, and surface previously-invoked tools — Android primary, Desktop secondary
 
 ### Pending Todos
 
