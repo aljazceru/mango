@@ -180,6 +180,11 @@ pub struct AgentStepRow {
     pub result: Option<String>,
     pub status: String,
     pub created_at: i64,
+    /// Phase 35 (CTX-10) — tool provenance, persisted in
+    /// `agent_steps.tool_origin` column added by MIGRATION_V20.
+    /// `Some("local")` for built-in tools, `Some("contextvm")` for tools
+    /// invoked via Nostr, `None` for non-tool_call rows.
+    pub tool_origin: Option<String>,
 }
 
 // ── Agent session queries ─────────────────────────────────────────────────────
@@ -228,8 +233,8 @@ pub fn list_agent_sessions(conn: &Connection) -> Result<Vec<AgentSessionRow>, Pe
 /// Insert a new agent step row.
 pub fn insert_agent_step(conn: &Connection, row: &AgentStepRow) -> Result<(), PersistenceError> {
     conn.prepare_cached(
-        "INSERT INTO agent_steps (id, session_id, step_number, action_type, action_payload, result, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO agent_steps (id, session_id, step_number, action_type, action_payload, result, status, created_at, tool_origin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?
     .execute(rusqlite::params![
         row.id,
@@ -240,6 +245,7 @@ pub fn insert_agent_step(conn: &Connection, row: &AgentStepRow) -> Result<(), Pe
         row.result,
         row.status,
         row.created_at,
+        row.tool_origin,
     ])?;
     Ok(())
 }
@@ -283,7 +289,7 @@ pub fn list_agent_steps(
     session_id: &str,
 ) -> Result<Vec<AgentStepRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, session_id, step_number, action_type, action_payload, result, status, created_at
+        "SELECT id, session_id, step_number, action_type, action_payload, result, status, created_at, tool_origin
          FROM agent_steps WHERE session_id = ?1 ORDER BY step_number ASC",
     )?;
     let rows = stmt
@@ -297,6 +303,7 @@ pub fn list_agent_steps(
                 result: row.get(5)?,
                 status: row.get(6)?,
                 created_at: row.get(7)?,
+                tool_origin: row.get(8)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
