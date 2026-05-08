@@ -2122,7 +2122,12 @@ data class AgentStepSummary (
     /**
      * One of: "pending", "completed", "failed"
      */
-    var `status`: kotlin.String
+    var `status`: kotlin.String, 
+    /**
+     * Phase 35 — provenance of the tool call. None for non-tool_call steps.
+     * "local" for built-in tools, "contextvm" for tools invoked via Nostr.
+     */
+    var `toolOrigin`: kotlin.String?
 ) {
     
     companion object
@@ -2141,6 +2146,7 @@ public object FfiConverterTypeAgentStepSummary: FfiConverterRustBuffer<AgentStep
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
@@ -2151,7 +2157,8 @@ public object FfiConverterTypeAgentStepSummary: FfiConverterRustBuffer<AgentStep
             FfiConverterOptionalString.allocationSize(value.`toolName`) +
             FfiConverterOptionalString.allocationSize(value.`toolInput`) +
             FfiConverterOptionalString.allocationSize(value.`resultSnippet`) +
-            FfiConverterString.allocationSize(value.`status`)
+            FfiConverterString.allocationSize(value.`status`) +
+            FfiConverterOptionalString.allocationSize(value.`toolOrigin`)
     )
 
     override fun write(value: AgentStepSummary, buf: ByteBuffer) {
@@ -2162,6 +2169,7 @@ public object FfiConverterTypeAgentStepSummary: FfiConverterRustBuffer<AgentStep
             FfiConverterOptionalString.write(value.`toolInput`, buf)
             FfiConverterOptionalString.write(value.`resultSnippet`, buf)
             FfiConverterString.write(value.`status`, buf)
+            FfiConverterOptionalString.write(value.`toolOrigin`, buf)
     }
 }
 
@@ -2333,7 +2341,24 @@ data class AppState (
      * (DIR-04). Populated by `load_directory_sources_summary`; never includes
      * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
      */
-    var `directorySources`: List<DirectorySourceSummary>
+    var `directorySources`: List<DirectorySourceSummary>, 
+    /**
+     * Phase 35 — discovered tools (announcements merged with persisted
+     * enabled state). Populated by AppAction::DiscoverContextvmTools and
+     * AppAction::SetContextvmToolEnabled.
+     */
+    var `contextvmTools`: List<DiscoverableTool>, 
+    /**
+     * Phase 35 — Settings → TOOLS → "Automatically discover and use tools"
+     * toggle. Defaults to false. Persisted under settings key
+     * `auto_discover_tools`.
+     */
+    var `autoDiscoverToolsEnabled`: kotlin.Boolean, 
+    /**
+     * Phase 35 — current discovery query state for the Tool Discovery
+     * screen. Updated by AppAction::DiscoverContextvmTools handler.
+     */
+    var `contextvmDiscoveryState`: ContextvmDiscoveryState
 ) {
     
     companion object
@@ -2382,6 +2407,9 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterSequenceTypeDirectorySourceSummary.read(buf),
+            FfiConverterSequenceTypeDiscoverableTool.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterTypeContextvmDiscoveryState.read(buf),
         )
     }
 
@@ -2422,7 +2450,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterLong.allocationSize(value.`lockTimeoutSeconds`) +
             FfiConverterBoolean.allocationSize(value.`authInitialized`) +
             FfiConverterBoolean.allocationSize(value.`encryptionEnabled`) +
-            FfiConverterSequenceTypeDirectorySourceSummary.allocationSize(value.`directorySources`)
+            FfiConverterSequenceTypeDirectorySourceSummary.allocationSize(value.`directorySources`) +
+            FfiConverterSequenceTypeDiscoverableTool.allocationSize(value.`contextvmTools`) +
+            FfiConverterBoolean.allocationSize(value.`autoDiscoverToolsEnabled`) +
+            FfiConverterTypeContextvmDiscoveryState.allocationSize(value.`contextvmDiscoveryState`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -2463,6 +2494,9 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterBoolean.write(value.`authInitialized`, buf)
             FfiConverterBoolean.write(value.`encryptionEnabled`, buf)
             FfiConverterSequenceTypeDirectorySourceSummary.write(value.`directorySources`, buf)
+            FfiConverterSequenceTypeDiscoverableTool.write(value.`contextvmTools`, buf)
+            FfiConverterBoolean.write(value.`autoDiscoverToolsEnabled`, buf)
+            FfiConverterTypeContextvmDiscoveryState.write(value.`contextvmDiscoveryState`, buf)
     }
 }
 
@@ -2865,6 +2899,68 @@ public object FfiConverterTypeDirectorySourceSummary: FfiConverterRustBuffer<Dir
             FfiConverterString.write(value.`lastSyncedLabel`, buf)
             FfiConverterSequenceString.write(value.`exclusionGlobs`, buf)
             FfiConverterTypeDirectorySyncStatus.write(value.`syncStatus`, buf)
+    }
+}
+
+
+
+/**
+ * Phase 35 — one tool surfaced by Nostr discovery, bound to AppState
+ * for the Tool Discovery sub-screen.
+ */
+data class DiscoverableTool (
+    /**
+     * Stable id: `<provider_pubkey_hex>:<tool_name>`.
+     */
+    var `id`: kotlin.String, 
+    /**
+     * LLM-facing tool name (e.g. "get_weather").
+     */
+    var `name`: kotlin.String, 
+    var `description`: kotlin.String, 
+    var `providerPubkey`: kotlin.String, 
+    /**
+     * `server_info.name` from the announcement, or None.
+     * UI falls back to `pubkey[..8]…` per UI-SPEC §F.
+     */
+    var `providerDisplayName`: kotlin.String?, 
+    var `enabled`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer<DiscoverableTool> {
+    override fun read(buf: ByteBuffer): DiscoverableTool {
+        return DiscoverableTool(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DiscoverableTool) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`description`) +
+            FfiConverterString.allocationSize(value.`providerPubkey`) +
+            FfiConverterOptionalString.allocationSize(value.`providerDisplayName`) +
+            FfiConverterBoolean.allocationSize(value.`enabled`)
+    )
+
+    override fun write(value: DiscoverableTool, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`description`, buf)
+            FfiConverterString.write(value.`providerPubkey`, buf)
+            FfiConverterOptionalString.write(value.`providerDisplayName`, buf)
+            FfiConverterBoolean.write(value.`enabled`, buf)
     }
 }
 
@@ -3972,6 +4068,41 @@ sealed class AppAction {
         companion object
     }
     
+    /**
+     * Phase 35 — kick off a one-shot discovery query against the
+     * hardcoded relay set. Spawns a background task; results land via
+     * InternalEvent::ContextvmDiscoveryComplete.
+     */
+    object DiscoverContextvmTools : AppAction()
+    
+    
+    /**
+     * Phase 35 — toggle a single discovered tool on/off (CTX-03).
+     * `tool_id` matches `DiscoverableTool.id` =
+     * `<provider_pubkey>:<tool_name>`.
+     */
+    data class SetContextvmToolEnabled(
+        val `toolId`: kotlin.String, 
+        val `enabled`: kotlin.Boolean) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Phase 35 — flip the auto-discover toggle (CTX-04). Persisted in
+     * settings table under `auto_discover_tools`.
+     */
+    data class SetAutoDiscoverTools(
+        val `enabled`: kotlin.Boolean) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Phase 35 — re-run a discovery query (UI-SPEC §E "Try again" button).
+     * Same effect as DiscoverContextvmTools but explicit for telemetry.
+     */
+    object RetryContextvmDiscovery : AppAction()
+    
+    
 
     
     companion object
@@ -4188,6 +4319,15 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
+            71 -> AppAction.DiscoverContextvmTools
+            72 -> AppAction.SetContextvmToolEnabled(
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            73 -> AppAction.SetAutoDiscoverTools(
+                FfiConverterBoolean.read(buf),
+                )
+            74 -> AppAction.RetryContextvmDiscovery
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4695,6 +4835,33 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterByteArray.allocationSize(value.`bookmarkData`)
             )
         }
+        is AppAction.DiscoverContextvmTools -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.SetContextvmToolEnabled -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`toolId`)
+                + FfiConverterBoolean.allocationSize(value.`enabled`)
+            )
+        }
+        is AppAction.SetAutoDiscoverTools -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterBoolean.allocationSize(value.`enabled`)
+            )
+        }
+        is AppAction.RetryContextvmDiscovery -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -5059,6 +5226,25 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 buf.putInt(70)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterByteArray.write(value.`bookmarkData`, buf)
+                Unit
+            }
+            is AppAction.DiscoverContextvmTools -> {
+                buf.putInt(71)
+                Unit
+            }
+            is AppAction.SetContextvmToolEnabled -> {
+                buf.putInt(72)
+                FfiConverterString.write(value.`toolId`, buf)
+                FfiConverterBoolean.write(value.`enabled`, buf)
+                Unit
+            }
+            is AppAction.SetAutoDiscoverTools -> {
+                buf.putInt(73)
+                FfiConverterBoolean.write(value.`enabled`, buf)
+                Unit
+            }
+            is AppAction.RetryContextvmDiscovery -> {
+                buf.putInt(74)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -5559,6 +5745,118 @@ public object FfiConverterTypeBusyState : FfiConverterRustBuffer<BusyState>{
             is BusyState.Streaming -> {
                 buf.putInt(3)
                 FfiConverterString.write(value.`model`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * Phase 35 — discovery query lifecycle state for the Tool Discovery
+ * sub-screen. Maps 1-to-1 to UI-SPEC states C/D/E/F.
+ */
+sealed class ContextvmDiscoveryState {
+    
+    /**
+     * Initial state before any query has run for this AppState lifecycle.
+     */
+    object Idle : ContextvmDiscoveryState()
+    
+    
+    /**
+     * A discovery query is in flight; UI shows the loading spinner /
+     * "Searching Nostr relays…" subtitle.
+     */
+    object Loading : ContextvmDiscoveryState()
+    
+    
+    /**
+     * Last query completed successfully (may have returned 0 tools).
+     */
+    object Loaded : ContextvmDiscoveryState()
+    
+    
+    /**
+     * Last query failed; `message` is human-readable and may be
+     * rendered verbatim by the UI in the error state. UI-SPEC §E
+     * uses the locked headline "Couldn't reach relays" — `message`
+     * is logged but the UI uses the locked headline regardless.
+     */
+    data class Error(
+        val `message`: kotlin.String) : ContextvmDiscoveryState() {
+        companion object
+    }
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeContextvmDiscoveryState : FfiConverterRustBuffer<ContextvmDiscoveryState>{
+    override fun read(buf: ByteBuffer): ContextvmDiscoveryState {
+        return when(buf.getInt()) {
+            1 -> ContextvmDiscoveryState.Idle
+            2 -> ContextvmDiscoveryState.Loading
+            3 -> ContextvmDiscoveryState.Loaded
+            4 -> ContextvmDiscoveryState.Error(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: ContextvmDiscoveryState) = when(value) {
+        is ContextvmDiscoveryState.Idle -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is ContextvmDiscoveryState.Loading -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is ContextvmDiscoveryState.Loaded -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is ContextvmDiscoveryState.Error -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`message`)
+            )
+        }
+    }
+
+    override fun write(value: ContextvmDiscoveryState, buf: ByteBuffer) {
+        when(value) {
+            is ContextvmDiscoveryState.Idle -> {
+                buf.putInt(1)
+                Unit
+            }
+            is ContextvmDiscoveryState.Loading -> {
+                buf.putInt(2)
+                Unit
+            }
+            is ContextvmDiscoveryState.Loaded -> {
+                buf.putInt(3)
+                Unit
+            }
+            is ContextvmDiscoveryState.Error -> {
+                buf.putInt(4)
+                FfiConverterString.write(value.`message`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -6122,6 +6420,12 @@ sealed class Screen {
     
     
     /**
+     * Phase 35 — Tool Discovery sub-screen (pushed from SettingsTools).
+     */
+    object ToolDiscovery : Screen()
+    
+    
+    /**
      * Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
      */
     object Locked : Screen()
@@ -6162,8 +6466,9 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             12 -> Screen.SettingsAppearance
             13 -> Screen.SettingsSecurity
             14 -> Screen.SettingsTools
-            15 -> Screen.Locked
-            16 -> Screen.PinSetup
+            15 -> Screen.ToolDiscovery
+            16 -> Screen.Locked
+            17 -> Screen.PinSetup
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -6255,6 +6560,12 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 4UL
             )
         }
+        is Screen.ToolDiscovery -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
         is Screen.Locked -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -6329,12 +6640,16 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 buf.putInt(14)
                 Unit
             }
-            is Screen.Locked -> {
+            is Screen.ToolDiscovery -> {
                 buf.putInt(15)
                 Unit
             }
-            is Screen.PinSetup -> {
+            is Screen.Locked -> {
                 buf.putInt(16)
+                Unit
+            }
+            is Screen.PinSetup -> {
+                buf.putInt(17)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -7341,6 +7656,34 @@ public object FfiConverterSequenceTypeDirectorySourceSummary: FfiConverterRustBu
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeDirectorySourceSummary.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeDiscoverableTool: FfiConverterRustBuffer<List<DiscoverableTool>> {
+    override fun read(buf: ByteBuffer): List<DiscoverableTool> {
+        val len = buf.getInt()
+        return List<DiscoverableTool>(len) {
+            FfiConverterTypeDiscoverableTool.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<DiscoverableTool>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeDiscoverableTool.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<DiscoverableTool>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeDiscoverableTool.write(it, buf)
         }
     }
 }
