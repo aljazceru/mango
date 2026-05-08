@@ -510,6 +510,85 @@ pub fn view<'a>(
         .padding(Padding::from([0u16, 16]))
         .width(Length::Fill);
 
+    // ── Phase 35 Row A — Discover tools summary row ──────────────────────────
+    // Reuses the providers_summary closure style (lines 135-164):
+    // background = vc.card, border = vc.border 1px, radius 8.0.
+    let enabled_tool_count = state
+        .contextvm_tools
+        .iter()
+        .filter(|t| t.enabled)
+        .count();
+    let discover_subtitle = match enabled_tool_count {
+        0 => "No tools enabled".to_string(),
+        1 => "1 tool enabled".to_string(),
+        n => format!("{} tools enabled", n),
+    };
+    let discover_tools_summary = container(
+        button(
+            row![
+                text("Discover tools").size(14).color(vc.text),
+                iced::widget::Space::new().width(Length::Fill),
+                text(discover_subtitle).size(12).color(vc.muted),
+                text(">").size(12).color(vc.muted),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        )
+        .on_press(Message::ContextvmDiscoverToolsClicked)
+        .padding(Padding::from([8u16, 16]))
+        .width(Length::Fill)
+        .style(move |_, _| button::Style {
+            background: Some(Background::Color(vc.card)),
+            border: Border {
+                radius: 8.0.into(),
+                color: vc.border,
+                width: 1.0,
+            },
+            ..Default::default()
+        }),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([0u16, 16]));
+
+    // ── Phase 35 Row B — Auto-discover toggle row ────────────────────────────
+    // Reuses the memory_toggle closure style (lines 344-366):
+    // background = vc.card, border = vc.border 1px, radius 8.0,
+    // padding = [10, 16].
+    let auto_discover_toggle = container(
+        column![
+            row![
+                text("Automatically discover and use tools")
+                    .size(14)
+                    .color(vc.text),
+                iced::widget::Space::new().width(Length::Fill),
+                toggler(state.auto_discover_tools_enabled)
+                    .on_toggle(Message::SettingsAutoDiscoverToolsToggled)
+                    .size(20),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+            text("Find new tools each conversation and offer them to the assistant automatically.")
+                .size(11)
+                .color(vc.muted),
+        ]
+        .spacing(4),
+    )
+    .padding(Padding::from([10u16, 16]))
+    .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(vc.card)),
+        border: Border {
+            radius: 8.0.into(),
+            color: vc.border,
+            width: 1.0,
+        },
+        ..Default::default()
+    });
+
+    let auto_discover_row = container(auto_discover_toggle)
+        .padding(Padding::from([0u16, 16]))
+        .width(Length::Fill);
+
     // ── Security Section (Lock Timeout) ──────────────────────────────────────
     let current_label = lock_timeout_label(state.lock_timeout_seconds);
 
@@ -586,6 +665,10 @@ pub fn view<'a>(
         security_row,
         section_header("TOOLS", vc.muted),
         tools_body,
+        iced::widget::Space::new().height(8),
+        discover_tools_summary,
+        iced::widget::Space::new().height(8),
+        auto_discover_row,
         section_header("APPEARANCE", vc.muted),
         appearance_row,
         divider(),
