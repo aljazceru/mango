@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -19,6 +20,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.foundation.lazy.LazyColumn
@@ -33,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
+import dev.disobey.mango.rust.DiscoverableTool
 import dev.disobey.mango.rust.Screen
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -132,6 +135,48 @@ fun SettingsScreen(
                     subtitle = if (appState.braveApiKeySet) "Web search configured" else "Web search not configured",
                     onClick = { onDispatch(AppAction.PushScreen(screen = Screen.SettingsTools)) },
                 )
+
+                // Phase 35 Row A — Discover tools.
+                Spacer(Modifier.height(4.dp))
+                SettingsLinkCard(
+                    title = "Discover tools",
+                    subtitle = discoverToolsSubtitle(appState.contextvmTools),
+                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.ToolDiscovery)) },
+                )
+
+                // Phase 35 Row B — Auto-discover toggle.
+                Spacer(Modifier.height(4.dp))
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = "Automatically discover and use tools",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Text(
+                                text = "Find new tools each conversation and offer them to the assistant automatically.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        Switch(
+                            checked = appState.autoDiscoverToolsEnabled,
+                            onCheckedChange = { checked ->
+                                onDispatch(AppAction.SetAutoDiscoverTools(enabled = checked))
+                            },
+                        )
+                    }
+                }
             }
 
             item {
@@ -146,6 +191,15 @@ fun SettingsScreen(
 
             item { Spacer(Modifier.height(32.dp)) }
         }
+    }
+}
+
+private fun discoverToolsSubtitle(tools: List<DiscoverableTool>): String {
+    val n = tools.count { it.enabled }
+    return when (n) {
+        0 -> "No tools enabled"
+        1 -> "1 tool enabled"
+        else -> "$n tools enabled"
     }
 }
 
