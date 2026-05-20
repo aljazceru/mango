@@ -8,6 +8,7 @@
 use std::fmt;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ContextvmError {
     /// Transport-level failure: relay WebSocket can't connect, DNS fails,
     /// TLS handshake fails. Covers the entire "no relay reachable" class.

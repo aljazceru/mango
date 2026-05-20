@@ -144,6 +144,7 @@ pub fn descriptors_to_chat_tools(
 /// Rows whose `schema_json` fails to parse are silently dropped (logged
 /// via `log::warn!`). Plan 35-05 calls this once at conversation
 /// start.
+#[allow(dead_code)]
 pub fn hydrate_from_db(conn: &rusqlite::Connection) -> Vec<ContextvmToolDescriptor> {
     let rows = match crate::persistence::queries::list_enabled_contextvm_tools(conn) {
         Ok(r) => r,
