@@ -16,17 +16,12 @@ pub mod error;
 pub mod invocation;
 pub mod npub;
 
-pub use discovery::{
-    discover_all, discover_servers, discover_tools_for_server, DiscoveredServer, DiscoveredTool,
-};
+pub use discovery::DiscoveredTool;
 pub use dispatch::{
-    build_dispatch_map, descriptors_to_chat_tools, finalise_for_turn, hydrate_from_db,
-    ContextvmToolDescriptor, DESCRIPTION_CAP_CHARS, MAX_REMOTE_TOOLS_PER_TURN,
-    RESERVED_LOCAL_NAMES,
+    build_dispatch_map, descriptors_to_chat_tools, finalise_for_turn,
+    ContextvmToolDescriptor, DESCRIPTION_CAP_CHARS,
 };
-pub use error::ContextvmError;
-pub use invocation::{invoke_tool, INVOCATION_TIMEOUT_SECS, MAX_TOOL_RESULT_BYTES};
-pub use npub::encode_npub;
+pub use invocation::invoke_tool;
 
 /// Curated default relay list. CTX-07 amendment: no upstream "defaults"
 /// constant exists in contextvm-sdk 0.1.0, so we ship our own.
@@ -43,4 +38,33 @@ pub fn default_relays_owned() -> Vec<String> {
         .iter()
         .map(|s| (*s).to_string())
         .collect()
+}
+
+/// Install the rustls default `CryptoProvider` exactly once for the
+/// process. contextvm-sdk → nostr-relay-pool → tokio-tungstenite pulls in
+/// rustls 0.23 transitively, but tokio-tungstenite does not enable any
+/// crypto-provider feature itself. With both `aws-lc-rs` and `ring`
+/// disabled (or both enabled) at the leaf, rustls aborts the process the
+/// first time a TLS client config is built, with the message:
+///
+///   "Could not automatically determine the process-level CryptoProvider
+///    from Rustls crate features."
+///
+/// Our own `rust/Cargo.toml` pins `rustls` with `features = ["ring"]`, so
+/// `ring::default_provider()` is the right provider to install. The
+/// existing `crate::net::tls` module installs the same provider lazily in
+/// its TLS-pinning helper, but that path is only exercised by the
+/// attestation flow — discovery and invocation hit websocket TLS first.
+///
+/// Idempotent: `install_default()` returns `Err` if a provider is already
+/// installed, which we deliberately ignore. The wrapping `Once` keeps the
+/// hot path branch-free after first call.
+pub(crate) fn ensure_rustls_crypto_provider() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // Best-effort: if some other code path already installed a provider,
+        // `install_default()` will fail and we leave that one in place.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 }

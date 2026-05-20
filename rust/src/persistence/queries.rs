@@ -1316,10 +1316,7 @@ pub fn delete_directory_file(
 }
 
 /// Count the number of tracked files for a directory source.
-pub fn count_directory_files(
-    conn: &Connection,
-    source_id: &str,
-) -> Result<i64, PersistenceError> {
+pub fn count_directory_files(conn: &Connection, source_id: &str) -> Result<i64, PersistenceError> {
     let count: i64 = conn
         .prepare_cached("SELECT COUNT(*) FROM directory_files WHERE source_id = ?1")?
         .query_row(rusqlite::params![source_id], |row| row.get(0))?;
@@ -1468,12 +1465,12 @@ pub fn list_all_contextvm_tools(
 
 /// Bulk delete — used when the user toggles a tool off and we want to
 /// keep the table compact. Optional in v1; included for cleanup paths.
+#[allow(dead_code)]
 pub fn delete_contextvm_tool(conn: &Connection, id: &str) -> Result<(), PersistenceError> {
     conn.prepare_cached("DELETE FROM contextvm_tools WHERE id = ?1")?
         .execute(rusqlite::params![id])?;
     Ok(())
 }
-
 
 /// Phase 36 (CTX36-USED-01) — read all contextvm tool-call agent_steps rows so
 /// the caller can aggregate by tool_name. Returns `(action_payload_json, created_at)`
