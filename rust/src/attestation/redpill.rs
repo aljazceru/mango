@@ -66,7 +66,9 @@ pub enum RedpillError {
     #[error("Redpill compose-manager actions_hash mismatch: expected={expected} actual={actual}")]
     ComposeManagerMismatch { expected: String, actual: String },
 
-    #[error("Redpill Tinfoil-routed model not supported via aggregator; use direct-Tinfoil integration")]
+    #[error(
+        "Redpill Tinfoil-routed model not supported via aggregator; use direct-Tinfoil integration"
+    )]
     TinfoilUnsupported,
 
     #[error("Redpill orchestrated three-way AND failed: {failed}")]
@@ -167,8 +169,7 @@ pub fn quote_bytes(s: &str) -> Result<Vec<u8>, RedpillError> {
 /// Returns false (=> reject) on too-short quotes or debug-bit set.
 /// Reference: `redpill-verifier::chutes.ts` and Python `decode-report-data.py`.
 pub fn debug_mode_disabled(quote_bytes: &[u8]) -> bool {
-    quote_bytes.len() > TD_ATTRIBUTES_OFFSET
-        && (quote_bytes[TD_ATTRIBUTES_OFFSET] & 0x01) == 0
+    quote_bytes.len() > TD_ATTRIBUTES_OFFSET && (quote_bytes[TD_ATTRIBUTES_OFFSET] & 0x01) == 0
 }
 
 // ── REPORTDATA decoders (D-08 / D-09 / D-10 / D-11) ──────────────────────────
@@ -183,10 +184,12 @@ pub fn verify_redpill_gateway_reportdata(
     gateway_signing_address_hex: &str,
     submitted_nonce: &[u8; 32],
 ) -> Result<(), RedpillError> {
-    let expected_addr = hex::decode(gateway_signing_address_hex.trim_start_matches("0x"))
-        .map_err(|e| RedpillError::ReportDataMismatch {
-            component: "gateway",
-            detail: format!("addr hex decode: {e}"),
+    let expected_addr =
+        hex::decode(gateway_signing_address_hex.trim_start_matches("0x")).map_err(|e| {
+            RedpillError::ReportDataMismatch {
+                component: "gateway",
+                detail: format!("addr hex decode: {e}"),
+            }
         })?;
     if expected_addr.len() != 32 {
         return Err(RedpillError::ReportDataMismatch {
@@ -385,6 +388,7 @@ pub async fn fetch_and_verify_redpill_attestation(
         backend.id, url
     );
 
+    crate::net::tls::ensure_default_crypto_provider();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
@@ -417,15 +421,24 @@ pub async fn fetch_and_verify_redpill_attestation(
         )));
     }
 
-    let value: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| RedpillError::Network(format!("parse: {e}")))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| RedpillError::Network(format!("parse: {e}")))?;
     let shape = detect_shape(&value)?;
 
     match shape {
-        RedpillShape::Flat => verify_flat(backend, requested_model, &value, &nonce, tdx_policy).await,
+        RedpillShape::Flat => {
+            verify_flat(backend, requested_model, &value, &nonce, tdx_policy).await
+        }
         RedpillShape::Orchestrated { is_near_ai } => {
-            verify_orchestrated(backend, requested_model, &value, &nonce, is_near_ai, tdx_policy)
-                .await
+            verify_orchestrated(
+                backend,
+                requested_model,
+                &value,
+                &nonce,
+                is_near_ai,
+                tdx_policy,
+            )
+            .await
         }
         RedpillShape::Chutes => {
             verify_chutes(backend, requested_model, &value, &nonce, tdx_policy).await
@@ -460,7 +473,9 @@ async fn verify_flat(
     }
 
     if q.len() < REPORTDATA_OFFSET + REPORTDATA_LEN {
-        return Err(RedpillError::QuoteDecode("quote too short for REPORTDATA".into()));
+        return Err(RedpillError::QuoteDecode(
+            "quote too short for REPORTDATA".into(),
+        ));
     }
     let mut rd = [0u8; 64];
     rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
@@ -504,9 +519,8 @@ async fn verify_flat(
     }
 
     if let Some(payload_str) = value.get("nvidia_payload").and_then(|v| v.as_str()) {
-        let _: serde_json::Value = serde_json::from_str(payload_str).map_err(|e| {
-            RedpillError::Network(format!("nvidia_payload inner JSON parse: {e}"))
-        })?;
+        let _: serde_json::Value = serde_json::from_str(payload_str)
+            .map_err(|e| RedpillError::Network(format!("nvidia_payload inner JSON parse: {e}")))?;
         let nonce_hex = hex::encode(nonce);
         super::nvidia::fetch_and_verify_nvidia(payload_str, &nonce_hex, &backend.id).await?;
     }
@@ -572,9 +586,8 @@ async fn verify_orchestrated(
             out.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
             out
         };
-        verify_redpill_gateway_reportdata(&rd, &gw_addr_hex, nonce).map_err(|_| {
-            RedpillError::OrchestratedComponentFailed { failed: "gateway" }
-        })?;
+        verify_redpill_gateway_reportdata(&rd, &gw_addr_hex, nonce)
+            .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "gateway" })?;
     }
 
     // ── Model component ─────────────────────────────────────────────────
@@ -628,7 +641,9 @@ async fn verify_orchestrated(
     // ── Compose-manager component ───────────────────────────────────────
     let cm = m0
         .compose_manager_attestation
-        .ok_or(RedpillError::OrchestratedComponentFailed { failed: "compose_manager" })?;
+        .ok_or(RedpillError::OrchestratedComponentFailed {
+            failed: "compose_manager",
+        })?;
     let cm_actions_hash_hex = cm.actions_hash.clone();
     {
         let rd: [u8; 64] = if let Some(ref rd_hex) = cm.report_data {
@@ -743,8 +758,8 @@ async fn verify_chutes(
             other => serde_json::to_string(other)
                 .map_err(|e| RedpillError::Network(format!("gpu_evidence serialize: {e}")))?,
         };
-        let _ = super::nvidia::fetch_and_verify_nvidia(&payload_str, &entry.nonce, &backend.id)
-            .await?;
+        let _ =
+            super::nvidia::fetch_and_verify_nvidia(&payload_str, &entry.nonce, &backend.id).await?;
     }
 
     Ok(VerifiedRedpillAttestation {

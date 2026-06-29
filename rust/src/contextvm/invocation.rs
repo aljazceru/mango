@@ -30,11 +30,11 @@ const SETTINGS_SECRET_KEY: &str = "contextvm_secret_key";
 /// fresh one and persist it. The key is identity-only; a future plan can
 /// promote this to keychain storage if threat model warrants it.
 pub fn load_or_create_secret_key(conn: &Connection) -> Result<String, ContextvmError> {
-    if let Some(hex) = queries::get_setting(conn, SETTINGS_SECRET_KEY).map_err(|e| {
-        ContextvmError::Other {
+    if let Some(hex) =
+        queries::get_setting(conn, SETTINGS_SECRET_KEY).map_err(|e| ContextvmError::Other {
             detail: e.to_string(),
-        }
-    })? {
+        })?
+    {
         if !hex.is_empty() {
             return Ok(hex);
         }
@@ -96,6 +96,7 @@ pub async fn invoke_tool(
     use contextvm_sdk::{
         signer, EncryptionMode, JsonRpcMessage, JsonRpcRequest, NostrClientTransportConfig,
     };
+    crate::contextvm::ensure_rustls_crypto_provider();
 
     // Parse the persisted key. If parsing fails (corrupt setting), fall
     // through to the Other error path.
@@ -109,7 +110,10 @@ pub async fn invoke_tool(
         }
     };
 
-    let relays = crate::contextvm::default_relays_owned();
+    let relays = match std::env::var("CONTEXTVM_RELAY_OVERRIDE") {
+        Ok(v) if !v.is_empty() => v.split(',').map(|s| s.trim().to_string()).collect(),
+        _ => crate::contextvm::default_relays_owned(),
+    };
     // `NostrClientTransportConfig` is `#[non_exhaustive]` cross-crate, so
     // we mutate the `Default` instance via its `with_*` builders rather
     // than using a struct expression.
@@ -184,10 +188,7 @@ pub async fn invoke_tool(
 /// Decode a `JsonRpcMessage` response into the user-visible result string.
 /// Pulled into its own function so unit tests can construct synthetic
 /// messages without spinning up a real proxy.
-pub fn decode_response(
-    response: &contextvm_sdk::JsonRpcMessage,
-    _tool_name: &str,
-) -> String {
+pub fn decode_response(response: &contextvm_sdk::JsonRpcMessage, _tool_name: &str) -> String {
     let raw = match serde_json::to_value(response) {
         Ok(v) => v,
         Err(e) => {

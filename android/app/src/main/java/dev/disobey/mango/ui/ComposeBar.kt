@@ -1,14 +1,16 @@
 package dev.disobey.mango.ui
 
+import android.widget.Toast
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AttachFile
@@ -28,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AttachmentInfo
 
@@ -38,16 +41,23 @@ import dev.disobey.mango.rust.AttachmentInfo
 fun ComposeBar(
     pendingAttachment: AttachmentInfo?,
     isStreaming: Boolean,
+    isInputBlocked: Boolean = isStreaming,
+    showStopButton: Boolean = isStreaming,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
     onAttach: () -> Unit,
     onClearAttachment: () -> Unit,
     modifier: Modifier = Modifier,
+    routingLabel: String? = null,
+    routingDetail: String? = null,
 ) {
     var inputText by remember { mutableStateOf("") }
+    val context = LocalContext.current
 
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .navigationBarsPadding(),
         tonalElevation = 2.dp,
     ) {
         Column(
@@ -55,6 +65,27 @@ fun ComposeBar(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
+            if (!routingLabel.isNullOrBlank()) {
+                Surface(
+                    modifier = Modifier
+                        .padding(bottom = 6.dp)
+                        .clickable(enabled = !routingDetail.isNullOrBlank()) {
+                            routingDetail?.let {
+                                Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ) {
+                    Text(
+                        routingLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
+            }
+
             // Pending attachment indicator
             if (pendingAttachment != null) {
                 Row(
@@ -79,6 +110,7 @@ fun ComposeBar(
                     )
                     IconButton(
                         onClick = onClearAttachment,
+                        enabled = !isInputBlocked,
                         modifier = Modifier.size(24.dp),
                     ) {
                         Icon(
@@ -99,6 +131,7 @@ fun ComposeBar(
                 // Attach button
                 IconButton(
                     onClick = onAttach,
+                    enabled = !isInputBlocked,
                     modifier = Modifier.size(44.dp),
                 ) {
                     Icon(
@@ -116,11 +149,11 @@ fun ComposeBar(
                     modifier = Modifier.weight(1f),
                     minLines = 1,
                     maxLines = 6,
-                    enabled = !isStreaming,
+                    enabled = !isInputBlocked,
                 )
 
                 // Send / Stop button
-                if (isStreaming) {
+                if (showStopButton) {
                     IconButton(
                         onClick = onStop,
                         modifier = Modifier.size(44.dp),
@@ -132,25 +165,30 @@ fun ComposeBar(
                         )
                     }
                 } else {
-                    IconButton(
-                        onClick = {
-                            val trimmed = inputText.trim()
-                            if (trimmed.isNotEmpty()) {
-                                onSend(trimmed)
-                                inputText = ""
-                            }
-                        },
-                        enabled = inputText.isNotBlank(),
-                        modifier = Modifier.size(44.dp),
+                    val canSend = !isInputBlocked && inputText.isNotBlank()
+                    Surface(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clickable(enabled = canSend) {
+                                val trimmed = inputText.trim()
+                                if (trimmed.isNotEmpty()) {
+                                    onSend(trimmed)
+                                    inputText = ""
+                                }
+                            },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface,
                     ) {
-                        Icon(
-                            Icons.Default.ArrowUpward,
-                            contentDescription = "Send message",
-                            tint = if (inputText.isNotBlank())
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.ArrowUpward,
+                                contentDescription = "Send message",
+                                tint = if (canSend)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }

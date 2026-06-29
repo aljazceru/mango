@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS attestation_cache (
 
 INSERT OR IGNORE INTO backends (id, name, base_url, model_list, tee_type, display_order, is_active, created_at)
 VALUES
-    ('tinfoil', 'Tinfoil', 'https://inference.tinfoil.sh/v1/', '[\"llama3-3-70b\",\"deepseek-r1-0528\",\"kimi-k2-5\"]', 'IntelTdx', 0, 1, strftime('%s','now'));
+    ('tinfoil', 'Tinfoil', 'https://inference.tinfoil.sh/v1/', '[\"qwen3-vl-30b\",\"gemma4-31b\",\"kimi-k2-6\",\"llama3-3-70b\",\"gpt-oss-120b\"]', 'IntelTdx', 0, 1, strftime('%s','now'));
 ";
 
 /// Migration v2: add index on agent_steps for ordered step retrieval per session.
@@ -158,7 +158,7 @@ ALTER TABLE conversations
 ///
 /// Tinfoil: use their actual model IDs (not meta-llama/ prefixed — Tinfoil uses short names).
 pub const MIGRATION_V7: &str = "
-UPDATE backends SET model_list = '[\"llama3-3-70b\",\"deepseek-r1-0528\",\"kimi-k2-5\"]'
+UPDATE backends SET model_list = '[\"qwen3-vl-30b\",\"gemma4-31b\",\"kimi-k2-6\",\"llama3-3-70b\",\"gpt-oss-120b\"]'
     WHERE id = 'tinfoil';
 ";
 
@@ -380,6 +380,57 @@ CREATE INDEX IF NOT EXISTS idx_contextvm_tools_enabled
 ALTER TABLE agent_steps ADD COLUMN tool_origin TEXT;
 ";
 
+/// Phase 38 — Trusted providers registry.
+///
+/// `trusted_providers` holds one row per provider pubkey the user has
+/// explicitly trusted. When `auto_discover_tools` is enabled, only tools
+/// from trusted providers are offered to the LLM automatically.
+/// `added_at` is a Unix-seconds timestamp; `label` is an optional
+/// user-supplied note (e.g. "Tinfoil weather service").
+pub const MIGRATION_V21: &str = "
+ALTER TABLE contextvm_tools ADD COLUMN provider_name TEXT;
+ALTER TABLE contextvm_tools ADD COLUMN provider_about TEXT;
+ALTER TABLE contextvm_tools ADD COLUMN provider_picture TEXT;
+ALTER TABLE contextvm_tools ADD COLUMN provider_nip05 TEXT;
+CREATE TABLE IF NOT EXISTS trusted_providers (
+    pubkey       TEXT PRIMARY KEY NOT NULL,
+    label        TEXT,
+    added_at     INTEGER NOT NULL
+);
+";
+
+/// Phase 38 — hybrid local/remote routing profiles.
+///
+/// Profiles are virtual backends stored as `hybrid:<id>` in conversation/default backend
+/// settings. The actual local and remote legs remain normal backend rows.
+pub const MIGRATION_V22: &str = "
+CREATE TABLE IF NOT EXISTS hybrid_profiles (
+    id                                  TEXT PRIMARY KEY NOT NULL,
+    name                                TEXT NOT NULL,
+    local_backend_id                    TEXT NOT NULL,
+    local_model_id                      TEXT NOT NULL,
+    remote_backend_id                   TEXT NOT NULL,
+    remote_model_id                     TEXT NOT NULL,
+    escalate_if_attachment              INTEGER NOT NULL DEFAULT 1,
+    prefer_local_when_offline           INTEGER NOT NULL DEFAULT 1,
+    escalate_if_message_longer_than     INTEGER,
+    compress_history                    INTEGER NOT NULL DEFAULT 0,
+    rewrite_rag_query                   INTEGER NOT NULL DEFAULT 0,
+    created_at                          INTEGER NOT NULL,
+    updated_at                          INTEGER NOT NULL
+);
+";
+
+/// Phase 38 follow-up: refresh seeded Tinfoil models with current multimodal IDs.
+///
+/// Phase 38's hybrid image-route DoD requires a Tinfoil remote model that accepts image
+/// attachments. Older installs only had text-only/stale Tinfoil ids, so upgrade them.
+pub const MIGRATION_V23: &str = "
+UPDATE backends
+SET model_list = '[\"qwen3-vl-30b\",\"gemma4-31b\",\"kimi-k2-6\",\"llama3-3-70b\",\"gpt-oss-120b\"]'
+WHERE id = 'tinfoil';
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -402,6 +453,9 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V18,
     MIGRATION_V19,
     MIGRATION_V20,
+    MIGRATION_V21,
+    MIGRATION_V22,
+    MIGRATION_V23,
 ];
 
 #[cfg(test)]
@@ -464,7 +518,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(after, 0, "files should be cascade-deleted when source removed");
+        assert_eq!(
+            after, 0,
+            "files should be cascade-deleted when source removed"
+        );
     }
 
     #[test]
@@ -493,6 +550,23 @@ mod tests {
             cols.contains(&"orchestrated_components".to_string()),
             "orchestrated_components column missing; got {:?}",
             cols
+        );
+    }
+
+    #[test]
+    fn test_migration_v23_seeds_tinfoil_multimodal_model() {
+        let db = Database::open(":memory:").expect("open in-memory db");
+        let model_list: String = db
+            .conn()
+            .query_row(
+                "SELECT model_list FROM backends WHERE id = 'tinfoil'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("seeded tinfoil backend");
+        assert!(
+            model_list.contains("qwen3-vl-30b"),
+            "tinfoil seed must include a vision-capable model for hybrid image routing: {model_list}"
         );
     }
 

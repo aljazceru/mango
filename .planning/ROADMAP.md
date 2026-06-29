@@ -70,6 +70,53 @@
 
 ## Phase Details
 
+
+### Phase 10: PPQ.AI Backend Integration
+**Goal**: Integrate PPQ.AI as a TEE-attested LLM provider with AMD SEV-SNP attestation verification, PPQ private E2EE transport, and private model filtering
+**Depends on**: Phase 9 (existing attestation infrastructure)
+**Requirements**: PPQ-01, PPQ-02, PPQ-03, PPQ-04, PPQ-05, PPQ-06
+**Success Criteria** (what must be TRUE):
+  1. PPQ.AI appears as a provider preset with AMD SEV-SNP TEE type
+  2. PPQ private transport (PpqPrivateE2ee) routes requests through EHBP encryption
+  3. AMD SEV-SNP attestation verification parses and validates PPQ attestation reports
+  4. Database migrations V10/V11 seed PPQ.AI backend with correct configuration
+  5. UI integration on Android, iOS, and Desktop includes ppq.ai links and AmdSevSnp TEE type support
+  6. Comprehensive test coverage for PPQ transport, attestation, and streaming
+**Plans:** 6/6 plans complete
+Plans:
+- [x] 10-01-PLAN.md — Core PPQ private transport module with EHBP encryption, attestation verification, and streaming support
+- [x] 10-02-PLAN.md — Transport kind (PpqPrivateE2ee) and TEE type (AmdSevSnp) extensions
+- [x] 10-03-PLAN.md — Database migrations V10 (seed PPQ.AI) and V11 (switch to private transport base URL)
+- [x] 10-04-PLAN.md — Attestation routing and streaming integration
+- [x] 10-05-PLAN.md — UI integration across Android, iOS, and Desktop (ppq.ai links + AmdSevSnp TEE type)
+- [x] 10-06-PLAN.md — Test coverage for PPQ transport, presets, attestation, and streaming cancellation
+
+### Phase 12: ORT Stable Upgrade
+**Goal**: Upgrade ONNX Runtime (ort) from 2.0.0-rc.9 to the latest available release compatible with fastembed 5.13.0 (rc.11; no stable 2.x exists, 1.x yanked) with all existing embedding tests passing
+**Depends on**: Phase 11 (mobile embeddings)
+**Requirements**: DFNS-03
+**Success Criteria** (what must be TRUE):
+  1. ort version in rust/Cargo.toml is 2.0.0-rc.11 (matches Cargo.lock resolution)
+  2. Full test suite passes without modification
+  3. Rationale for using rc.11 documented in Cargo.toml (no stable exists, CLAUDE.md recommends rc.12 but fastembed pins rc.11)
+  4. ROADMAP.md success criterion #2 and REQUIREMENTS.md DFNS-03 revised to say "latest available release" instead of "stable release"
+  5. CLAUDE.md Technology Stack, Version Compatibility, and Sources sections all reference rc.11 not rc.12
+**Plans:** 1/1 plans complete
+Plans:
+- [x] 12-01-PLAN.md — Update ort version from rc.9 to rc.11, add rationale comment, revise ROADMAP.md / REQUIREMENTS.md, and update CLAUDE.md
+
+### Phase 19: Test Coverage Gaps
+**Goal**: Fill critical test coverage gaps across core modules: streaming cancellation in encrypted transports, agent mid-step failures, and attestation cache TTL behavior
+**Depends on**: Phase 18 (TEE runtime configuration)
+**Requirements**: TEST-01, TEST-02, TEST-03
+**Success Criteria** (what must be TRUE):
+  1. Streaming cancellation tests verify StopGeneration + StreamCancelled → Idle transition for both Tinfoil and PPQ transports
+  2. Agent max-step test verifies 20-step limit enforcement at persistence layer
+  3. Attestation cache TTL tests verify get_latest_for_backend rejects expired entries while get_raw_report bypasses TTL by design
+**Plans:** 1/1 plans complete
+Plans:
+- [x] 19-01-PLAN.md — Test coverage for streaming cancellation, agent failure injection, and attestation cache TTL behavior
+
 ### Phase 20: Memory Core
 **Goal**: The app automatically extracts and stores facts, preferences, and entities from completed conversations as local on-device memories
 **Depends on**: Phase 19 (existing RAG + persistence infrastructure)

@@ -1,5 +1,5 @@
 import Foundation
-import onnxruntime_objc
+import OnnxRuntimeBindings
 import os
 
 private let logger = Logger(subsystem: "dev.disobey.mango", category: "Embedding")

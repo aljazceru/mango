@@ -23,11 +23,21 @@ pub fn spawn_attestation_task(
 
         let att_event = match result {
             Ok(event) => event,
-            Err(e) => AttestationEvent::Failed {
-                backend_id,
-                is_transient: e.is_transient(),
-                reason: e.to_string(),
-            },
+            Err(e) => {
+                let is_transient = e.is_transient();
+                log::warn!(
+                    target: "attestation",
+                    "[attestation] failed backend={} transient={} reason={}",
+                    backend_id,
+                    is_transient,
+                    e
+                );
+                AttestationEvent::Failed {
+                    backend_id,
+                    is_transient,
+                    reason: e.to_string(),
+                }
+            }
         };
 
         let internal = crate::llm::InternalEvent::AttestationResult(att_event);

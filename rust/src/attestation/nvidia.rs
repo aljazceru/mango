@@ -55,11 +55,10 @@ pub fn verify_nvidia_jwt(
     expected_nonce_hex: &str,
     jwk: &serde_json::Value,
 ) -> Result<NvidiaAttestationClaims, AttestationError> {
-    let header = jsonwebtoken::decode_header(jwt_token).map_err(|e| {
-        AttestationError::JwtVerification {
+    let header =
+        jsonwebtoken::decode_header(jwt_token).map_err(|e| AttestationError::JwtVerification {
             reason: format!("JWT header decode: {}", e),
-        }
-    })?;
+        })?;
 
     let parsed: jsonwebtoken::jwk::Jwk =
         serde_json::from_value(jwk.clone()).map_err(|e| AttestationError::JwtVerification {
@@ -132,8 +131,9 @@ pub async fn fetch_and_verify_nvidia(
 
     log::debug!(target: "attestation", "[attestation] fetch_and_verify_nvidia backend={}", backend_id);
 
+    crate::net::tls::ensure_default_crypto_provider();
     let client = reqwest::Client::builder()
-        .hickory_dns(false)
+        .no_hickory_dns()
         .build()
         .map_err(|e| AttestationError::NetworkError {
             reason: e.to_string(),
@@ -166,21 +166,25 @@ pub async fn fetch_and_verify_nvidia(
     }
 
     let response_json: serde_json::Value =
-        nras_response.json().await.map_err(|e| AttestationError::NetworkError {
-            reason: format!("Failed to parse NRAS response: {}", e),
-        })?;
+        nras_response
+            .json()
+            .await
+            .map_err(|e| AttestationError::NetworkError {
+                reason: format!("Failed to parse NRAS response: {}", e),
+            })?;
 
     let jwt_token = extract_nras_jwt(&response_json)?;
 
     // Step 3: Decode JWT header for kid + alg
-    let header = jsonwebtoken::decode_header(&jwt_token).map_err(|e| {
-        AttestationError::JwtVerification {
+    let header =
+        jsonwebtoken::decode_header(&jwt_token).map_err(|e| AttestationError::JwtVerification {
             reason: format!("JWT header decode: {}", e),
-        }
-    })?;
-    let header_kid = header.kid.ok_or_else(|| AttestationError::JwtVerification {
-        reason: "JWT header missing kid".to_string(),
-    })?;
+        })?;
+    let header_kid = header
+        .kid
+        .ok_or_else(|| AttestationError::JwtVerification {
+            reason: "JWT header missing kid".to_string(),
+        })?;
 
     // Step 4: Fetch NVIDIA JWKS, pick the key matching the JWT's kid
     log::debug!(target: "attestation", "[attestation] fetching NRAS JWKS backend={}", backend_id);
@@ -192,11 +196,13 @@ pub async fn fetch_and_verify_nvidia(
             reason: format!("JWKS fetch failed: {}", e),
         })?;
 
-    let jwks: serde_json::Value = jwks_response.json().await.map_err(|e| {
-        AttestationError::NetworkError {
-            reason: format!("Failed to parse JWKS: {}", e),
-        }
-    })?;
+    let jwks: serde_json::Value =
+        jwks_response
+            .json()
+            .await
+            .map_err(|e| AttestationError::NetworkError {
+                reason: format!("Failed to parse JWKS: {}", e),
+            })?;
 
     let key = jwks["keys"]
         .as_array()
@@ -314,11 +320,12 @@ fn build_nras_v3_request(payload: &str, nonce_hex: &str) -> Result<String, Attes
             .collect::<Vec<_>>()
     } else {
         // Single-object shape — wrap.
-        let cert = v.get("certificate").and_then(|s| s.as_str()).ok_or_else(|| {
-            AttestationError::JwtVerification {
+        let cert = v
+            .get("certificate")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| AttestationError::JwtVerification {
                 reason: "nvidia_payload missing 'certificate'".to_string(),
-            }
-        })?;
+            })?;
         let ev = v.get("evidence").and_then(|s| s.as_str()).ok_or_else(|| {
             AttestationError::JwtVerification {
                 reason: "nvidia_payload missing 'evidence'".to_string(),
@@ -371,8 +378,7 @@ mod nras_request_tests {
 
     #[test]
     fn build_nras_v3_request_wraps_single_evidence() {
-        let payload =
-            r#"{"arch":"HOPPER","certificate":"CERT_PEM","evidence":"EV_HEX"}"#;
+        let payload = r#"{"arch":"HOPPER","certificate":"CERT_PEM","evidence":"EV_HEX"}"#;
         let body = build_nras_v3_request(payload, "deadbeef").unwrap();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["nonce"], "deadbeef");

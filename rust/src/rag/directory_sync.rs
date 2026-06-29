@@ -57,10 +57,7 @@ pub struct StoredFingerprint {
 ///
 /// DIR-01: unchanged files (same path + mtime + size) are in NONE of the
 /// buckets so callers can skip re-embedding them.
-pub fn diff_files(
-    stored: &[StoredFingerprint],
-    current: &[(String, i64, i64)],
-) -> FileDiff {
+pub fn diff_files(stored: &[StoredFingerprint], current: &[(String, i64, i64)]) -> FileDiff {
     use std::collections::HashMap;
     let stored_map: HashMap<&str, (i64, i64)> = stored
         .iter()
@@ -243,12 +240,12 @@ mod tests {
     #[test]
     fn test_directory_diff_unchanged() {
         let stored = vec![fp("a.md", 100, 10), fp("b.md", 200, 20)];
-        let current = vec![
-            ("a.md".to_string(), 100, 10),
-            ("b.md".to_string(), 200, 20),
-        ];
+        let current = vec![("a.md".to_string(), 100, 10), ("b.md".to_string(), 200, 20)];
         let diff = diff_files(&stored, &current);
-        assert!(diff.added.is_empty(), "unchanged files must not be in added");
+        assert!(
+            diff.added.is_empty(),
+            "unchanged files must not be in added"
+        );
         assert!(
             diff.modified.is_empty(),
             "unchanged files must not be in modified"
@@ -401,12 +398,13 @@ mod tests {
             touch(root, "inside.md", "i");
 
             let globs = vec!["../../etc/passwd".to_string()];
-            let result =
-                walk_with_exclusions(root.to_str().unwrap(), &globs).unwrap_or_default();
+            let result = walk_with_exclusions(root.to_str().unwrap(), &globs).unwrap_or_default();
 
             let root_canon = root.canonicalize().unwrap();
             for (p, _, _) in &result {
-                let canon = Path::new(p).canonicalize().unwrap_or_else(|_| Path::new(p).to_path_buf());
+                let canon = Path::new(p)
+                    .canonicalize()
+                    .unwrap_or_else(|_| Path::new(p).to_path_buf());
                 assert!(
                     canon.starts_with(&root_canon),
                     "walk emitted path outside root: {:?} (root={:?})",

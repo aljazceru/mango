@@ -37,7 +37,7 @@ fn test_migration_v6_creates_tables() {
     );
 }
 
-/// Verify migration version is 6 after opening a fresh database.
+/// Verify migration version is 20 after opening a fresh database.
 #[test]
 fn test_migration_v6_version() {
     let db = Database::open(":memory:").unwrap();
@@ -46,8 +46,8 @@ fn test_migration_v6_version() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 20,
-        "user_version should be 20 after all migrations including MIGRATION_V20"
+        version, 23,
+        "user_version should be 23 after all migrations including MIGRATION_V23"
     );
 }
 
@@ -292,6 +292,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
     // 100ms is stable under parallel test load; actor init includes VectorIndex + document list load.

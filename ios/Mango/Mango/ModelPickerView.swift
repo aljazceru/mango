@@ -8,8 +8,11 @@ struct ModelPickerView: View {
     let backends: [BackendSummary]
     let activeBackendId: String?
     let selectedModelId: String?
+    var hybridProfiles: [HybridProfile] = []
+    var activeHybridProfileId: String? = nil
     var attestationStatus: AttestationStatus? = nil
     let onSelectModel: (String) -> Void
+    var onUseHybridProfile: (String) -> Void = { _ in }
 
     var body: some View {
         Menu {
@@ -19,6 +22,18 @@ struct ModelPickerView: View {
                         Label(model.displayName, systemImage: "checkmark")
                     } else {
                         Text(model.displayName)
+                    }
+                }
+            }
+            if !hybridProfiles.isEmpty {
+                Divider()
+                ForEach(hybridProfiles, id: \.id) { profile in
+                    Button(action: { onUseHybridProfile(profile.id) }) {
+                        if profile.id == activeHybridProfileId {
+                            Label(profile.name, systemImage: "checkmark")
+                        } else {
+                            Text(profile.name)
+                        }
                     }
                 }
             }
@@ -69,14 +84,22 @@ struct ModelPickerView: View {
               let backend = backends.first(where: { $0.id == backendId }) else {
             return []
         }
-        return backend.availableModels.map { modelId in
+        return backend.models.map { modelId in
             ModelInfo(id: modelId, displayName: shortModelName(modelId))
         }
     }
 
     private var currentModelName: String {
+        if let profile = activeHybridProfile {
+            return "Hybrid: \(profile.name)"
+        }
         guard let modelId = selectedModelId else { return "Model" }
         return shortModelName(modelId)
+    }
+
+    private var activeHybridProfile: HybridProfile? {
+        guard let activeHybridProfileId else { return nil }
+        return hybridProfiles.first(where: { $0.id == activeHybridProfileId })
     }
 }
 

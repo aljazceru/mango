@@ -26,7 +26,7 @@ pub const MAX_EXTRACT_INPUT_BYTES: usize = 20 * 1024 * 1024;
 /// Phase 32-09 dispatch (extends Phase 8 baseline):
 /// - `.pdf` → `pdf-extract`
 /// - `.docx` → `docx-rs`
-/// - `.epub` → `epub` crate (per-chapter XHTML, run through `html2text`)
+/// - `.epub` → `epub-parser` crate (spine pages as plain text)
 /// - `.html` / `.htm` → `html2text` (script/style stripped, no JS execution)
 /// - `.rtf` → `rtf-parser`
 /// - anything else (including `.md`, `.txt`, `.org`, unknown) → UTF-8 lossy
@@ -73,8 +73,7 @@ pub fn extract_text_from_file(filename: &str, content_bytes: &[u8]) -> anyhow::R
 /// nested paragraphs, tables, hyperlinks, structured-data tags, and inserts
 /// uniformly without recursing through every typed enum variant.
 fn extract_docx(bytes: &[u8]) -> anyhow::Result<String> {
-    let docx = docx_rs::read_docx(bytes)
-        .map_err(|e| anyhow::anyhow!("read_docx: {}", e))?;
+    let docx = docx_rs::read_docx(bytes).map_err(|e| anyhow::anyhow!("read_docx: {}", e))?;
     let json: serde_json::Value = serde_json::from_str(&docx.json())
         .map_err(|e| anyhow::anyhow!("docx json parse: {}", e))?;
     let mut out = String::new();
@@ -92,8 +91,7 @@ fn extract_docx(bytes: &[u8]) -> anyhow::Result<String> {
 fn walk_docx_text(v: &serde_json::Value, out: &mut String) {
     match v {
         serde_json::Value::Object(map) => {
-            let is_text =
-                map.get("type").and_then(|t| t.as_str()) == Some("text");
+            let is_text = map.get("type").and_then(|t| t.as_str()) == Some("text");
             if is_text {
                 if let Some(t) = map
                     .get("data")
@@ -120,28 +118,23 @@ fn walk_docx_text(v: &serde_json::Value, out: &mut String) {
     }
 }
 
-/// Extract plain text from an `.epub` byte buffer using the `epub` crate.
+/// Extract plain text from an `.epub` byte buffer using the `epub-parser` crate.
 ///
-/// Iterates the spine, fetches each chapter's XHTML resource, and pipes it
-/// through `html2text` to strip markup. Concatenates with blank-line
-/// separators between chapters.
+/// The parser walks the spine and returns cleaned page text. Concatenates with
+/// blank-line separators between pages.
 fn extract_epub(bytes: &[u8]) -> anyhow::Result<String> {
-    let cursor = std::io::Cursor::new(bytes);
-    let mut doc = epub::doc::EpubDoc::from_reader(cursor)
+    let doc = epub_parser::Epub::parse_from_buffer(bytes)
         .map_err(|e| anyhow::anyhow!("epub open: {}", e))?;
     let mut out = String::new();
-    loop {
-        if let Some((xhtml, _mime)) = doc.get_current_str() {
-            let text = html2text::from_read(xhtml.as_bytes(), 80)
-                .map_err(|e| anyhow::anyhow!("epub chapter html→text: {}", e))?;
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
-            out.push_str(&text);
+    for page in doc.pages {
+        let text = page.content.trim();
+        if text.is_empty() {
+            continue;
         }
-        if !doc.go_next() {
-            break;
+        if !out.is_empty() {
+            out.push_str("\n\n");
         }
+        out.push_str(text);
     }
     Ok(out)
 }
@@ -152,8 +145,7 @@ fn extract_epub(bytes: &[u8]) -> anyhow::Result<String> {
 /// at the DOM-render stage, closing the T-32-I5 information-disclosure
 /// threat for HTML clipping inputs.
 fn extract_html(bytes: &[u8]) -> anyhow::Result<String> {
-    html2text::from_read(bytes, 80)
-        .map_err(|e| anyhow::anyhow!("html→text: {}", e))
+    html2text::from_read(bytes, 80).map_err(|e| anyhow::anyhow!("html→text: {}", e))
 }
 
 /// Extract plain text from `.rtf` bytes using `rtf-parser`.
@@ -162,10 +154,9 @@ fn extract_html(bytes: &[u8]) -> anyhow::Result<String> {
 /// We deliberately use the `Result`-returning chain rather than the
 /// panic-prone `parse_rtf(String)` convenience wrapper.
 fn extract_rtf(bytes: &[u8]) -> anyhow::Result<String> {
-    let s = std::str::from_utf8(bytes)
-        .map_err(|e| anyhow::anyhow!("rtf utf-8: {}", e))?;
-    let tokens = rtf_parser::lexer::Lexer::scan(s)
-        .map_err(|e| anyhow::anyhow!("rtf lex: {:?}", e))?;
+    let s = std::str::from_utf8(bytes).map_err(|e| anyhow::anyhow!("rtf utf-8: {}", e))?;
+    let tokens =
+        rtf_parser::lexer::Lexer::scan(s).map_err(|e| anyhow::anyhow!("rtf lex: {:?}", e))?;
     let doc = rtf_parser::parser::Parser::new(tokens)
         .parse()
         .map_err(|e| anyhow::anyhow!("rtf parse: {:?}", e))?;

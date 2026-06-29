@@ -164,6 +164,7 @@ pub async fn fetch_and_verify_venice_attestation(
         url
     );
 
+    crate::net::tls::ensure_default_crypto_provider();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
@@ -194,11 +195,10 @@ pub async fn fetch_and_verify_venice_attestation(
         })?;
 
     // 3. Parse wire format
-    let resp: VeniceAttestationResponse = serde_json::from_str(&body).map_err(|e| {
-        AttestationError::QuoteVerification {
+    let resp: VeniceAttestationResponse =
+        serde_json::from_str(&body).map_err(|e| AttestationError::QuoteVerification {
             reason: format!("Venice attestation JSON parse failed: {e}"),
-        }
-    })?;
+        })?;
 
     log::debug!(
         target: "attestation",
@@ -213,10 +213,7 @@ pub async fn fetch_and_verify_venice_attestation(
         })?;
     if quote_bytes.len() < 48 {
         return Err(AttestationError::QuoteVerification {
-            reason: format!(
-                "Venice intel_quote too short: {} bytes",
-                quote_bytes.len()
-            ),
+            reason: format!("Venice intel_quote too short: {} bytes", quote_bytes.len()),
         });
     }
 
@@ -273,10 +270,11 @@ pub async fn fetch_and_verify_venice_attestation(
                 reason: "Venice response missing nvidia_payload".into(),
             })?;
     // Sanity-check that the inner content actually parses as JSON before forwarding.
-    let _: serde_json::Value =
-        serde_json::from_str(&nvidia_payload_str).map_err(|e| AttestationError::QuoteVerification {
+    let _: serde_json::Value = serde_json::from_str(&nvidia_payload_str).map_err(|e| {
+        AttestationError::QuoteVerification {
             reason: format!("Venice nvidia_payload inner JSON parse failed: {e}"),
-        })?;
+        }
+    })?;
     let _nvidia_evt =
         super::nvidia::fetch_and_verify_nvidia(&nvidia_payload_str, &nonce_hex, &backend.id)
             .await?;

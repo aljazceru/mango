@@ -12,6 +12,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(50));
@@ -77,6 +78,7 @@ fn test_send_message_creates_conversation_when_none_active() {
 
     app.dispatch(AppAction::SendMessage {
         text: "Hello without a conversation".into(),
+        force_role: None,
     });
     wait();
     let state = app.state();
@@ -102,6 +104,7 @@ fn test_send_message_auto_title_from_text() {
         "This is a user message that is longer than fifty characters by quite a lot indeed";
     app.dispatch(AppAction::SendMessage {
         text: long_text.into(),
+        force_role: None,
     });
     wait();
     let state = app.state();
@@ -135,6 +138,7 @@ fn test_load_conversation_populates_messages() {
     // Send a message to populate messages
     app.dispatch(AppAction::SendMessage {
         text: "Test message for load".into(),
+        force_role: None,
     });
     wait();
 
@@ -363,6 +367,7 @@ fn test_retry_deletes_assistant_and_resends() {
     // we inject StreamChunk + StreamDone manually to simulate a completed exchange
     app.dispatch(AppAction::SendMessage {
         text: "What is 2+2?".into(),
+        force_role: None,
     });
     wait();
 
@@ -418,6 +423,7 @@ fn test_edit_truncates_and_resends() {
     // delete_messages_after (which uses created_at > threshold for truncation).
     app.dispatch(AppAction::SendMessage {
         text: "First message".into(),
+        force_role: None,
     });
     wait();
     std::thread::sleep(Duration::from_millis(5)); // ensure distinct timestamp
@@ -431,6 +437,7 @@ fn test_edit_truncates_and_resends() {
     std::thread::sleep(Duration::from_millis(5)); // ensure distinct timestamp
     app.dispatch(AppAction::SendMessage {
         text: "Second message".into(),
+        force_role: None,
     });
     wait();
     std::thread::sleep(Duration::from_millis(5)); // ensure distinct timestamp
@@ -530,6 +537,7 @@ fn test_send_with_attachment_prepends_content() {
 
     app.dispatch(AppAction::SendMessage {
         text: "Summarize this".into(),
+        force_role: None,
     });
     wait();
     let state = app.state();
@@ -598,6 +606,7 @@ fn test_system_prompt_resolution_global() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(50));
@@ -627,6 +636,7 @@ fn test_stream_done_persists_assistant_message() {
     // Simulate a streaming exchange
     app.dispatch(AppAction::SendMessage {
         text: "What is Rust?".into(),
+        force_role: None,
     });
     wait();
     app.test_send_internal(InternalEvent::StreamChunk {
@@ -681,6 +691,7 @@ fn test_auto_title_on_first_response() {
     // Send a message and complete the stream
     app.dispatch(AppAction::SendMessage {
         text: "Tell me about Rust programming".into(),
+        force_role: None,
     });
     wait();
     app.test_send_internal(InternalEvent::StreamChunk {

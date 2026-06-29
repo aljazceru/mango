@@ -33,8 +33,10 @@ pub fn is_vision_model(model_id: &str) -> bool {
 
     // Gemma 3 / Gemma 4 multimodal (SigLIP vision encoder).
     // Covers: "gemma3:27b", "gemma-3-27b-it", "gemma4-31b", "google/gemma-3-27b".
-    if id.contains("gemma3") || id.contains("gemma-3")
-        || id.contains("gemma4") || id.contains("gemma-4")
+    if id.contains("gemma3")
+        || id.contains("gemma-3")
+        || id.contains("gemma4")
+        || id.contains("gemma-4")
     {
         return true;
     }
@@ -64,8 +66,11 @@ pub fn is_vision_model(model_id: &str) -> bool {
 
     // OpenAI multimodal: gpt-4o / gpt-4-turbo / gpt-4.1 / gpt-4.5 / gpt-4v.
     // Must NOT match gpt-3.5 or gpt-oss-120b (text-only Tinfoil model).
-    if id.contains("gpt-4o") || id.contains("gpt-4-turbo")
-        || id.contains("gpt-4.1") || id.contains("gpt-4.5") || id.contains("gpt-4v")
+    if id.contains("gpt-4o")
+        || id.contains("gpt-4-turbo")
+        || id.contains("gpt-4.1")
+        || id.contains("gpt-4.5")
+        || id.contains("gpt-4v")
     {
         return true;
     }
@@ -94,10 +99,16 @@ mod tests {
     fn vision_models_return_true() {
         // Tinfoil Gemma 3 (user-visible label variants seen in the wild).
         assert!(is_vision_model("gemma3:27b"), "gemma3:27b should be vision");
-        assert!(is_vision_model("gemma-3-27b-it"), "gemma-3-27b-it should be vision");
+        assert!(
+            is_vision_model("gemma-3-27b-it"),
+            "gemma-3-27b-it should be vision"
+        );
         // User-reported label from the original debug session.
         assert!(is_vision_model("gemma4-31b"), "gemma4-31b should be vision");
-        assert!(is_vision_model("google/gemma-3-27b"), "prefixed gemma-3 should be vision");
+        assert!(
+            is_vision_model("google/gemma-3-27b"),
+            "prefixed gemma-3 should be vision"
+        );
 
         // PPQ.AI private vision model.
         assert!(
@@ -116,22 +127,46 @@ mod tests {
         assert!(is_vision_model("llava-1.6"), "llava should be vision");
         assert!(is_vision_model("pixtral-12b"), "pixtral should be vision");
         assert!(is_vision_model("gpt-4o"), "gpt-4o should be vision");
-        assert!(is_vision_model("gpt-4o-mini"), "gpt-4o-mini should be vision");
-        assert!(is_vision_model("gpt-4-turbo"), "gpt-4-turbo should be vision");
-        assert!(is_vision_model("claude-3-5-sonnet"), "claude-3-5-sonnet should be vision");
-        assert!(is_vision_model("claude-4-opus"), "claude-4-opus should be vision");
-        assert!(is_vision_model("gemini-1.5-pro"), "gemini-1.5-pro should be vision");
+        assert!(
+            is_vision_model("gpt-4o-mini"),
+            "gpt-4o-mini should be vision"
+        );
+        assert!(
+            is_vision_model("gpt-4-turbo"),
+            "gpt-4-turbo should be vision"
+        );
+        assert!(
+            is_vision_model("claude-3-5-sonnet"),
+            "claude-3-5-sonnet should be vision"
+        );
+        assert!(
+            is_vision_model("claude-4-opus"),
+            "claude-4-opus should be vision"
+        );
+        assert!(
+            is_vision_model("gemini-1.5-pro"),
+            "gemini-1.5-pro should be vision"
+        );
     }
 
     #[test]
     fn text_only_models_return_false() {
         // Seeded Tinfoil models (all text-only in current deployment).
-        assert!(!is_vision_model("llama3-3-70b"), "llama3-3-70b is text-only");
-        assert!(!is_vision_model("deepseek-r1-0528"), "deepseek-r1-0528 is text-only");
+        assert!(
+            !is_vision_model("llama3-3-70b"),
+            "llama3-3-70b is text-only"
+        );
+        assert!(
+            !is_vision_model("deepseek-r1-0528"),
+            "deepseek-r1-0528 is text-only"
+        );
         assert!(!is_vision_model("kimi-k2-5"), "kimi-k2-5 is text-only");
 
         // Seeded PPQ.AI private models that are text-only.
-        assert!(!is_vision_model("private/kimi-k2-5"), "private/kimi-k2-5 is text-only");
+        assert!(
+            !is_vision_model("private/kimi-k2-5"),
+            "private/kimi-k2-5 is text-only"
+        );
         assert!(
             !is_vision_model("private/deepseek-r1-0528"),
             "private/deepseek-r1-0528 is text-only"
@@ -146,21 +181,30 @@ mod tests {
         );
 
         // OpenAI text-only variants.
-        assert!(!is_vision_model("gpt-3.5-turbo"), "gpt-3.5-turbo is text-only");
+        assert!(
+            !is_vision_model("gpt-3.5-turbo"),
+            "gpt-3.5-turbo is text-only"
+        );
         assert!(
             !is_vision_model("gpt-oss-120b"),
             "gpt-oss-120b must not match gpt-4 patterns"
         );
 
         // Gemini 1.0 (text-only legacy).
-        assert!(!is_vision_model("gemini-1.0-pro"), "gemini-1.0-pro is text-only");
+        assert!(
+            !is_vision_model("gemini-1.0-pro"),
+            "gemini-1.0-pro is text-only"
+        );
 
         // Claude 2 (pre-vision).
         assert!(!is_vision_model("claude-2.1"), "claude-2.1 is text-only");
 
         // Empty / unknown.
         assert!(!is_vision_model(""), "empty string returns false");
-        assert!(!is_vision_model("random-local-model"), "unknown returns false");
+        assert!(
+            !is_vision_model("random-local-model"),
+            "unknown returns false"
+        );
     }
 
     #[test]

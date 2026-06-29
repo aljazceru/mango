@@ -158,9 +158,9 @@ struct DocumentLibraryView: View {
         Button {
             appManager.dispatch(.pushScreen(screen: .directorySources))
         } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "folder.fill")
-                    .foregroundStyle(.accentColor)
+                HStack(spacing: 12) {
+                    Image(systemName: "folder.fill")
+                    .foregroundStyle(Color.accentColor)
                     .font(.title3)
                     .frame(width: 28)
 
@@ -218,7 +218,7 @@ struct DocumentLibraryView: View {
     private func documentRow(_ doc: DocumentSummary) -> some View {
         HStack(spacing: 12) {
             Image(systemName: formatIcon(doc.format))
-                .foregroundStyle(.accentColor)
+                .foregroundStyle(Color.accentColor)
                 .font(.title3)
                 .frame(width: 28)
 
@@ -278,7 +278,7 @@ struct DocumentLibraryView: View {
                     let filename = url.lastPathComponent
                     appManager.dispatch(.ingestDocument(
                         filename: filename,
-                        content: Array(data)
+                        content: data
                     ))
                 } catch {
                     // File read error -- swallow silently; future plan adds toast

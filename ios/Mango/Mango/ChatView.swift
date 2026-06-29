@@ -8,14 +8,15 @@ struct ChatView: View {
     @EnvironmentObject var appManager: AppManager
     let state: AppState
     @Binding var inputText: String
-    let onSend: () -> Void
+    let onSend: (BackendRole?) -> Void
     let onStop: () -> Void
     let onRetry: () -> Void
     let onEdit: (String, String) -> Void
     let onCopy: (String) -> Void
-    let onAttach: () -> Void
+    let onAttach: (String, String, UInt64) -> Void
     let onClearAttachment: () -> Void
     let onSelectModel: (String) -> Void
+    let onUseHybridProfile: (String) -> Void
     let onSetSystemPrompt: (String?) -> Void
     let onSetToolsEnabled: (Bool) -> Void
     let onRenameConversation: (String, String) -> Void
@@ -33,6 +34,7 @@ struct ChatView: View {
     @State private var showToolsSheet = false
     @State private var showRenameAlert = false
     @State private var renameText = ""
+    @State private var forceRemoteNext = false
     // Phase 31 (IMG-05/IMG-06): attach action sheet + image pickers
     @State private var showAttachOptions = false
     @State private var showCameraPicker = false
@@ -45,21 +47,34 @@ struct ChatView: View {
             // Placed as a slim header strip above the thread so it's discoverable
             // without conflicting with the principal model picker in the nav bar.
             if let conv = currentConversation {
-                Button {
-                    renameText = conv.title
-                    showRenameAlert = true
-                } label: {
-                    Text(conv.title)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 6)
+                HStack(spacing: 8) {
+                    Button {
+                        renameText = conv.title
+                        showRenameAlert = true
+                    } label: {
+                        Text(conv.title)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Rename conversation \(conv.title)")
+
+                    Button {
+                        showConvMenu = true
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                    }
+                    .accessibilityLabel("Conversation options")
+                    .accessibilityIdentifier("conversationOptionsButton")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Rename conversation \(conv.title)")
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
             }
             Divider()
 
@@ -120,12 +135,32 @@ struct ChatView: View {
 
             Divider()
 
+            if let chip = hybridRouteChip {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(chip.label)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                    Text(chip.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                Divider()
+            }
+
             // Compose bar
             ComposeBarView(
                 inputText: $inputText,
                 pendingAttachment: state.pendingAttachment,
                 isStreaming: state.busyState.isStreaming,
-                onSend: onSend,
+                isInputBlocked: state.busyState.isBusy,
+                showStopButton: state.busyState.isStreaming || state.busyState.isAttestationLoading,
+                onSend: {
+                    onSend(forceRemoteNext ? .remote : nil)
+                    forceRemoteNext = false
+                },
                 onStop: onStop,
                 onAttach: { showAttachOptions = true },
                 onClearAttachment: onClearAttachment
@@ -134,6 +169,12 @@ struct ChatView: View {
         .navigationTitle(conversationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(false)
+        .onChange(of: currentConversation?.id) { _, _ in
+            forceRemoteNext = false
+        }
+        .onChange(of: activeHybridProfileId) { _, _ in
+            forceRemoteNext = false
+        }
         .toolbar {
             ToolbarItemGroup(placement: .principal) {
                 // Model picker with inline attestation indicator
@@ -141,40 +182,35 @@ struct ChatView: View {
                     backends: state.backends,
                     activeBackendId: state.activeBackendId,
                     selectedModelId: currentConversation?.modelId,
+                    hybridProfiles: state.hybridProfiles,
+                    activeHybridProfileId: activeHybridProfileId,
                     attestationStatus: activeAttestationStatus,
-                    onSelectModel: onSelectModel
+                    onSelectModel: onSelectModel,
+                    onUseHybridProfile: onUseHybridProfile
                 )
             }
-            ToolbarItem(placement: .primaryAction) {
-                // Collapsed "..." menu: RAG, Instructions, Tools
-                Menu {
-                    let attachedCount = state.currentConversationAttachedDocs.count
-                    Button {
-                        showDocAttachSheet = true
-                    } label: {
-                        Text(attachedCount > 0 ? "RAG (\(attachedCount))" : "RAG")
+            if activeHybridProfile != nil {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(forceRemoteNext ? "Remote next: On" : "Remote next") {
+                        forceRemoteNext.toggle()
                     }
-
-                    Button {
-                        currentSystemPrompt = currentConversation?.systemPrompt ?? ""
-                        showSystemPromptSheet = true
-                    } label: {
-                        Label("Instructions", systemImage: "text.alignleft")
-                    }
-
-                    let toolsOn = currentConversation?.toolsEnabled ?? false
-                    Button {
-                        showToolsSheet = true
-                    } label: {
-                        Label(
-                            toolsOn ? "Tools: On" : "Tools",
-                            systemImage: toolsOn ? "wrench.fill" : "wrench"
-                        )
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .accessibilityLabel("Conversation options")
                 }
+            }
+        }
+        .confirmationDialog("Conversation options", isPresented: $showConvMenu, titleVisibility: .visible) {
+            let attachedCount = state.currentConversationAttachedDocs.count
+            Button(attachedCount > 0 ? "RAG (\(attachedCount))" : "RAG") {
+                showDocAttachSheet = true
+            }
+
+            Button("Instructions") {
+                currentSystemPrompt = currentConversation?.systemPrompt ?? ""
+                showSystemPromptSheet = true
+            }
+
+            let toolsOn = currentConversation?.toolsEnabled ?? false
+            Button(toolsOn ? "Tools: On" : "Tools") {
+                showToolsSheet = true
             }
         }
         .sheet(isPresented: $showSystemPromptSheet) {
@@ -290,8 +326,21 @@ struct ChatView: View {
     }
 
     private var activeAttestationStatus: AttestationStatus? {
-        guard let backendId = state.activeBackendId else { return nil }
+        guard let backendId = activeHybridProfile?.remoteBackendId ?? state.activeBackendId else {
+            return nil
+        }
         return state.attestationStatuses.first(where: { $0.backendId == backendId })?.status
+    }
+
+    private var activeHybridProfileId: String? {
+        let backendId = currentConversation?.backendId ?? state.activeBackendId
+        guard let backendId, backendId.hasPrefix("hybrid:") else { return nil }
+        return String(backendId.dropFirst("hybrid:".count))
+    }
+
+    private var activeHybridProfile: HybridProfile? {
+        guard let activeHybridProfileId else { return nil }
+        return state.hybridProfiles.first(where: { $0.id == activeHybridProfileId })
     }
 
     /// Whether the model selected for the current conversation supports vision
@@ -299,8 +348,42 @@ struct ChatView: View {
     /// Defaults to false when no model is selected so the user is never offered
     /// an image option that would silently fail.
     private var currentModelSupportsVision: Bool {
-        guard let modelId = currentConversation?.modelId, !modelId.isEmpty else { return false }
+        guard let modelId = activeHybridProfile?.remoteModelId ?? currentConversation?.modelId,
+              !modelId.isEmpty else { return false }
         return modelSupportsVision(modelId: modelId)
+    }
+
+    private var hybridRouteChip: (label: String, detail: String)? {
+        guard let profile = activeHybridProfile else { return nil }
+        if forceRemoteNext {
+            return (
+                "Remote next turn · \(shortRouteModelName(profile.remoteModelId))",
+                "Routing reason: user override"
+            )
+        }
+
+        if let route = state.lastTurnRouting,
+           route.profileId == profile.id,
+           route.conversationId == state.currentConversationId {
+            let label: String
+            switch route.decision {
+            case .local:
+                label = "Answered locally · on-device"
+            case .remote:
+                label = route.teeVerified
+                    ? "Escalated to \(route.providerName) · \(route.teeLabel) verified"
+                    : "Escalated to \(route.providerName) · verifying"
+            }
+            return (label, "Routing reason: \(route.reason)")
+        }
+
+        return ("Hybrid ready · local by default", "Routing reason: local default")
+    }
+
+    private func shortRouteModelName(_ modelId: String) -> String {
+        String(modelId.split(separator: "/").last ?? Substring(modelId))
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
     }
 
     private func isLastAssistantMessage(_ message: UiMessage) -> Bool {
@@ -323,13 +406,8 @@ struct ChatView: View {
                     let filename = url.lastPathComponent
                     let sizeBytes = UInt64(data.count)
                     await MainActor.run {
-                        onAttach()
+                        onAttach(filename, content, sizeBytes)
                     }
-                    // Dispatch via AppManager is done at the parent coordinator level;
-                    // here we surface the action via onAttach callback using the attachment data.
-                    // The actual dispatch would be: appManager.dispatch(.attachFile(filename: filename, content: content, sizeBytes: sizeBytes))
-                    // Since we follow the callback pattern, the parent dispatches the action.
-                    _ = (filename, content, sizeBytes) // captured for parent coordinator use
                 } catch {
                     // Non-text file or read error -- parent shows error toast
                 }
@@ -352,7 +430,7 @@ private struct StreamingBubbleView: View {
     var body: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
-                StructuredText(text)
+                StructuredText(markdown: text)
                     .font(.body)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
@@ -454,8 +532,24 @@ private struct ToolsSheet: View {
 // MARK: - BusyState Extension
 
 private extension BusyState {
+    var isBusy: Bool {
+        switch self {
+        case .idle:
+            return false
+        case .loading(_), .streaming(_):
+            return true
+        }
+    }
+
     var isStreaming: Bool {
         if case .streaming = self { return true }
+        return false
+    }
+
+    var isAttestationLoading: Bool {
+        if case let .loading(message) = self {
+            return message.localizedCaseInsensitiveContains("attestation")
+        }
         return false
     }
 }
@@ -492,7 +586,7 @@ private struct DocumentAttachSheet: View {
                                 Image(systemName: attachedDocIds.contains(doc.id)
                                       ? "checkmark.circle.fill" : "circle")
                                     .foregroundStyle(attachedDocIds.contains(doc.id)
-                                                    ? .accentColor : .secondary)
+                                                    ? Color.accentColor : Color.secondary)
                                     .font(.title3)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(doc.name)

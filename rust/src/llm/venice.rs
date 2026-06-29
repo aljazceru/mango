@@ -80,8 +80,9 @@ pub fn model_list_url(backend: &BackendConfig) -> Result<String, LlmError> {
 /// Construct an HTTP client with the same TLS profile used by the rest of the
 /// transport stack. Verbatim from `ppq_private::build_http_client`.
 pub fn build_http_client(timeout: Duration) -> Result<reqwest::Client, LlmError> {
+    crate::net::tls::ensure_default_crypto_provider();
     reqwest::Client::builder()
-        .hickory_dns(false)
+        .no_hickory_dns()
         .timeout(timeout)
         .build()
         .map_err(|error| LlmError::NetworkError {
@@ -92,9 +93,7 @@ pub fn build_http_client(timeout: Duration) -> Result<reqwest::Client, LlmError>
 /// Format the public attestation URL (VEN-02). The endpoint is unauthenticated;
 /// per-request 32-byte nonce is hex-encoded into the query string.
 pub fn format_attestation_url(model: &str, nonce_hex: &str, base_url: &str) -> String {
-    let root = base_url
-        .trim_end_matches('/')
-        .trim_end_matches("/api/v1");
+    let root = base_url.trim_end_matches('/').trim_end_matches("/api/v1");
     format!(
         "{}{}?model={}&nonce={}",
         root,
@@ -233,9 +232,11 @@ fn build_venice_chat_body(
     let mut value = serde_json::to_value(request).map_err(|e| LlmError::NetworkError {
         reason: format!("serialize request: {e}"),
     })?;
-    let object = value.as_object_mut().ok_or_else(|| LlmError::NetworkError {
-        reason: "Invalid chat completion request shape".into(),
-    })?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| LlmError::NetworkError {
+            reason: "Invalid chat completion request shape".into(),
+        })?;
 
     if let Some(Value::Array(messages)) = object.get_mut("messages") {
         for msg in messages.iter_mut() {
@@ -393,11 +394,10 @@ fn handle_venice_sse_event(
         return Ok(false);
     }
 
-    let chunk: CreateChatCompletionStreamResponse = serde_json::from_str(&payload).map_err(|e| {
-        LlmError::NetworkError {
+    let chunk: CreateChatCompletionStreamResponse =
+        serde_json::from_str(&payload).map_err(|e| LlmError::NetworkError {
             reason: format!("Invalid Venice SSE chunk: {e}"),
-        }
-    })?;
+        })?;
 
     if let Some(envelope_hex) = chunk
         .choices
@@ -612,7 +612,8 @@ async fn run_streaming_inner(
     let body_bytes = build_venice_chat_body(&request, &aes_key, &eph_pub_65)?;
 
     let client = build_http_client(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))?;
-    let response = send_venice_request(&client, backend, &verified, &eph_pub_65, body_bytes).await?;
+    let response =
+        send_venice_request(&client, backend, &verified, &eph_pub_65, body_bytes).await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -703,7 +704,8 @@ async fn create_chat_completion_inner(
     }
 
     let client = build_http_client(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))?;
-    let response = send_venice_request(&client, backend, &verified, &eph_pub_65, body_bytes).await?;
+    let response =
+        send_venice_request(&client, backend, &verified, &eph_pub_65, body_bytes).await?;
 
     let status = response.status();
     if !status.is_success() {

@@ -110,6 +110,13 @@ class UiState:
         self.xml_path = xml_path
         raw = ensure_hierarchy(xml_path.read_text(encoding="utf-8"))
         self.root = ET.fromstring(raw)
+        self.parents: dict[ET.Element, ET.Element] = {}
+        self._index_parents(self.root)
+
+    def _index_parents(self, node: ET.Element) -> None:
+        for child in list(node):
+            self.parents[child] = node
+            self._index_parents(child)
 
     def nodes(self) -> list[ET.Element]:
         return list(self.root.iter("node"))
@@ -127,7 +134,52 @@ class UiState:
                 return pkg
         return None
 
+    def bounds_for(self, node: ET.Element) -> tuple[int, int, int, int]:
+        bounds = node.attrib.get("bounds", "")
+        m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+        if not m:
+            raise SmokeError(f"node has no bounds: {node.attrib}")
+        return tuple(map(int, m.groups()))
+
+    def center_for(self, node: ET.Element) -> tuple[int, int]:
+        x1, y1, x2, y2 = self.bounds_for(node)
+        return ((x1 + x2) // 2, (y1 + y2) // 2)
+
     def find_center(self, kind: str, value: str) -> tuple[int, int]:
+        return self.center_for(self.find_node(kind, value))
+
+    def find_input_center_for_label(self, label: str) -> tuple[int, int]:
+        label_node = self.find_node("text", label)
+        node = label_node
+        while node in self.parents:
+            node = self.parents[node]
+            if node.attrib.get("class") == "android.widget.EditText":
+                return self.center_for(node)
+
+        label_x, label_y = self.center_for(label_node)
+        candidates: list[tuple[int, int, int, ET.Element]] = []
+        for input_node in self.nodes():
+            if input_node.attrib.get("class") != "android.widget.EditText":
+                continue
+            x1, y1, x2, y2 = self.bounds_for(input_node)
+            if x1 <= label_x <= x2 and y1 <= label_y <= y2:
+                return self.center_for(input_node)
+            vertical_gap = max(y1 - label_y, label_y - y2, 0)
+            horizontal_gap = max(x1 - label_x, label_x - x2, 0)
+            center_y = (y1 + y2) // 2
+            candidates.append((vertical_gap, horizontal_gap, abs(center_y - label_y), input_node))
+
+        if candidates:
+            vertical_gap, _, _, input_node = min(candidates, key=lambda item: item[:3])
+            if vertical_gap <= 120:
+                return self.center_for(input_node)
+        raise SmokeError(f"could not find input for label: {label}")
+
+    def is_checked(self, kind: str, value: str) -> bool:
+        node = self.find_node(kind, value)
+        return node.attrib.get("checked", "false") == "true"
+
+    def find_node(self, kind: str, value: str) -> ET.Element:
         def match(node: ET.Element) -> bool:
             text = node.attrib.get("text", "")
             desc = node.attrib.get("content-desc", "")
@@ -146,12 +198,7 @@ class UiState:
         for node in self.nodes():
             if not match(node):
                 continue
-            bounds = node.attrib.get("bounds", "")
-            m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
-            if not m:
-                continue
-            x1, y1, x2, y2 = map(int, m.groups())
-            return ((x1 + x2) // 2, (y1 + y2) // 2)
+            return node
         raise SmokeError(f"could not find node ({kind}): {value}")
 
 
@@ -165,6 +212,7 @@ class Runner:
         *,
         record: bool,
         install_apk: bool,
+        reset_app_data: bool,
         env: dict[str, str],
     ) -> None:
         self.adb = adb
@@ -173,6 +221,7 @@ class Runner:
         self.artifact_dir = artifact_dir
         self.record = record
         self.install_apk = install_apk
+        self.reset_app_data = reset_app_data
         self.env = env
         self.xml_counter = 0
         self.recorder: Recorder | None = None
@@ -201,7 +250,14 @@ class Runner:
         self.xml_counter += 1
         safe = re.sub(r"[^a-zA-Z0-9_.-]+", "-", label).strip("-") or "step"
         path = self.artifact_dir / f"{self.xml_counter:03d}-{safe}.xml"
-        path.write_bytes(self.adb.exec_out(["uiautomator", "dump", "/dev/tty"]))
+        output = b""
+        for attempt in range(15):
+            output = self.adb.exec_out(["uiautomator", "dump", "/dev/tty"])
+            if b"</hierarchy>" in output:
+                break
+            if attempt < 14:
+                time.sleep(1)
+        path.write_bytes(output)
         return UiState(path)
 
     def screenshot(self, label: str) -> Path:
@@ -226,15 +282,55 @@ class Runner:
         width, height = self.get_screen_size()
         self.tap_center(width * px // 100, height * py // 100)
 
+    def swipe_percent(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
+        width, height = self.get_screen_size()
+        self.adb.shell(
+            f"input swipe {width * x1 // 100} {height * y1 // 100} "
+            f"{width * x2 // 100} {height * y2 // 100} {duration_ms}"
+        )
+
     def tap_selector(self, state: UiState, kind: str, value: str) -> None:
         x, y = state.find_center(kind, value)
         self.tap_center(x, y)
 
+    def input_text(self, text: str) -> None:
+        self.adb.run(["shell", "input", "text", sanitize_input_text(text)])
+
+    def focus_labeled_input(self, state: UiState, label: str) -> UiState:
+        last_error: SmokeError | None = None
+        for attempt in range(8):
+            try:
+                x, y = state.find_input_center_for_label(label)
+                _, height = self.get_screen_size()
+                if 40 <= y <= height - 40:
+                    self.tap_center(x, y)
+                    return state
+                if y > height - 160:
+                    self.swipe_percent(50, 74, 50, 40)
+                else:
+                    self.swipe_percent(50, 36, 50, 70)
+            except SmokeError as exc:
+                last_error = exc
+                self.swipe_percent(50, 74, 50, 40)
+            time.sleep(0.4)
+            state = self.dump_ui(f"focus-{label}-{attempt + 1}")
+        if last_error is not None:
+            raise last_error
+        raise SmokeError(f"could not bring input into view: {label}")
+
     def wait_for_foreground(self, package: str, tries: int = 20) -> None:
         for _ in range(tries):
             out = self.adb.shell("dumpsys activity activities")
-            m = re.search(r"topResumedActivity=.* u0 ([^/]+)/", out)
-            if m and m.group(1) == package:
+            packages = [
+                match.group(1)
+                for pattern in [
+                    r"topResumedActivity=.* u0 ([^/]+)/",
+                    r"mResumedActivity: .* u0 ([^/]+)/",
+                    r"ResumedActivity: .* u0 ([^/]+)/",
+                ]
+                for match in re.finditer(pattern, out)
+            ]
+            if package in packages:
                 return
             time.sleep(1)
         raise SmokeError(f"foreground package did not become {package}")
@@ -260,6 +356,25 @@ class Runner:
         target = text or desc or "|".join(package_any or [])
         raise SmokeError(f"timed out waiting for '{target}'")
 
+    def scroll_to_ui(
+        self,
+        *,
+        text: str | None = None,
+        desc: str | None = None,
+        tries: int = 6,
+        label: str = "scroll",
+    ) -> UiState:
+        for attempt in range(tries):
+            state = self.dump_ui(f"{label}-{attempt + 1}")
+            if text is not None and state.has_text(text):
+                return state
+            if desc is not None and state.has_desc(desc):
+                return state
+            self.swipe_percent(50, 82, 50, 28)
+            time.sleep(0.5)
+        target = text or desc or ""
+        raise SmokeError(f"timed out scrolling to '{target}'")
+
     def clear_logcat(self) -> None:
         self.adb.run(["logcat", "-c"])
 
@@ -277,6 +392,12 @@ class Runner:
             raise SmokeError(f"APK not found: {apk_path}")
         log(f"Installing {apk_path}")
         self.adb.run(["install", "-r", str(apk_path)])
+
+    def maybe_reset_app_data(self) -> None:
+        if not self.reset_app_data:
+            return
+        log(f"Clearing app data for {self.package}")
+        self.adb.shell(f"pm clear {shlex.quote(self.package)}", check=False)
 
     def maybe_force_stop(self) -> None:
         if self.release_package:
@@ -323,12 +444,14 @@ class Runner:
         if "wait_for_text" in step:
             spec = step["wait_for_text"]
             text = spec["text"] if isinstance(spec, dict) else spec
+            text = self.resolve_value(text)
             tries = spec.get("tries", 20) if isinstance(spec, dict) else 20
             label = spec.get("label", f"wait-{text}") if isinstance(spec, dict) else f"wait-{text}"
             return self.wait_for_ui(text=text, tries=tries, label=label)
         if "wait_for_desc" in step:
             spec = step["wait_for_desc"]
             desc = spec["desc"] if isinstance(spec, dict) else spec
+            desc = self.resolve_value(desc)
             tries = spec.get("tries", 20) if isinstance(spec, dict) else 20
             label = spec.get("label", f"wait-{desc}") if isinstance(spec, dict) else f"wait-{desc}"
             return self.wait_for_ui(desc=desc, tries=tries, label=label)
@@ -341,12 +464,12 @@ class Runner:
         if "assert_text" in step:
             if current is None:
                 raise SmokeError("assert_text requires current UI state")
-            self.assert_ui(current, text=step["assert_text"])
+            self.assert_ui(current, text=self.resolve_value(step["assert_text"]))
             return current
         if "assert_desc" in step:
             if current is None:
                 raise SmokeError("assert_desc requires current UI state")
-            self.assert_ui(current, desc=step["assert_desc"])
+            self.assert_ui(current, desc=self.resolve_value(step["assert_desc"]))
             return current
         if "assert_any_text" in step:
             if current is None:
@@ -365,17 +488,47 @@ class Runner:
         if "tap_text" in step:
             if current is None:
                 raise SmokeError("tap_text requires current UI state")
-            self.tap_selector(current, "text", step["tap_text"])
+            self.tap_selector(current, "text", self.resolve_value(step["tap_text"]))
             return current
         if "tap_desc" in step:
             if current is None:
                 raise SmokeError("tap_desc requires current UI state")
-            self.tap_selector(current, "desc", step["tap_desc"])
+            self.tap_selector(current, "desc", self.resolve_value(step["tap_desc"]))
+            return current
+        if "ensure_checked_desc" in step:
+            if current is None:
+                raise SmokeError("ensure_checked_desc requires current UI state")
+            desc = self.resolve_value(step["ensure_checked_desc"])
+            if not current.is_checked("desc", desc):
+                self.tap_selector(current, "desc", desc)
+                return self.dump_ui(f"checked-{desc}")
             return current
         if "tap_percent" in step:
             spec = step["tap_percent"]
             self.tap_percent(int(spec["x"]), int(spec["y"]))
             return current
+        if "swipe_percent" in step:
+            spec = step["swipe_percent"]
+            self.swipe_percent(
+                int(spec["x1"]),
+                int(spec["y1"]),
+                int(spec["x2"]),
+                int(spec["y2"]),
+                int(spec.get("duration_ms", 500)),
+            )
+            return self.dump_ui(str(spec.get("label", "swipe")))
+        if "scroll_to_text" in step:
+            spec = step["scroll_to_text"]
+            text = spec["text"] if isinstance(spec, dict) else spec
+            tries = spec.get("tries", 6) if isinstance(spec, dict) else 6
+            label = spec.get("label", f"scroll-{text}") if isinstance(spec, dict) else f"scroll-{text}"
+            return self.scroll_to_ui(text=self.resolve_value(text), tries=tries, label=label)
+        if "scroll_to_desc" in step:
+            spec = step["scroll_to_desc"]
+            desc = spec["desc"] if isinstance(spec, dict) else spec
+            tries = spec.get("tries", 6) if isinstance(spec, dict) else 6
+            label = spec.get("label", f"scroll-{desc}") if isinstance(spec, dict) else f"scroll-{desc}"
+            return self.scroll_to_ui(desc=self.resolve_value(desc), tries=tries, label=label)
         if "back" in step:
             if current is not None and current.has_desc("Back"):
                 self.tap_selector(current, "desc", "Back")
@@ -386,12 +539,17 @@ class Runner:
             if current is None:
                 raise SmokeError("type_into_text requires current UI state")
             spec = step["type_into_text"]
-            self.tap_selector(current, "text", self.resolve_value(spec["field"]))
-            self.adb.shell(f"input text {shlex.quote(sanitize_input_text(self.resolve_value(spec['text'])))}")
+            field = self.resolve_value(spec["field"])
+            current = self.focus_labeled_input(current, field)
+            self.input_text(self.resolve_value(spec["text"]))
             return self.dump_ui(f"type-{spec['field']}")
         if "press_enter" in step:
             self.adb.shell("input keyevent KEYCODE_ENTER")
             return current
+        if "hide_keyboard" in step:
+            self.adb.shell("input keyevent KEYCODE_BACK")
+            time.sleep(0.5)
+            return self.dump_ui("hide-keyboard")
         if "sleep" in step:
             time.sleep(float(step["sleep"]))
             return current
@@ -417,11 +575,40 @@ class Runner:
         if "screenshot" in step:
             self.screenshot(str(step["screenshot"]))
             return current
+        if "assert_logcat_contains" in step:
+            spec = step["assert_logcat_contains"]
+            pattern = self.resolve_value(spec["pattern"] if isinstance(spec, dict) else spec)
+            label = spec.get("label", "logcat-check") if isinstance(spec, dict) else "logcat-check"
+            logcat_file = self.save_logcat()
+            content = logcat_file.read_text(encoding="utf-8")
+            if pattern not in content:
+                raise SmokeError(f"logcat did not contain '{pattern}' (label={label}); see {logcat_file}")
+            log(f"logcat contains '{pattern}' ✓")
+            return current
+        if "wait_logcat_contains" in step:
+            spec = step["wait_logcat_contains"]
+            pattern = self.resolve_value(spec["pattern"] if isinstance(spec, dict) else spec)
+            label = spec.get("label", "logcat-wait") if isinstance(spec, dict) else "logcat-wait"
+            timeout = float(spec.get("timeout", 60)) if isinstance(spec, dict) else 60.0
+            deadline = time.monotonic() + timeout
+            while True:
+                logcat_file = self.save_logcat()
+                content = logcat_file.read_text(encoding="utf-8")
+                if pattern in content:
+                    log(f"logcat contains '{pattern}' ✓")
+                    return current
+                if time.monotonic() >= deadline:
+                    raise SmokeError(
+                        f"timed out waiting for logcat pattern '{pattern}' "
+                        f"(label={label}); see {logcat_file}"
+                    )
+                time.sleep(2)
         raise SmokeError(f"unsupported step: {step}")
 
     def run(self) -> Path | None:
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.maybe_force_stop()
+        self.maybe_reset_app_data()
         self.maybe_install()
         if self.record:
             self.start_recording()
@@ -477,6 +664,7 @@ def main() -> int:
     parser.add_argument("--serial", default=os.environ.get("ANDROID_SERIAL"))
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--reset-app-data", action="store_true")
     parser.add_argument("--artifacts-dir")
     args = parser.parse_args()
 
@@ -501,6 +689,7 @@ def main() -> int:
         artifacts_dir,
         record=args.record,
         install_apk=args.install,
+        reset_app_data=args.reset_app_data,
         env=env,
     )
     try:

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::error::Error as _;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,6 +34,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::backend::BackendConfig;
 use super::error::LlmError;
+use super::local::{PlatformHttpHeader, PlatformHttpRequest, PlatformHttpResponse};
 use crate::attestation::{AttestationError, AttestationEvent};
 
 const ATC_ATTESTATION_URL: &str = "https://atc.tinfoil.sh/attestation";
@@ -102,12 +104,76 @@ pub fn model_list_url(backend: &BackendConfig) -> Result<String, LlmError> {
 }
 
 pub fn build_http_client(timeout: Duration) -> Result<reqwest::Client, LlmError> {
-    reqwest::Client::builder()
-        .hickory_dns(false)
-        .timeout(timeout)
-        .build()
+    crate::net::tls::attested_reqwest_client(timeout).map_err(|error| LlmError::NetworkError {
+        reason: error.to_string(),
+    })
+}
+
+fn reqwest_error_reason(context: &str, error: &reqwest::Error) -> String {
+    let mut reason = format!("{context}: {error}");
+    let mut source = error.source();
+    while let Some(error) = source {
+        reason.push_str(": caused by: ");
+        reason.push_str(&error.to_string());
+        source = error.source();
+    }
+    reason
+}
+
+fn use_platform_http_for_tinfoil() -> bool {
+    cfg!(target_os = "android")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SecureResponseMode {
+    Buffered,
+    Streaming,
+}
+
+fn use_platform_http_for_secure_request(mode: SecureResponseMode) -> bool {
+    use_platform_http_for_tinfoil() && mode == SecureResponseMode::Buffered
+}
+
+fn header_map_to_platform_headers(headers: &HeaderMap) -> Vec<PlatformHttpHeader> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value.to_str().ok().map(|value| PlatformHttpHeader {
+                name: name.as_str().to_string(),
+                value: value.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn platform_header_value(headers: &[PlatformHttpHeader], name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case(name))
+        .map(|header| header.value.clone())
+}
+
+async fn platform_http_request(
+    method: &str,
+    url: &str,
+    headers: Vec<PlatformHttpHeader>,
+    body: Vec<u8>,
+    timeout: Duration,
+) -> Result<PlatformHttpResponse, LlmError> {
+    let request = PlatformHttpRequest {
+        method: method.to_string(),
+        url: url.to_string(),
+        headers,
+        body,
+        timeout_secs: timeout.as_secs().max(1),
+    };
+    tokio::task::spawn_blocking(move || super::local::platform_http_request(request))
+        .await
         .map_err(|error| LlmError::NetworkError {
-            reason: error.to_string(),
+            reason: format!("Platform HTTP task failed: {error}"),
+        })?
+        .map_err(|error| LlmError::NetworkError {
+            reason: format!("Platform HTTP request failed: {error}"),
         })
 }
 
@@ -151,7 +217,14 @@ pub async fn create_chat_completion(
     let body = serde_json::to_vec(&request).map_err(|error| LlmError::NetworkError {
         reason: error.to_string(),
     })?;
-    let response = send_secure_request(backend, "/chat/completions", body, true).await?;
+    let response = send_secure_request(
+        backend,
+        "/chat/completions",
+        body,
+        true,
+        SecureResponseMode::Buffered,
+    )
+    .await?;
     let decrypted = decrypt_response_bytes(response).await?;
     serde_json::from_slice::<CreateChatCompletionResponse>(&decrypted).map_err(|error| {
         LlmError::NetworkError {
@@ -271,7 +344,15 @@ pub async fn run_streaming_chat_completion_from_api_messages(
         }
     };
 
-    let response = match send_secure_request(&backend, "/chat/completions", body, true).await {
+    let response = match send_secure_request(
+        &backend,
+        "/chat/completions",
+        body,
+        true,
+        SecureResponseMode::Streaming,
+    )
+    .await
+    {
         Ok(response) => response,
         Err(error) => {
             let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
@@ -293,10 +374,42 @@ async fn stream_decrypted_sse(
     cancel_token: tokio_util::sync::CancellationToken,
     core_tx: &flume::Sender<crate::CoreMsg>,
 ) -> Result<(), LlmError> {
-    let mut body_stream = response.response.bytes_stream();
     let mut framed = Vec::new();
     let mut sse = String::new();
     let mut seq = 0u64;
+
+    if let EncryptedResponseBody::Bytes(bytes) = response.body {
+        if cancel_token.is_cancelled() {
+            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                crate::llm::streaming::InternalEvent::StreamCancelled,
+            )));
+            return Ok(());
+        }
+        let keep_reading = process_encrypted_sse_bytes(
+            &bytes,
+            &response.key_material,
+            &mut framed,
+            &mut sse,
+            &mut seq,
+            core_tx,
+        )?;
+        if !framed.is_empty() {
+            return Err(LlmError::NetworkError {
+                reason: "Truncated Tinfoil secure encrypted response".to_string(),
+            });
+        }
+        if keep_reading {
+            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                crate::llm::streaming::InternalEvent::StreamDone,
+            )));
+        }
+        return Ok(());
+    }
+
+    let EncryptedResponseBody::Reqwest(response_stream) = response.body else {
+        unreachable!();
+    };
+    let mut body_stream = response_stream.bytes_stream();
 
     loop {
         tokio::select! {
@@ -310,19 +423,18 @@ async fn stream_decrypted_sse(
             next = body_stream.next() => {
                 match next {
                     Some(Ok(bytes)) => {
-                        framed.extend_from_slice(&bytes);
-                        while let Some(chunk) = try_take_frame(&mut framed) {
-                            let plaintext = decrypt_chunk(&response.key_material, seq, &chunk)?;
-                            seq = seq.saturating_add(1);
-                            sse.push_str(&String::from_utf8_lossy(&plaintext));
-                            while let Some(event) = take_sse_event(&mut sse) {
-                                if !handle_sse_event(&event, core_tx)? {
-                                    let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                                        crate::llm::streaming::InternalEvent::StreamDone,
-                                    )));
-                                    return Ok(());
-                                }
-                            }
+                        if !process_encrypted_sse_bytes(
+                            &bytes,
+                            &response.key_material,
+                            &mut framed,
+                            &mut sse,
+                            &mut seq,
+                            core_tx,
+                        )? {
+                            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
+                                crate::llm::streaming::InternalEvent::StreamDone,
+                            )));
+                            return Ok(());
                         }
                     }
                     Some(Err(error)) => {
@@ -340,6 +452,28 @@ async fn stream_decrypted_sse(
             }
         }
     }
+}
+
+fn process_encrypted_sse_bytes(
+    bytes: &[u8],
+    key_material: &ResponseKeyMaterial,
+    framed: &mut Vec<u8>,
+    sse: &mut String,
+    seq: &mut u64,
+    core_tx: &flume::Sender<crate::CoreMsg>,
+) -> Result<bool, LlmError> {
+    framed.extend_from_slice(bytes);
+    while let Some(chunk) = try_take_frame(framed) {
+        let plaintext = decrypt_chunk(key_material, *seq, &chunk)?;
+        *seq = (*seq).saturating_add(1);
+        sse.push_str(&String::from_utf8_lossy(&plaintext));
+        while let Some(event) = take_sse_event(sse) {
+            if !handle_sse_event(&event, core_tx)? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn handle_sse_event(
@@ -383,10 +517,28 @@ fn handle_sse_event(
 }
 
 async fn decrypt_response_bytes(response: EncryptedResponse) -> Result<Vec<u8>, LlmError> {
-    let mut stream = response.response.bytes_stream();
     let mut framed = Vec::new();
     let mut plaintext = Vec::new();
     let mut seq = 0u64;
+
+    if let EncryptedResponseBody::Bytes(bytes) = response.body {
+        framed.extend_from_slice(&bytes);
+        while let Some(frame) = try_take_frame(&mut framed) {
+            plaintext.extend_from_slice(&decrypt_chunk(&response.key_material, seq, &frame)?);
+            seq = seq.saturating_add(1);
+        }
+        if !framed.is_empty() {
+            return Err(LlmError::NetworkError {
+                reason: "Truncated Tinfoil secure encrypted response".to_string(),
+            });
+        }
+        return Ok(plaintext);
+    }
+
+    let EncryptedResponseBody::Reqwest(response_stream) = response.body else {
+        unreachable!();
+    };
+    let mut stream = response_stream.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| LlmError::NetworkError {
@@ -409,8 +561,13 @@ async fn decrypt_response_bytes(response: EncryptedResponse) -> Result<Vec<u8>, 
 }
 
 struct EncryptedResponse {
-    response: reqwest::Response,
+    body: EncryptedResponseBody,
     key_material: ResponseKeyMaterial,
+}
+
+enum EncryptedResponseBody {
+    Reqwest(reqwest::Response),
+    Bytes(Vec<u8>),
 }
 
 #[derive(Clone)]
@@ -424,6 +581,7 @@ async fn send_secure_request(
     path: &str,
     body: Vec<u8>,
     allow_retry: bool,
+    response_mode: SecureResponseMode,
 ) -> Result<EncryptedResponse, LlmError> {
     // The attestation task will have already run with the loaded policy (and
     // populated the cache). If the cache is cold here we fall back to defaults,
@@ -431,7 +589,6 @@ async fn send_secure_request(
     let verified =
         ensure_verified_attestation(backend, &crate::attestation::SnpPolicy::default()).await?;
     let encrypted = encrypt_request_body(&verified.hpke_public_key, &body)?;
-    let client = build_http_client(Duration::from_secs(90))?;
 
     let endpoint = format!("{}{}", verified.request_base_url, path);
     let mut headers = HeaderMap::new();
@@ -464,6 +621,61 @@ async fn send_secure_request(
         );
     }
 
+    if use_platform_http_for_secure_request(response_mode) {
+        let response = platform_http_request(
+            "POST",
+            &endpoint,
+            header_map_to_platform_headers(&headers),
+            encrypted.encrypted_body,
+            Duration::from_secs(90),
+        )
+        .await?;
+        if !(200..=299).contains(&response.status_code) {
+            if response.status_code == 422 && allow_retry {
+                if let Ok(problem) = serde_json::from_slice::<ProblemDetails>(&response.body) {
+                    if problem.r#type == EHBP_KEY_CONFIG_PROBLEM {
+                        invalidate_cached_attestation(backend);
+                        return Box::pin(send_secure_request(
+                            backend,
+                            path,
+                            body,
+                            false,
+                            response_mode,
+                        ))
+                        .await;
+                    }
+                }
+            }
+            let body_text = String::from_utf8_lossy(&response.body).to_string();
+            let problem = serde_json::from_str::<ProblemDetails>(&body_text).ok();
+            return Err(map_plain_error_body(
+                response.status_code,
+                &body_text,
+                problem.as_ref(),
+            ));
+        }
+        let response_nonce = platform_header_value(&response.headers, EHBP_RESPONSE_NONCE)
+            .ok_or_else(|| LlmError::NetworkError {
+                reason: format!(
+                    "Missing {EHBP_RESPONSE_NONCE} header from Tinfoil secure response"
+                ),
+            })?;
+        let response_nonce =
+            hex::decode(response_nonce).map_err(|error| LlmError::NetworkError {
+                reason: format!("Invalid Tinfoil secure response nonce: {error}"),
+            })?;
+        let key_material = derive_response_key_material(
+            &encrypted.exported_secret,
+            &encrypted.request_enc,
+            &response_nonce,
+        )?;
+        return Ok(EncryptedResponse {
+            body: EncryptedResponseBody::Bytes(response.body),
+            key_material,
+        });
+    }
+
+    let client = build_http_client(Duration::from_secs(90))?;
     let response = client
         .post(endpoint)
         .headers(headers)
@@ -471,7 +683,7 @@ async fn send_secure_request(
         .send()
         .await
         .map_err(|error| LlmError::NetworkError {
-            reason: error.to_string(),
+            reason: reqwest_error_reason("Failed to send Tinfoil secure request", &error),
         })?;
 
     if !response.status().is_success() {
@@ -484,7 +696,14 @@ async fn send_secure_request(
                 .unwrap_or(false)
         {
             invalidate_cached_attestation(backend);
-            return Box::pin(send_secure_request(backend, path, body, false)).await;
+            return Box::pin(send_secure_request(
+                backend,
+                path,
+                body,
+                false,
+                response_mode,
+            ))
+            .await;
         }
         return Err(map_plain_error_body(status, &body_text, problem.as_ref()));
     }
@@ -509,7 +728,7 @@ async fn send_secure_request(
     )?;
 
     Ok(EncryptedResponse {
-        response,
+        body: EncryptedResponseBody::Reqwest(response),
         key_material,
     })
 }
@@ -764,29 +983,76 @@ async fn fetch_and_verify_attestation(
             reason: format!("Invalid Tinfoil enclave URL: {enclave_url}"),
         })?;
     let client = build_http_client(Duration::from_secs(30))?;
+    log::info!(
+        target: "attestation",
+        "[attestation] tinfoil fetch ATC bundle request_base={} enclave={} expected_domain={}",
+        request_base_url,
+        enclave_url,
+        expected_domain
+    );
 
-    let bundle_response = client
-        .post(ATC_ATTESTATION_URL)
-        .json(&json!({ "enclaveUrl": enclave_url }))
-        .send()
-        .await
-        .map_err(|error| LlmError::NetworkError {
-            reason: error.to_string(),
+    let bundle_text = if use_platform_http_for_tinfoil() {
+        let body = serde_json::to_vec(&json!({ "enclaveUrl": enclave_url })).map_err(|error| {
+            LlmError::NetworkError {
+                reason: format!("Failed to encode Tinfoil attestation request: {error}"),
+            }
+        })?;
+        let response = platform_http_request(
+            "POST",
+            ATC_ATTESTATION_URL,
+            vec![PlatformHttpHeader {
+                name: CONTENT_TYPE.as_str().to_string(),
+                value: "application/json".to_string(),
+            }],
+            body,
+            Duration::from_secs(30),
+        )
+        .await?;
+        if !(200..=299).contains(&response.status_code) {
+            return Err(LlmError::NetworkError {
+                reason: format!(
+                    "Tinfoil attestation bundle returned HTTP {}: {}",
+                    response.status_code,
+                    String::from_utf8_lossy(&response.body)
+                ),
+            });
+        }
+        String::from_utf8(response.body).map_err(|error| LlmError::NetworkError {
+            reason: format!("Invalid UTF-8 in Tinfoil attestation bundle body: {error}"),
         })?
-        .error_for_status()
-        .map_err(|error| LlmError::NetworkError {
-            reason: error.to_string(),
-        })?;
-    let bundle_text = bundle_response
-        .text()
-        .await
-        .map_err(|error| LlmError::NetworkError {
-            reason: format!("Failed to read Tinfoil attestation bundle body: {error}"),
-        })?;
+    } else {
+        let bundle_response = client
+            .post(ATC_ATTESTATION_URL)
+            .json(&json!({ "enclaveUrl": enclave_url }))
+            .send()
+            .await
+            .map_err(|error| LlmError::NetworkError {
+                reason: reqwest_error_reason("Failed to fetch Tinfoil attestation bundle", &error),
+            })?
+            .error_for_status()
+            .map_err(|error| LlmError::NetworkError {
+                reason: reqwest_error_reason(
+                    "Tinfoil attestation bundle returned HTTP error",
+                    &error,
+                ),
+            })?;
+        bundle_response
+            .text()
+            .await
+            .map_err(|error| LlmError::NetworkError {
+                reason: format!("Failed to read Tinfoil attestation bundle body: {error}"),
+            })?
+    };
     let bundle: AttestationBundle =
         serde_json::from_str(&bundle_text).map_err(|error| LlmError::NetworkError {
             reason: format!("Invalid Tinfoil attestation bundle JSON: {error}"),
         })?;
+    log::info!(
+        target: "attestation",
+        "[attestation] tinfoil ATC bundle fetched domain={} report_format={}",
+        bundle.domain,
+        bundle.enclave_attestation_report.format
+    );
 
     if bundle.domain != expected_domain {
         return Err(LlmError::NetworkError {
@@ -806,6 +1072,11 @@ async fn fetch_and_verify_attestation(
         &bundle.enclave_attestation_report,
         &hpke_public_key_hex,
     )?;
+    log::info!(
+        target: "attestation",
+        "[attestation] tinfoil certificate binding verified domain={}",
+        bundle.domain
+    );
     verify_hpke_key_endpoint(&client, &bundle.domain, &hpke_public_key).await?;
 
     Ok(VerifiedTinfoilAttestation {
@@ -1052,36 +1323,66 @@ async fn verify_hpke_key_endpoint(
     expected_hpke_key: &[u8; 32],
 ) -> Result<(), LlmError> {
     let url = format!("https://{domain}{HPKE_KEYS_PATH}");
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|error| LlmError::NetworkError {
-            reason: error.to_string(),
-        })?
-        .error_for_status()
-        .map_err(|error| LlmError::NetworkError {
-            reason: error.to_string(),
-        })?;
-
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    if content_type != APPLICATION_OHTTP_KEYS {
+    let (content_type, body) = if use_platform_http_for_tinfoil() {
+        let response =
+            platform_http_request("GET", &url, Vec::new(), Vec::new(), Duration::from_secs(30))
+                .await?;
+        if !(200..=299).contains(&response.status_code) {
+            return Err(LlmError::NetworkError {
+                reason: format!(
+                    "Tinfoil HPKE key endpoint returned HTTP {}: {}",
+                    response.status_code,
+                    String::from_utf8_lossy(&response.body)
+                ),
+            });
+        }
+        (
+            platform_header_value(&response.headers, CONTENT_TYPE.as_str()).unwrap_or_default(),
+            response.body,
+        )
+    } else {
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|error| LlmError::NetworkError {
+                reason: reqwest_error_reason("Failed to fetch Tinfoil HPKE key endpoint", &error),
+            })?
+            .error_for_status()
+            .map_err(|error| LlmError::NetworkError {
+                reason: reqwest_error_reason(
+                    "Tinfoil HPKE key endpoint returned HTTP error",
+                    &error,
+                ),
+            })?;
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| LlmError::NetworkError {
+                reason: error.to_string(),
+            })?
+            .to_vec();
+        (content_type, body)
+    };
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if media_type != APPLICATION_OHTTP_KEYS {
         return Err(LlmError::NetworkError {
             reason: format!("Unexpected HPKE key content type: {content_type}"),
         });
     }
 
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| LlmError::NetworkError {
-            reason: error.to_string(),
-        })?;
-    let parsed = parse_ohttp_key_config(body.as_ref())?;
+    let parsed = parse_ohttp_key_config(&body)?;
     if parsed != *expected_hpke_key {
         return Err(LlmError::NetworkError {
             reason: "HPKE key endpoint did not match attested public key".to_string(),
@@ -1127,6 +1428,55 @@ fn parse_ohttp_key_config(bytes: &[u8]) -> Result<[u8; 32], LlmError> {
     let mut key = [0u8; 32];
     key.copy_from_slice(&bytes[public_key_start..public_key_end]);
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encrypted_frame(key_material: &ResponseKeyMaterial, seq: u64, plaintext: &[u8]) -> Vec<u8> {
+        let cipher = Aes256Gcm::new_from_slice(&key_material.key).unwrap();
+        let nonce = Nonce::from(compute_chunk_nonce(&key_material.nonce_base, seq));
+        let ciphertext = cipher.encrypt(&nonce, plaintext).unwrap();
+        let mut frame = Vec::with_capacity(4 + ciphertext.len());
+        frame.extend_from_slice(&(ciphertext.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&ciphertext);
+        frame
+    }
+
+    #[test]
+    fn full_body_encrypted_sse_path_handles_done_frame() {
+        let key_material = ResponseKeyMaterial {
+            key: [7; KEY_LEN],
+            nonce_base: [9; NONCE_LEN],
+        };
+        let bytes = encrypted_frame(&key_material, 0, b"data: [DONE]\n\n");
+        let (tx, _rx) = flume::unbounded();
+        let mut framed = Vec::new();
+        let mut sse = String::new();
+        let mut seq = 0;
+
+        let keep_reading = process_encrypted_sse_bytes(
+            &bytes,
+            &key_material,
+            &mut framed,
+            &mut sse,
+            &mut seq,
+            &tx,
+        )
+        .unwrap();
+
+        assert!(!keep_reading);
+        assert!(framed.is_empty());
+        assert_eq!(seq, 1);
+    }
+
+    #[test]
+    fn streaming_secure_requests_do_not_use_platform_http() {
+        assert!(!use_platform_http_for_secure_request(
+            SecureResponseMode::Streaming
+        ));
+    }
 }
 
 fn extract_dns_sans(cert: &X509Certificate<'_>) -> Result<Vec<String>, LlmError> {

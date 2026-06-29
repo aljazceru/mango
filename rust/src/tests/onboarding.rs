@@ -9,16 +9,22 @@ use crate::{
 /// attestation demo integration, CompleteOnboarding persistence, and show_first_chat_placeholder.
 use std::time::Duration;
 
-/// Helper: create FfiApp with in-memory DB and give actor time to initialize.
+/// Helper: create FfiApp with in-memory DB and wait for the actor's first state.
 fn make_app() -> std::sync::Arc<FfiApp> {
     let app = FfiApp::new(
         "".into(),
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
-    std::thread::sleep(Duration::from_millis(50));
+    for _ in 0..100 {
+        if !matches!(app.state().router.current_screen, Screen::Home { .. }) {
+            return app;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     app
 }
 
@@ -222,6 +228,7 @@ fn test_send_message_clears_placeholder_flag() {
     // Send a message -- should clear the placeholder flag
     app.dispatch(AppAction::SendMessage {
         text: "Hello".into(),
+        force_role: None,
     });
     wait();
     let state = app.state();

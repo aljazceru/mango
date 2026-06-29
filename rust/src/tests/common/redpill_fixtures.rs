@@ -11,8 +11,7 @@ pub const SHAPE_C_CHUTES_JSON: &str =
     include_str!("../../../tests/fixtures/redpill/attestation-chutes-raw.json");
 pub const SHAPE_D_TINFOIL_REFUSAL_JSON: &str =
     include_str!("../../../tests/fixtures/redpill/attestation-tinfoil-raw.json");
-pub const NONCE_LOG: &str =
-    include_str!("../../../tests/fixtures/redpill/nonce.txt");
+pub const NONCE_LOG: &str = include_str!("../../../tests/fixtures/redpill/nonce.txt");
 
 /// Hex nonces submitted when each capture was taken (from nonce.txt).
 /// Names mirror the Python decoder script's `nonces` dict.

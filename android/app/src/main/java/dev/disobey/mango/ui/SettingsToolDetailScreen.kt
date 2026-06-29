@@ -169,8 +169,9 @@ fun SettingsToolDetailScreen(
             // ── 2. ADVERTISED BY ────────────────────────────────────────────
             Section(label = "ADVERTISED BY") {
                 Text(
-                    // Locked fallback when display name is null: "Unnamed provider"
-                    tool.providerDisplayName ?: "Unnamed provider",
+                    // Phase 37: Use provider_name from Nostr profile if available,
+                    // fallback to providerDisplayName, then "Unnamed provider"
+                    tool.providerName ?: tool.providerDisplayName ?: "Unnamed provider",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 CopyRow(

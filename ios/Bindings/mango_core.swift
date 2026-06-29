@@ -685,8 +685,10 @@ open class FfiApp: FfiAppProtocol, @unchecked Sendable {
      * `embedding_provider` provides on-device embedding inference; use `NullEmbeddingProvider` for tests.
      * `embedding_status` reflects whether the real embedding provider loaded successfully
      * (`Active`) or fell back to `NullEmbeddingProvider` due to an init failure (`Degraded`).
+     * `local_llm_provider` provides on-device local chat inference; use `NullLocalLlmProvider`
+     * on platforms without a native local runtime.
      */
-public convenience init(dataDir: String, keychain: KeychainProvider, embeddingProvider: EmbeddingProvider, embeddingStatus: EmbeddingStatus, biometricProvider: BiometricProvider) {
+public convenience init(dataDir: String, keychain: KeychainProvider, embeddingProvider: EmbeddingProvider, embeddingStatus: EmbeddingStatus, localLlmProvider: LocalLlmProvider, biometricProvider: BiometricProvider) {
     let pointer =
         try! rustCall() {
     uniffi_mango_core_fn_constructor_ffiapp_new(
@@ -694,6 +696,7 @@ public convenience init(dataDir: String, keychain: KeychainProvider, embeddingPr
         FfiConverterCallbackInterfaceKeychainProvider_lower(keychain),
         FfiConverterCallbackInterfaceEmbeddingProvider_lower(embeddingProvider),
         FfiConverterTypeEmbeddingStatus_lower(embeddingStatus),
+        FfiConverterCallbackInterfaceLocalLlmProvider_lower(localLlmProvider),
         FfiConverterCallbackInterfaceBiometricProvider_lower(biometricProvider),$0
     )
 }
@@ -872,6 +875,269 @@ public func FfiConverterTypeFfiApp_lift(_ pointer: UnsafeMutableRawPointer) thro
 #endif
 public func FfiConverterTypeFfiApp_lower(_ value: FfiApp) -> UnsafeMutableRawPointer {
     return FfiConverterTypeFfiApp.lower(value)
+}
+
+
+
+
+
+
+public protocol LocalGenerationContextProtocol: AnyObject, Sendable {
+    
+    func emitError(message: String) 
+    
+    func emitToken(token: String) 
+    
+    func isCancelled()  -> Bool
+    
+}
+open class LocalGenerationContext: LocalGenerationContextProtocol, @unchecked Sendable {
+    fileprivate let pointer: UnsafeMutableRawPointer!
+
+    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoPointer {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noPointer: NoPointer) {
+        self.pointer = nil
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
+        return try! rustCall { uniffi_mango_core_fn_clone_localgenerationcontext(self.pointer, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        guard let pointer = pointer else {
+            return
+        }
+
+        try! rustCall { uniffi_mango_core_fn_free_localgenerationcontext(pointer, $0) }
+    }
+
+    
+
+    
+open func emitError(message: String)  {try! rustCall() {
+    uniffi_mango_core_fn_method_localgenerationcontext_emit_error(self.uniffiClonePointer(),
+        FfiConverterString.lower(message),$0
+    )
+}
+}
+    
+open func emitToken(token: String)  {try! rustCall() {
+    uniffi_mango_core_fn_method_localgenerationcontext_emit_token(self.uniffiClonePointer(),
+        FfiConverterString.lower(token),$0
+    )
+}
+}
+    
+open func isCancelled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLocalGenerationContext: FfiConverter {
+
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = LocalGenerationContext
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> LocalGenerationContext {
+        return LocalGenerationContext(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: LocalGenerationContext) -> UnsafeMutableRawPointer {
+        return value.uniffiClonePointer()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalGenerationContext {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: LocalGenerationContext, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalGenerationContext_lift(_ pointer: UnsafeMutableRawPointer) throws -> LocalGenerationContext {
+    return try FfiConverterTypeLocalGenerationContext.lift(pointer)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalGenerationContext_lower(_ value: LocalGenerationContext) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeLocalGenerationContext.lower(value)
+}
+
+
+
+
+
+
+public protocol LocalModelDownloadContextProtocol: AnyObject, Sendable {
+    
+    func emitProgress(downloadedBytes: UInt64, totalBytes: UInt64?) 
+    
+}
+open class LocalModelDownloadContext: LocalModelDownloadContextProtocol, @unchecked Sendable {
+    fileprivate let pointer: UnsafeMutableRawPointer!
+
+    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoPointer {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noPointer: NoPointer) {
+        self.pointer = nil
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
+        return try! rustCall { uniffi_mango_core_fn_clone_localmodeldownloadcontext(self.pointer, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        guard let pointer = pointer else {
+            return
+        }
+
+        try! rustCall { uniffi_mango_core_fn_free_localmodeldownloadcontext(pointer, $0) }
+    }
+
+    
+
+    
+open func emitProgress(downloadedBytes: UInt64, totalBytes: UInt64?)  {try! rustCall() {
+    uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(self.uniffiClonePointer(),
+        FfiConverterUInt64.lower(downloadedBytes),
+        FfiConverterOptionUInt64.lower(totalBytes),$0
+    )
+}
+}
+    
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLocalModelDownloadContext: FfiConverter {
+
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = LocalModelDownloadContext
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> LocalModelDownloadContext {
+        return LocalModelDownloadContext(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: LocalModelDownloadContext) -> UnsafeMutableRawPointer {
+        return value.uniffiClonePointer()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalModelDownloadContext {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: LocalModelDownloadContext, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalModelDownloadContext_lift(_ pointer: UnsafeMutableRawPointer) throws -> LocalModelDownloadContext {
+    return try FfiConverterTypeLocalModelDownloadContext.lift(pointer)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalModelDownloadContext_lower(_ value: LocalModelDownloadContext) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeLocalModelDownloadContext.lower(value)
 }
 
 
@@ -1273,6 +1539,22 @@ public struct AppState {
      */
     public var embeddingStatus: EmbeddingStatus
     /**
+     * Device-local LLM capability reported by the native local provider.
+     */
+    public var localDeviceCapability: DeviceCapability
+    /**
+     * Downloadable local models with verified on-disk status.
+     */
+    public var localModels: [LocalModelSummary]
+    /**
+     * Progress for the active local model download, if any.
+     */
+    public var localDownloadProgress: LocalModelDownloadProgress?
+    /**
+     * Global kill switch for on-device LLM inference.
+     */
+    public var localInferenceEnabled: Bool
+    /**
      * Memory summaries loaded on demand when user navigates to Screen::Memories (per D-14).
      */
     public var memories: [MemorySummary]
@@ -1352,6 +1634,20 @@ public struct AppState {
      * screen. Updated by AppAction::DiscoverContextvmTools handler.
      */
     public var contextvmDiscoveryState: ContextvmDiscoveryState
+    /**
+     * Phase 38 — saved local/remote hybrid routing profiles.
+     */
+    public var hybridProfiles: [HybridProfile]
+    /**
+     * Phase 38 — route selected for the most recent hybrid turn, for UI route chips.
+     */
+    public var lastTurnRouting: TurnRoutingSummary?
+    /**
+     * Phase 38 — list of providers the user has explicitly trusted.
+     * When `auto_discover_tools_enabled` is true, only tools from these
+     * providers are offered to the LLM automatically.
+     */
+    public var trustedProviders: [TrustedProvider]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1436,6 +1732,18 @@ public struct AppState {
          * Unavailable: no provider supplied by design.
          */embeddingStatus: EmbeddingStatus, 
         /**
+         * Device-local LLM capability reported by the native local provider.
+         */localDeviceCapability: DeviceCapability, 
+        /**
+         * Downloadable local models with verified on-disk status.
+         */localModels: [LocalModelSummary], 
+        /**
+         * Progress for the active local model download, if any.
+         */localDownloadProgress: LocalModelDownloadProgress?, 
+        /**
+         * Global kill switch for on-device LLM inference.
+         */localInferenceEnabled: Bool, 
+        /**
          * Memory summaries loaded on demand when user navigates to Screen::Memories (per D-14).
          */memories: [MemorySummary], 
         /**
@@ -1498,7 +1806,18 @@ public struct AppState {
         /**
          * Phase 35 — current discovery query state for the Tool Discovery
          * screen. Updated by AppAction::DiscoverContextvmTools handler.
-         */contextvmDiscoveryState: ContextvmDiscoveryState) {
+         */contextvmDiscoveryState: ContextvmDiscoveryState, 
+        /**
+         * Phase 38 — saved local/remote hybrid routing profiles.
+         */hybridProfiles: [HybridProfile], 
+        /**
+         * Phase 38 — route selected for the most recent hybrid turn, for UI route chips.
+         */lastTurnRouting: TurnRoutingSummary?, 
+        /**
+         * Phase 38 — list of providers the user has explicitly trusted.
+         * When `auto_discover_tools_enabled` is true, only tools from these
+         * providers are offered to the LLM automatically.
+         */trustedProviders: [TrustedProvider]) {
         self.rev = rev
         self.router = router
         self.busyState = busyState
@@ -1523,6 +1842,10 @@ public struct AppState {
         self.attestationIntervalMinutes = attestationIntervalMinutes
         self.globalSystemPrompt = globalSystemPrompt
         self.embeddingStatus = embeddingStatus
+        self.localDeviceCapability = localDeviceCapability
+        self.localModels = localModels
+        self.localDownloadProgress = localDownloadProgress
+        self.localInferenceEnabled = localInferenceEnabled
         self.memories = memories
         self.memoryCount = memoryCount
         self.braveApiKeySet = braveApiKeySet
@@ -1539,6 +1862,9 @@ public struct AppState {
         self.contextvmTools = contextvmTools
         self.autoDiscoverToolsEnabled = autoDiscoverToolsEnabled
         self.contextvmDiscoveryState = contextvmDiscoveryState
+        self.hybridProfiles = hybridProfiles
+        self.lastTurnRouting = lastTurnRouting
+        self.trustedProviders = trustedProviders
     }
 }
 
@@ -1621,6 +1947,18 @@ extension AppState: Equatable, Hashable {
         if lhs.embeddingStatus != rhs.embeddingStatus {
             return false
         }
+        if lhs.localDeviceCapability != rhs.localDeviceCapability {
+            return false
+        }
+        if lhs.localModels != rhs.localModels {
+            return false
+        }
+        if lhs.localDownloadProgress != rhs.localDownloadProgress {
+            return false
+        }
+        if lhs.localInferenceEnabled != rhs.localInferenceEnabled {
+            return false
+        }
         if lhs.memories != rhs.memories {
             return false
         }
@@ -1669,6 +2007,15 @@ extension AppState: Equatable, Hashable {
         if lhs.contextvmDiscoveryState != rhs.contextvmDiscoveryState {
             return false
         }
+        if lhs.hybridProfiles != rhs.hybridProfiles {
+            return false
+        }
+        if lhs.lastTurnRouting != rhs.lastTurnRouting {
+            return false
+        }
+        if lhs.trustedProviders != rhs.trustedProviders {
+            return false
+        }
         return true
     }
 
@@ -1697,6 +2044,10 @@ extension AppState: Equatable, Hashable {
         hasher.combine(attestationIntervalMinutes)
         hasher.combine(globalSystemPrompt)
         hasher.combine(embeddingStatus)
+        hasher.combine(localDeviceCapability)
+        hasher.combine(localModels)
+        hasher.combine(localDownloadProgress)
+        hasher.combine(localInferenceEnabled)
         hasher.combine(memories)
         hasher.combine(memoryCount)
         hasher.combine(braveApiKeySet)
@@ -1713,6 +2064,9 @@ extension AppState: Equatable, Hashable {
         hasher.combine(contextvmTools)
         hasher.combine(autoDiscoverToolsEnabled)
         hasher.combine(contextvmDiscoveryState)
+        hasher.combine(hybridProfiles)
+        hasher.combine(lastTurnRouting)
+        hasher.combine(trustedProviders)
     }
 }
 
@@ -1749,6 +2103,10 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 attestationIntervalMinutes: FfiConverterUInt32.read(from: &buf), 
                 globalSystemPrompt: FfiConverterOptionString.read(from: &buf), 
                 embeddingStatus: FfiConverterTypeEmbeddingStatus.read(from: &buf), 
+                localDeviceCapability: FfiConverterTypeDeviceCapability.read(from: &buf), 
+                localModels: FfiConverterSequenceTypeLocalModelSummary.read(from: &buf), 
+                localDownloadProgress: FfiConverterOptionTypeLocalModelDownloadProgress.read(from: &buf), 
+                localInferenceEnabled: FfiConverterBool.read(from: &buf), 
                 memories: FfiConverterSequenceTypeMemorySummary.read(from: &buf), 
                 memoryCount: FfiConverterUInt64.read(from: &buf), 
                 braveApiKeySet: FfiConverterBool.read(from: &buf), 
@@ -1764,7 +2122,10 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 directorySources: FfiConverterSequenceTypeDirectorySourceSummary.read(from: &buf), 
                 contextvmTools: FfiConverterSequenceTypeDiscoverableTool.read(from: &buf), 
                 autoDiscoverToolsEnabled: FfiConverterBool.read(from: &buf), 
-                contextvmDiscoveryState: FfiConverterTypeContextvmDiscoveryState.read(from: &buf)
+                contextvmDiscoveryState: FfiConverterTypeContextvmDiscoveryState.read(from: &buf), 
+                hybridProfiles: FfiConverterSequenceTypeHybridProfile.read(from: &buf), 
+                lastTurnRouting: FfiConverterOptionTypeTurnRoutingSummary.read(from: &buf), 
+                trustedProviders: FfiConverterSequenceTypeTrustedProvider.read(from: &buf)
         )
     }
 
@@ -1793,6 +2154,10 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.attestationIntervalMinutes, into: &buf)
         FfiConverterOptionString.write(value.globalSystemPrompt, into: &buf)
         FfiConverterTypeEmbeddingStatus.write(value.embeddingStatus, into: &buf)
+        FfiConverterTypeDeviceCapability.write(value.localDeviceCapability, into: &buf)
+        FfiConverterSequenceTypeLocalModelSummary.write(value.localModels, into: &buf)
+        FfiConverterOptionTypeLocalModelDownloadProgress.write(value.localDownloadProgress, into: &buf)
+        FfiConverterBool.write(value.localInferenceEnabled, into: &buf)
         FfiConverterSequenceTypeMemorySummary.write(value.memories, into: &buf)
         FfiConverterUInt64.write(value.memoryCount, into: &buf)
         FfiConverterBool.write(value.braveApiKeySet, into: &buf)
@@ -1809,6 +2174,9 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterSequenceTypeDiscoverableTool.write(value.contextvmTools, into: &buf)
         FfiConverterBool.write(value.autoDiscoverToolsEnabled, into: &buf)
         FfiConverterTypeContextvmDiscoveryState.write(value.contextvmDiscoveryState, into: &buf)
+        FfiConverterSequenceTypeHybridProfile.write(value.hybridProfiles, into: &buf)
+        FfiConverterOptionTypeTurnRoutingSummary.write(value.lastTurnRouting, into: &buf)
+        FfiConverterSequenceTypeTrustedProvider.write(value.trustedProviders, into: &buf)
     }
 }
 
@@ -2293,6 +2661,103 @@ public func FfiConverterTypeConversationSummary_lower(_ value: ConversationSumma
 
 
 /**
+ * Device-side capability summary for local LLM inference.
+ */
+public struct DeviceCapability {
+    public var abi: String
+    public var totalRamBytes: UInt64
+    public var maxModelBytes: UInt64
+    public var supportsMmap: Bool
+    public var reason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(abi: String, totalRamBytes: UInt64, maxModelBytes: UInt64, supportsMmap: Bool, reason: String?) {
+        self.abi = abi
+        self.totalRamBytes = totalRamBytes
+        self.maxModelBytes = maxModelBytes
+        self.supportsMmap = supportsMmap
+        self.reason = reason
+    }
+}
+
+#if compiler(>=6)
+extension DeviceCapability: Sendable {}
+#endif
+
+
+extension DeviceCapability: Equatable, Hashable {
+    public static func ==(lhs: DeviceCapability, rhs: DeviceCapability) -> Bool {
+        if lhs.abi != rhs.abi {
+            return false
+        }
+        if lhs.totalRamBytes != rhs.totalRamBytes {
+            return false
+        }
+        if lhs.maxModelBytes != rhs.maxModelBytes {
+            return false
+        }
+        if lhs.supportsMmap != rhs.supportsMmap {
+            return false
+        }
+        if lhs.reason != rhs.reason {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(abi)
+        hasher.combine(totalRamBytes)
+        hasher.combine(maxModelBytes)
+        hasher.combine(supportsMmap)
+        hasher.combine(reason)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDeviceCapability: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DeviceCapability {
+        return
+            try DeviceCapability(
+                abi: FfiConverterString.read(from: &buf), 
+                totalRamBytes: FfiConverterUInt64.read(from: &buf), 
+                maxModelBytes: FfiConverterUInt64.read(from: &buf), 
+                supportsMmap: FfiConverterBool.read(from: &buf), 
+                reason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DeviceCapability, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.abi, into: &buf)
+        FfiConverterUInt64.write(value.totalRamBytes, into: &buf)
+        FfiConverterUInt64.write(value.maxModelBytes, into: &buf)
+        FfiConverterBool.write(value.supportsMmap, into: &buf)
+        FfiConverterOptionString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeviceCapability_lift(_ buf: RustBuffer) throws -> DeviceCapability {
+    return try FfiConverterTypeDeviceCapability.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeviceCapability_lower(_ value: DeviceCapability) -> RustBuffer {
+    return FfiConverterTypeDeviceCapability.lower(value)
+}
+
+
+/**
  * A single file fingerprint + content payload inside a SyncDirectoryFiles batch (Phase 32, DIR-05).
  *
  * Native layers enumerate the user-chosen directory (Desktop walker, iOS bookmark
@@ -2644,6 +3109,22 @@ public struct DiscoverableTool {
      * UI falls back to `pubkey[..8]…` per UI-SPEC §F.
      */
     public var providerDisplayName: String?
+    /**
+     * Provider profile name from kind 0 metadata (Phase 37).
+     */
+    public var providerName: String?
+    /**
+     * Provider profile "about" text from kind 0 metadata (Phase 37).
+     */
+    public var providerAbout: String?
+    /**
+     * Provider profile picture URL from kind 0 metadata (Phase 37).
+     */
+    public var providerPicture: String?
+    /**
+     * Provider NIP-05 identifier from kind 0 metadata (Phase 37).
+     */
+    public var providerNip05: String?
     public var enabled: Bool
     /**
      * Times the user has invoked this tool via the agent loop. 0 if never used.
@@ -2663,17 +3144,18 @@ public struct DiscoverableTool {
      */
     public var lastSeenAt: Int64
     /**
-     * Pre-computed relative-time label for last_seen_at (always populated).
+     * Pre-computed "3d ago" / "Just now" label (relative to now at projection
+     * time). Always present (non-None).
      */
     public var lastSeenLabel: String
     /**
-     * bech32 npub1… encoding of provider_pubkey. Falls back to "invalid:<prefix>"
-     * on malformed hex (never panics).
+     * Bech32 npub1… encoding of the provider pubkey (Phase 36, CTX36-NPUB-01).
+     * UI uses this for copy-to-clipboard on the Tool Detail screen.
      */
     public var npub: String
     /**
-     * `serde_json::to_string_pretty` of the parsed schema_json, or raw schema_json
-     * if parse fails. Used by the Tool Detail SCHEMA expander.
+     * Pretty-printed JSON schema (Phase 36, CTX36-NPUB-01). UI renders this
+     * in the Tool Detail screen SCHEMA expander.
      */
     public var schemaPretty: String
 
@@ -2689,7 +3171,19 @@ public struct DiscoverableTool {
         /**
          * `server_info.name` from the announcement, or None.
          * UI falls back to `pubkey[..8]…` per UI-SPEC §F.
-         */providerDisplayName: String?, enabled: Bool, 
+         */providerDisplayName: String?, 
+        /**
+         * Provider profile name from kind 0 metadata (Phase 37).
+         */providerName: String?, 
+        /**
+         * Provider profile "about" text from kind 0 metadata (Phase 37).
+         */providerAbout: String?, 
+        /**
+         * Provider profile picture URL from kind 0 metadata (Phase 37).
+         */providerPicture: String?, 
+        /**
+         * Provider NIP-05 identifier from kind 0 metadata (Phase 37).
+         */providerNip05: String?, enabled: Bool, 
         /**
          * Times the user has invoked this tool via the agent loop. 0 if never used.
          */usageCount: UInt32, 
@@ -2704,21 +3198,26 @@ public struct DiscoverableTool {
          * Unix seconds when this announcement was last seen on the Nostr relay set.
          */lastSeenAt: Int64, 
         /**
-         * Pre-computed relative-time label for last_seen_at (always populated).
+         * Pre-computed "3d ago" / "Just now" label (relative to now at projection
+         * time). Always present (non-None).
          */lastSeenLabel: String, 
         /**
-         * bech32 npub1… encoding of provider_pubkey. Falls back to "invalid:<prefix>"
-         * on malformed hex (never panics).
+         * Bech32 npub1… encoding of the provider pubkey (Phase 36, CTX36-NPUB-01).
+         * UI uses this for copy-to-clipboard on the Tool Detail screen.
          */npub: String, 
         /**
-         * `serde_json::to_string_pretty` of the parsed schema_json, or raw schema_json
-         * if parse fails. Used by the Tool Detail SCHEMA expander.
+         * Pretty-printed JSON schema (Phase 36, CTX36-NPUB-01). UI renders this
+         * in the Tool Detail screen SCHEMA expander.
          */schemaPretty: String) {
         self.id = id
         self.name = name
         self.description = description
         self.providerPubkey = providerPubkey
         self.providerDisplayName = providerDisplayName
+        self.providerName = providerName
+        self.providerAbout = providerAbout
+        self.providerPicture = providerPicture
+        self.providerNip05 = providerNip05
         self.enabled = enabled
         self.usageCount = usageCount
         self.lastUsedAt = lastUsedAt
@@ -2750,6 +3249,18 @@ extension DiscoverableTool: Equatable, Hashable {
             return false
         }
         if lhs.providerDisplayName != rhs.providerDisplayName {
+            return false
+        }
+        if lhs.providerName != rhs.providerName {
+            return false
+        }
+        if lhs.providerAbout != rhs.providerAbout {
+            return false
+        }
+        if lhs.providerPicture != rhs.providerPicture {
+            return false
+        }
+        if lhs.providerNip05 != rhs.providerNip05 {
             return false
         }
         if lhs.enabled != rhs.enabled {
@@ -2785,6 +3296,10 @@ extension DiscoverableTool: Equatable, Hashable {
         hasher.combine(description)
         hasher.combine(providerPubkey)
         hasher.combine(providerDisplayName)
+        hasher.combine(providerName)
+        hasher.combine(providerAbout)
+        hasher.combine(providerPicture)
+        hasher.combine(providerNip05)
         hasher.combine(enabled)
         hasher.combine(usageCount)
         hasher.combine(lastUsedAt)
@@ -2810,6 +3325,10 @@ public struct FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer {
                 description: FfiConverterString.read(from: &buf), 
                 providerPubkey: FfiConverterString.read(from: &buf), 
                 providerDisplayName: FfiConverterOptionString.read(from: &buf), 
+                providerName: FfiConverterOptionString.read(from: &buf), 
+                providerAbout: FfiConverterOptionString.read(from: &buf), 
+                providerPicture: FfiConverterOptionString.read(from: &buf), 
+                providerNip05: FfiConverterOptionString.read(from: &buf), 
                 enabled: FfiConverterBool.read(from: &buf), 
                 usageCount: FfiConverterUInt32.read(from: &buf), 
                 lastUsedAt: FfiConverterOptionInt64.read(from: &buf), 
@@ -2827,6 +3346,10 @@ public struct FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer {
         FfiConverterString.write(value.description, into: &buf)
         FfiConverterString.write(value.providerPubkey, into: &buf)
         FfiConverterOptionString.write(value.providerDisplayName, into: &buf)
+        FfiConverterOptionString.write(value.providerName, into: &buf)
+        FfiConverterOptionString.write(value.providerAbout, into: &buf)
+        FfiConverterOptionString.write(value.providerPicture, into: &buf)
+        FfiConverterOptionString.write(value.providerNip05, into: &buf)
         FfiConverterBool.write(value.enabled, into: &buf)
         FfiConverterUInt32.write(value.usageCount, into: &buf)
         FfiConverterOptionInt64.write(value.lastUsedAt, into: &buf)
@@ -3053,6 +3576,124 @@ public func FfiConverterTypeFilePickResult_lower(_ value: FilePickResult) -> Rus
 }
 
 
+public struct HybridProfile {
+    public var id: String
+    public var name: String
+    public var localBackendId: String
+    public var localModelId: String
+    public var remoteBackendId: String
+    public var remoteModelId: String
+    public var policy: RoutingPolicy
+    public var preprocessing: LocalPreprocessing
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, localBackendId: String, localModelId: String, remoteBackendId: String, remoteModelId: String, policy: RoutingPolicy, preprocessing: LocalPreprocessing) {
+        self.id = id
+        self.name = name
+        self.localBackendId = localBackendId
+        self.localModelId = localModelId
+        self.remoteBackendId = remoteBackendId
+        self.remoteModelId = remoteModelId
+        self.policy = policy
+        self.preprocessing = preprocessing
+    }
+}
+
+#if compiler(>=6)
+extension HybridProfile: Sendable {}
+#endif
+
+
+extension HybridProfile: Equatable, Hashable {
+    public static func ==(lhs: HybridProfile, rhs: HybridProfile) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.localBackendId != rhs.localBackendId {
+            return false
+        }
+        if lhs.localModelId != rhs.localModelId {
+            return false
+        }
+        if lhs.remoteBackendId != rhs.remoteBackendId {
+            return false
+        }
+        if lhs.remoteModelId != rhs.remoteModelId {
+            return false
+        }
+        if lhs.policy != rhs.policy {
+            return false
+        }
+        if lhs.preprocessing != rhs.preprocessing {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(localBackendId)
+        hasher.combine(localModelId)
+        hasher.combine(remoteBackendId)
+        hasher.combine(remoteModelId)
+        hasher.combine(policy)
+        hasher.combine(preprocessing)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHybridProfile: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HybridProfile {
+        return
+            try HybridProfile(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                localBackendId: FfiConverterString.read(from: &buf), 
+                localModelId: FfiConverterString.read(from: &buf), 
+                remoteBackendId: FfiConverterString.read(from: &buf), 
+                remoteModelId: FfiConverterString.read(from: &buf), 
+                policy: FfiConverterTypeRoutingPolicy.read(from: &buf), 
+                preprocessing: FfiConverterTypeLocalPreprocessing.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HybridProfile, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.localBackendId, into: &buf)
+        FfiConverterString.write(value.localModelId, into: &buf)
+        FfiConverterString.write(value.remoteBackendId, into: &buf)
+        FfiConverterString.write(value.remoteModelId, into: &buf)
+        FfiConverterTypeRoutingPolicy.write(value.policy, into: &buf)
+        FfiConverterTypeLocalPreprocessing.write(value.preprocessing, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHybridProfile_lift(_ buf: RustBuffer) throws -> HybridProfile {
+    return try FfiConverterTypeHybridProfile.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHybridProfile_lower(_ value: HybridProfile) -> RustBuffer {
+    return FfiConverterTypeHybridProfile.lower(value)
+}
+
+
 /**
  * Progress of an ongoing document ingestion (Phase 8).
  *
@@ -3132,6 +3773,445 @@ public func FfiConverterTypeIngestionProgress_lift(_ buf: RustBuffer) throws -> 
 #endif
 public func FfiConverterTypeIngestionProgress_lower(_ value: IngestionProgress) -> RustBuffer {
     return FfiConverterTypeIngestionProgress.lower(value)
+}
+
+
+/**
+ * Download progress for a single local model.
+ */
+public struct LocalModelDownloadProgress {
+    public var modelId: String
+    public var downloadedBytes: UInt64
+    public var totalBytes: UInt64?
+    /**
+     * One of: "downloading", "verifying", "complete", "failed".
+     */
+    public var stage: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(modelId: String, downloadedBytes: UInt64, totalBytes: UInt64?, 
+        /**
+         * One of: "downloading", "verifying", "complete", "failed".
+         */stage: String) {
+        self.modelId = modelId
+        self.downloadedBytes = downloadedBytes
+        self.totalBytes = totalBytes
+        self.stage = stage
+    }
+}
+
+#if compiler(>=6)
+extension LocalModelDownloadProgress: Sendable {}
+#endif
+
+
+extension LocalModelDownloadProgress: Equatable, Hashable {
+    public static func ==(lhs: LocalModelDownloadProgress, rhs: LocalModelDownloadProgress) -> Bool {
+        if lhs.modelId != rhs.modelId {
+            return false
+        }
+        if lhs.downloadedBytes != rhs.downloadedBytes {
+            return false
+        }
+        if lhs.totalBytes != rhs.totalBytes {
+            return false
+        }
+        if lhs.stage != rhs.stage {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(modelId)
+        hasher.combine(downloadedBytes)
+        hasher.combine(totalBytes)
+        hasher.combine(stage)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLocalModelDownloadProgress: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalModelDownloadProgress {
+        return
+            try LocalModelDownloadProgress(
+                modelId: FfiConverterString.read(from: &buf), 
+                downloadedBytes: FfiConverterUInt64.read(from: &buf), 
+                totalBytes: FfiConverterOptionUInt64.read(from: &buf), 
+                stage: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LocalModelDownloadProgress, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.modelId, into: &buf)
+        FfiConverterUInt64.write(value.downloadedBytes, into: &buf)
+        FfiConverterOptionUInt64.write(value.totalBytes, into: &buf)
+        FfiConverterString.write(value.stage, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalModelDownloadProgress_lift(_ buf: RustBuffer) throws -> LocalModelDownloadProgress {
+    return try FfiConverterTypeLocalModelDownloadProgress.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalModelDownloadProgress_lower(_ value: LocalModelDownloadProgress) -> RustBuffer {
+    return FfiConverterTypeLocalModelDownloadProgress.lower(value)
+}
+
+
+/**
+ * Built-in downloadable local model entry.
+ */
+public struct LocalModelPreset {
+    public var id: String
+    public var name: String
+    public var description: String
+    public var filename: String
+    public var url: String
+    public var sha256: String
+    public var sizeBytes: UInt64
+    public var quantization: String
+    public var minRamBytes: UInt64
+    public var chatTemplate: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, description: String, filename: String, url: String, sha256: String, sizeBytes: UInt64, quantization: String, minRamBytes: UInt64, chatTemplate: String) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.filename = filename
+        self.url = url
+        self.sha256 = sha256
+        self.sizeBytes = sizeBytes
+        self.quantization = quantization
+        self.minRamBytes = minRamBytes
+        self.chatTemplate = chatTemplate
+    }
+}
+
+#if compiler(>=6)
+extension LocalModelPreset: Sendable {}
+#endif
+
+
+extension LocalModelPreset: Equatable, Hashable {
+    public static func ==(lhs: LocalModelPreset, rhs: LocalModelPreset) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.description != rhs.description {
+            return false
+        }
+        if lhs.filename != rhs.filename {
+            return false
+        }
+        if lhs.url != rhs.url {
+            return false
+        }
+        if lhs.sha256 != rhs.sha256 {
+            return false
+        }
+        if lhs.sizeBytes != rhs.sizeBytes {
+            return false
+        }
+        if lhs.quantization != rhs.quantization {
+            return false
+        }
+        if lhs.minRamBytes != rhs.minRamBytes {
+            return false
+        }
+        if lhs.chatTemplate != rhs.chatTemplate {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(description)
+        hasher.combine(filename)
+        hasher.combine(url)
+        hasher.combine(sha256)
+        hasher.combine(sizeBytes)
+        hasher.combine(quantization)
+        hasher.combine(minRamBytes)
+        hasher.combine(chatTemplate)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLocalModelPreset: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalModelPreset {
+        return
+            try LocalModelPreset(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                description: FfiConverterString.read(from: &buf), 
+                filename: FfiConverterString.read(from: &buf), 
+                url: FfiConverterString.read(from: &buf), 
+                sha256: FfiConverterString.read(from: &buf), 
+                sizeBytes: FfiConverterUInt64.read(from: &buf), 
+                quantization: FfiConverterString.read(from: &buf), 
+                minRamBytes: FfiConverterUInt64.read(from: &buf), 
+                chatTemplate: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LocalModelPreset, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.description, into: &buf)
+        FfiConverterString.write(value.filename, into: &buf)
+        FfiConverterString.write(value.url, into: &buf)
+        FfiConverterString.write(value.sha256, into: &buf)
+        FfiConverterUInt64.write(value.sizeBytes, into: &buf)
+        FfiConverterString.write(value.quantization, into: &buf)
+        FfiConverterUInt64.write(value.minRamBytes, into: &buf)
+        FfiConverterString.write(value.chatTemplate, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalModelPreset_lift(_ buf: RustBuffer) throws -> LocalModelPreset {
+    return try FfiConverterTypeLocalModelPreset.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalModelPreset_lower(_ value: LocalModelPreset) -> RustBuffer {
+    return FfiConverterTypeLocalModelPreset.lower(value)
+}
+
+
+/**
+ * UI-safe local model status, derived from catalog + verified file state.
+ */
+public struct LocalModelSummary {
+    public var id: String
+    public var name: String
+    public var description: String
+    public var quantization: String
+    public var sizeBytes: UInt64
+    public var minRamBytes: UInt64
+    public var downloaded: Bool
+    public var verified: Bool
+    public var path: String?
+    public var backendId: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, description: String, quantization: String, sizeBytes: UInt64, minRamBytes: UInt64, downloaded: Bool, verified: Bool, path: String?, backendId: String?) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.quantization = quantization
+        self.sizeBytes = sizeBytes
+        self.minRamBytes = minRamBytes
+        self.downloaded = downloaded
+        self.verified = verified
+        self.path = path
+        self.backendId = backendId
+    }
+}
+
+#if compiler(>=6)
+extension LocalModelSummary: Sendable {}
+#endif
+
+
+extension LocalModelSummary: Equatable, Hashable {
+    public static func ==(lhs: LocalModelSummary, rhs: LocalModelSummary) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.description != rhs.description {
+            return false
+        }
+        if lhs.quantization != rhs.quantization {
+            return false
+        }
+        if lhs.sizeBytes != rhs.sizeBytes {
+            return false
+        }
+        if lhs.minRamBytes != rhs.minRamBytes {
+            return false
+        }
+        if lhs.downloaded != rhs.downloaded {
+            return false
+        }
+        if lhs.verified != rhs.verified {
+            return false
+        }
+        if lhs.path != rhs.path {
+            return false
+        }
+        if lhs.backendId != rhs.backendId {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(description)
+        hasher.combine(quantization)
+        hasher.combine(sizeBytes)
+        hasher.combine(minRamBytes)
+        hasher.combine(downloaded)
+        hasher.combine(verified)
+        hasher.combine(path)
+        hasher.combine(backendId)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLocalModelSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalModelSummary {
+        return
+            try LocalModelSummary(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                description: FfiConverterString.read(from: &buf), 
+                quantization: FfiConverterString.read(from: &buf), 
+                sizeBytes: FfiConverterUInt64.read(from: &buf), 
+                minRamBytes: FfiConverterUInt64.read(from: &buf), 
+                downloaded: FfiConverterBool.read(from: &buf), 
+                verified: FfiConverterBool.read(from: &buf), 
+                path: FfiConverterOptionString.read(from: &buf), 
+                backendId: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LocalModelSummary, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.description, into: &buf)
+        FfiConverterString.write(value.quantization, into: &buf)
+        FfiConverterUInt64.write(value.sizeBytes, into: &buf)
+        FfiConverterUInt64.write(value.minRamBytes, into: &buf)
+        FfiConverterBool.write(value.downloaded, into: &buf)
+        FfiConverterBool.write(value.verified, into: &buf)
+        FfiConverterOptionString.write(value.path, into: &buf)
+        FfiConverterOptionString.write(value.backendId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalModelSummary_lift(_ buf: RustBuffer) throws -> LocalModelSummary {
+    return try FfiConverterTypeLocalModelSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalModelSummary_lower(_ value: LocalModelSummary) -> RustBuffer {
+    return FfiConverterTypeLocalModelSummary.lower(value)
+}
+
+
+public struct LocalPreprocessing {
+    public var compressHistory: Bool
+    public var rewriteRagQuery: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(compressHistory: Bool, rewriteRagQuery: Bool) {
+        self.compressHistory = compressHistory
+        self.rewriteRagQuery = rewriteRagQuery
+    }
+}
+
+#if compiler(>=6)
+extension LocalPreprocessing: Sendable {}
+#endif
+
+
+extension LocalPreprocessing: Equatable, Hashable {
+    public static func ==(lhs: LocalPreprocessing, rhs: LocalPreprocessing) -> Bool {
+        if lhs.compressHistory != rhs.compressHistory {
+            return false
+        }
+        if lhs.rewriteRagQuery != rhs.rewriteRagQuery {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(compressHistory)
+        hasher.combine(rewriteRagQuery)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLocalPreprocessing: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalPreprocessing {
+        return
+            try LocalPreprocessing(
+                compressHistory: FfiConverterBool.read(from: &buf), 
+                rewriteRagQuery: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LocalPreprocessing, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.compressHistory, into: &buf)
+        FfiConverterBool.write(value.rewriteRagQuery, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalPreprocessing_lift(_ buf: RustBuffer) throws -> LocalPreprocessing {
+    return try FfiConverterTypeLocalPreprocessing.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalPreprocessing_lower(_ value: LocalPreprocessing) -> RustBuffer {
+    return FfiConverterTypeLocalPreprocessing.lower(value)
 }
 
 
@@ -3498,6 +4578,248 @@ public func FfiConverterTypeOrchestratedComponent_lower(_ value: OrchestratedCom
 }
 
 
+public struct PlatformHttpHeader {
+    public var name: String
+    public var value: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, value: String) {
+        self.name = name
+        self.value = value
+    }
+}
+
+#if compiler(>=6)
+extension PlatformHttpHeader: Sendable {}
+#endif
+
+
+extension PlatformHttpHeader: Equatable, Hashable {
+    public static func ==(lhs: PlatformHttpHeader, rhs: PlatformHttpHeader) -> Bool {
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.value != rhs.value {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(name)
+        hasher.combine(value)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePlatformHttpHeader: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PlatformHttpHeader {
+        return
+            try PlatformHttpHeader(
+                name: FfiConverterString.read(from: &buf), 
+                value: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PlatformHttpHeader, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.value, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformHttpHeader_lift(_ buf: RustBuffer) throws -> PlatformHttpHeader {
+    return try FfiConverterTypePlatformHttpHeader.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformHttpHeader_lower(_ value: PlatformHttpHeader) -> RustBuffer {
+    return FfiConverterTypePlatformHttpHeader.lower(value)
+}
+
+
+public struct PlatformHttpRequest {
+    public var method: String
+    public var url: String
+    public var headers: [PlatformHttpHeader]
+    public var body: Data
+    public var timeoutSecs: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(method: String, url: String, headers: [PlatformHttpHeader], body: Data, timeoutSecs: UInt64) {
+        self.method = method
+        self.url = url
+        self.headers = headers
+        self.body = body
+        self.timeoutSecs = timeoutSecs
+    }
+}
+
+#if compiler(>=6)
+extension PlatformHttpRequest: Sendable {}
+#endif
+
+
+extension PlatformHttpRequest: Equatable, Hashable {
+    public static func ==(lhs: PlatformHttpRequest, rhs: PlatformHttpRequest) -> Bool {
+        if lhs.method != rhs.method {
+            return false
+        }
+        if lhs.url != rhs.url {
+            return false
+        }
+        if lhs.headers != rhs.headers {
+            return false
+        }
+        if lhs.body != rhs.body {
+            return false
+        }
+        if lhs.timeoutSecs != rhs.timeoutSecs {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(method)
+        hasher.combine(url)
+        hasher.combine(headers)
+        hasher.combine(body)
+        hasher.combine(timeoutSecs)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePlatformHttpRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PlatformHttpRequest {
+        return
+            try PlatformHttpRequest(
+                method: FfiConverterString.read(from: &buf), 
+                url: FfiConverterString.read(from: &buf), 
+                headers: FfiConverterSequenceTypePlatformHttpHeader.read(from: &buf), 
+                body: FfiConverterData.read(from: &buf), 
+                timeoutSecs: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PlatformHttpRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.method, into: &buf)
+        FfiConverterString.write(value.url, into: &buf)
+        FfiConverterSequenceTypePlatformHttpHeader.write(value.headers, into: &buf)
+        FfiConverterData.write(value.body, into: &buf)
+        FfiConverterUInt64.write(value.timeoutSecs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformHttpRequest_lift(_ buf: RustBuffer) throws -> PlatformHttpRequest {
+    return try FfiConverterTypePlatformHttpRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformHttpRequest_lower(_ value: PlatformHttpRequest) -> RustBuffer {
+    return FfiConverterTypePlatformHttpRequest.lower(value)
+}
+
+
+public struct PlatformHttpResponse {
+    public var statusCode: UInt16
+    public var headers: [PlatformHttpHeader]
+    public var body: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(statusCode: UInt16, headers: [PlatformHttpHeader], body: Data) {
+        self.statusCode = statusCode
+        self.headers = headers
+        self.body = body
+    }
+}
+
+#if compiler(>=6)
+extension PlatformHttpResponse: Sendable {}
+#endif
+
+
+extension PlatformHttpResponse: Equatable, Hashable {
+    public static func ==(lhs: PlatformHttpResponse, rhs: PlatformHttpResponse) -> Bool {
+        if lhs.statusCode != rhs.statusCode {
+            return false
+        }
+        if lhs.headers != rhs.headers {
+            return false
+        }
+        if lhs.body != rhs.body {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(statusCode)
+        hasher.combine(headers)
+        hasher.combine(body)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePlatformHttpResponse: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PlatformHttpResponse {
+        return
+            try PlatformHttpResponse(
+                statusCode: FfiConverterUInt16.read(from: &buf), 
+                headers: FfiConverterSequenceTypePlatformHttpHeader.read(from: &buf), 
+                body: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PlatformHttpResponse, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.statusCode, into: &buf)
+        FfiConverterSequenceTypePlatformHttpHeader.write(value.headers, into: &buf)
+        FfiConverterData.write(value.body, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformHttpResponse_lift(_ buf: RustBuffer) throws -> PlatformHttpResponse {
+    return try FfiConverterTypePlatformHttpResponse.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformHttpResponse_lower(_ value: PlatformHttpResponse) -> RustBuffer {
+    return FfiConverterTypePlatformHttpResponse.lower(value)
+}
+
+
 /**
  * A known provider preset for the Add Backend form.
  * UniFFI-exported so all platforms share the same preset data.
@@ -3696,6 +5018,323 @@ public func FfiConverterTypeRouter_lower(_ value: Router) -> RustBuffer {
 }
 
 
+public struct RoutingPolicy {
+    public var escalateIfAttachment: Bool
+    public var preferLocalWhenOffline: Bool
+    public var escalateIfMessageLongerThan: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(escalateIfAttachment: Bool, preferLocalWhenOffline: Bool, escalateIfMessageLongerThan: UInt64?) {
+        self.escalateIfAttachment = escalateIfAttachment
+        self.preferLocalWhenOffline = preferLocalWhenOffline
+        self.escalateIfMessageLongerThan = escalateIfMessageLongerThan
+    }
+}
+
+#if compiler(>=6)
+extension RoutingPolicy: Sendable {}
+#endif
+
+
+extension RoutingPolicy: Equatable, Hashable {
+    public static func ==(lhs: RoutingPolicy, rhs: RoutingPolicy) -> Bool {
+        if lhs.escalateIfAttachment != rhs.escalateIfAttachment {
+            return false
+        }
+        if lhs.preferLocalWhenOffline != rhs.preferLocalWhenOffline {
+            return false
+        }
+        if lhs.escalateIfMessageLongerThan != rhs.escalateIfMessageLongerThan {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(escalateIfAttachment)
+        hasher.combine(preferLocalWhenOffline)
+        hasher.combine(escalateIfMessageLongerThan)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRoutingPolicy: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RoutingPolicy {
+        return
+            try RoutingPolicy(
+                escalateIfAttachment: FfiConverterBool.read(from: &buf), 
+                preferLocalWhenOffline: FfiConverterBool.read(from: &buf), 
+                escalateIfMessageLongerThan: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RoutingPolicy, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.escalateIfAttachment, into: &buf)
+        FfiConverterBool.write(value.preferLocalWhenOffline, into: &buf)
+        FfiConverterOptionUInt64.write(value.escalateIfMessageLongerThan, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRoutingPolicy_lift(_ buf: RustBuffer) throws -> RoutingPolicy {
+    return try FfiConverterTypeRoutingPolicy.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRoutingPolicy_lower(_ value: RoutingPolicy) -> RustBuffer {
+    return FfiConverterTypeRoutingPolicy.lower(value)
+}
+
+
+/**
+ * Phase 38 — one entry in the user's trusted-providers list.
+ */
+public struct TrustedProvider {
+    /**
+     * Nostr hex pubkey.
+     */
+    public var pubkey: String
+    /**
+     * Optional user-supplied label.
+     */
+    public var label: String?
+    /**
+     * Unix seconds when the user added this entry.
+     */
+    public var addedAt: Int64
+    /**
+     * Bech32 npub1… encoding, pre-computed for display.
+     */
+    public var npub: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Nostr hex pubkey.
+         */pubkey: String, 
+        /**
+         * Optional user-supplied label.
+         */label: String?, 
+        /**
+         * Unix seconds when the user added this entry.
+         */addedAt: Int64, 
+        /**
+         * Bech32 npub1… encoding, pre-computed for display.
+         */npub: String) {
+        self.pubkey = pubkey
+        self.label = label
+        self.addedAt = addedAt
+        self.npub = npub
+    }
+}
+
+#if compiler(>=6)
+extension TrustedProvider: Sendable {}
+#endif
+
+
+extension TrustedProvider: Equatable, Hashable {
+    public static func ==(lhs: TrustedProvider, rhs: TrustedProvider) -> Bool {
+        if lhs.pubkey != rhs.pubkey {
+            return false
+        }
+        if lhs.label != rhs.label {
+            return false
+        }
+        if lhs.addedAt != rhs.addedAt {
+            return false
+        }
+        if lhs.npub != rhs.npub {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(pubkey)
+        hasher.combine(label)
+        hasher.combine(addedAt)
+        hasher.combine(npub)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrustedProvider: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TrustedProvider {
+        return
+            try TrustedProvider(
+                pubkey: FfiConverterString.read(from: &buf), 
+                label: FfiConverterOptionString.read(from: &buf), 
+                addedAt: FfiConverterInt64.read(from: &buf), 
+                npub: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TrustedProvider, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.pubkey, into: &buf)
+        FfiConverterOptionString.write(value.label, into: &buf)
+        FfiConverterInt64.write(value.addedAt, into: &buf)
+        FfiConverterString.write(value.npub, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrustedProvider_lift(_ buf: RustBuffer) throws -> TrustedProvider {
+    return try FfiConverterTypeTrustedProvider.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrustedProvider_lower(_ value: TrustedProvider) -> RustBuffer {
+    return FfiConverterTypeTrustedProvider.lower(value)
+}
+
+
+public struct TurnRoutingSummary {
+    public var conversationId: String?
+    public var profileId: String?
+    public var backendId: String
+    public var modelId: String
+    public var decision: BackendRole
+    public var reason: String
+    public var providerName: String
+    public var teeLabel: String
+    public var teeVerified: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(conversationId: String?, profileId: String?, backendId: String, modelId: String, decision: BackendRole, reason: String, providerName: String, teeLabel: String, teeVerified: Bool) {
+        self.conversationId = conversationId
+        self.profileId = profileId
+        self.backendId = backendId
+        self.modelId = modelId
+        self.decision = decision
+        self.reason = reason
+        self.providerName = providerName
+        self.teeLabel = teeLabel
+        self.teeVerified = teeVerified
+    }
+}
+
+#if compiler(>=6)
+extension TurnRoutingSummary: Sendable {}
+#endif
+
+
+extension TurnRoutingSummary: Equatable, Hashable {
+    public static func ==(lhs: TurnRoutingSummary, rhs: TurnRoutingSummary) -> Bool {
+        if lhs.conversationId != rhs.conversationId {
+            return false
+        }
+        if lhs.profileId != rhs.profileId {
+            return false
+        }
+        if lhs.backendId != rhs.backendId {
+            return false
+        }
+        if lhs.modelId != rhs.modelId {
+            return false
+        }
+        if lhs.decision != rhs.decision {
+            return false
+        }
+        if lhs.reason != rhs.reason {
+            return false
+        }
+        if lhs.providerName != rhs.providerName {
+            return false
+        }
+        if lhs.teeLabel != rhs.teeLabel {
+            return false
+        }
+        if lhs.teeVerified != rhs.teeVerified {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(conversationId)
+        hasher.combine(profileId)
+        hasher.combine(backendId)
+        hasher.combine(modelId)
+        hasher.combine(decision)
+        hasher.combine(reason)
+        hasher.combine(providerName)
+        hasher.combine(teeLabel)
+        hasher.combine(teeVerified)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTurnRoutingSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TurnRoutingSummary {
+        return
+            try TurnRoutingSummary(
+                conversationId: FfiConverterOptionString.read(from: &buf), 
+                profileId: FfiConverterOptionString.read(from: &buf), 
+                backendId: FfiConverterString.read(from: &buf), 
+                modelId: FfiConverterString.read(from: &buf), 
+                decision: FfiConverterTypeBackendRole.read(from: &buf), 
+                reason: FfiConverterString.read(from: &buf), 
+                providerName: FfiConverterString.read(from: &buf), 
+                teeLabel: FfiConverterString.read(from: &buf), 
+                teeVerified: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TurnRoutingSummary, into buf: inout [UInt8]) {
+        FfiConverterOptionString.write(value.conversationId, into: &buf)
+        FfiConverterOptionString.write(value.profileId, into: &buf)
+        FfiConverterString.write(value.backendId, into: &buf)
+        FfiConverterString.write(value.modelId, into: &buf)
+        FfiConverterTypeBackendRole.write(value.decision, into: &buf)
+        FfiConverterString.write(value.reason, into: &buf)
+        FfiConverterString.write(value.providerName, into: &buf)
+        FfiConverterString.write(value.teeLabel, into: &buf)
+        FfiConverterBool.write(value.teeVerified, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTurnRoutingSummary_lift(_ buf: RustBuffer) throws -> TurnRoutingSummary {
+    return try FfiConverterTypeTurnRoutingSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTurnRoutingSummary_lower(_ value: TurnRoutingSummary) -> RustBuffer {
+    return FfiConverterTypeTurnRoutingSummary.lower(value)
+}
+
+
 /**
  * A single message in the active conversation, for UI rendering.
  *
@@ -3888,9 +5527,9 @@ public enum AppAction {
      */
     case noop
     /**
-     * Send a chat message to the active backend (per D-04, D-05)
+     * Send a chat message to the active backend. `force_role` applies only to hybrid profiles.
      */
-    case sendMessage(text: String
+    case sendMessage(text: String, forceRole: BackendRole?
     )
     /**
      * Stop the active generation (per D-06, LLMC-07)
@@ -3998,6 +5637,36 @@ public enum AppAction {
      * Persist a model as the global default for new conversations.
      */
     case setDefaultModel(modelId: String
+    )
+    /**
+     * Enable or disable on-device local inference globally.
+     */
+    case setLocalInferenceEnabled(enabled: Bool
+    )
+    /**
+     * Download and verify a built-in local model.
+     */
+    case downloadLocalModel(modelId: String
+    )
+    /**
+     * Delete a downloaded local model after unloading it if safe.
+     */
+    case deleteLocalModel(modelId: String
+    )
+    /**
+     * Save or update a hybrid local/remote routing profile.
+     */
+    case saveHybridProfile(profile: HybridProfile
+    )
+    /**
+     * Delete a saved hybrid profile.
+     */
+    case deleteHybridProfile(profileId: String
+    )
+    /**
+     * Make a hybrid profile the active/default conversation target.
+     */
+    case setActiveHybridProfile(profileId: String
     )
     /**
      * Override the backend used for a specific conversation.
@@ -4264,6 +5933,18 @@ public enum AppAction {
      * Same effect as DiscoverContextvmTools but explicit for telemetry.
      */
     case retryContextvmDiscovery
+    /**
+     * Add a provider pubkey to the trust list. `label` is optional.
+     * When `auto_discover_tools_enabled`, only trusted providers' tools
+     * are offered to the LLM automatically.
+     */
+    case addTrustedProvider(pubkey: String, label: String?
+    )
+    /**
+     * Remove a provider from the trust list by pubkey.
+     */
+    case removeTrustedProvider(pubkey: String
+    )
 }
 
 
@@ -4296,7 +5977,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         
         case 6: return .noop
         
-        case 7: return .sendMessage(text: try FfiConverterString.read(from: &buf)
+        case 7: return .sendMessage(text: try FfiConverterString.read(from: &buf), forceRole: try FfiConverterOptionTypeBackendRole.read(from: &buf)
         )
         
         case 8: return .stopGeneration
@@ -4359,130 +6040,154 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 29: return .setDefaultModel(modelId: try FfiConverterString.read(from: &buf)
         )
         
-        case 30: return .overrideConversationBackend(conversationId: try FfiConverterString.read(from: &buf), backendId: try FfiConverterString.read(from: &buf)
+        case 30: return .setLocalInferenceEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 31: return .nextOnboardingStep
-        
-        case 32: return .previousOnboardingStep
-        
-        case 33: return .updateBackendApiKey(backendId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
+        case 31: return .downloadLocalModel(modelId: try FfiConverterString.read(from: &buf)
         )
         
-        case 34: return .validateApiKey(backendId: try FfiConverterString.read(from: &buf)
+        case 32: return .deleteLocalModel(modelId: try FfiConverterString.read(from: &buf)
         )
         
-        case 35: return .completeOnboarding
-        
-        case 36: return .skipOnboarding
-        
-        case 37: return .addBackendFromPreset(presetId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
+        case 33: return .saveHybridProfile(profile: try FfiConverterTypeHybridProfile.read(from: &buf)
         )
         
-        case 38: return .ingestDocument(filename: try FfiConverterString.read(from: &buf), content: try FfiConverterData.read(from: &buf)
+        case 34: return .deleteHybridProfile(profileId: try FfiConverterString.read(from: &buf)
         )
         
-        case 39: return .deleteDocument(documentId: try FfiConverterString.read(from: &buf)
+        case 35: return .setActiveHybridProfile(profileId: try FfiConverterString.read(from: &buf)
         )
         
-        case 40: return .attachDocumentToConversation(documentId: try FfiConverterString.read(from: &buf)
+        case 36: return .overrideConversationBackend(conversationId: try FfiConverterString.read(from: &buf), backendId: try FfiConverterString.read(from: &buf)
         )
         
-        case 41: return .detachDocumentFromConversation(documentId: try FfiConverterString.read(from: &buf)
+        case 37: return .nextOnboardingStep
+        
+        case 38: return .previousOnboardingStep
+        
+        case 39: return .updateBackendApiKey(backendId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 42: return .launchAgentSession(taskDescription: try FfiConverterString.read(from: &buf)
+        case 40: return .validateApiKey(backendId: try FfiConverterString.read(from: &buf)
         )
         
-        case 43: return .pauseAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 41: return .completeOnboarding
+        
+        case 42: return .skipOnboarding
+        
+        case 43: return .addBackendFromPreset(presetId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 44: return .resumeAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 44: return .ingestDocument(filename: try FfiConverterString.read(from: &buf), content: try FfiConverterData.read(from: &buf)
         )
         
-        case 45: return .cancelAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 45: return .deleteDocument(documentId: try FfiConverterString.read(from: &buf)
         )
         
-        case 46: return .loadAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 46: return .attachDocumentToConversation(documentId: try FfiConverterString.read(from: &buf)
         )
         
-        case 47: return .clearAgentDetail
-        
-        case 48: return .setAttestationInterval(minutes: try FfiConverterUInt32.read(from: &buf)
+        case 47: return .detachDocumentFromConversation(documentId: try FfiConverterString.read(from: &buf)
         )
         
-        case 49: return .setGlobalSystemPrompt(prompt: try FfiConverterOptionString.read(from: &buf)
+        case 48: return .launchAgentSession(taskDescription: try FfiConverterString.read(from: &buf)
         )
         
-        case 50: return .listMemories
-        
-        case 51: return .deleteMemory(memoryId: try FfiConverterString.read(from: &buf)
+        case 49: return .pauseAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 52: return .updateMemory(memoryId: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf)
+        case 50: return .resumeAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 53: return .setBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
+        case 51: return .cancelAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 54: return .validateBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
+        case 52: return .loadAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 55: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 53: return .clearAgentDetail
+        
+        case 54: return .setAttestationInterval(minutes: try FfiConverterUInt32.read(from: &buf)
         )
         
-        case 56: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 55: return .setGlobalSystemPrompt(prompt: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 57: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
+        case 56: return .listMemories
+        
+        case 57: return .deleteMemory(memoryId: try FfiConverterString.read(from: &buf)
         )
         
-        case 58: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
+        case 58: return .updateMemory(memoryId: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf)
         )
         
-        case 59: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
+        case 59: return .setBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 60: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
+        case 60: return .validateBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 61: return .lockApp
-        
-        case 62: return .attemptBiometricUnlock
-        
-        case 63: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 61: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 64: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
+        case 62: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 65: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
+        case 63: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
         )
         
-        case 66: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
+        case 64: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 67: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
+        case 65: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
         )
         
-        case 68: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
+        case 66: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
         )
         
-        case 69: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
+        case 67: return .lockApp
+        
+        case 68: return .attemptBiometricUnlock
+        
+        case 69: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 70: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
+        case 70: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
         )
         
-        case 71: return .discoverContextvmTools
-        
-        case 72: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 71: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 73: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
+        case 72: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
         )
         
-        case 74: return .retryContextvmDiscovery
+        case 73: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 74: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
+        )
+        
+        case 75: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 76: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
+        )
+        
+        case 77: return .discoverContextvmTools
+        
+        case 78: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 79: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 80: return .retryContextvmDiscovery
+        
+        case 81: return .addTrustedProvider(pubkey: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 82: return .removeTrustedProvider(pubkey: try FfiConverterString.read(from: &buf)
+        )
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4519,9 +6224,10 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(6))
         
         
-        case let .sendMessage(text):
+        case let .sendMessage(text,forceRole):
             writeInt(&buf, Int32(7))
             FfiConverterString.write(text, into: &buf)
+            FfiConverterOptionTypeBackendRole.write(forceRole, into: &buf)
             
         
         case .stopGeneration:
@@ -4640,183 +6346,213 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterString.write(modelId, into: &buf)
             
         
-        case let .overrideConversationBackend(conversationId,backendId):
+        case let .setLocalInferenceEnabled(enabled):
             writeInt(&buf, Int32(30))
+            FfiConverterBool.write(enabled, into: &buf)
+            
+        
+        case let .downloadLocalModel(modelId):
+            writeInt(&buf, Int32(31))
+            FfiConverterString.write(modelId, into: &buf)
+            
+        
+        case let .deleteLocalModel(modelId):
+            writeInt(&buf, Int32(32))
+            FfiConverterString.write(modelId, into: &buf)
+            
+        
+        case let .saveHybridProfile(profile):
+            writeInt(&buf, Int32(33))
+            FfiConverterTypeHybridProfile.write(profile, into: &buf)
+            
+        
+        case let .deleteHybridProfile(profileId):
+            writeInt(&buf, Int32(34))
+            FfiConverterString.write(profileId, into: &buf)
+            
+        
+        case let .setActiveHybridProfile(profileId):
+            writeInt(&buf, Int32(35))
+            FfiConverterString.write(profileId, into: &buf)
+            
+        
+        case let .overrideConversationBackend(conversationId,backendId):
+            writeInt(&buf, Int32(36))
             FfiConverterString.write(conversationId, into: &buf)
             FfiConverterString.write(backendId, into: &buf)
             
         
         case .nextOnboardingStep:
-            writeInt(&buf, Int32(31))
+            writeInt(&buf, Int32(37))
         
         
         case .previousOnboardingStep:
-            writeInt(&buf, Int32(32))
+            writeInt(&buf, Int32(38))
         
         
         case let .updateBackendApiKey(backendId,apiKey):
-            writeInt(&buf, Int32(33))
+            writeInt(&buf, Int32(39))
             FfiConverterString.write(backendId, into: &buf)
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .validateApiKey(backendId):
-            writeInt(&buf, Int32(34))
+            writeInt(&buf, Int32(40))
             FfiConverterString.write(backendId, into: &buf)
             
         
         case .completeOnboarding:
-            writeInt(&buf, Int32(35))
+            writeInt(&buf, Int32(41))
         
         
         case .skipOnboarding:
-            writeInt(&buf, Int32(36))
+            writeInt(&buf, Int32(42))
         
         
         case let .addBackendFromPreset(presetId,apiKey):
-            writeInt(&buf, Int32(37))
+            writeInt(&buf, Int32(43))
             FfiConverterString.write(presetId, into: &buf)
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .ingestDocument(filename,content):
-            writeInt(&buf, Int32(38))
+            writeInt(&buf, Int32(44))
             FfiConverterString.write(filename, into: &buf)
             FfiConverterData.write(content, into: &buf)
             
         
         case let .deleteDocument(documentId):
-            writeInt(&buf, Int32(39))
+            writeInt(&buf, Int32(45))
             FfiConverterString.write(documentId, into: &buf)
             
         
         case let .attachDocumentToConversation(documentId):
-            writeInt(&buf, Int32(40))
+            writeInt(&buf, Int32(46))
             FfiConverterString.write(documentId, into: &buf)
             
         
         case let .detachDocumentFromConversation(documentId):
-            writeInt(&buf, Int32(41))
+            writeInt(&buf, Int32(47))
             FfiConverterString.write(documentId, into: &buf)
             
         
         case let .launchAgentSession(taskDescription):
-            writeInt(&buf, Int32(42))
+            writeInt(&buf, Int32(48))
             FfiConverterString.write(taskDescription, into: &buf)
             
         
         case let .pauseAgentSession(sessionId):
-            writeInt(&buf, Int32(43))
+            writeInt(&buf, Int32(49))
             FfiConverterString.write(sessionId, into: &buf)
             
         
         case let .resumeAgentSession(sessionId):
-            writeInt(&buf, Int32(44))
+            writeInt(&buf, Int32(50))
             FfiConverterString.write(sessionId, into: &buf)
             
         
         case let .cancelAgentSession(sessionId):
-            writeInt(&buf, Int32(45))
+            writeInt(&buf, Int32(51))
             FfiConverterString.write(sessionId, into: &buf)
             
         
         case let .loadAgentSession(sessionId):
-            writeInt(&buf, Int32(46))
+            writeInt(&buf, Int32(52))
             FfiConverterString.write(sessionId, into: &buf)
             
         
         case .clearAgentDetail:
-            writeInt(&buf, Int32(47))
+            writeInt(&buf, Int32(53))
         
         
         case let .setAttestationInterval(minutes):
-            writeInt(&buf, Int32(48))
+            writeInt(&buf, Int32(54))
             FfiConverterUInt32.write(minutes, into: &buf)
             
         
         case let .setGlobalSystemPrompt(prompt):
-            writeInt(&buf, Int32(49))
+            writeInt(&buf, Int32(55))
             FfiConverterOptionString.write(prompt, into: &buf)
             
         
         case .listMemories:
-            writeInt(&buf, Int32(50))
+            writeInt(&buf, Int32(56))
         
         
         case let .deleteMemory(memoryId):
-            writeInt(&buf, Int32(51))
+            writeInt(&buf, Int32(57))
             FfiConverterString.write(memoryId, into: &buf)
             
         
         case let .updateMemory(memoryId,content):
-            writeInt(&buf, Int32(52))
+            writeInt(&buf, Int32(58))
             FfiConverterString.write(memoryId, into: &buf)
             FfiConverterString.write(content, into: &buf)
             
         
         case let .setBraveApiKey(apiKey):
-            writeInt(&buf, Int32(53))
+            writeInt(&buf, Int32(59))
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .validateBraveApiKey(apiKey):
-            writeInt(&buf, Int32(54))
+            writeInt(&buf, Int32(60))
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .setMemoriesEnabled(enabled):
-            writeInt(&buf, Int32(55))
+            writeInt(&buf, Int32(61))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setConversationToolsEnabled(conversationId,enabled):
-            writeInt(&buf, Int32(56))
+            writeInt(&buf, Int32(62))
             FfiConverterString.write(conversationId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setupPin(pin,duressPin,enableBiometric):
-            writeInt(&buf, Int32(57))
+            writeInt(&buf, Int32(63))
             FfiConverterString.write(pin, into: &buf)
             FfiConverterOptionString.write(duressPin, into: &buf)
             FfiConverterBool.write(enableBiometric, into: &buf)
             
         
         case let .setDuressPin(pin):
-            writeInt(&buf, Int32(58))
+            writeInt(&buf, Int32(64))
             FfiConverterOptionString.write(pin, into: &buf)
             
         
         case let .unlockWithDek(dekHex):
-            writeInt(&buf, Int32(59))
+            writeInt(&buf, Int32(65))
             FfiConverterString.write(dekHex, into: &buf)
             
         
         case let .unlockWithPin(pin):
-            writeInt(&buf, Int32(60))
+            writeInt(&buf, Int32(66))
             FfiConverterString.write(pin, into: &buf)
             
         
         case .lockApp:
-            writeInt(&buf, Int32(61))
+            writeInt(&buf, Int32(67))
         
         
         case .attemptBiometricUnlock:
-            writeInt(&buf, Int32(62))
+            writeInt(&buf, Int32(68))
         
         
         case let .setBiometricLoginEnabled(enabled):
-            writeInt(&buf, Int32(63))
+            writeInt(&buf, Int32(69))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setLockTimeout(seconds):
-            writeInt(&buf, Int32(64))
+            writeInt(&buf, Int32(70))
             FfiConverterInt64.write(seconds, into: &buf)
             
         
         case let .addDirectorySource(displayName,path,bookmarkData,treeUri,exclusionGlobs):
-            writeInt(&buf, Int32(65))
+            writeInt(&buf, Int32(71))
             FfiConverterString.write(displayName, into: &buf)
             FfiConverterOptionString.write(path, into: &buf)
             FfiConverterOptionData.write(bookmarkData, into: &buf)
@@ -4825,7 +6561,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .syncDirectoryFiles(sourceId,files,removedPaths,isFinalBatch):
-            writeInt(&buf, Int32(66))
+            writeInt(&buf, Int32(72))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceTypeDirectoryFileEntry.write(files, into: &buf)
             FfiConverterSequenceString.write(removedPaths, into: &buf)
@@ -4833,45 +6569,56 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .removeDirectorySource(sourceId):
-            writeInt(&buf, Int32(67))
+            writeInt(&buf, Int32(73))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .setDirectoryExclusions(sourceId,globs):
-            writeInt(&buf, Int32(68))
+            writeInt(&buf, Int32(74))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceString.write(globs, into: &buf)
             
         
         case let .triggerDirectorySync(sourceId):
-            writeInt(&buf, Int32(69))
+            writeInt(&buf, Int32(75))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .updateDirectorySourceBookmark(sourceId,bookmarkData):
-            writeInt(&buf, Int32(70))
+            writeInt(&buf, Int32(76))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterData.write(bookmarkData, into: &buf)
             
         
         case .discoverContextvmTools:
-            writeInt(&buf, Int32(71))
+            writeInt(&buf, Int32(77))
         
         
         case let .setContextvmToolEnabled(toolId,enabled):
-            writeInt(&buf, Int32(72))
+            writeInt(&buf, Int32(78))
             FfiConverterString.write(toolId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setAutoDiscoverTools(enabled):
-            writeInt(&buf, Int32(73))
+            writeInt(&buf, Int32(79))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case .retryContextvmDiscovery:
-            writeInt(&buf, Int32(74))
+            writeInt(&buf, Int32(80))
         
+        
+        case let .addTrustedProvider(pubkey,label):
+            writeInt(&buf, Int32(81))
+            FfiConverterString.write(pubkey, into: &buf)
+            FfiConverterOptionString.write(label, into: &buf)
+            
+        
+        case let .removeTrustedProvider(pubkey):
+            writeInt(&buf, Int32(82))
+            FfiConverterString.write(pubkey, into: &buf)
+            
         }
     }
 }
@@ -5232,6 +6979,76 @@ public func FfiConverterTypeAttestationStatus_lower(_ value: AttestationStatus) 
 
 
 extension AttestationStatus: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum BackendRole {
+    
+    case local
+    case remote
+}
+
+
+#if compiler(>=6)
+extension BackendRole: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBackendRole: FfiConverterRustBuffer {
+    typealias SwiftType = BackendRole
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BackendRole {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .local
+        
+        case 2: return .remote
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: BackendRole, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .local:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .remote:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackendRole_lift(_ buf: RustBuffer) throws -> BackendRole {
+    return try FfiConverterTypeBackendRole.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackendRole_lower(_ value: BackendRole) -> RustBuffer {
+    return FfiConverterTypeBackendRole.lower(value)
+}
+
+
+extension BackendRole: Equatable, Hashable {}
 
 
 
@@ -5932,6 +7749,124 @@ extension LlmError: Foundation.LocalizedError {
 
 
 
+
+public enum LocalLlmError: Swift.Error {
+
+    
+    
+    case Unsupported(reason: String
+    )
+    case ModelMissing(path: String
+    )
+    case LoadFailed(reason: String
+    )
+    case NotLoaded
+    case GenerationFailed(reason: String
+    )
+    case Cancelled
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLocalLlmError: FfiConverterRustBuffer {
+    typealias SwiftType = LocalLlmError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalLlmError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Unsupported(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .ModelMissing(
+            path: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .LoadFailed(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .NotLoaded
+        case 5: return .GenerationFailed(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 6: return .Cancelled
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LocalLlmError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Unsupported(reason):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case let .ModelMissing(path):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(path, into: &buf)
+            
+        
+        case let .LoadFailed(reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case .NotLoaded:
+            writeInt(&buf, Int32(4))
+        
+        
+        case let .GenerationFailed(reason):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case .Cancelled:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalLlmError_lift(_ buf: RustBuffer) throws -> LocalLlmError {
+    return try FfiConverterTypeLocalLlmError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalLlmError_lower(_ value: LocalLlmError) -> RustBuffer {
+    return FfiConverterTypeLocalLlmError.lower(value)
+}
+
+
+extension LocalLlmError: Equatable, Hashable {}
+
+
+
+
+extension LocalLlmError: Foundation.LocalizedError {
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+}
+
+
+
+
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
@@ -6110,6 +8045,10 @@ public enum Screen {
     case contextvmToolDetail(toolId: String
     )
     /**
+     * Phase 38 — Trusted Providers management screen.
+     */
+    case trustedProviders
+    /**
      * Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
      */
     case locked
@@ -6169,9 +8108,11 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         case 16: return .contextvmToolDetail(toolId: try FfiConverterString.read(from: &buf)
         )
         
-        case 17: return .locked
+        case 17: return .trustedProviders
         
-        case 18: return .pinSetup
+        case 18: return .locked
+        
+        case 19: return .pinSetup
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -6248,12 +8189,16 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
             FfiConverterString.write(toolId, into: &buf)
             
         
-        case .locked:
+        case .trustedProviders:
             writeInt(&buf, Int32(17))
         
         
-        case .pinSetup:
+        case .locked:
             writeInt(&buf, Int32(18))
+        
+        
+        case .pinSetup:
+            writeInt(&buf, Int32(19))
         
         }
     }
@@ -7086,6 +9031,282 @@ public func FfiConverterCallbackInterfaceKeychainProvider_lower(_ v: KeychainPro
     return FfiConverterCallbackInterfaceKeychainProvider.lower(v)
 }
 
+
+
+
+public protocol LocalLlmProvider: AnyObject, Sendable {
+    
+    func loadModel(modelPath: String) throws 
+    
+    func downloadModelFile(url: String, destinationPath: String, context: LocalModelDownloadContext) throws 
+    
+    func platformHttpRequest(request: PlatformHttpRequest) throws  -> PlatformHttpResponse
+    
+    func generate(promptJson: String, context: LocalGenerationContext) throws 
+    
+    func unload() 
+    
+    func loadedModelPath()  -> String?
+    
+    func deviceCapability()  -> DeviceCapability
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceLocalLlmProvider {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceLocalLlmProvider] = [UniffiVTableCallbackInterfaceLocalLlmProvider(
+        loadModel: { (
+            uniffiHandle: UInt64,
+            modelPath: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.loadModel(
+                     modelPath: try FfiConverterString.lift(modelPath)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeLocalLlmError_lower
+            )
+        },
+        downloadModelFile: { (
+            uniffiHandle: UInt64,
+            url: RustBuffer,
+            destinationPath: RustBuffer,
+            context: UnsafeMutableRawPointer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.downloadModelFile(
+                     url: try FfiConverterString.lift(url),
+                     destinationPath: try FfiConverterString.lift(destinationPath),
+                     context: try FfiConverterTypeLocalModelDownloadContext_lift(context)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeLocalLlmError_lower
+            )
+        },
+        platformHttpRequest: { (
+            uniffiHandle: UInt64,
+            request: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> PlatformHttpResponse in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.platformHttpRequest(
+                     request: try FfiConverterTypePlatformHttpRequest_lift(request)
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypePlatformHttpResponse_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeLocalLlmError_lower
+            )
+        },
+        generate: { (
+            uniffiHandle: UInt64,
+            promptJson: RustBuffer,
+            context: UnsafeMutableRawPointer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.generate(
+                     promptJson: try FfiConverterString.lift(promptJson),
+                     context: try FfiConverterTypeLocalGenerationContext_lift(context)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeLocalLlmError_lower
+            )
+        },
+        unload: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.unload(
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        loadedModelPath: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String? in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.loadedModelPath(
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterOptionString.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        deviceCapability: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> DeviceCapability in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.deviceCapability(
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeDeviceCapability_lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            let result = try? FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.remove(handle: uniffiHandle)
+            if result == nil {
+                print("Uniffi callback interface LocalLlmProvider: handle missing in uniffiFree")
+            }
+        }
+    )]
+}
+
+private func uniffiCallbackInitLocalLlmProvider() {
+    uniffi_mango_core_fn_init_callback_vtable_localllmprovider(UniffiCallbackInterfaceLocalLlmProvider.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceLocalLlmProvider {
+    fileprivate static let handleMap = UniffiHandleMap<LocalLlmProvider>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceLocalLlmProvider : FfiConverter {
+    typealias SwiftType = LocalLlmProvider
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceLocalLlmProvider_lift(_ handle: UInt64) throws -> LocalLlmProvider {
+    return try FfiConverterCallbackInterfaceLocalLlmProvider.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceLocalLlmProvider_lower(_ v: LocalLlmProvider) -> UInt64 {
+    return FfiConverterCallbackInterfaceLocalLlmProvider.lower(v)
+}
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -7281,6 +9502,54 @@ fileprivate struct FfiConverterOptionTypeIngestionProgress: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeLocalModelDownloadProgress: FfiConverterRustBuffer {
+    typealias SwiftType = LocalModelDownloadProgress?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeLocalModelDownloadProgress.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeLocalModelDownloadProgress.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeTurnRoutingSummary: FfiConverterRustBuffer {
+    typealias SwiftType = TurnRoutingSummary?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeTurnRoutingSummary.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeTurnRoutingSummary.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeAttestationStatus: FfiConverterRustBuffer {
     typealias SwiftType = AttestationStatus?
 
@@ -7297,6 +9566,30 @@ fileprivate struct FfiConverterOptionTypeAttestationStatus: FfiConverterRustBuff
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeAttestationStatus.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeBackendRole: FfiConverterRustBuffer {
+    typealias SwiftType = BackendRole?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeBackendRole.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeBackendRole.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7629,6 +9922,81 @@ fileprivate struct FfiConverterSequenceTypeDocumentSummary: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeHybridProfile: FfiConverterRustBuffer {
+    typealias SwiftType = [HybridProfile]
+
+    public static func write(_ value: [HybridProfile], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeHybridProfile.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [HybridProfile] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [HybridProfile]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeHybridProfile.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeLocalModelPreset: FfiConverterRustBuffer {
+    typealias SwiftType = [LocalModelPreset]
+
+    public static func write(_ value: [LocalModelPreset], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeLocalModelPreset.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [LocalModelPreset] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [LocalModelPreset]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeLocalModelPreset.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeLocalModelSummary: FfiConverterRustBuffer {
+    typealias SwiftType = [LocalModelSummary]
+
+    public static func write(_ value: [LocalModelSummary], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeLocalModelSummary.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [LocalModelSummary] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [LocalModelSummary]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeLocalModelSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeMemorySummary: FfiConverterRustBuffer {
     typealias SwiftType = [MemorySummary]
 
@@ -7679,6 +10047,31 @@ fileprivate struct FfiConverterSequenceTypeOrchestratedComponent: FfiConverterRu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypePlatformHttpHeader: FfiConverterRustBuffer {
+    typealias SwiftType = [PlatformHttpHeader]
+
+    public static func write(_ value: [PlatformHttpHeader], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePlatformHttpHeader.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PlatformHttpHeader] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PlatformHttpHeader]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePlatformHttpHeader.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeProviderPreset: FfiConverterRustBuffer {
     typealias SwiftType = [ProviderPreset]
 
@@ -7696,6 +10089,31 @@ fileprivate struct FfiConverterSequenceTypeProviderPreset: FfiConverterRustBuffe
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeProviderPreset.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeTrustedProvider: FfiConverterRustBuffer {
+    typealias SwiftType = [TrustedProvider]
+
+    public static func write(_ value: [TrustedProvider], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTrustedProvider.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TrustedProvider] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TrustedProvider]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTrustedProvider.read(from: &buf))
         }
         return seq
     }
@@ -7761,6 +10179,21 @@ public func knownProviderPresets() -> [ProviderPreset]  {
 })
 }
 /**
+ * Built-in local model catalog shared by all platforms.
+ *
+ * Sources: Hugging Face model metadata APIs for
+ * `Qwen/Qwen2.5-1.5B-Instruct-GGUF?blobs=true` and
+ * `QuantFactory/Qwen2.5-0.5B-Instruct-GGUF?blobs=true`, verified
+ * 2026-06-23. Android uses the platform HTTPS stack for model downloads; the
+ * file is installed only after the pinned SHA-256 matches.
+ */
+public func localModelCatalog() -> [LocalModelPreset]  {
+    return try!  FfiConverterSequenceTypeLocalModelPreset.lift(try! rustCall() {
+    uniffi_mango_core_fn_func_local_model_catalog($0
+    )
+})
+}
+/**
  * Returns `true` when the given model id is known to accept multimodal image
  * inputs via the OpenAI-compatible `image_url` content part.
  *
@@ -7795,6 +10228,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_func_known_provider_presets() != 26978) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_mango_core_checksum_func_local_model_catalog() != 13685) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_mango_core_checksum_func_model_supports_vision() != 37098) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -7822,7 +10258,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_method_ffiapp_state() != 64379) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_constructor_ffiapp_new() != 30597) {
+    if (uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() != 4827) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_localgenerationcontext_emit_token() != 722) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled() != 30851) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress() != 7846) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_constructor_ffiapp_new() != 17337) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_appreconciler_reconcile() != 36412) {
@@ -7849,12 +10297,34 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_method_keychainprovider_delete() != 11222) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_mango_core_checksum_method_localllmprovider_load_model() != 31244) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_localllmprovider_download_model_file() != 41722) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_localllmprovider_platform_http_request() != 10857) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_localllmprovider_generate() != 30695) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_localllmprovider_unload() != 59285) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path() != 33154) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_localllmprovider_device_capability() != 48773) {
+        return InitializationResult.apiChecksumMismatch
+    }
 
     uniffiCallbackInitAppReconciler()
     uniffiCallbackInitBiometricProvider()
     uniffiCallbackInitEmbeddingProvider()
     uniffiCallbackInitFilePickerProvider()
     uniffiCallbackInitKeychainProvider()
+    uniffiCallbackInitLocalLlmProvider()
     return InitializationResult.ok
 }()
 

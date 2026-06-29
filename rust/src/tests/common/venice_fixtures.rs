@@ -22,7 +22,9 @@ pub fn golden_capture() -> serde_json::Value {
 /// Hex-decode the `intel_quote` field from the golden capture.
 pub fn golden_intel_quote_bytes() -> Vec<u8> {
     let v = golden_capture();
-    let hex_str = v["intel_quote"].as_str().expect("intel_quote present and string");
+    let hex_str = v["intel_quote"]
+        .as_str()
+        .expect("intel_quote present and string");
     hex::decode(hex_str).expect("intel_quote must be valid hex")
 }
 

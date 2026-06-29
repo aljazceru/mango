@@ -1,6 +1,9 @@
 use crate::llm::error::LlmError;
-use crate::llm::streaming::InternalEvent;
-use crate::{AppAction, BusyState, EmbeddingStatus, FfiApp};
+use crate::llm::streaming::{ChatMessage, ChatRole, InternalEvent};
+use crate::llm::{BackendConfig, TeeType};
+use crate::{AppAction, BusyState, CoreMsg, EmbeddingStatus, FfiApp};
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::time::Duration;
 
 /// Helper: create FfiApp and give it a moment to initialize.
@@ -11,6 +14,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullKeychainProvider),
         Box::new(crate::NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
     // Phase 8: VectorIndex init + document list load adds overhead; 150ms is stable in parallel test load.
@@ -54,6 +58,7 @@ fn test_send_message_starts_streaming() {
     let app = make_app();
     app.dispatch(AppAction::SendMessage {
         text: "Hello".into(),
+        force_role: None,
     });
     std::thread::sleep(Duration::from_millis(100));
     let state = app.state();
@@ -64,6 +69,131 @@ fn test_send_message_starts_streaming() {
         "Expected streaming or error, got: {:?}",
         state.busy_state
     );
+}
+
+#[test]
+fn test_qvac_local_server_streams_openai_compatible_chat() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock local server");
+    let addr = listener.local_addr().expect("mock local server address");
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept local chat request");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).expect("read request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let request_text = String::from_utf8_lossy(&request);
+                let content_length = request_text
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                let header_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|pos| pos + 4)
+                    .expect("header terminator");
+                while request.len().saturating_sub(header_end) < content_length {
+                    let read = stream.read(&mut buffer).expect("read request body");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                break;
+            }
+        }
+
+        let request_text = String::from_utf8_lossy(&request).to_string();
+        request_tx
+            .send(request_text)
+            .expect("send captured request");
+
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl-local\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"llama3.2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"LOCAL_\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-local\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"llama3.2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"SERVER_OK\"},\"finish_reason\":null}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write SSE response");
+    });
+
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let (tx, rx) = flume::unbounded();
+    let backend = BackendConfig {
+        id: "qvac-local".to_string(),
+        name: "Local server".to_string(),
+        base_url: format!("http://{addr}/v1/"),
+        api_key: String::new(),
+        models: vec!["llama3.2".to_string()],
+        tee_type: TeeType::Unknown,
+        max_concurrent_requests: 1,
+        supports_tool_use: false,
+    };
+
+    crate::llm::spawn_streaming_task(
+        &runtime,
+        &backend,
+        "llama3.2",
+        vec![ChatMessage {
+            role: ChatRole::User,
+            content: "desktop local server ping".to_string(),
+        }],
+        None,
+        tx,
+        None,
+    );
+
+    let mut text = String::new();
+    loop {
+        match rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("stream event from qvac-local mock server")
+        {
+            CoreMsg::InternalEvent(event) => match *event {
+                InternalEvent::StreamChunk { token } => text.push_str(&token),
+                InternalEvent::StreamDone => break,
+                InternalEvent::StreamError { error } => {
+                    panic!("qvac-local OpenAI-compatible stream errored: {error}")
+                }
+                other => panic!("unexpected stream event: {other:?}"),
+            },
+            _ => panic!("unexpected core message"),
+        }
+    }
+
+    let request_text = request_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("captured local server request");
+    assert!(
+        request_text.starts_with("POST /v1/chat/completions "),
+        "unexpected request path: {request_text}"
+    );
+    assert!(
+        request_text.contains("\"model\":\"llama3.2\"")
+            && request_text.contains("desktop local server ping")
+            && request_text.contains("\"stream\":true"),
+        "request did not look like an OpenAI-compatible streaming chat: {request_text}"
+    );
+    assert_eq!(text, "LOCAL_SERVER_OK");
+
+    server.join().expect("mock server completed");
 }
 
 // --- InternalEvent injection tests (LLMC-03) ---

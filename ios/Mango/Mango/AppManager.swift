@@ -65,7 +65,9 @@ private class IOSEmbeddingProvider: EmbeddingProvider {
 final class AppManager: AppReconciler, ObservableObject {
     let ffiApp: FfiApp
     var appState: AppState
+    var isReady: Bool
     private var lastRevApplied: UInt64
+    private var rehydratedDirectorySourceIds = Set<String>()
 
     init() {
         let fm = FileManager.default
@@ -84,32 +86,25 @@ final class AppManager: AppReconciler, ObservableObject {
             embedding = IOSEmbeddingProvider()
             embeddingStatus = .degraded
         }
+        let localLlm = IOSLocalLlmProvider()
         let biometric = BiometricProviderImpl()
-        let app = FfiApp(dataDir: dataDir, keychain: keychain, embeddingProvider: embedding, embeddingStatus: embeddingStatus, biometricProvider: biometric)
+        let app = FfiApp(
+            dataDir: dataDir,
+            keychain: keychain,
+            embeddingProvider: embedding,
+            embeddingStatus: embeddingStatus,
+            localLlmProvider: localLlm,
+            biometricProvider: biometric
+        )
         self.ffiApp = app
 
         let initial = app.state()
         self.appState = initial
+        self.isReady = false
         self.lastRevApplied = initial.rev
 
         app.listenForUpdates(reconciler: self)
-
-        // Rehydrate DirectorySyncScheduler.bookmarkCache from persisted
-        // directory_sources.bookmark_data so the first ScenePhase.active
-        // after cold launch can sync pre-existing sources without requiring
-        // the user to re-add the folder. Closes HI-01 / VERIFICATION truth #12.
-        for source in initial.directorySources {
-            do {
-                if let blob = try app.getDirectoryBookmark(sourceId: source.id) {
-                    DirectorySyncScheduler.cacheBookmark(sourceId: source.id, bookmarkData: blob)
-                } else {
-                    // Desktop/Android-shaped row (no bookmark) — expected; skip silently.
-                    logger.info("AppManager rehydrate: no bookmark for source \(source.id, privacy: .public)")
-                }
-            } catch {
-                logger.warning("AppManager rehydrate: getDirectoryBookmark failed for \(source.id, privacy: .public): \(error.localizedDescription)")
-            }
-        }
+        rehydrateDirectoryBookmarks(from: initial)
     }
 
     nonisolated func reconcile(update: AppUpdate) {
@@ -121,13 +116,36 @@ final class AppManager: AppReconciler, ObservableObject {
     private func apply(update: AppUpdate) {
         switch update {
         case .fullState(let s):
-            if s.rev <= lastRevApplied { return }
+            if s.rev < lastRevApplied { return }
             lastRevApplied = s.rev
             appState = s
+            isReady = true
+            rehydrateDirectoryBookmarks(from: s)
         }
     }
 
     func dispatch(_ action: AppAction) {
         ffiApp.dispatch(action: action)
+    }
+
+    private func rehydrateDirectoryBookmarks(from state: AppState) {
+        // Rehydrate DirectorySyncScheduler.bookmarkCache from persisted
+        // directory_sources.bookmark_data so foreground sync can run after cold
+        // launch even when the first actor-emitted state arrives with the same
+        // rev as the constructor snapshot.
+        for source in state.directorySources {
+            guard !rehydratedDirectorySourceIds.contains(source.id) else { continue }
+            do {
+                if let blob = try ffiApp.getDirectoryBookmark(sourceId: source.id) {
+                    DirectorySyncScheduler.cacheBookmark(sourceId: source.id, bookmarkData: blob)
+                } else {
+                    // Desktop/Android-shaped row (no bookmark) is expected.
+                    logger.info("AppManager rehydrate: no bookmark for source \(source.id, privacy: .public)")
+                }
+                rehydratedDirectorySourceIds.insert(source.id)
+            } catch {
+                logger.warning("AppManager rehydrate: getDirectoryBookmark failed for \(source.id, privacy: .public): \(error.localizedDescription)")
+            }
+        }
     }
 }

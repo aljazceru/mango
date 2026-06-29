@@ -73,9 +73,11 @@ fun SettingsProvidersScreen(
     val presetKeys = remember { mutableStateMapOf<String, String>() }
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
     val presets = knownProviderPresets()
+        .filterNot { it.id == "qvac-local" }
     var addName by remember { mutableStateOf("") }
     var addUrl by remember { mutableStateOf("") }
     var addApiKey by remember { mutableStateOf("") }
+    var addModel by remember { mutableStateOf("") }
     var showApiKey by remember { mutableStateOf(false) }
     var addTeeType by remember { mutableStateOf("IntelTdx") }
     var teeExpanded by remember { mutableStateOf(false) }
@@ -112,7 +114,10 @@ fun SettingsProvidersScreen(
             }
 
             items(presets) { preset ->
-                val isEnabled = appState.backends.any { it.id == preset.id && it.hasApiKey }
+                val keyOptional = presetKeyOptionalProviders(preset.id, preset.teeType)
+                val isEnabled = appState.backends.any {
+                    it.id == preset.id && (it.hasApiKey || keyOptional)
+                }
                 val backend   = appState.backends.find { it.id == preset.id }
                 val att       = appState.attestationStatuses.find { it.backendId == preset.id }
                 val isOpen    = expanded[preset.id] == true
@@ -273,7 +278,7 @@ fun SettingsProvidersScreen(
                                     OutlinedTextField(
                                         value = presetKeys[preset.id] ?: "",
                                         onValueChange = { presetKeys[preset.id] = it },
-                                        label = { Text("API Key") },
+                                        label = { Text(if (keyOptional) "API Key (optional)" else "API Key") },
                                         modifier = Modifier.fillMaxWidth(),
                                         singleLine = true,
                                         shape = RoundedCornerShape(8.dp),
@@ -283,12 +288,12 @@ fun SettingsProvidersScreen(
                                     Button(
                                         onClick = {
                                             val key = (presetKeys[preset.id] ?: "").trim()
-                                            if (key.isNotEmpty()) {
+                                            if (key.isNotEmpty() || keyOptional) {
                                                 onDispatch(AppAction.AddBackendFromPreset(presetId = preset.id, apiKey = key))
                                                 presetKeys[preset.id] = ""
                                             }
                                         },
-                                        enabled = (presetKeys[preset.id] ?: "").isNotBlank(),
+                                        enabled = keyOptional || (presetKeys[preset.id] ?: "").isNotBlank(),
                                         modifier = Modifier.fillMaxWidth(),
                                         shape = RoundedCornerShape(8.dp),
                                         colors = ButtonDefaults.buttonColors(containerColor = if (isDark) DarkHealthy else LightHealthy)
@@ -397,6 +402,13 @@ fun SettingsProvidersScreen(
                                 }
                             }
                         )
+                        OutlinedTextField(
+                            value = addModel,
+                            onValueChange = { addModel = it },
+                            label = { Text("Model ID") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
                         ExposedDropdownMenuBox(
                             expanded = teeExpanded,
                             onExpandedChange = { teeExpanded = it },
@@ -435,15 +447,16 @@ fun SettingsProvidersScreen(
                                         baseUrl = addUrl,
                                         apiKey = addApiKey,
                                         teeType = parseTeeTypeProviders(addTeeType),
-                                        models = emptyList(),
+                                        models = listOf(addModel.trim()).filter { it.isNotEmpty() },
                                     )
                                 )
                                 addName = ""
                                 addUrl = ""
                                 addApiKey = ""
+                                addModel = ""
                                 addTeeType = "IntelTdx"
                             },
-                            enabled = addName.isNotBlank() && addUrl.isNotBlank() && addApiKey.isNotBlank(),
+                            enabled = addName.isNotBlank() && addUrl.isNotBlank() && addApiKey.isNotBlank() && addModel.isNotBlank(),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text("Add Provider")
@@ -485,6 +498,10 @@ private fun teeTypeLabelProviders(t: TeeType): String = when (t) {
     TeeType.NVIDIA_H100_CC -> "NVIDIA H100 CC"
     TeeType.AMD_SEV_SNP    -> "AMD SEV-SNP"
     TeeType.UNKNOWN        -> "Unknown"
+}
+
+private fun presetKeyOptionalProviders(id: String, teeType: TeeType): Boolean {
+    return id == "qvac-local" || teeType == TeeType.UNKNOWN
 }
 
 private fun parseTeeTypeProviders(value: String): TeeType = when (value) {

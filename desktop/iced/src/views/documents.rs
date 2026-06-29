@@ -176,31 +176,18 @@ pub fn view(state: &AppState, is_dark: bool) -> Element<'_, Message> {
         let mut list_children: Vec<Element<'_, Message>> = Vec::new();
 
         if !state.directory_sources.is_empty() {
-            list_children.push(
-                text("FOLDERS")
-                    .size(11)
-                    .color(muted_color)
-                    .into(),
-            );
+            list_children.push(text("FOLDERS").size(11).color(muted_color).into());
             for src in state.directory_sources.iter() {
-                list_children.push(
-                    crate::views::directory_sources::directory_source_compact_row(src, vc),
-                );
+                list_children
+                    .push(crate::views::directory_sources::directory_source_compact_row(src, vc));
             }
         }
 
         if !state.documents.is_empty() {
             if !state.directory_sources.is_empty() {
-                list_children.push(
-                    iced::widget::Space::new().height(Length::Fixed(8.0)).into(),
-                );
+                list_children.push(iced::widget::Space::new().height(Length::Fixed(8.0)).into());
             }
-            list_children.push(
-                text("DOCUMENTS")
-                    .size(11)
-                    .color(muted_color)
-                    .into(),
-            );
+            list_children.push(text("DOCUMENTS").size(11).color(muted_color).into());
             for doc in state.documents.iter() {
                 list_children.push(build_document_row(doc, vc));
             }

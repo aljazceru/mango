@@ -118,7 +118,13 @@ pub fn tinfoil_backend() -> BackendConfig {
         name: "Tinfoil".into(),
         base_url: "https://inference.tinfoil.sh/v1/".into(),
         api_key: std::env::var("TINFOIL_API_KEY").unwrap_or_default(),
-        models: vec!["meta-llama/Llama-3.3-70B-Instruct".into()],
+        models: vec![
+            "qwen3-vl-30b".into(),
+            "gemma4-31b".into(),
+            "kimi-k2-6".into(),
+            "llama3-3-70b".into(),
+            "gpt-oss-120b".into(),
+        ],
         tee_type: TeeType::IntelTdx,
         max_concurrent_requests: 5,
         supports_tool_use: true,
@@ -172,7 +178,16 @@ pub fn known_provider_presets() -> Vec<ProviderPreset> {
             name: "Redpill".into(),
             base_url: "https://api.redpill.ai/v1/".into(),
             tee_type: TeeType::IntelTdx,
-            description: "Intel TDX aggregator (Phala / NearAI / Chutes) \u{2014} multi-quote attestation".into(),
+            description:
+                "Intel TDX aggregator (Phala / NearAI / Chutes) \u{2014} multi-quote attestation"
+                    .into(),
+        },
+        ProviderPreset {
+            id: "qvac-local".into(),
+            name: "Local server".into(),
+            base_url: "http://127.0.0.1:11434/v1/".into(),
+            tee_type: TeeType::Unknown,
+            description: "OpenAI-compatible local server (Ollama / llama.cpp)".into(),
         },
     ]
 }

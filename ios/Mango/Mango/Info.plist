@@ -24,10 +24,6 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>UILaunchScreen</key>
     <dict/>
-    <key>UIRequiredDeviceCapabilities</key>
-    <array>
-        <string>armv7</string>
-    </array>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>

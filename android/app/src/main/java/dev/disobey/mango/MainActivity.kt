@@ -93,6 +93,7 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         var themeMode by mutableStateOf(prefs.getString("theme_mode", "system") ?: "system")
+        var fontSize by mutableStateOf(prefs.getString("font_size", "normal") ?: "normal")
 
         setContent {
             val useDarkTheme = when (themeMode) {
@@ -107,6 +108,11 @@ class MainActivity : AppCompatActivity() {
                     onThemeModeChanged = { newMode ->
                         themeMode = newMode
                         prefs.edit().putString("theme_mode", newMode).apply()
+                    },
+                    fontSize = fontSize,
+                    onFontSizeChanged = { newSize ->
+                        fontSize = newSize
+                        prefs.edit().putString("font_size", newSize).apply()
                     },
                 )
             }

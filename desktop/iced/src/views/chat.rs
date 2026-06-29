@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
+use iced::widget::image::{self as iced_image, Handle as ImageHandle};
 use iced::widget::markdown;
 use iced::widget::{
     button, center, column, container, pick_list, row, scrollable, text, text_input,
 };
 use iced::Theme;
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
-use iced::widget::image::{self as iced_image, Handle as ImageHandle};
 
-use mango_core::{AppAction, AppState, BusyState, UiMessage};
+use mango_core::{AppAction, AppState, BackendRole, BusyState, UiMessage};
 
 use crate::Message;
 
@@ -34,11 +34,20 @@ pub fn chat_view<'a>(
     parsed_messages: &'a HashMap<String, Vec<markdown::Item>>,
     show_docs_attachment_overlay: bool,
     show_conv_menu: bool,
+    force_remote_next: bool,
     show_tools_panel: bool,
     image_cache: &'a HashMap<String, ImageHandle>,
 ) -> Element<'a, Message> {
     let vc = crate::theme::view_colors(is_dark);
     let is_streaming = matches!(&state.busy_state, BusyState::Streaming { .. });
+    let is_chat_busy = matches!(
+        &state.busy_state,
+        BusyState::Loading { .. } | BusyState::Streaming { .. }
+    );
+    let is_attestation_loading = matches!(
+        &state.busy_state,
+        BusyState::Loading { message } if message.to_ascii_lowercase().contains("attestation")
+    );
 
     // ── Header ──────────────────────────────────────────────────────────────
     let conv_title = state
@@ -57,10 +66,7 @@ pub fn chat_view<'a>(
         _ => false,
     };
     let title_elem: Element<'_, Message> = if is_renaming_current {
-        let rename_text_val = rename_state
-            .as_ref()
-            .map(|(_, t)| t.as_str())
-            .unwrap_or("");
+        let rename_text_val = rename_state.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
         let rename_input = text_input("Conversation name", rename_text_val)
             .on_input(Message::RenameChanged)
             .on_submit(Message::SubmitRename)
@@ -120,9 +126,24 @@ pub fn chat_view<'a>(
         .and_then(|cid| state.conversations.iter().find(|c| c.id == cid))
         .map(|c| c.model_id.clone())
         .unwrap_or_default();
+    let current_backend_id = state
+        .current_conversation_id
+        .as_deref()
+        .and_then(|cid| state.conversations.iter().find(|c| c.id == cid))
+        .map(|c| c.backend_id.clone());
+    let active_hybrid_profile_id = current_backend_id
+        .as_deref()
+        .or(state.active_backend_id.as_deref())
+        .and_then(|id| id.strip_prefix("hybrid:"));
+    let active_hybrid_profile = active_hybrid_profile_id
+        .and_then(|profile_id| state.hybrid_profiles.iter().find(|p| p.id == profile_id));
 
     let model_picker: Element<'_, Message> = if available_models.is_empty() {
-        text("No models").size(14).into()
+        if let Some(profile) = active_hybrid_profile {
+            text(format!("Hybrid: {}", profile.name)).size(14).into()
+        } else {
+            text("No models").size(14).into()
+        }
     } else {
         let selected = if available_models.contains(&current_model) {
             Some(current_model.clone())
@@ -136,9 +157,10 @@ pub fn chat_view<'a>(
     };
 
     // Attestation dot next to the model picker (replaces separate badge widget in header)
-    let attest_status = state
-        .active_backend_id
-        .as_deref()
+    let attest_backend_id = active_hybrid_profile
+        .map(|profile| profile.remote_backend_id.as_str())
+        .or(state.active_backend_id.as_deref());
+    let attest_status = attest_backend_id
         .and_then(|id| {
             state
                 .attestation_statuses
@@ -168,6 +190,56 @@ pub fn chat_view<'a>(
         })
     });
 
+    let hybrid_buttons: Vec<Element<'_, Message>> = state
+        .hybrid_profiles
+        .iter()
+        .map(|profile| {
+            let active = active_hybrid_profile_id == Some(profile.id.as_str());
+            let label = if active {
+                format!("Hybrid: {}", profile.name)
+            } else {
+                format!("Use {}", profile.name)
+            };
+            let bg = if active { vc.accent_dim } else { vc.surface };
+            button(text(label).size(12).color(vc.text_dim))
+                .on_press(Message::UseHybridProfile(profile.id.clone()))
+                .padding(Padding::from([4u16, 10]))
+                .style(move |_theme, _status| button::Style {
+                    background: Some(Background::Color(bg)),
+                    border: Border {
+                        radius: 4.0.into(),
+                        color: vc.border,
+                        width: 1.0,
+                    },
+                    text_color: vc.text_dim,
+                    ..Default::default()
+                })
+                .into()
+        })
+        .collect();
+
+    let force_remote_btn: Option<Element<'_, Message>> = active_hybrid_profile.map(|_| {
+        let bg = if force_remote_next {
+            vc.accent_dim
+        } else {
+            vc.surface
+        };
+        button(text("Remote next").size(12).color(vc.text_dim))
+            .on_press(Message::ToggleForceRemoteNext)
+            .padding(Padding::from([4u16, 10]))
+            .style(move |_theme, _status| button::Style {
+                background: Some(Background::Color(bg)),
+                border: Border {
+                    radius: 4.0.into(),
+                    color: vc.border,
+                    width: 1.0,
+                },
+                text_color: vc.text_dim,
+                ..Default::default()
+            })
+            .into()
+    });
+
     // "..." button: toggles the conv options panel (Docs / Instructions / Tools)
     let menu_active_bg = vc.accent_dim;
     let menu_inactive_bg = vc.surface;
@@ -195,11 +267,64 @@ pub fn chat_view<'a>(
     }
     header_children.push(conv_menu_btn.into());
     header_children.push(model_picker);
+    for hybrid_button in hybrid_buttons {
+        header_children.push(hybrid_button);
+    }
+    if let Some(force_remote_btn) = force_remote_btn {
+        header_children.push(force_remote_btn);
+    }
 
     let header_row = row(header_children)
         .align_y(Alignment::Center)
         .spacing(8)
         .padding(Padding::from([8u16, 16]));
+
+    let route_chip: Option<Element<'_, Message>> = active_hybrid_profile.map(|profile| {
+        let (label, detail) = if force_remote_next {
+            (
+                format!(
+                    "Remote next turn · {}",
+                    compact_chat_model_name(&profile.remote_model_id)
+                ),
+                "Routing reason: user override".to_string(),
+            )
+        } else if let Some(route) = state.last_turn_routing.as_ref().filter(|route| {
+            route.profile_id.as_deref() == Some(profile.id.as_str())
+                && route.conversation_id.as_deref() == state.current_conversation_id.as_deref()
+        }) {
+            let label = match route.decision {
+                BackendRole::Local => "Answered locally · on-device".to_string(),
+                BackendRole::Remote => {
+                    if route.tee_verified {
+                        format!(
+                            "Escalated to {} · {} verified",
+                            route.provider_name, route.tee_label
+                        )
+                    } else {
+                        format!("Escalated to {} · verifying", route.provider_name)
+                    }
+                }
+            };
+            (label, format!("Routing reason: {}", route.reason))
+        } else {
+            (
+                "Hybrid ready · local by default".to_string(),
+                "Routing reason: local default".to_string(),
+            )
+        };
+        let surface = vc.surface;
+        container(column![
+            text(label).size(12),
+            text(detail).size(11).color(vc.text_dim)
+        ])
+        .padding(Padding::from([6u16, 16]))
+        .width(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(surface)),
+            ..Default::default()
+        })
+        .into()
+    });
 
     // ── Conversation options panel (replaces separate Instructions row + inline buttons) ──
     // Shown below the header when show_conv_menu is true.
@@ -382,8 +507,7 @@ pub fn chat_view<'a>(
         };
 
         // ── Export as Markdown button (quick/260421-tg6) ──
-        let export_enabled =
-            state.current_conversation_id.is_some() && !state.messages.is_empty();
+        let export_enabled = state.current_conversation_id.is_some() && !state.messages.is_empty();
         let export_bg = vc.surface;
         let export_text_color = if export_enabled {
             vc.text_dim
@@ -407,8 +531,7 @@ pub fn chat_view<'a>(
         let export_btn = export_btn_widget;
 
         // ── Fork button (quick/260423-93w) ──
-        let fork_enabled =
-            state.current_conversation_id.is_some() && !state.messages.is_empty();
+        let fork_enabled = state.current_conversation_id.is_some() && !state.messages.is_empty();
         let fork_bg = vc.surface;
         let fork_text_color = if fork_enabled { vc.text_dim } else { vc.muted };
         let fork_btn = button(text("Fork").size(13).color(fork_text_color))
@@ -431,9 +554,15 @@ pub fn chat_view<'a>(
         let secondary_surface = vc.secondary_surface;
         let accent = vc.accent;
         let menu_row = container(
-            row![docs_btn, tools_btn, fork_btn, export_btn, instructions_section_inner]
-                .spacing(12)
-                .align_y(Alignment::Center),
+            row![
+                docs_btn,
+                tools_btn,
+                fork_btn,
+                export_btn,
+                instructions_section_inner
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
         )
         .padding(Padding::from([8u16, 16]))
         .width(Length::Fill)
@@ -548,7 +677,13 @@ pub fn chat_view<'a>(
         .width(Length::Fill);
 
     // ── Compose bar ──────────────────────────────────────────────────────────
-    let compose_area = build_compose_bar(state, input_text, is_streaming, vc);
+    let compose_area = build_compose_bar(
+        state,
+        input_text,
+        is_chat_busy,
+        is_streaming || is_attestation_loading,
+        vc,
+    );
 
     // ── Document attachment overlay ───────────────────────────────────────────
     let docs_overlay: Option<Element<'_, Message>> = if show_docs_attachment_overlay {
@@ -625,6 +760,9 @@ pub fn chat_view<'a>(
             ..Default::default()
         })
         .into()];
+    if let Some(chip) = route_chip {
+        col_children.push(chip);
+    }
     if let Some(overlay) = docs_overlay {
         col_children.push(overlay);
     }
@@ -702,12 +840,13 @@ fn render_user_message<'a>(
     let surface = vc.surface;
 
     // IMG-07: render decrypted thumbnail when available
-    let thumbnail_elem: Option<Element<'_, Message>> = image_cache.get(&msg.id).map(|handle: &ImageHandle| {
-        iced_image::Image::new(handle.clone())
-            .width(Length::Fixed(240.0))
-            .content_fit(iced::ContentFit::Contain)
-            .into()
-    });
+    let thumbnail_elem: Option<Element<'_, Message>> =
+        image_cache.get(&msg.id).map(|handle: &ImageHandle| {
+            iced_image::Image::new(handle.clone())
+                .width(Length::Fixed(240.0))
+                .content_fit(iced::ContentFit::Contain)
+                .into()
+        });
 
     let content_elem: Element<'_, Message> = if msg.has_attachment {
         let attach_label = msg.attachment_name.as_deref().unwrap_or("attachment");
@@ -984,7 +1123,8 @@ fn build_error_bubble<'a>(error: &'a str, vc: crate::theme::ViewColors) -> Eleme
 fn build_compose_bar<'a>(
     state: &'a AppState,
     input_text: &'a str,
-    is_streaming: bool,
+    is_input_blocked: bool,
+    show_stop_button: bool,
     vc: crate::theme::ViewColors,
 ) -> Element<'a, Message> {
     // Pending attachment indicator above the input
@@ -1000,28 +1140,26 @@ fn build_compose_bar<'a>(
             } else {
                 format!("{} ({})", filename, size_display)
             };
-            row![
-                text(label)
-                    .size(13)
-                    .color(text_dim),
-                button(text("X").size(12))
-                    .on_press(Message::ClearAttachment)
-                    .padding(Padding::from([1u16, 4]))
-                    .style(move |_theme, _status| button::Style {
-                        background: None,
-                        text_color: destructive,
-                        ..Default::default()
-                    }),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .into()
+            let mut clear_btn = button(text("X").size(12))
+                .padding(Padding::from([1u16, 4]))
+                .style(move |_theme, _status| button::Style {
+                    background: None,
+                    text_color: destructive,
+                    ..Default::default()
+                });
+            if !is_input_blocked {
+                clear_btn = clear_btn.on_press(Message::ClearAttachment);
+            }
+
+            row![text(label).size(13).color(text_dim), clear_btn,]
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .into()
         });
 
     // Attach button
     let surface = vc.surface;
-    let attach_btn = button(text("Attach").size(14))
-        .on_press(Message::AttachFile)
+    let mut attach_btn = button(text("Attach").size(14))
         .padding(Padding::from([6u16, 12]))
         .style(move |_theme, _status| button::Style {
             background: Some(Background::Color(surface)),
@@ -1031,10 +1169,13 @@ fn build_compose_bar<'a>(
             },
             ..Default::default()
         });
+    if !is_input_blocked {
+        attach_btn = attach_btn.on_press(Message::AttachFile);
+    }
 
-    // Text input (disabled while streaming)
-    let msg_input: Element<'_, Message> = if is_streaming {
-        text_input("Streaming...", input_text)
+    // Text input is disabled while streaming or waiting on a send preflight.
+    let msg_input: Element<'_, Message> = if is_input_blocked {
+        text_input("Waiting...", input_text)
             .size(14)
             .padding(Padding::from([6u16, 10]))
             .into()
@@ -1051,7 +1192,7 @@ fn build_compose_bar<'a>(
     let accent = vc.accent;
     let muted = vc.muted;
     let secondary_surface = vc.secondary_surface;
-    let cta_btn: Element<'_, Message> = if is_streaming {
+    let cta_btn: Element<'_, Message> = if show_stop_button {
         button(text("Stop").size(14))
             .on_press(Message::DispatchAction(AppAction::StopGeneration))
             .padding(Padding::from([6u16, 16]))
@@ -1064,7 +1205,7 @@ fn build_compose_bar<'a>(
                 ..Default::default()
             })
             .into()
-    } else if !input_text.is_empty() {
+    } else if !input_text.is_empty() && !is_input_blocked {
         button(text("Send").size(14))
             .on_press(Message::SubmitMessage)
             .padding(Padding::from([6u16, 16]))
@@ -1128,4 +1269,12 @@ fn action_btn_style(
         text_color,
         ..Default::default()
     }
+}
+
+fn compact_chat_model_name(model_id: &str) -> String {
+    model_id
+        .rsplit('/')
+        .next()
+        .unwrap_or(model_id)
+        .replace(['_', '-'], " ")
 }

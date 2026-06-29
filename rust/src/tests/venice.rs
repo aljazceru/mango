@@ -28,9 +28,7 @@ fn attestation_url_format() {
         "https://api.venice.ai",
     );
     assert!(
-        url.ends_with(
-            "/api/v1/tee/attestation?model=e2ee-venice-uncensored-24b-p&nonce=abc123"
-        ),
+        url.ends_with("/api/v1/tee/attestation?model=e2ee-venice-uncensored-24b-p&nonce=abc123"),
         "unexpected URL: {url}"
     );
     assert!(url.starts_with("https://api.venice.ai"));
@@ -41,9 +39,9 @@ fn attestation_url_format() {
         "abc123",
         "https://api.venice.ai/api/v1/",
     );
-    assert!(url2.ends_with(
-        "/api/v1/tee/attestation?model=e2ee-venice-uncensored-24b-p&nonce=abc123"
-    ));
+    assert!(
+        url2.ends_with("/api/v1/tee/attestation?model=e2ee-venice-uncensored-24b-p&nonce=abc123")
+    );
 }
 
 #[test]
@@ -109,7 +107,10 @@ fn ecdh_aes_round_trip() {
     // (per-request randomness — VEN-07).
     let other_eph = EphemeralSecret::random(&mut thread_rng());
     let other_aes = derive_session_key(&other_eph, &server_pub_65).unwrap();
-    assert_ne!(client_aes, other_aes, "two ephemerals must derive different AES keys");
+    assert_ne!(
+        client_aes, other_aes,
+        "two ephemerals must derive different AES keys"
+    );
 }
 
 #[test]
@@ -124,7 +125,10 @@ fn envelope_round_trip() {
     // distinct envelopes.
     let e1 = seal_message(pt, &key, &eph_pub).unwrap();
     let e2 = seal_message(pt, &key, &eph_pub).unwrap();
-    assert_ne!(e1, e2, "fresh nonce per call (Pitfall 7) — envelopes must differ");
+    assert_ne!(
+        e1, e2,
+        "fresh nonce per call (Pitfall 7) — envelopes must differ"
+    );
 
     // Both envelopes round-trip with the same key.
     assert_eq!(open_envelope(&e1, &key).unwrap(), pt);
@@ -177,7 +181,10 @@ fn request_body_shape() {
 
     // System message (index 0): content encrypted to hex envelope.
     let sys_content = v["messages"][0]["content"].as_str().unwrap();
-    assert_ne!(sys_content, "you are helpful", "system content must be encrypted");
+    assert_ne!(
+        sys_content, "you are helpful",
+        "system content must be encrypted"
+    );
     assert!(sys_content.chars().all(|c| c.is_ascii_hexdigit()));
     // Min length: (65 + 12 + tag(16)) bytes hex-encoded = 2 * 93 = 186 hex chars
     // for a 0-byte plaintext; "you are helpful" = 15 bytes plaintext.

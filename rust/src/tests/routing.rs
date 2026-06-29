@@ -3,10 +3,14 @@ use std::time::{Duration, Instant};
 use crate::llm::backend::{BackendConfig, HealthStatus, TeeType};
 use crate::llm::router::{FailoverRouter, HealthState};
 use crate::persistence::queries::{
-    delete_backend, insert_backend, list_backend_health, list_backends,
-    update_backend_display_order, upsert_backend_health, BackendHealthRow, BackendRow,
+    delete_backend, delete_hybrid_profile, insert_backend, list_backend_health, list_backends,
+    list_hybrid_profiles, update_backend_display_order, upsert_backend_health,
+    upsert_hybrid_profile, BackendHealthRow, BackendRow,
 };
 use crate::persistence::Database;
+use crate::routing::{
+    resolve_turn_routing, BackendRole, HybridProfile, LocalPreprocessing, RoutingPolicy,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -25,6 +29,26 @@ fn test_backend(id: &str, models: Vec<&str>) -> BackendConfig {
 
 fn in_memory_db() -> Database {
     Database::open(":memory:").unwrap()
+}
+
+fn test_hybrid_profile() -> HybridProfile {
+    HybridProfile {
+        id: "local-tinfoil".to_string(),
+        name: "Local to Tinfoil".to_string(),
+        local_backend_id: "local-qwen".to_string(),
+        local_model_id: "qwen2.5".to_string(),
+        remote_backend_id: "tinfoil".to_string(),
+        remote_model_id: "qwen3-vl-30b".to_string(),
+        policy: RoutingPolicy {
+            escalate_if_attachment: true,
+            prefer_local_when_offline: true,
+            escalate_if_message_longer_than: Some(8),
+        },
+        preprocessing: LocalPreprocessing {
+            compress_history: false,
+            rewrite_rag_query: false,
+        },
+    }
 }
 
 // ── FailoverRouter: select_backend ───────────────────────────────────────────
@@ -454,4 +478,96 @@ fn test_mark_failed_429_independent_of_mark_failed() {
     );
     // consecutive_failures counter should be 2
     assert_eq!(router.health.get("a").unwrap().consecutive_failures, 2);
+}
+
+// ── Hybrid routing profiles ──────────────────────────────────────────────────
+
+#[test]
+fn test_hybrid_profile_crud_roundtrip() {
+    let db = in_memory_db();
+    let conn = db.conn();
+    let profile = test_hybrid_profile();
+
+    upsert_hybrid_profile(conn, &profile, 100).unwrap();
+    let profiles = list_hybrid_profiles(conn).unwrap();
+    assert_eq!(profiles, vec![profile.clone()]);
+
+    let updated = HybridProfile {
+        name: "Updated".to_string(),
+        policy: RoutingPolicy {
+            escalate_if_attachment: false,
+            prefer_local_when_offline: false,
+            escalate_if_message_longer_than: None,
+        },
+        preprocessing: LocalPreprocessing {
+            compress_history: true,
+            rewrite_rag_query: true,
+        },
+        ..profile
+    };
+    upsert_hybrid_profile(conn, &updated, 200).unwrap();
+    let mut expected = updated.clone();
+    expected.preprocessing = LocalPreprocessing::default();
+    assert_eq!(list_hybrid_profiles(conn).unwrap(), vec![expected.clone()]);
+
+    let loaded = crate::persistence::queries::get_hybrid_profile(conn, &updated.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.preprocessing, LocalPreprocessing::default());
+
+    delete_hybrid_profile(conn, &updated.id).unwrap();
+    assert!(list_hybrid_profiles(conn).unwrap().is_empty());
+}
+
+#[test]
+fn test_hybrid_cascade_attachment_routes_remote() {
+    let profile = test_hybrid_profile();
+    let route = resolve_turn_routing(&profile, "hello", true, None, true);
+    assert_eq!(route.decision, BackendRole::Remote);
+    assert_eq!(route.backend_id, "tinfoil");
+    assert_eq!(route.model_id, "qwen3-vl-30b");
+    assert_eq!(route.reason, "attachment present");
+}
+
+#[test]
+fn test_hybrid_cascade_offline_routes_local() {
+    let profile = test_hybrid_profile();
+    let route = resolve_turn_routing(&profile, "hello", false, None, false);
+    assert_eq!(route.decision, BackendRole::Local);
+    assert_eq!(route.backend_id, "local-qwen");
+    assert_eq!(route.model_id, "qwen2.5");
+    assert_eq!(route.reason, "remote unavailable");
+}
+
+#[test]
+fn test_hybrid_cascade_override_wins() {
+    let profile = test_hybrid_profile();
+    let route = resolve_turn_routing(&profile, "hello", false, Some(BackendRole::Remote), true);
+    assert_eq!(route.decision, BackendRole::Remote);
+    assert_eq!(route.backend_id, "tinfoil");
+    assert_eq!(route.reason, "user override");
+}
+
+#[test]
+fn test_hybrid_cascade_attachment_ignores_local_override() {
+    let profile = test_hybrid_profile();
+    let route = resolve_turn_routing(&profile, "hello", true, Some(BackendRole::Local), true);
+    assert_eq!(route.decision, BackendRole::Remote);
+    assert_eq!(route.backend_id, "tinfoil");
+    assert_eq!(route.model_id, "qwen3-vl-30b");
+    assert_eq!(route.reason, "attachment present");
+}
+
+#[test]
+fn test_hybrid_cascade_long_message_routes_remote() {
+    let profile = test_hybrid_profile();
+    let route = resolve_turn_routing(
+        &profile,
+        "This message is deliberately long enough to cross the tiny threshold.",
+        false,
+        None,
+        true,
+    );
+    assert_eq!(route.decision, BackendRole::Remote);
+    assert_eq!(route.reason, "message too long for local");
 }

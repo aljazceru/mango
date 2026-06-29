@@ -8,11 +8,17 @@ struct ContentView: View {
 
     /// Timestamp when the app last moved to background (D-10).
     @State private var backgroundedAt: Date? = nil
+    @State private var chatInputText: String = ""
 
     var body: some View {
+        let isReady = appManager.isReady
         let screen = appManager.appState.router.currentScreen
         Group {
-            switch screen {
+            if !isReady {
+                Color(.systemBackground)
+                    .ignoresSafeArea()
+            } else {
+                switch screen {
             case .locked:
                 LockScreen()
                     .environmentObject(appManager)
@@ -52,21 +58,47 @@ struct ContentView: View {
             case .settingsTools:
                 SettingsToolsView()
                     .environmentObject(appManager)
+            case .toolDiscovery, .contextvmToolDetail:
+                SettingsToolsView()
+                    .environmentObject(appManager)
+            case .trustedProviders:
+                SettingsProvidersView()
+                    .environmentObject(appManager)
             case .agents:
                 AgentSessionListView()
                     .environmentObject(appManager)
-            case .chat(let conversationId):
+            case .chat:
                 ChatView(
                     state: appManager.appState,
-                    inputText: .constant(""),
-                    onSend: {},
+                    inputText: $chatInputText,
+                    onSend: { forceRole in
+                        let text = chatInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !text.isEmpty else { return }
+                        appManager.dispatch(.sendMessage(text: text, forceRole: forceRole))
+                        chatInputText = ""
+                    },
                     onStop: { appManager.dispatch(.stopGeneration) },
                     onRetry: { appManager.dispatch(.retryLastMessage) },
                     onEdit: { id, text in appManager.dispatch(.editMessage(messageId: id, newText: text)) },
                     onCopy: { text in UIPasteboard.general.string = text },
-                    onAttach: {},
+                    onAttach: { filename, content, sizeBytes in
+                        appManager.dispatch(.attachFile(
+                            filename: filename,
+                            content: content,
+                            sizeBytes: sizeBytes
+                        ))
+                    },
                     onClearAttachment: { appManager.dispatch(.clearAttachment) },
                     onSelectModel: { model in appManager.dispatch(.selectModel(modelId: model)) },
+                    onUseHybridProfile: { profileId in
+                        if let convId = appManager.appState.currentConversationId {
+                            appManager.dispatch(.overrideConversationBackend(
+                                conversationId: convId,
+                                backendId: "hybrid:\(profileId)"
+                            ))
+                        }
+                        appManager.dispatch(.setActiveHybridProfile(profileId: profileId))
+                    },
                     onSetSystemPrompt: { prompt in appManager.dispatch(.setSystemPrompt(prompt: prompt)) },
                     onSetToolsEnabled: { enabled in
                         if let convId = appManager.appState.currentConversationId {
@@ -83,6 +115,7 @@ struct ContentView: View {
                 .environmentObject(appManager)
             case .home:
                 homeView
+                }
             }
         }
         // D-10: Record when app backgrounds; check elapsed time on return to foreground.

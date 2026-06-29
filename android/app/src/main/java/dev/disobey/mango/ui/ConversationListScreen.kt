@@ -110,7 +110,7 @@ fun ConversationListScreen(
                                 deleteTarget = conversation.id
                                 false // let confirmation dialog handle the actual delete
                             } else false
-                        },
+                        }
                     )
 
                     SwipeToDismissBox(

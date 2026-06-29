@@ -454,8 +454,9 @@ pub(crate) fn dispatch_web_search(
 
     let key = brave_api_key.to_string();
     let result = runtime.block_on(async move {
+        crate::net::tls::ensure_default_crypto_provider();
         let client = reqwest::Client::builder()
-            .hickory_dns(false)
+            .no_hickory_dns()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
@@ -520,8 +521,9 @@ pub(crate) fn dispatch_fetch_url(args_str: &str, runtime: &tokio::runtime::Runti
 
     let url_for_error = url.clone();
     let result = runtime.block_on(async move {
+        crate::net::tls::ensure_default_crypto_provider();
         let client = reqwest::Client::builder()
-            .hickory_dns(false)
+            .no_hickory_dns()
             .timeout(Duration::from_secs(15))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());

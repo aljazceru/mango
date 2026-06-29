@@ -12,6 +12,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.Text
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +32,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -90,6 +95,10 @@ fun SettingsToolDiscoveryScreen(
     // recomposition across discovery state transitions.
     var query by remember { mutableStateOf("") }
 
+    // Provider filter state (null = all providers)
+    var selectedProvider by remember { mutableStateOf<String?>(null) }
+    var providerMenuExpanded by remember { mutableStateOf(false) }
+
     // Auto-fire discovery on first composition (UI-SPEC §C "pull on open").
     // The Rust core preserves the cached `contextvm_tools` list across the
     // Loading transition, so the UI can render cached rows immediately.
@@ -102,18 +111,68 @@ fun SettingsToolDiscoveryScreen(
     // Phase 36: live filter, no debounce. Cardinality is bounded by Nostr
     // discovery (tens, not thousands) — O(N) substring scan per keystroke
     // is trivially fast (T-36-02-D1 accepted).
-    val filteredTools by remember(appState.contextvmTools, query) {
+    val filteredTools by remember(appState.contextvmTools, query, selectedProvider) {
         derivedStateOf {
             val q = query.trim().lowercase()
-            if (q.isEmpty()) {
-                appState.contextvmTools
-            } else {
-                appState.contextvmTools.filter { tool ->
+            appState.contextvmTools.filter { tool ->
+                // Text search filter
+                val textMatch = if (q.isEmpty()) {
+                    true
+                } else {
                     tool.name.lowercase().contains(q) ||
                         tool.description.lowercase().contains(q) ||
-                        (tool.providerDisplayName ?: "").lowercase().contains(q)
+                        (tool.providerDisplayName ?: "").lowercase().contains(q) ||
+                        (tool.providerName ?: "").lowercase().contains(q)
                 }
+
+                // Provider filter (Phase 37: filter by provider pubkey)
+                val providerMatch = if (selectedProvider == null) {
+                    true
+                } else {
+                    tool.providerPubkey == selectedProvider
+                }
+
+                textMatch && providerMatch
             }
+        }
+    }
+
+    // Extract unique providers from the tool list (Phase 37: use provider_name from Nostr profile)
+    val uniqueProviders by remember(appState.contextvmTools) {
+        derivedStateOf {
+            appState.contextvmTools
+                .map { tool ->
+                    // Use provider_name (from Nostr profile) if available, otherwise fall back to
+                    // provider_display_name, and finally to npub if neither is available
+                    val displayName = tool.providerName
+                        ?: tool.providerDisplayName
+                        ?: if (tool.npub.length > 8) "${tool.npub.substring(0, 8)}…" else tool.npub
+                    Pair(displayName, tool.providerPubkey)
+                }
+                .distinctBy { it.second } // Dedup by pubkey
+                .sortedBy { it.first }
+        }
+    }
+
+    // Get the display name for the selected provider
+    val selectedProviderDisplayName = selectedProvider?.let { pubkey ->
+        uniqueProviders.find { it.second == pubkey }?.first
+    }
+
+    // Phase 37: group filtered tools by provider for display
+    val groupedTools by remember(filteredTools) {
+        derivedStateOf {
+            filteredTools
+                .groupBy { it.providerPubkey }
+                .toSortedMap { pk1, pk2 ->
+                    val name1 = filteredTools.find { it.providerPubkey == pk1 }?.let { tool ->
+                        tool.providerName ?: tool.providerDisplayName ?: tool.npub
+                    } ?: pk1
+                    val name2 = filteredTools.find { it.providerPubkey == pk2 }?.let { tool ->
+                        tool.providerName ?: tool.providerDisplayName ?: tool.npub
+                    } ?: pk2
+                    name1.compareTo(name2)
+                }
         }
     }
 
@@ -153,6 +212,53 @@ fun SettingsToolDiscoveryScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             )
+
+            // Provider filter dropdown (Phase 37: use provider_name from Nostr profile)
+            ExposedDropdownMenuBox(
+                expanded = providerMenuExpanded,
+                onExpandedChange = { providerMenuExpanded = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+            ) {
+                OutlinedTextField(
+                    value = selectedProviderDisplayName ?: "All Providers",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Filter by provider") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerMenuExpanded) },
+                    modifier = Modifier
+                        .menuAnchor()
+                        .fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                    ),
+                )
+                ExposedDropdownMenu(
+                    expanded = providerMenuExpanded,
+                    onDismissRequest = { providerMenuExpanded = false },
+                ) {
+                    // "All Providers" option
+                    DropdownMenuItem(
+                        text = { Text("All Providers") },
+                        onClick = {
+                            selectedProvider = null
+                            providerMenuExpanded = false
+                        },
+                    )
+                    // Provider options
+                    uniqueProviders.forEach { (displayName, pubkey) ->
+                        DropdownMenuItem(
+                            text = { Text(displayName) },
+                            onClick = {
+                                selectedProvider = pubkey
+                                providerMenuExpanded = false
+                            },
+                        )
+                    }
+                }
+            }
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
@@ -165,8 +271,8 @@ fun SettingsToolDiscoveryScreen(
                         if (appState.contextvmTools.isEmpty()) {
                             LoadingState()
                         } else {
-                            ToolListOrEmptySearch(
-                                tools = filteredTools,
+                            ToolListGroupedOrEmptySearch(
+                                groupedTools = groupedTools,
                                 query = query,
                                 onToggle = { tool, enabled ->
                                     onDispatch(
@@ -193,8 +299,8 @@ fun SettingsToolDiscoveryScreen(
                         if (appState.contextvmTools.isEmpty()) {
                             EmptyState(onRetry = { onDispatch(AppAction.RetryContextvmDiscovery) })
                         } else {
-                            ToolListOrEmptySearch(
-                                tools = filteredTools,
+                            ToolListGroupedOrEmptySearch(
+                                groupedTools = groupedTools,
                                 query = query,
                                 onToggle = { tool, enabled ->
                                     onDispatch(
@@ -276,6 +382,67 @@ private fun ErrorState(onRetry: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Button(onClick = onRetry) { Text("Try again") }
+    }
+}
+
+/**
+ * Phase 37 — renders either the grouped tool list with provider headers or the centered
+ * "No tools match \"{query}\"" caption when a non-empty query yields no results.
+ */
+@Composable
+private fun ToolListGroupedOrEmptySearch(
+    groupedTools: Map<String, List<DiscoverableTool>>,
+    query: String,
+    onToggle: (DiscoverableTool, Boolean) -> Unit,
+    onRowTap: (DiscoverableTool) -> Unit,
+) {
+    val totalTools = groupedTools.values.sumOf { it.size }
+
+    if (totalTools == 0 && query.trim().isNotEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            // Locked copy per UI-SPEC §States M.
+            // Straight ASCII quotes (not curly) — UI-SPEC §Copywriting Contract.
+            Text(
+                "No tools match \"${query}\"",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    } else {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
+            contentPadding = PaddingValues(vertical = 8.dp),
+        ) {
+            groupedTools.forEach { (providerPubkey, tools) ->
+                // Get provider name for header
+                val providerName = tools.firstOrNull()?.let { tool ->
+                    tool.providerName ?: tool.providerDisplayName ?: if (tool.npub.length > 8) "${tool.npub.substring(0, 8)}…" else tool.npub
+                } ?: providerPubkey
+
+                // Provider header
+                item {
+                    Text(
+                        text = providerName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+                    )
+                }
+
+                // Tool rows for this provider
+                items(tools, key = { it.id }) { tool ->
+                    ToolRow(tool = tool, onToggle = onToggle, onRowTap = onRowTap)
+                }
+            }
+        }
     }
 }
 

@@ -42,10 +42,7 @@ fn dispatch_unknown_shape_fails_closed() {
 
 #[test]
 fn quote_bytes_hex_round_trip() {
-    let hex_quote = shape_a_value()["intel_quote"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let hex_quote = shape_a_value()["intel_quote"].as_str().unwrap().to_string();
     let bytes = quote_bytes(&hex_quote).unwrap();
     assert!(bytes.len() >= 1000, "TDX v4 quote ≈ 5006 bytes");
     assert_eq!(

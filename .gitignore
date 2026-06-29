@@ -31,9 +31,12 @@ target/
 build/
 android/local.properties
 android/app/build/
+android/app/.cxx/
 android/app/src/main/jniLibs/
 android/.gradle/
 android/.kotlin/
+__pycache__/
+*.pyc
 # iOS/Xcode generated files
 ios/Frameworks/
 *.xcodeproj/xcuserdata/
@@ -47,6 +50,7 @@ staging/
 .claude/
 # Staged artifacts waiting for manual review before deletion
 to-delete/
+artifacts/*
 # Note: flake.lock is intentionally NOT ignored -- it pins exact dependency versions
 SECURITY_REVIEW.md
 local.properties
@@ -62,6 +66,7 @@ local.properties
 *.jks
 *.credential*
 brave.txt
+macpass.txt
 
 # Database and log files
 *.db

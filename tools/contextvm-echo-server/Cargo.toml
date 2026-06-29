@@ -1,0 +1,20 @@
+[package]
+name = "contextvm-echo-server"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+description = "Local contextvm echo server for live integration testing"
+
+[[bin]]
+name = "contextvm-echo-server"
+path = "src/main.rs"
+
+[dependencies]
+contextvm-sdk = { version = "0.1.1", features = ["rmcp"] }
+rmcp = { version = "0.16.0", features = ["server", "macros", "schemars"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nostr-sdk = "0.43"
+anyhow = "1"

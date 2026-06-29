@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust", "uniffi-bindgen", "desktop/iced"]
+members = ["rust", "uniffi-bindgen", "desktop/iced", "tools/contextvm-echo-server"]
 resolver = "2"
 
 [workspace.package]

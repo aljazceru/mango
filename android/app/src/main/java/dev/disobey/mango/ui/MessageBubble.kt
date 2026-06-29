@@ -40,8 +40,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -69,26 +72,35 @@ fun MessageBubble(
     onRetry: () -> Unit,
     onEdit: () -> Unit,
     modifier: Modifier = Modifier,
+    fontScale: Float = 1f,
     // IMG-07: decrypt-on-read callback; null when DEK unavailable
     onReadEncryptedImage: ((String) -> ByteArray)? = null,
 ) {
-    when (message.role) {
-        "user" -> UserBubble(
-            message = message,
-            onCopy = onCopy,
-            onEdit = onEdit,
-            onReadEncryptedImage = onReadEncryptedImage,
-            modifier = modifier,
-        )
-        "assistant" -> AssistantBubble(
-            message = message,
-            isLastAssistant = isLastAssistant,
-            isStreaming = isStreaming,
-            onCopy = onCopy,
-            onRetry = onRetry,
-            modifier = modifier,
-        )
-        else -> SystemBubble(message = message, modifier = modifier)
+    val density = LocalDensity.current
+    val scaledDensity = if (fontScale != 1f) {
+        Density(density.density, density.fontScale * fontScale)
+    } else {
+        density
+    }
+    CompositionLocalProvider(LocalDensity provides scaledDensity) {
+        when (message.role) {
+            "user" -> UserBubble(
+                message = message,
+                onCopy = onCopy,
+                onEdit = onEdit,
+                onReadEncryptedImage = onReadEncryptedImage,
+                modifier = modifier,
+            )
+            "assistant" -> AssistantBubble(
+                message = message,
+                isLastAssistant = isLastAssistant,
+                isStreaming = isStreaming,
+                onCopy = onCopy,
+                onRetry = onRetry,
+                modifier = modifier,
+            )
+            else -> SystemBubble(message = message, modifier = modifier)
+        }
     }
 }
 
@@ -188,32 +200,46 @@ private fun AssistantBubble(
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
         ) {
             Markdown(
                 content = message.content,
                 colors = markdownColor(),
                 typography = markdownTypography(
-                    h1 = MaterialTheme.typography.titleLarge.copy(
+                    h1 = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                     ),
-                    h2 = MaterialTheme.typography.titleMedium.copy(
+                    h2 = MaterialTheme.typography.titleSmall.copy(
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                     ),
-                    h3 = MaterialTheme.typography.titleSmall.copy(
+                    h3 = MaterialTheme.typography.bodyLarge.copy(
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                     ),
-                    h4 = MaterialTheme.typography.bodyLarge.copy(
+                    h4 = MaterialTheme.typography.bodyMedium.copy(
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                     ),
-                    h5 = MaterialTheme.typography.bodyMedium.copy(
+                    h5 = MaterialTheme.typography.bodySmall.copy(
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                     ),
                     h6 = MaterialTheme.typography.bodySmall.copy(
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                     ),
+                    text = MaterialTheme.typography.bodyMedium,
+                    paragraph = MaterialTheme.typography.bodyMedium,
+                    bullet = MaterialTheme.typography.bodyMedium,
+                    ordered = MaterialTheme.typography.bodyMedium,
+                    list = MaterialTheme.typography.bodyMedium,
+                    table = MaterialTheme.typography.bodySmall,
+                    code = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    ),
+                    inlineCode = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    ),
                 ),
                 modifier = Modifier
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
             )
         }
         // RAG context indicator (D-07): shown when documents contributed context
@@ -273,7 +299,15 @@ private fun SystemBubble(
 fun StreamingMessageBubble(
     text: String,
     modifier: Modifier = Modifier,
+    fontScale: Float = 1f,
 ) {
+    val density = LocalDensity.current
+    val scaledDensity = if (fontScale != 1f) {
+        Density(density.density, density.fontScale * fontScale)
+    } else {
+        density
+    }
+    CompositionLocalProvider(LocalDensity provides scaledDensity) {
     Column(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.Start,
@@ -298,6 +332,7 @@ fun StreamingMessageBubble(
             modifier = Modifier.padding(start = 16.dp),
         )
     }
+    } // end CompositionLocalProvider
 }
 
 // MARK: - Thinking Indicator Bubble

@@ -7,7 +7,7 @@ use std::time::Duration as StdDuration;
 
 use mango_core::embedding::desktop::DesktopEmbeddingProvider;
 use mango_core::{
-    AppAction, AppReconciler, AppState, AppUpdate, DesktopKeychainProvider,
+    AppAction, AppReconciler, AppState, AppUpdate, BackendRole, DesktopKeychainProvider,
     DirectoryFileEntry, FfiApp, NullBiometricProvider, NullEmbeddingProvider, OnboardingStep,
     Screen, TeeType,
 };
@@ -85,6 +85,35 @@ fn load_preferences() -> Preferences {
         .unwrap_or_default()
 }
 
+fn preset_allows_empty_api_key(preset_id: &str) -> bool {
+    mango_core::known_provider_presets()
+        .into_iter()
+        .any(|preset| {
+            preset.id == preset_id
+                && (preset.id == "qvac-local" || preset.tee_type == TeeType::Unknown)
+        })
+}
+
+fn action_clears_force_remote_next(action: &AppAction) -> bool {
+    matches!(
+        action,
+        AppAction::SetActiveBackend { .. }
+            | AppAction::NewConversation
+            | AppAction::LoadConversation { .. }
+            | AppAction::ForkConversation { .. }
+            | AppAction::DeleteConversation { .. }
+            | AppAction::DeleteAllConversations
+            | AppAction::DeleteAllData
+            | AppAction::SelectModel { .. }
+            | AppAction::RemoveBackend { .. }
+            | AppAction::SetDefaultBackend { .. }
+            | AppAction::SaveHybridProfile { .. }
+            | AppAction::DeleteHybridProfile { .. }
+            | AppAction::SetActiveHybridProfile { .. }
+            | AppAction::OverrideConversationBackend { .. }
+    )
+}
+
 fn save_preferences(prefs: &Preferences) {
     let path = preferences_path();
     if let Some(parent) = path.parent() {
@@ -137,6 +166,7 @@ fn sanitize_filename(title: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn tee_type_to_str(tee: &TeeType) -> &'static str {
     match tee {
         TeeType::IntelTdx => "IntelTdx",
@@ -225,6 +255,7 @@ impl AppManager {
             Box::new(DesktopKeychainProvider),
             embedding_provider,
             embedding_status,
+            Box::new(mango_core::NullLocalLlmProvider),
             Box::new(NullBiometricProvider),
         );
         let (notify_tx, update_rx) = flume::unbounded();
@@ -313,6 +344,8 @@ enum App {
         show_docs_attachment_overlay: bool,
         // Conversation options menu (Docs/Instructions/Tools panel) local state
         show_conv_menu: bool,
+        // Hybrid routing one-shot override for the next submitted message.
+        force_remote_next: bool,
         // Tools sub-panel within the conv menu (individual tool toggles)
         show_tools_panel: bool,
         // Memory edit state: (memory_id, current_edit_text) when user is editing a memory
@@ -359,6 +392,8 @@ enum App {
         // ── Phase 36 — Tool Discovery / Tool Detail UI-state ──
         /// Live search query for the Tool Discovery list (no debounce).
         contextvm_search_query: String,
+        /// Selected provider filter for tool discovery (None = all providers).
+        contextvm_provider_filter: Option<String>,
         /// Inline copy-confirmation status line shown on the Tool Detail
         /// screen for ~2 seconds after a Copy action.
         contextvm_copy_status: Option<String>,
@@ -391,6 +426,8 @@ enum Message {
     AttachFile,
     ClearAttachment,
     SelectModel(String),
+    UseHybridProfile(String),
+    ToggleForceRemoteNext,
     /// Fork the currently-loaded conversation (quick/260423-93w).
     ForkConversation,
     // System prompt (per CHAT-11 / D-09)
@@ -446,9 +483,14 @@ enum Message {
     // Phase 35 — Tool Discovery "Try again" / refresh tap.
     ContextvmRetryClicked,
     // Phase 35 — per-tool Switch toggled in Tool Discovery list.
-    ContextvmToolToggled { tool_id: String, enabled: bool },
+    ContextvmToolToggled {
+        tool_id: String,
+        enabled: bool,
+    },
     // Phase 36 — Tool Discovery search filter input changed.
     ContextvmSearchChanged(String),
+    /// Provider filter changed for tool discovery (None = all providers).
+    ContextvmProviderFilterChanged(Option<String>),
     // Phase 36 — Copy actions on the Tool Detail sub-screen.
     CopyNpub(String),
     CopyHex(String),
@@ -590,6 +632,7 @@ impl App {
                     onboarding_show_learn_more: false,
                     show_docs_attachment_overlay: false,
                     show_conv_menu: false,
+                    force_remote_next: false,
                     show_tools_panel: false,
                     memory_edit_state: None,
                     settings_brave_api_key: String::new(),
@@ -614,6 +657,7 @@ impl App {
                     dir_watched_paths: dir_watched_paths.clone(),
                     // Phase 36
                     contextvm_search_query: String::new(),
+                    contextvm_provider_filter: None,
                     contextvm_copy_status: None,
                     contextvm_schema_expanded: false,
                 }
@@ -708,6 +752,7 @@ impl App {
                 onboarding_show_learn_more,
                 show_docs_attachment_overlay,
                 show_conv_menu,
+                force_remote_next,
                 show_tools_panel,
                 memory_edit_state,
                 settings_brave_api_key,
@@ -731,6 +776,7 @@ impl App {
                 dir_in_flight,
                 dir_watched_paths,
                 contextvm_search_query,
+                contextvm_provider_filter,
                 contextvm_copy_status,
                 contextvm_schema_expanded,
             } => {
@@ -740,8 +786,7 @@ impl App {
                         // Parse new completed assistant messages for markdown rendering
                         // (per iced docs: store Vec<markdown::Item> in app state)
                         for msg in &latest.messages {
-                            if msg.role == "assistant" && !parsed_messages.contains_key(&msg.id)
-                            {
+                            if msg.role == "assistant" && !parsed_messages.contains_key(&msg.id) {
                                 let items: Vec<iced::widget::markdown::Item> =
                                     iced::widget::markdown::parse(&msg.content).collect();
                                 parsed_messages.insert(msg.id.clone(), items);
@@ -787,9 +832,7 @@ impl App {
                         // with image_path not yet in the cache.
                         let mut thumb_tasks: Vec<Task<Message>> = Vec::new();
                         for msg in &latest.messages {
-                            if msg.image_path.is_some()
-                                && !image_cache.contains_key(&msg.id)
-                            {
+                            if msg.image_path.is_some() && !image_cache.contains_key(&msg.id) {
                                 let msg_id = msg.id.clone();
                                 let ffi = manager.ffi.clone();
                                 thumb_tasks.push(Task::perform(
@@ -803,12 +846,10 @@ impl App {
                                         .and_then(|r| r.ok())
                                     },
                                     |result| match result {
-                                        Some((message_id, bytes)) => {
-                                            Message::ThumbnailLoaded {
-                                                message_id,
-                                                handle: iced::widget::image::Handle::from_bytes(bytes),
-                                            }
-                                        }
+                                        Some((message_id, bytes)) => Message::ThumbnailLoaded {
+                                            message_id,
+                                            handle: iced::widget::image::Handle::from_bytes(bytes),
+                                        },
                                         None => Message::CoreUpdated, // no-op on failure
                                     },
                                 ));
@@ -833,6 +874,9 @@ impl App {
                     }
 
                     Message::DispatchAction(action) => {
+                        if action_clears_force_remote_next(&action) {
+                            *force_remote_next = false;
+                        }
                         manager.dispatch(action);
                     }
 
@@ -843,7 +887,15 @@ impl App {
                     Message::SubmitMessage => {
                         let text_to_send = input_text.trim().to_string();
                         if !text_to_send.is_empty() {
-                            manager.dispatch(AppAction::SendMessage { text: text_to_send });
+                            manager.dispatch(AppAction::SendMessage {
+                                text: text_to_send,
+                                force_role: if *force_remote_next {
+                                    Some(BackendRole::Remote)
+                                } else {
+                                    None
+                                },
+                            });
+                            *force_remote_next = false;
                             *input_text = String::new();
                         }
                     }
@@ -851,6 +903,7 @@ impl App {
                     Message::OpenConversation(id) => {
                         *show_system_prompt_input = false;
                         *system_prompt_text = String::new();
+                        *force_remote_next = false;
                         manager.dispatch(AppAction::LoadConversation {
                             conversation_id: id,
                         });
@@ -973,8 +1026,7 @@ impl App {
                                         .add_filter("Images", &["jpg", "jpeg", "png"])
                                         .add_filter("Text", &["txt", "md", "json", "csv", "log"])
                                 } else {
-                                    dialog
-                                        .add_filter("Text", &["txt", "md", "json", "csv", "log"])
+                                    dialog.add_filter("Text", &["txt", "md", "json", "csv", "log"])
                                 };
                                 let path = dialog.pick_file()?;
                                 let filename = path
@@ -986,16 +1038,14 @@ impl App {
                                     .and_then(|e| e.to_str())
                                     .unwrap_or("")
                                     .to_ascii_lowercase();
-                                let is_image =
-                                    matches!(ext.as_str(), "jpg" | "jpeg" | "png");
+                                let is_image = matches!(ext.as_str(), "jpg" | "jpeg" | "png");
 
                                 if is_image {
                                     // Use absolute path for T-31-01 mitigation. Fall back
                                     // to the original path if canonicalize fails; rfd
                                     // returns absolute paths on all supported platforms.
-                                    let abs_path = path
-                                        .canonicalize()
-                                        .unwrap_or_else(|_| path.clone());
+                                    let abs_path =
+                                        path.canonicalize().unwrap_or_else(|_| path.clone());
                                     let mime = if ext == "png" {
                                         "image/png".to_string()
                                     } else {
@@ -1018,9 +1068,8 @@ impl App {
                                         }
                                         Err(_) => {
                                             manager_clone.dispatch(AppAction::ShowToast {
-                                                message:
-                                                    "This file type cannot be read as text."
-                                                        .to_string(),
+                                                message: "This file type cannot be read as text."
+                                                    .to_string(),
                                             });
                                         }
                                     }
@@ -1039,6 +1088,21 @@ impl App {
 
                     Message::SelectModel(model_id) => {
                         manager.dispatch(AppAction::SelectModel { model_id });
+                    }
+
+                    Message::UseHybridProfile(profile_id) => {
+                        if let Some(conversation_id) = state.current_conversation_id.clone() {
+                            manager.dispatch(AppAction::OverrideConversationBackend {
+                                conversation_id,
+                                backend_id: format!("hybrid:{profile_id}"),
+                            });
+                        }
+                        manager.dispatch(AppAction::SetActiveHybridProfile { profile_id });
+                        *force_remote_next = false;
+                    }
+
+                    Message::ToggleForceRemoteNext => {
+                        *force_remote_next = !*force_remote_next;
                     }
 
                     Message::ToggleSystemPromptInput => {
@@ -1128,7 +1192,7 @@ impl App {
                             .get(&preset_id)
                             .cloned()
                             .unwrap_or_default();
-                        if !api_key.trim().is_empty() {
+                        if !api_key.trim().is_empty() || preset_allows_empty_api_key(&preset_id) {
                             manager.dispatch(AppAction::AddBackendFromPreset {
                                 preset_id: preset_id.clone(),
                                 api_key,
@@ -1204,6 +1268,9 @@ impl App {
                     Message::ContextvmSearchChanged(q) => {
                         *contextvm_search_query = q;
                     }
+                    Message::ContextvmProviderFilterChanged(provider) => {
+                        *contextvm_provider_filter = provider;
+                    }
                     // Phase 36 — Tool Detail Copy actions. Each writes the
                     // FULL value to the clipboard, surfaces the locked status
                     // string, and schedules a ClearCopyStatus 2s later.
@@ -1254,7 +1321,9 @@ impl App {
                     Message::OnboardingValidateKey => {
                         let preset_id = onboarding_selected_backend.clone();
                         let api_key = onboarding_api_key.trim().to_string();
-                        if !api_key.is_empty() && !preset_id.is_empty() {
+                        if !preset_id.is_empty()
+                            && (!api_key.is_empty() || preset_allows_empty_api_key(&preset_id))
+                        {
                             // First, add/enable the backend from the preset (idempotent).
                             manager.dispatch(AppAction::AddBackendFromPreset {
                                 preset_id: preset_id.clone(),
@@ -1407,8 +1476,8 @@ impl App {
                             .await
                             .unwrap_or_else(|e| Err(format!("task join error: {e}")))
                         };
-                        return Task::perform(fut, |result| {
-                            Message::ExportMarkdownReady { result }
+                        return Task::perform(fut, |result| Message::ExportMarkdownReady {
+                            result,
                         });
                     }
 
@@ -1779,11 +1848,9 @@ impl App {
                                 dir_exclusion_validation.clear();
                             }
                             DM::SyncNow(id) => {
-                                if let Some((path, globs)) = lookup_source_path_and_globs(
-                                    state,
-                                    dir_watched_paths,
-                                    &id,
-                                ) {
+                                if let Some((path, globs)) =
+                                    lookup_source_path_and_globs(state, dir_watched_paths, &id)
+                                {
                                     manager.dispatch(AppAction::TriggerDirectorySync {
                                         source_id: id.clone(),
                                     });
@@ -1801,10 +1868,8 @@ impl App {
                                 // Resolve the path from AppState (the `path` field added in
                                 // this polish pass) and open it in the native file browser
                                 // via the `open` crate (xdg-open on Linux, Finder on macOS).
-                                if let Some(src) = state
-                                    .directory_sources
-                                    .iter()
-                                    .find(|s| s.id == id)
+                                if let Some(src) =
+                                    state.directory_sources.iter().find(|s| s.id == id)
                                 {
                                     if let Some(ref path) = src.path {
                                         let _ = open::that(path);
@@ -1862,6 +1927,7 @@ impl App {
                 onboarding_show_learn_more,
                 show_docs_attachment_overlay,
                 show_conv_menu,
+                force_remote_next,
                 show_tools_panel,
                 memory_edit_state,
                 settings_brave_api_key,
@@ -1881,6 +1947,7 @@ impl App {
                 dir_pending_remove_id,
                 dir_watcher_warning,
                 contextvm_search_query,
+                contextvm_provider_filter,
                 contextvm_copy_status,
                 contextvm_schema_expanded,
                 ..
@@ -1978,6 +2045,7 @@ impl App {
                     return views::tool_discovery::view(
                         state,
                         contextvm_search_query,
+                        contextvm_provider_filter,
                         *is_dark,
                     );
                 }
@@ -2015,6 +2083,7 @@ impl App {
                         parsed_messages,
                         *show_docs_attachment_overlay,
                         *show_conv_menu,
+                        *force_remote_next,
                         *show_tools_panel,
                         image_cache,
                     ),
@@ -2139,7 +2208,10 @@ fn spawn_directory_sync_workers(
                 tx: flume::Sender<Vec<std::path::PathBuf>>,
             }
             impl EventHandler for PollHandler {
-                fn handle_event(&mut self, res: notify_debouncer_mini::notify::Result<NotifyEvent>) {
+                fn handle_event(
+                    &mut self,
+                    res: notify_debouncer_mini::notify::Result<NotifyEvent>,
+                ) {
                     if let Ok(ev) = res {
                         let _ = self.tx.send(ev.paths);
                     }
@@ -2157,8 +2229,8 @@ fn spawn_directory_sync_workers(
                         "File watching unavailable; syncing on schedule every 5 min".to_string(),
                     )));
                     let ev_tx_poll = ev_tx.clone();
-                    let cfg = NotifyConfig::default()
-                        .with_poll_interval(StdDuration::from_secs(60));
+                    let cfg =
+                        NotifyConfig::default().with_poll_interval(StdDuration::from_secs(60));
                     match PollWatcher::new(PollHandler { tx: ev_tx_poll }, cfg) {
                         Ok(w) => {
                             poll_watcher = Some(w);
@@ -2216,10 +2288,7 @@ fn spawn_directory_sync_workers(
                                     let ev_tx_poll = ev_tx.clone();
                                     let cfg = NotifyConfig::default()
                                         .with_poll_interval(StdDuration::from_secs(60));
-                                    match PollWatcher::new(
-                                        PollHandler { tx: ev_tx_poll },
-                                        cfg,
-                                    ) {
+                                    match PollWatcher::new(PollHandler { tx: ev_tx_poll }, cfg) {
                                         Ok(w) => {
                                             poll_watcher = Some(w);
                                             using_poll_fallback = true;
@@ -2227,9 +2296,9 @@ fn spawn_directory_sync_workers(
                                             // paths on the new watcher.
                                             registered_paths.clear();
                                         }
-                                        Err(e2) => eprintln!(
-                                            "[dir-sync] PollWatcher init failed: {e2}"
-                                        ),
+                                        Err(e2) => {
+                                            eprintln!("[dir-sync] PollWatcher init failed: {e2}")
+                                        }
                                     }
                                 } else {
                                     eprintln!("[dir-sync] watch({p}) failed: {msg}");
@@ -2242,10 +2311,8 @@ fn spawn_directory_sync_workers(
                 // Drain raw-path events with short timeout.
                 match ev_rx.recv_timeout(StdDuration::from_millis(500)) {
                     Ok(paths) => {
-                        let map_snapshot = watched_paths
-                            .lock()
-                            .map(|g| g.clone())
-                            .unwrap_or_default();
+                        let map_snapshot =
+                            watched_paths.lock().map(|g| g.clone()).unwrap_or_default();
                         let mut fired: std::collections::HashSet<String> =
                             std::collections::HashSet::new();
                         for p in paths {

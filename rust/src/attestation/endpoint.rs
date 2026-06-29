@@ -113,8 +113,9 @@ async fn verify_quote_endpoint(
     policy: &TeePolicy,
 ) -> Result<AttestationEvent, AttestationError> {
     let url = attestation_url(&backend.base_url);
+    crate::net::tls::ensure_default_crypto_provider();
     let client = Client::builder()
-        .hickory_dns(false)
+        .no_hickory_dns()
         .timeout(Duration::from_secs(30))
         .tls_info(true)
         .build()
@@ -203,12 +204,17 @@ async fn verify_tdx_attestation(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let collateral =
-        dcap_qvl::collateral::get_collateral(dcap_qvl::collateral::PHALA_PCCS_URL, quote_bytes)
-            .await
-            .map_err(|e| AttestationError::CollateralFetch {
-                reason: e.to_string(),
-            })?;
+    let collateral_client = dcap_qvl::collateral::CollateralClient::with_default_http(
+        dcap_qvl::collateral::PHALA_PCCS_URL,
+    )
+    .map_err(|e| AttestationError::CollateralFetch {
+        reason: e.to_string(),
+    })?;
+    let collateral = collateral_client.fetch(quote_bytes).await.map_err(|e| {
+        AttestationError::CollateralFetch {
+            reason: e.to_string(),
+        }
+    })?;
     let verified = dcap_qvl::verify::verify(quote_bytes, &collateral, now_secs).map_err(|e| {
         AttestationError::QuoteVerification {
             reason: e.to_string(),
@@ -425,8 +431,9 @@ async fn verify_or_fetch_vcek(
         }
     }
 
+    crate::net::tls::ensure_default_crypto_provider();
     let client = Client::builder()
-        .hickory_dns(false)
+        .no_hickory_dns()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| AttestationError::NetworkError {

@@ -44,10 +44,13 @@ async fn live_venice_attestation_verifies() {
     };
     let backend = venice_backend(api_key);
     let policy = crate::attestation::policy::TdxPolicy::default();
-    let verified =
-        crate::attestation::venice::ensure_verified_venice_attestation(&backend, VENICE_MODEL, &policy)
-            .await
-            .expect("Venice attestation must succeed");
+    let verified = crate::attestation::venice::ensure_verified_venice_attestation(
+        &backend,
+        VENICE_MODEL,
+        &policy,
+    )
+    .await
+    .expect("Venice attestation must succeed");
     assert_eq!(
         verified.signing_pubkey_uncompressed[0], 0x04,
         "uncompressed secp256k1 pubkey must start with 0x04"
@@ -72,12 +75,11 @@ async fn live_venice_chat_completion_e2ee() {
     use async_openai::types::chat::{
         ChatCompletionRequestMessage, ChatCompletionRequestUserMessageArgs,
     };
-    let user_msg: ChatCompletionRequestMessage =
-        ChatCompletionRequestUserMessageArgs::default()
-            .content("Reply with the single word: VERIFIED")
-            .build()
-            .expect("user message builds")
-            .into();
+    let user_msg: ChatCompletionRequestMessage = ChatCompletionRequestUserMessageArgs::default()
+        .content("Reply with the single word: VERIFIED")
+        .build()
+        .expect("user message builds")
+        .into();
 
     let response = crate::llm::venice::create_chat_completion(
         backend,

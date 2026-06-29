@@ -529,6 +529,26 @@ pub fn update_conversation_model(
     Ok(())
 }
 
+/// Update both backend_id and model_id for a conversation, refreshing `updated_at`.
+pub fn update_conversation_backend_and_model(
+    conn: &Connection,
+    conversation_id: &str,
+    backend_id: &str,
+    model_id: &str,
+    updated_at: i64,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "UPDATE conversations SET backend_id = ?2, model_id = ?3, updated_at = ?4 WHERE id = ?1",
+    )?
+    .execute(rusqlite::params![
+        conversation_id,
+        backend_id,
+        model_id,
+        updated_at
+    ])?;
+    Ok(())
+}
+
 /// Update the system_prompt for a conversation, refreshing `updated_at`.
 ///
 /// Pass `None` to clear the per-conversation system prompt (falls back to global default).
@@ -588,8 +608,39 @@ pub fn delete_message(conn: &Connection, message_id: &str) -> Result<(), Persist
 /// Insert a new backend row.
 pub fn insert_backend(conn: &Connection, row: &BackendRow) -> Result<(), PersistenceError> {
     conn.prepare_cached(
-        "INSERT INTO backends (id, name, base_url, model_list, tee_type, display_order, is_active, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO backends (id, name, base_url, model_list, tee_type, display_order, is_active, created_at, max_concurrent_requests, supports_tool_use)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?
+    .execute(rusqlite::params![
+        row.id,
+        row.name,
+        row.base_url,
+        row.model_list,
+        row.tee_type,
+        row.display_order,
+        row.is_active,
+        row.created_at,
+        row.max_concurrent_requests,
+        if row.supports_tool_use { 1 } else { 0 },
+    ])?;
+    Ok(())
+}
+
+/// Insert or update a local on-device backend row.
+///
+/// Local rows are capability-constrained regardless of any previous stale row:
+/// one concurrent request, no tool use, and `local://` routing.
+pub fn upsert_local_backend(conn: &Connection, row: &BackendRow) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "INSERT INTO backends (id, name, base_url, model_list, tee_type, display_order, is_active, created_at, max_concurrent_requests, supports_tool_use)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 0)
+         ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             base_url = excluded.base_url,
+             model_list = excluded.model_list,
+             tee_type = excluded.tee_type,
+             max_concurrent_requests = 1,
+             supports_tool_use = 0",
     )?
     .execute(rusqlite::params![
         row.id,
@@ -1335,6 +1386,14 @@ pub struct ContextvmToolRow {
     pub description: String,
     pub provider_pubkey: String,
     pub provider_display_name: Option<String>,
+    /// Provider profile name from kind 0 metadata (Phase 37).
+    pub provider_name: Option<String>,
+    /// Provider profile "about" text from kind 0 metadata (Phase 37).
+    pub provider_about: Option<String>,
+    /// Provider profile picture URL from kind 0 metadata (Phase 37).
+    pub provider_picture: Option<String>,
+    /// Provider NIP-05 identifier from kind 0 metadata (Phase 37).
+    pub provider_nip05: Option<String>,
     pub schema_json: String,
     pub enabled: bool,
     pub last_seen_at: i64,
@@ -1352,8 +1411,9 @@ pub fn upsert_contextvm_tool(
     conn.prepare_cached(
         "INSERT OR REPLACE INTO contextvm_tools \
          (id, tool_name, display_name, description, provider_pubkey, \
-          provider_display_name, schema_json, enabled, last_seen_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+          provider_display_name, provider_name, provider_about, provider_picture, \
+          provider_nip05, schema_json, enabled, last_seen_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )?
     .execute(rusqlite::params![
         row.id,
@@ -1362,6 +1422,10 @@ pub fn upsert_contextvm_tool(
         row.description,
         row.provider_pubkey,
         row.provider_display_name,
+        row.provider_name,
+        row.provider_about,
+        row.provider_picture,
+        row.provider_nip05,
         row.schema_json,
         row.enabled as i64,
         row.last_seen_at,
@@ -1387,7 +1451,8 @@ pub fn get_contextvm_tool_by_name(
 ) -> Result<Option<ContextvmToolRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, tool_name, display_name, description, provider_pubkey, \
-                provider_display_name, schema_json, enabled, last_seen_at \
+                provider_display_name, provider_name, provider_about, provider_picture, \
+                provider_nip05, schema_json, enabled, last_seen_at \
          FROM contextvm_tools WHERE tool_name = ?1 LIMIT 1",
     )?;
     let mut rows = stmt.query(rusqlite::params![tool_name])?;
@@ -1399,9 +1464,13 @@ pub fn get_contextvm_tool_by_name(
             description: r.get(3)?,
             provider_pubkey: r.get(4)?,
             provider_display_name: r.get(5)?,
-            schema_json: r.get(6)?,
-            enabled: r.get::<_, i64>(7)? != 0,
-            last_seen_at: r.get(8)?,
+            provider_name: r.get(6)?,
+            provider_about: r.get(7)?,
+            provider_picture: r.get(8)?,
+            provider_nip05: r.get(9)?,
+            schema_json: r.get(10)?,
+            enabled: r.get::<_, i64>(11)? != 0,
+            last_seen_at: r.get(12)?,
         }))
     } else {
         Ok(None)
@@ -1414,7 +1483,8 @@ pub fn list_enabled_contextvm_tools(
 ) -> Result<Vec<ContextvmToolRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, tool_name, display_name, description, provider_pubkey, \
-                provider_display_name, schema_json, enabled, last_seen_at \
+                provider_display_name, provider_name, provider_about, provider_picture, \
+                provider_nip05, schema_json, enabled, last_seen_at \
          FROM contextvm_tools WHERE enabled = 1 ORDER BY last_seen_at DESC",
     )?;
     let rows: Result<Vec<_>, _> = stmt
@@ -1426,9 +1496,13 @@ pub fn list_enabled_contextvm_tools(
                 description: r.get(3)?,
                 provider_pubkey: r.get(4)?,
                 provider_display_name: r.get(5)?,
-                schema_json: r.get(6)?,
-                enabled: r.get::<_, i64>(7)? != 0,
-                last_seen_at: r.get(8)?,
+                provider_name: r.get(6)?,
+                provider_about: r.get(7)?,
+                provider_picture: r.get(8)?,
+                provider_nip05: r.get(9)?,
+                schema_json: r.get(10)?,
+                enabled: r.get::<_, i64>(11)? != 0,
+                last_seen_at: r.get(12)?,
             })
         })?
         .collect();
@@ -1442,7 +1516,8 @@ pub fn list_all_contextvm_tools(
 ) -> Result<Vec<ContextvmToolRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, tool_name, display_name, description, provider_pubkey, \
-                provider_display_name, schema_json, enabled, last_seen_at \
+                provider_display_name, provider_name, provider_about, provider_picture, \
+                provider_nip05, schema_json, enabled, last_seen_at \
          FROM contextvm_tools ORDER BY last_seen_at DESC",
     )?;
     let rows: Result<Vec<_>, _> = stmt
@@ -1454,9 +1529,13 @@ pub fn list_all_contextvm_tools(
                 description: r.get(3)?,
                 provider_pubkey: r.get(4)?,
                 provider_display_name: r.get(5)?,
-                schema_json: r.get(6)?,
-                enabled: r.get::<_, i64>(7)? != 0,
-                last_seen_at: r.get(8)?,
+                provider_name: r.get(6)?,
+                provider_about: r.get(7)?,
+                provider_picture: r.get(8)?,
+                provider_nip05: r.get(9)?,
+                schema_json: r.get(10)?,
+                enabled: r.get::<_, i64>(11)? != 0,
+                last_seen_at: r.get(12)?,
             })
         })?
         .collect();
@@ -1470,6 +1549,176 @@ pub fn delete_contextvm_tool(conn: &Connection, id: &str) -> Result<(), Persiste
     conn.prepare_cached("DELETE FROM contextvm_tools WHERE id = ?1")?
         .execute(rusqlite::params![id])?;
     Ok(())
+}
+
+// ── Phase 38 — trusted_providers queries ──────────────────────────────────────
+
+/// One row from the `trusted_providers` table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrustedProviderRow {
+    /// Nostr hex pubkey of the provider.
+    pub pubkey: String,
+    /// Optional user-supplied label (e.g. "Tinfoil weather service").
+    pub label: Option<String>,
+    /// Unix seconds when the user added this provider.
+    pub added_at: i64,
+}
+
+/// Insert a provider into the trust list. Silently replaces if already present.
+pub fn add_trusted_provider(
+    conn: &Connection,
+    row: &TrustedProviderRow,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "INSERT OR REPLACE INTO trusted_providers (pubkey, label, added_at) \
+         VALUES (?1, ?2, ?3)",
+    )?
+    .execute(rusqlite::params![row.pubkey, row.label, row.added_at])?;
+    Ok(())
+}
+
+/// Remove a provider from the trust list by pubkey.
+pub fn remove_trusted_provider(conn: &Connection, pubkey: &str) -> Result<(), PersistenceError> {
+    conn.prepare_cached("DELETE FROM trusted_providers WHERE pubkey = ?1")?
+        .execute(rusqlite::params![pubkey])?;
+    Ok(())
+}
+
+/// Return all trusted providers, ordered by `added_at DESC`.
+pub fn list_trusted_providers(
+    conn: &Connection,
+) -> Result<Vec<TrustedProviderRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT pubkey, label, added_at FROM trusted_providers ORDER BY added_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(TrustedProviderRow {
+                pubkey: r.get(0)?,
+                label: r.get(1)?,
+                added_at: r.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Return true if the given pubkey is in the trust list.
+pub fn is_trusted_provider(conn: &Connection, pubkey: &str) -> Result<bool, PersistenceError> {
+    let count: i64 = conn
+        .prepare_cached("SELECT COUNT(*) FROM trusted_providers WHERE pubkey = ?1")?
+        .query_row(rusqlite::params![pubkey], |r| r.get(0))?;
+    Ok(count > 0)
+}
+
+// ── Phase 38 — hybrid profile queries ─────────────────────────────────────────
+
+pub fn upsert_hybrid_profile(
+    conn: &Connection,
+    profile: &crate::routing::HybridProfile,
+    now: i64,
+) -> Result<(), PersistenceError> {
+    // Phase 38 v1 is cascade-only until the local-preprocessing spike passes.
+    // Keep the columns for forward compatibility, but do not persist flags that
+    // would currently be silent no-ops.
+    conn.prepare_cached(
+        "INSERT INTO hybrid_profiles (
+            id, name, local_backend_id, local_model_id, remote_backend_id, remote_model_id,
+            escalate_if_attachment, prefer_local_when_offline, escalate_if_message_longer_than,
+            compress_history, rewrite_rag_query, created_at, updated_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+         ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            local_backend_id = excluded.local_backend_id,
+            local_model_id = excluded.local_model_id,
+            remote_backend_id = excluded.remote_backend_id,
+            remote_model_id = excluded.remote_model_id,
+            escalate_if_attachment = excluded.escalate_if_attachment,
+            prefer_local_when_offline = excluded.prefer_local_when_offline,
+            escalate_if_message_longer_than = excluded.escalate_if_message_longer_than,
+            compress_history = excluded.compress_history,
+            rewrite_rag_query = excluded.rewrite_rag_query,
+            updated_at = excluded.updated_at",
+    )?
+    .execute(rusqlite::params![
+        profile.id,
+        profile.name,
+        profile.local_backend_id,
+        profile.local_model_id,
+        profile.remote_backend_id,
+        profile.remote_model_id,
+        profile.policy.escalate_if_attachment as i64,
+        profile.policy.prefer_local_when_offline as i64,
+        profile
+            .policy
+            .escalate_if_message_longer_than
+            .map(|v| v as i64),
+        0_i64,
+        0_i64,
+        now,
+    ])?;
+    Ok(())
+}
+
+pub fn delete_hybrid_profile(conn: &Connection, id: &str) -> Result<(), PersistenceError> {
+    conn.prepare_cached("DELETE FROM hybrid_profiles WHERE id = ?1")?
+        .execute(rusqlite::params![id])?;
+    Ok(())
+}
+
+pub fn get_hybrid_profile(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<crate::routing::HybridProfile>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, name, local_backend_id, local_model_id, remote_backend_id, remote_model_id,
+                escalate_if_attachment, prefer_local_when_offline, escalate_if_message_longer_than,
+                compress_history, rewrite_rag_query
+         FROM hybrid_profiles WHERE id = ?1",
+    )?;
+    match stmt.query_row(rusqlite::params![id], hybrid_profile_from_row) {
+        Ok(profile) => Ok(Some(profile)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(PersistenceError::from(e)),
+    }
+}
+
+pub fn list_hybrid_profiles(
+    conn: &Connection,
+) -> Result<Vec<crate::routing::HybridProfile>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, name, local_backend_id, local_model_id, remote_backend_id, remote_model_id,
+                escalate_if_attachment, prefer_local_when_offline, escalate_if_message_longer_than,
+                compress_history, rewrite_rag_query
+         FROM hybrid_profiles ORDER BY updated_at DESC, name ASC",
+    )?;
+    let rows = stmt
+        .query_map([], hybrid_profile_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn hybrid_profile_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::routing::HybridProfile> {
+    let threshold: Option<i64> = row.get(8)?;
+    Ok(crate::routing::HybridProfile {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        local_backend_id: row.get(2)?,
+        local_model_id: row.get(3)?,
+        remote_backend_id: row.get(4)?,
+        remote_model_id: row.get(5)?,
+        policy: crate::routing::RoutingPolicy {
+            escalate_if_attachment: row.get::<_, i64>(6)? != 0,
+            prefer_local_when_offline: row.get::<_, i64>(7)? != 0,
+            escalate_if_message_longer_than: threshold.map(|v| v.max(0) as u64),
+        },
+        // Phase 38 v1 ships deterministic cascade only. Treat any stale or
+        // externally-written preprocessing flags as disabled until 38-04 lands.
+        preprocessing: crate::routing::LocalPreprocessing::default(),
+    })
 }
 
 /// Phase 36 (CTX36-USED-01) — read all contextvm tool-call agent_steps rows so

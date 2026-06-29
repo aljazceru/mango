@@ -1,10 +1,9 @@
 import SwiftUI
 import Textual
-import HighlightSwift
 
 /// Renders a single chat message bubble.
 /// User messages: right-aligned, blue tint, plain text.
-/// Assistant messages: left-aligned, surface grey, markdown via Textual + HighlightSwift.
+/// Assistant messages: left-aligned, surface grey, markdown via Textual.
 struct MessageBubbleView: View {
     let message: UiMessage
     let isLastAssistant: Bool
@@ -94,13 +93,7 @@ struct MessageBubbleView: View {
                 if let name = message.attachmentName, message.hasAttachment {
                     attachmentIndicator(name: name)
                 }
-                StructuredText(message.content) { codeBlock in
-                    // Use HighlightSwift for syntax-highlighted code blocks
-                    HighlightedCodeBlockView(
-                        code: codeBlock.code,
-                        language: codeBlock.language
-                    )
-                }
+                StructuredText(markdown: message.content)
                 .font(.body)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
@@ -170,44 +163,4 @@ struct MessageBubbleView: View {
     private var assistantBubbleColor: Color {
         AppColors.assistantBubble(colorScheme)
     }
-}
-
-// MARK: - HighlightedCodeBlockView
-
-/// Syntax-highlighted code block using HighlightSwift.
-private struct HighlightedCodeBlockView: View {
-    let code: String
-    let language: String?
-
-    @State private var highlighted: AttributedString?
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Group {
-            if let highlighted {
-                Text(highlighted)
-                    .font(.system(.body, design: .monospaced))
-            } else {
-                Text(code)
-                    .font(.system(.body, design: .monospaced))
-            }
-        }
-        .padding(8)
-        .background(AppColors.assistantBubble(colorScheme))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .task(id: "\(code)\(colorScheme == .dark)") {
-            highlighted = await highlightCode(code, language: language, darkMode: colorScheme == .dark)
-        }
-    }
-}
-
-@MainActor
-private func highlightCode(_ code: String, language: String?, darkMode: Bool) async -> AttributedString? {
-    let highlight = Highlight()
-    let result = try? await highlight.attributedText(
-        code,
-        language: language,
-        colors: darkMode ? .dark(.atom) : .light(.atom)
-    )
-    return result
 }

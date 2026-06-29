@@ -13,6 +13,7 @@ use crate::net::tls::pinned_reqwest_client;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderTransportKind {
     OpenAiCompatible,
+    LocalOnDevice,
     TinfoilSecure,
     PpqPrivateE2ee,
     VeniceE2ee,
@@ -21,6 +22,10 @@ pub enum ProviderTransportKind {
 
 impl ProviderTransportKind {
     pub fn for_backend(backend: &BackendConfig) -> Self {
+        if super::local_models::is_local_base_url(&backend.base_url) {
+            return Self::LocalOnDevice;
+        }
+
         if backend.provider_kind() == super::backend::ProviderKind::Tinfoil {
             return Self::TinfoilSecure;
         }
@@ -46,6 +51,7 @@ impl ProviderTransportKind {
     pub fn openai_api_base(self, backend: &BackendConfig) -> Result<String, LlmError> {
         match self {
             Self::OpenAiCompatible => Ok(backend.base_url.trim_end_matches('/').to_string()),
+            Self::LocalOnDevice => Err(unsupported_local_transport_error()),
             Self::TinfoilSecure => Err(tinfoil_secure_transport_error()),
             Self::PpqPrivateE2ee => Err(unsupported_private_transport_error()),
             Self::VeniceE2ee => Err(unsupported_venice_transport_error()),
@@ -69,6 +75,7 @@ impl ProviderTransportKind {
             Self::OpenAiCompatible => {
                 Ok(format!("{}/models", backend.base_url.trim_end_matches('/')))
             }
+            Self::LocalOnDevice => Err(unsupported_local_transport_error()),
             Self::TinfoilSecure => super::tinfoil_secure::model_list_url(backend),
             Self::PpqPrivateE2ee => super::ppq_private::model_list_url(backend),
             Self::VeniceE2ee => super::venice::model_list_url(backend),
@@ -96,13 +103,15 @@ impl ProviderTransportKind {
                     return Ok((client, true));
                 }
 
+                crate::net::tls::ensure_default_crypto_provider();
                 let client = reqwest::Client::builder()
-                    .hickory_dns(false)
+                    .no_hickory_dns()
                     .timeout(timeout)
                     .build()
                     .unwrap_or_else(|_| reqwest::Client::new());
                 Ok((client, false))
             }
+            Self::LocalOnDevice => Err(unsupported_local_transport_error()),
             Self::TinfoilSecure => Ok((super::tinfoil_secure::build_http_client(timeout)?, false)),
             Self::PpqPrivateE2ee => Ok((super::ppq_private::build_http_client(timeout)?, false)),
             Self::VeniceE2ee => Ok((super::venice::build_http_client(timeout)?, false)),
@@ -144,5 +153,11 @@ fn unsupported_private_transport_error() -> LlmError {
 fn unsupported_venice_transport_error() -> LlmError {
     LlmError::NetworkError {
         reason: "Venice E2EE transport does not use the generic OpenAI client path. Use the provider-specific Venice transport implementation instead.".to_string(),
+    }
+}
+
+fn unsupported_local_transport_error() -> LlmError {
+    LlmError::NetworkError {
+        reason: "Local on-device transport does not use the generic OpenAI client path. Use the actor-side LocalLlmProvider dispatch instead.".to_string(),
     }
 }

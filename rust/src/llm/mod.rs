@@ -1,6 +1,8 @@
 pub mod backend;
 pub mod capabilities;
 pub mod error;
+pub mod local;
+pub mod local_models;
 pub mod ppq_private;
 pub mod redpill;
 pub mod router;
@@ -15,6 +17,14 @@ pub use backend::{
 };
 pub use capabilities::is_vision_model;
 pub use error::LlmError;
+pub use local::{
+    set_platform_local_provider, spawn_local_streaming_task, DeviceCapability,
+    LocalGenerationContext, LocalLlmError, LocalLlmProvider, LocalModelDownloadContext,
+    NullLocalLlmProvider, PlatformHttpHeader, PlatformHttpRequest, PlatformHttpResponse,
+};
+pub use local_models::{
+    local_model_catalog, LocalModelDownloadProgress, LocalModelPreset, LocalModelSummary,
+};
 pub use router::FailoverRouter;
 pub use streaming::{spawn_streaming_task, spawn_streaming_task_from_api_messages, InternalEvent};
 pub use transport::ProviderTransportKind;

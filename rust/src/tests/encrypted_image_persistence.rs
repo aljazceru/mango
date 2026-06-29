@@ -186,6 +186,12 @@ fn no_image_path_when_dek_absent() {
     } else {
         0
     };
-    assert_eq!(dir_count, 0, "no image file should be written when DEK is absent");
-    assert!(image_path.is_none(), "image_path must be None when DEK is absent");
+    assert_eq!(
+        dir_count, 0,
+        "no image file should be written when DEK is absent"
+    );
+    assert!(
+        image_path.is_none(),
+        "image_path must be None when DEK is absent"
+    );
 }

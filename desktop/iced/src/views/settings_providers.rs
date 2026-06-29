@@ -199,17 +199,11 @@ pub fn view<'a>(
 
     // ── Providers ─────────────────────────────────────────────────────────────
     let presets = known_provider_presets();
-    let enabled_ids: Vec<String> = state
-        .backends
-        .iter()
-        .filter(|b| b.has_api_key)
-        .map(|b| b.id.clone())
-        .collect();
-
     struct PresetRow {
         id: String,
         name: String,
         tee_type: TeeType,
+        key_optional: bool,
     }
     let rows: Vec<PresetRow> = presets
         .iter()
@@ -217,13 +211,17 @@ pub fn view<'a>(
             id: p.id.clone(),
             name: p.name.clone(),
             tee_type: p.tee_type.clone(),
+            key_optional: p.id == "qvac-local" || p.tee_type == TeeType::Unknown,
         })
         .collect();
 
     let provider_cards: Vec<Element<'_, Message>> = rows
         .into_iter()
         .map(|p| {
-            let is_enabled = enabled_ids.contains(&p.id);
+            let is_enabled = state
+                .backends
+                .iter()
+                .any(|b| b.id == p.id && (b.has_api_key || p.key_optional));
             let name_text = text(p.name.clone()).size(14).color(vc.text);
             let tee_text = text(tee_label(&p.tee_type)).size(11).color(vc.muted);
 
@@ -387,19 +385,26 @@ pub fn view<'a>(
                 .into()
             } else {
                 let current_key = preset_keys.get(&p.id).map(|s| s.as_str()).unwrap_or("");
-                let can_enable = !current_key.trim().is_empty();
+                let can_enable = p.key_optional || !current_key.trim().is_empty();
 
-                let key_input = text_input("API Key", current_key)
-                    .secure(true)
-                    .on_input({
-                        let pid = p.id.clone();
-                        move |v| Message::SettingsPresetKeyChanged {
-                            preset_id: pid.clone(),
-                            key: v,
-                        }
-                    })
-                    .size(13)
-                    .padding(Padding::from([7u16, 10]));
+                let key_input = text_input(
+                    if p.key_optional {
+                        "API Key (optional)"
+                    } else {
+                        "API Key"
+                    },
+                    current_key,
+                )
+                .secure(true)
+                .on_input({
+                    let pid = p.id.clone();
+                    move |v| Message::SettingsPresetKeyChanged {
+                        preset_id: pid.clone(),
+                        key: v,
+                    }
+                })
+                .size(13)
+                .padding(Padding::from([7u16, 10]));
 
                 let enable_el = action_btn(
                     "Enable",

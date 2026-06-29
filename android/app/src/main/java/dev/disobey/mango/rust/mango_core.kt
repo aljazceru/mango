@@ -678,6 +678,27 @@ internal interface UniffiCallbackInterfaceKeychainProviderMethod1 : com.sun.jna.
 internal interface UniffiCallbackInterfaceKeychainProviderMethod2 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
+internal interface UniffiCallbackInterfaceLocalLlmProviderMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`modelPath`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceLocalLlmProviderMethod1 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`destinationPath`: RustBuffer.ByValue,`context`: Pointer,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceLocalLlmProviderMethod2 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`request`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceLocalLlmProviderMethod3 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`promptJson`: RustBuffer.ByValue,`context`: Pointer,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceLocalLlmProviderMethod4 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceLocalLlmProviderMethod5 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceLocalLlmProviderMethod6 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 @Structure.FieldOrder("reconcile", "uniffiFree")
 internal open class UniffiVTableCallbackInterfaceAppReconciler(
     @JvmField internal var `reconcile`: UniffiCallbackInterfaceAppReconcilerMethod0? = null,
@@ -767,6 +788,62 @@ internal open class UniffiVTableCallbackInterfaceKeychainProvider(
     }
 
 }
+@Structure.FieldOrder("loadModel", "downloadModelFile", "platformHttpRequest", "generate", "unload", "loadedModelPath", "deviceCapability", "uniffiFree")
+internal open class UniffiVTableCallbackInterfaceLocalLlmProvider(
+    @JvmField internal var `loadModel`: UniffiCallbackInterfaceLocalLlmProviderMethod0? = null,
+    @JvmField internal var `downloadModelFile`: UniffiCallbackInterfaceLocalLlmProviderMethod1? = null,
+    @JvmField internal var `platformHttpRequest`: UniffiCallbackInterfaceLocalLlmProviderMethod2? = null,
+    @JvmField internal var `generate`: UniffiCallbackInterfaceLocalLlmProviderMethod3? = null,
+    @JvmField internal var `unload`: UniffiCallbackInterfaceLocalLlmProviderMethod4? = null,
+    @JvmField internal var `loadedModelPath`: UniffiCallbackInterfaceLocalLlmProviderMethod5? = null,
+    @JvmField internal var `deviceCapability`: UniffiCallbackInterfaceLocalLlmProviderMethod6? = null,
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+) : Structure() {
+    class UniffiByValue(
+        `loadModel`: UniffiCallbackInterfaceLocalLlmProviderMethod0? = null,
+        `downloadModelFile`: UniffiCallbackInterfaceLocalLlmProviderMethod1? = null,
+        `platformHttpRequest`: UniffiCallbackInterfaceLocalLlmProviderMethod2? = null,
+        `generate`: UniffiCallbackInterfaceLocalLlmProviderMethod3? = null,
+        `unload`: UniffiCallbackInterfaceLocalLlmProviderMethod4? = null,
+        `loadedModelPath`: UniffiCallbackInterfaceLocalLlmProviderMethod5? = null,
+        `deviceCapability`: UniffiCallbackInterfaceLocalLlmProviderMethod6? = null,
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    ): UniffiVTableCallbackInterfaceLocalLlmProvider(`loadModel`,`downloadModelFile`,`platformHttpRequest`,`generate`,`unload`,`loadedModelPath`,`deviceCapability`,`uniffiFree`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceLocalLlmProvider) {
+        `loadModel` = other.`loadModel`
+        `downloadModelFile` = other.`downloadModelFile`
+        `platformHttpRequest` = other.`platformHttpRequest`
+        `generate` = other.`generate`
+        `unload` = other.`unload`
+        `loadedModelPath` = other.`loadedModelPath`
+        `deviceCapability` = other.`deviceCapability`
+        `uniffiFree` = other.`uniffiFree`
+    }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -879,6 +956,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_mango_core_checksum_func_known_provider_presets(
 ): Short
+fun uniffi_mango_core_checksum_func_local_model_catalog(
+): Short
 fun uniffi_mango_core_checksum_func_model_supports_vision(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_dispatch(
@@ -897,6 +976,14 @@ fun uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_state(
 ): Short
+fun uniffi_mango_core_checksum_method_localgenerationcontext_emit_error(
+): Short
+fun uniffi_mango_core_checksum_method_localgenerationcontext_emit_token(
+): Short
+fun uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled(
+): Short
+fun uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress(
+): Short
 fun uniffi_mango_core_checksum_constructor_ffiapp_new(
 ): Short
 fun uniffi_mango_core_checksum_method_appreconciler_reconcile(
@@ -914,6 +1001,20 @@ fun uniffi_mango_core_checksum_method_keychainprovider_store(
 fun uniffi_mango_core_checksum_method_keychainprovider_load(
 ): Short
 fun uniffi_mango_core_checksum_method_keychainprovider_delete(
+): Short
+fun uniffi_mango_core_checksum_method_localllmprovider_load_model(
+): Short
+fun uniffi_mango_core_checksum_method_localllmprovider_download_model_file(
+): Short
+fun uniffi_mango_core_checksum_method_localllmprovider_platform_http_request(
+): Short
+fun uniffi_mango_core_checksum_method_localllmprovider_generate(
+): Short
+fun uniffi_mango_core_checksum_method_localllmprovider_unload(
+): Short
+fun uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path(
+): Short
+fun uniffi_mango_core_checksum_method_localllmprovider_device_capability(
 ): Short
 fun ffi_mango_core_uniffi_contract_version(
 ): Int
@@ -958,6 +1059,7 @@ internal interface UniffiLib : Library {
             uniffiCallbackInterfaceEmbeddingProvider.register(lib)
             uniffiCallbackInterfaceFilePickerProvider.register(lib)
             uniffiCallbackInterfaceKeychainProvider.register(lib)
+            uniffiCallbackInterfaceLocalLlmProvider.register(lib)
             // Loading of library with integrity check done.
             lib
         }
@@ -973,7 +1075,7 @@ internal interface UniffiLib : Library {
 ): Pointer
 fun uniffi_mango_core_fn_free_ffiapp(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`keychain`: Long,`embeddingProvider`: Long,`embeddingStatus`: RustBuffer.ByValue,`biometricProvider`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`keychain`: Long,`embeddingProvider`: Long,`embeddingStatus`: RustBuffer.ByValue,`localLlmProvider`: Long,`biometricProvider`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun uniffi_mango_core_fn_method_ffiapp_dispatch(`ptr`: Pointer,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -991,6 +1093,22 @@ fun uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(`ptr`: Pointer,`mess
 ): RustBuffer.ByValue
 fun uniffi_mango_core_fn_method_ffiapp_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_mango_core_fn_clone_localgenerationcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Pointer
+fun uniffi_mango_core_fn_free_localgenerationcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_mango_core_fn_method_localgenerationcontext_emit_error(`ptr`: Pointer,`message`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_mango_core_fn_method_localgenerationcontext_emit_token(`ptr`: Pointer,`token`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_mango_core_fn_clone_localmodeldownloadcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Pointer
+fun uniffi_mango_core_fn_free_localmodeldownloadcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(`ptr`: Pointer,`downloadedBytes`: Long,`totalBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_mango_core_fn_init_callback_vtable_appreconciler(`vtable`: UniffiVTableCallbackInterfaceAppReconciler,
 ): Unit
 fun uniffi_mango_core_fn_init_callback_vtable_biometricprovider(`vtable`: UniffiVTableCallbackInterfaceBiometricProvider,
@@ -1001,7 +1119,11 @@ fun uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(`vtable`: Uniff
 ): Unit
 fun uniffi_mango_core_fn_init_callback_vtable_keychainprovider(`vtable`: UniffiVTableCallbackInterfaceKeychainProvider,
 ): Unit
+fun uniffi_mango_core_fn_init_callback_vtable_localllmprovider(`vtable`: UniffiVTableCallbackInterfaceLocalLlmProvider,
+): Unit
 fun uniffi_mango_core_fn_func_known_provider_presets(uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_mango_core_fn_func_local_model_catalog(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_mango_core_fn_func_model_supports_vision(`modelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
@@ -1134,6 +1256,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_mango_core_checksum_func_known_provider_presets() != 26978.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_mango_core_checksum_func_local_model_catalog() != 33405.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_mango_core_checksum_func_model_supports_vision() != 37098.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1161,7 +1286,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_mango_core_checksum_method_ffiapp_state() != 64379.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_constructor_ffiapp_new() != 30597.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() != 4827.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_token() != 722.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled() != 30851.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress() != 7846.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_constructor_ffiapp_new() != 17337.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_appreconciler_reconcile() != 36412.toShort()) {
@@ -1186,6 +1323,27 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_keychainprovider_delete() != 11222.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_load_model() != 31244.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_download_model_file() != 41722.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_platform_http_request() != 10857.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_generate() != 30695.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_unload() != 59285.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path() != 33154.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_device_capability() != 48773.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1772,12 +1930,14 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      * `embedding_provider` provides on-device embedding inference; use `NullEmbeddingProvider` for tests.
      * `embedding_status` reflects whether the real embedding provider loaded successfully
      * (`Active`) or fell back to `NullEmbeddingProvider` due to an init failure (`Degraded`).
+     * `local_llm_provider` provides on-device local chat inference; use `NullLocalLlmProvider`
+     * on platforms without a native local runtime.
      */
-    constructor(`dataDir`: kotlin.String, `keychain`: KeychainProvider, `embeddingProvider`: EmbeddingProvider, `embeddingStatus`: EmbeddingStatus, `biometricProvider`: BiometricProvider) :
+    constructor(`dataDir`: kotlin.String, `keychain`: KeychainProvider, `embeddingProvider`: EmbeddingProvider, `embeddingStatus`: EmbeddingStatus, `localLlmProvider`: LocalLlmProvider, `biometricProvider`: BiometricProvider) :
         this(
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_mango_core_fn_constructor_ffiapp_new(
-        FfiConverterString.lower(`dataDir`),FfiConverterTypeKeychainProvider.lower(`keychain`),FfiConverterTypeEmbeddingProvider.lower(`embeddingProvider`),FfiConverterTypeEmbeddingStatus.lower(`embeddingStatus`),FfiConverterTypeBiometricProvider.lower(`biometricProvider`),_status)
+        FfiConverterString.lower(`dataDir`),FfiConverterTypeKeychainProvider.lower(`keychain`),FfiConverterTypeEmbeddingProvider.lower(`embeddingProvider`),FfiConverterTypeEmbeddingStatus.lower(`embeddingStatus`),FfiConverterTypeLocalLlmProvider.lower(`localLlmProvider`),FfiConverterTypeBiometricProvider.lower(`biometricProvider`),_status)
 }
     )
 
@@ -2021,6 +2181,503 @@ public object FfiConverterTypeFfiApp: FfiConverter<FfiApp, Pointer> {
     override fun allocationSize(value: FfiApp) = 8UL
 
     override fun write(value: FfiApp, buf: ByteBuffer) {
+        // The Rust code always expects pointers written as 8 bytes,
+        // and will fail to compile if they don't fit.
+        buf.putLong(Pointer.nativeValue(lower(value)))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a Pointer/Arc<T>
+// to the live Rust struct on the other side of the FFI.
+//
+// Each instance implements core operations for working with the Rust `Arc<T>` and the
+// Kotlin Pointer to work with the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque pointer to the underlying Rust struct.
+//     Method calls need to read this pointer from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its pointer should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the pointer, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the pointer, but is interrupted
+//      before it can pass the pointer over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read pointer value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface LocalGenerationContextInterface {
+    
+    fun `emitError`(`message`: kotlin.String)
+    
+    fun `emitToken`(`token`: kotlin.String)
+    
+    fun `isCancelled`(): kotlin.Boolean
+    
+    companion object
+}
+
+open class LocalGenerationContext: Disposable, AutoCloseable, LocalGenerationContextInterface
+{
+
+    constructor(pointer: Pointer) {
+        this.pointer = pointer
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+
+    /**
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noPointer: NoPointer) {
+        this.pointer = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+
+    protected val pointer: Pointer?
+    protected val cleanable: UniffiCleaner.Cleanable
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithPointer(block: (ptr: Pointer) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the pointer being freed concurrently.
+        try {
+            return block(this.uniffiClonePointer())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
+        override fun run() {
+            pointer?.let { ptr ->
+                uniffiRustCall { status ->
+                    UniffiLib.INSTANCE.uniffi_mango_core_fn_free_localgenerationcontext(ptr, status)
+                }
+            }
+        }
+    }
+
+    fun uniffiClonePointer(): Pointer {
+        return uniffiRustCall() { status ->
+            UniffiLib.INSTANCE.uniffi_mango_core_fn_clone_localgenerationcontext(pointer!!, status)
+        }
+    }
+
+    override fun `emitError`(`message`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_localgenerationcontext_emit_error(
+        it, FfiConverterString.lower(`message`),_status)
+}
+    }
+    
+    
+
+    override fun `emitToken`(`token`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_localgenerationcontext_emit_token(
+        it, FfiConverterString.lower(`token`),_status)
+}
+    }
+    
+    
+
+    override fun `isCancelled`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+    
+    companion object
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLocalGenerationContext: FfiConverter<LocalGenerationContext, Pointer> {
+
+    override fun lower(value: LocalGenerationContext): Pointer {
+        return value.uniffiClonePointer()
+    }
+
+    override fun lift(value: Pointer): LocalGenerationContext {
+        return LocalGenerationContext(value)
+    }
+
+    override fun read(buf: ByteBuffer): LocalGenerationContext {
+        // The Rust code always writes pointers as 8 bytes, and will
+        // fail to compile if they don't fit.
+        return lift(Pointer(buf.getLong()))
+    }
+
+    override fun allocationSize(value: LocalGenerationContext) = 8UL
+
+    override fun write(value: LocalGenerationContext, buf: ByteBuffer) {
+        // The Rust code always expects pointers written as 8 bytes,
+        // and will fail to compile if they don't fit.
+        buf.putLong(Pointer.nativeValue(lower(value)))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a Pointer/Arc<T>
+// to the live Rust struct on the other side of the FFI.
+//
+// Each instance implements core operations for working with the Rust `Arc<T>` and the
+// Kotlin Pointer to work with the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque pointer to the underlying Rust struct.
+//     Method calls need to read this pointer from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its pointer should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the pointer, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the pointer, but is interrupted
+//      before it can pass the pointer over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read pointer value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface LocalModelDownloadContextInterface {
+    
+    fun `emitProgress`(`downloadedBytes`: kotlin.ULong, `totalBytes`: kotlin.ULong?)
+    
+    companion object
+}
+
+open class LocalModelDownloadContext: Disposable, AutoCloseable, LocalModelDownloadContextInterface
+{
+
+    constructor(pointer: Pointer) {
+        this.pointer = pointer
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+
+    /**
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noPointer: NoPointer) {
+        this.pointer = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+
+    protected val pointer: Pointer?
+    protected val cleanable: UniffiCleaner.Cleanable
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithPointer(block: (ptr: Pointer) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the pointer being freed concurrently.
+        try {
+            return block(this.uniffiClonePointer())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
+        override fun run() {
+            pointer?.let { ptr ->
+                uniffiRustCall { status ->
+                    UniffiLib.INSTANCE.uniffi_mango_core_fn_free_localmodeldownloadcontext(ptr, status)
+                }
+            }
+        }
+    }
+
+    fun uniffiClonePointer(): Pointer {
+        return uniffiRustCall() { status ->
+            UniffiLib.INSTANCE.uniffi_mango_core_fn_clone_localmodeldownloadcontext(pointer!!, status)
+        }
+    }
+
+    override fun `emitProgress`(`downloadedBytes`: kotlin.ULong, `totalBytes`: kotlin.ULong?)
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(
+        it, FfiConverterULong.lower(`downloadedBytes`),FfiConverterOptionalULong.lower(`totalBytes`),_status)
+}
+    }
+    
+    
+
+    
+
+    
+    
+    companion object
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLocalModelDownloadContext: FfiConverter<LocalModelDownloadContext, Pointer> {
+
+    override fun lower(value: LocalModelDownloadContext): Pointer {
+        return value.uniffiClonePointer()
+    }
+
+    override fun lift(value: Pointer): LocalModelDownloadContext {
+        return LocalModelDownloadContext(value)
+    }
+
+    override fun read(buf: ByteBuffer): LocalModelDownloadContext {
+        // The Rust code always writes pointers as 8 bytes, and will
+        // fail to compile if they don't fit.
+        return lift(Pointer(buf.getLong()))
+    }
+
+    override fun allocationSize(value: LocalModelDownloadContext) = 8UL
+
+    override fun write(value: LocalModelDownloadContext, buf: ByteBuffer) {
         // The Rust code always expects pointers written as 8 bytes,
         // and will fail to compile if they don't fit.
         buf.putLong(Pointer.nativeValue(lower(value)))
@@ -2280,6 +2937,22 @@ data class AppState (
      */
     var `embeddingStatus`: EmbeddingStatus, 
     /**
+     * Device-local LLM capability reported by the native local provider.
+     */
+    var `localDeviceCapability`: DeviceCapability, 
+    /**
+     * Downloadable local models with verified on-disk status.
+     */
+    var `localModels`: List<LocalModelSummary>, 
+    /**
+     * Progress for the active local model download, if any.
+     */
+    var `localDownloadProgress`: LocalModelDownloadProgress?, 
+    /**
+     * Global kill switch for on-device LLM inference.
+     */
+    var `localInferenceEnabled`: kotlin.Boolean, 
+    /**
      * Memory summaries loaded on demand when user navigates to Screen::Memories (per D-14).
      */
     var `memories`: List<MemorySummary>, 
@@ -2358,7 +3031,21 @@ data class AppState (
      * Phase 35 — current discovery query state for the Tool Discovery
      * screen. Updated by AppAction::DiscoverContextvmTools handler.
      */
-    var `contextvmDiscoveryState`: ContextvmDiscoveryState
+    var `contextvmDiscoveryState`: ContextvmDiscoveryState, 
+    /**
+     * Phase 38 — saved local/remote hybrid routing profiles.
+     */
+    var `hybridProfiles`: List<HybridProfile>, 
+    /**
+     * Phase 38 — route selected for the most recent hybrid turn, for UI route chips.
+     */
+    var `lastTurnRouting`: TurnRoutingSummary?, 
+    /**
+     * Phase 38 — list of providers the user has explicitly trusted.
+     * When `auto_discover_tools_enabled` is true, only tools from these
+     * providers are offered to the LLM automatically.
+     */
+    var `trustedProviders`: List<TrustedProvider>
 ) {
     
     companion object
@@ -2394,6 +3081,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterUInt.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterTypeEmbeddingStatus.read(buf),
+            FfiConverterTypeDeviceCapability.read(buf),
+            FfiConverterSequenceTypeLocalModelSummary.read(buf),
+            FfiConverterOptionalTypeLocalModelDownloadProgress.read(buf),
+            FfiConverterBoolean.read(buf),
             FfiConverterSequenceTypeMemorySummary.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterBoolean.read(buf),
@@ -2410,6 +3101,9 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeDiscoverableTool.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterTypeContextvmDiscoveryState.read(buf),
+            FfiConverterSequenceTypeHybridProfile.read(buf),
+            FfiConverterOptionalTypeTurnRoutingSummary.read(buf),
+            FfiConverterSequenceTypeTrustedProvider.read(buf),
         )
     }
 
@@ -2438,6 +3132,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterUInt.allocationSize(value.`attestationIntervalMinutes`) +
             FfiConverterOptionalString.allocationSize(value.`globalSystemPrompt`) +
             FfiConverterTypeEmbeddingStatus.allocationSize(value.`embeddingStatus`) +
+            FfiConverterTypeDeviceCapability.allocationSize(value.`localDeviceCapability`) +
+            FfiConverterSequenceTypeLocalModelSummary.allocationSize(value.`localModels`) +
+            FfiConverterOptionalTypeLocalModelDownloadProgress.allocationSize(value.`localDownloadProgress`) +
+            FfiConverterBoolean.allocationSize(value.`localInferenceEnabled`) +
             FfiConverterSequenceTypeMemorySummary.allocationSize(value.`memories`) +
             FfiConverterULong.allocationSize(value.`memoryCount`) +
             FfiConverterBoolean.allocationSize(value.`braveApiKeySet`) +
@@ -2453,7 +3151,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeDirectorySourceSummary.allocationSize(value.`directorySources`) +
             FfiConverterSequenceTypeDiscoverableTool.allocationSize(value.`contextvmTools`) +
             FfiConverterBoolean.allocationSize(value.`autoDiscoverToolsEnabled`) +
-            FfiConverterTypeContextvmDiscoveryState.allocationSize(value.`contextvmDiscoveryState`)
+            FfiConverterTypeContextvmDiscoveryState.allocationSize(value.`contextvmDiscoveryState`) +
+            FfiConverterSequenceTypeHybridProfile.allocationSize(value.`hybridProfiles`) +
+            FfiConverterOptionalTypeTurnRoutingSummary.allocationSize(value.`lastTurnRouting`) +
+            FfiConverterSequenceTypeTrustedProvider.allocationSize(value.`trustedProviders`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -2481,6 +3182,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterUInt.write(value.`attestationIntervalMinutes`, buf)
             FfiConverterOptionalString.write(value.`globalSystemPrompt`, buf)
             FfiConverterTypeEmbeddingStatus.write(value.`embeddingStatus`, buf)
+            FfiConverterTypeDeviceCapability.write(value.`localDeviceCapability`, buf)
+            FfiConverterSequenceTypeLocalModelSummary.write(value.`localModels`, buf)
+            FfiConverterOptionalTypeLocalModelDownloadProgress.write(value.`localDownloadProgress`, buf)
+            FfiConverterBoolean.write(value.`localInferenceEnabled`, buf)
             FfiConverterSequenceTypeMemorySummary.write(value.`memories`, buf)
             FfiConverterULong.write(value.`memoryCount`, buf)
             FfiConverterBoolean.write(value.`braveApiKeySet`, buf)
@@ -2497,6 +3202,9 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeDiscoverableTool.write(value.`contextvmTools`, buf)
             FfiConverterBoolean.write(value.`autoDiscoverToolsEnabled`, buf)
             FfiConverterTypeContextvmDiscoveryState.write(value.`contextvmDiscoveryState`, buf)
+            FfiConverterSequenceTypeHybridProfile.write(value.`hybridProfiles`, buf)
+            FfiConverterOptionalTypeTurnRoutingSummary.write(value.`lastTurnRouting`, buf)
+            FfiConverterSequenceTypeTrustedProvider.write(value.`trustedProviders`, buf)
     }
 }
 
@@ -2735,6 +3443,53 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
 
 
 /**
+ * Device-side capability summary for local LLM inference.
+ */
+data class DeviceCapability (
+    var `abi`: kotlin.String, 
+    var `totalRamBytes`: kotlin.ULong, 
+    var `maxModelBytes`: kotlin.ULong, 
+    var `supportsMmap`: kotlin.Boolean, 
+    var `reason`: kotlin.String?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDeviceCapability: FfiConverterRustBuffer<DeviceCapability> {
+    override fun read(buf: ByteBuffer): DeviceCapability {
+        return DeviceCapability(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DeviceCapability) = (
+            FfiConverterString.allocationSize(value.`abi`) +
+            FfiConverterULong.allocationSize(value.`totalRamBytes`) +
+            FfiConverterULong.allocationSize(value.`maxModelBytes`) +
+            FfiConverterBoolean.allocationSize(value.`supportsMmap`) +
+            FfiConverterOptionalString.allocationSize(value.`reason`)
+    )
+
+    override fun write(value: DeviceCapability, buf: ByteBuffer) {
+            FfiConverterString.write(value.`abi`, buf)
+            FfiConverterULong.write(value.`totalRamBytes`, buf)
+            FfiConverterULong.write(value.`maxModelBytes`, buf)
+            FfiConverterBoolean.write(value.`supportsMmap`, buf)
+            FfiConverterOptionalString.write(value.`reason`, buf)
+    }
+}
+
+
+
+/**
  * A single file fingerprint + content payload inside a SyncDirectoryFiles batch (Phase 32, DIR-05).
  *
  * Native layers enumerate the user-chosen directory (Desktop walker, iOS bookmark
@@ -2924,6 +3679,22 @@ data class DiscoverableTool (
      * UI falls back to `pubkey[..8]…` per UI-SPEC §F.
      */
     var `providerDisplayName`: kotlin.String?, 
+    /**
+     * Provider profile name from kind 0 metadata (Phase 37).
+     */
+    var `providerName`: kotlin.String?, 
+    /**
+     * Provider profile "about" text from kind 0 metadata (Phase 37).
+     */
+    var `providerAbout`: kotlin.String?, 
+    /**
+     * Provider profile picture URL from kind 0 metadata (Phase 37).
+     */
+    var `providerPicture`: kotlin.String?, 
+    /**
+     * Provider NIP-05 identifier from kind 0 metadata (Phase 37).
+     */
+    var `providerNip05`: kotlin.String?, 
     var `enabled`: kotlin.Boolean, 
     /**
      * Times the user has invoked this tool via the agent loop. 0 if never used.
@@ -2943,17 +3714,18 @@ data class DiscoverableTool (
      */
     var `lastSeenAt`: kotlin.Long, 
     /**
-     * Pre-computed relative-time label for last_seen_at (always populated).
+     * Pre-computed "3d ago" / "Just now" label (relative to now at projection
+     * time). Always present (non-None).
      */
     var `lastSeenLabel`: kotlin.String, 
     /**
-     * bech32 npub1… encoding of provider_pubkey. Falls back to "invalid:<prefix>"
-     * on malformed hex (never panics).
+     * Bech32 npub1… encoding of the provider pubkey (Phase 36, CTX36-NPUB-01).
+     * UI uses this for copy-to-clipboard on the Tool Detail screen.
      */
     var `npub`: kotlin.String, 
     /**
-     * `serde_json::to_string_pretty` of the parsed schema_json, or raw schema_json
-     * if parse fails. Used by the Tool Detail SCHEMA expander.
+     * Pretty-printed JSON schema (Phase 36, CTX36-NPUB-01). UI renders this
+     * in the Tool Detail screen SCHEMA expander.
      */
     var `schemaPretty`: kotlin.String
 ) {
@@ -2972,6 +3744,10 @@ public object FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer<Discovera
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterUInt.read(buf),
             FfiConverterOptionalLong.read(buf),
@@ -2989,6 +3765,10 @@ public object FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer<Discovera
             FfiConverterString.allocationSize(value.`description`) +
             FfiConverterString.allocationSize(value.`providerPubkey`) +
             FfiConverterOptionalString.allocationSize(value.`providerDisplayName`) +
+            FfiConverterOptionalString.allocationSize(value.`providerName`) +
+            FfiConverterOptionalString.allocationSize(value.`providerAbout`) +
+            FfiConverterOptionalString.allocationSize(value.`providerPicture`) +
+            FfiConverterOptionalString.allocationSize(value.`providerNip05`) +
             FfiConverterBoolean.allocationSize(value.`enabled`) +
             FfiConverterUInt.allocationSize(value.`usageCount`) +
             FfiConverterOptionalLong.allocationSize(value.`lastUsedAt`) +
@@ -3005,6 +3785,10 @@ public object FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer<Discovera
             FfiConverterString.write(value.`description`, buf)
             FfiConverterString.write(value.`providerPubkey`, buf)
             FfiConverterOptionalString.write(value.`providerDisplayName`, buf)
+            FfiConverterOptionalString.write(value.`providerName`, buf)
+            FfiConverterOptionalString.write(value.`providerAbout`, buf)
+            FfiConverterOptionalString.write(value.`providerPicture`, buf)
+            FfiConverterOptionalString.write(value.`providerNip05`, buf)
             FfiConverterBoolean.write(value.`enabled`, buf)
             FfiConverterUInt.write(value.`usageCount`, buf)
             FfiConverterOptionalLong.write(value.`lastUsedAt`, buf)
@@ -3118,6 +3902,62 @@ public object FfiConverterTypeFilePickResult: FfiConverterRustBuffer<FilePickRes
 
 
 
+data class HybridProfile (
+    var `id`: kotlin.String, 
+    var `name`: kotlin.String, 
+    var `localBackendId`: kotlin.String, 
+    var `localModelId`: kotlin.String, 
+    var `remoteBackendId`: kotlin.String, 
+    var `remoteModelId`: kotlin.String, 
+    var `policy`: RoutingPolicy, 
+    var `preprocessing`: LocalPreprocessing
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHybridProfile: FfiConverterRustBuffer<HybridProfile> {
+    override fun read(buf: ByteBuffer): HybridProfile {
+        return HybridProfile(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeRoutingPolicy.read(buf),
+            FfiConverterTypeLocalPreprocessing.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HybridProfile) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`localBackendId`) +
+            FfiConverterString.allocationSize(value.`localModelId`) +
+            FfiConverterString.allocationSize(value.`remoteBackendId`) +
+            FfiConverterString.allocationSize(value.`remoteModelId`) +
+            FfiConverterTypeRoutingPolicy.allocationSize(value.`policy`) +
+            FfiConverterTypeLocalPreprocessing.allocationSize(value.`preprocessing`)
+    )
+
+    override fun write(value: HybridProfile, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`localBackendId`, buf)
+            FfiConverterString.write(value.`localModelId`, buf)
+            FfiConverterString.write(value.`remoteBackendId`, buf)
+            FfiConverterString.write(value.`remoteModelId`, buf)
+            FfiConverterTypeRoutingPolicy.write(value.`policy`, buf)
+            FfiConverterTypeLocalPreprocessing.write(value.`preprocessing`, buf)
+    }
+}
+
+
+
 /**
  * Progress of an ongoing document ingestion (Phase 8).
  *
@@ -3154,6 +3994,218 @@ public object FfiConverterTypeIngestionProgress: FfiConverterRustBuffer<Ingestio
     override fun write(value: IngestionProgress, buf: ByteBuffer) {
             FfiConverterString.write(value.`documentName`, buf)
             FfiConverterString.write(value.`stage`, buf)
+    }
+}
+
+
+
+/**
+ * Download progress for a single local model.
+ */
+data class LocalModelDownloadProgress (
+    var `modelId`: kotlin.String, 
+    var `downloadedBytes`: kotlin.ULong, 
+    var `totalBytes`: kotlin.ULong?, 
+    /**
+     * One of: "downloading", "verifying", "complete", "failed".
+     */
+    var `stage`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLocalModelDownloadProgress: FfiConverterRustBuffer<LocalModelDownloadProgress> {
+    override fun read(buf: ByteBuffer): LocalModelDownloadProgress {
+        return LocalModelDownloadProgress(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterOptionalULong.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: LocalModelDownloadProgress) = (
+            FfiConverterString.allocationSize(value.`modelId`) +
+            FfiConverterULong.allocationSize(value.`downloadedBytes`) +
+            FfiConverterOptionalULong.allocationSize(value.`totalBytes`) +
+            FfiConverterString.allocationSize(value.`stage`)
+    )
+
+    override fun write(value: LocalModelDownloadProgress, buf: ByteBuffer) {
+            FfiConverterString.write(value.`modelId`, buf)
+            FfiConverterULong.write(value.`downloadedBytes`, buf)
+            FfiConverterOptionalULong.write(value.`totalBytes`, buf)
+            FfiConverterString.write(value.`stage`, buf)
+    }
+}
+
+
+
+/**
+ * Built-in downloadable local model entry.
+ */
+data class LocalModelPreset (
+    var `id`: kotlin.String, 
+    var `name`: kotlin.String, 
+    var `description`: kotlin.String, 
+    var `filename`: kotlin.String, 
+    var `url`: kotlin.String, 
+    var `sha256`: kotlin.String, 
+    var `sizeBytes`: kotlin.ULong, 
+    var `quantization`: kotlin.String, 
+    var `minRamBytes`: kotlin.ULong, 
+    var `chatTemplate`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLocalModelPreset: FfiConverterRustBuffer<LocalModelPreset> {
+    override fun read(buf: ByteBuffer): LocalModelPreset {
+        return LocalModelPreset(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: LocalModelPreset) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`description`) +
+            FfiConverterString.allocationSize(value.`filename`) +
+            FfiConverterString.allocationSize(value.`url`) +
+            FfiConverterString.allocationSize(value.`sha256`) +
+            FfiConverterULong.allocationSize(value.`sizeBytes`) +
+            FfiConverterString.allocationSize(value.`quantization`) +
+            FfiConverterULong.allocationSize(value.`minRamBytes`) +
+            FfiConverterString.allocationSize(value.`chatTemplate`)
+    )
+
+    override fun write(value: LocalModelPreset, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`description`, buf)
+            FfiConverterString.write(value.`filename`, buf)
+            FfiConverterString.write(value.`url`, buf)
+            FfiConverterString.write(value.`sha256`, buf)
+            FfiConverterULong.write(value.`sizeBytes`, buf)
+            FfiConverterString.write(value.`quantization`, buf)
+            FfiConverterULong.write(value.`minRamBytes`, buf)
+            FfiConverterString.write(value.`chatTemplate`, buf)
+    }
+}
+
+
+
+/**
+ * UI-safe local model status, derived from catalog + verified file state.
+ */
+data class LocalModelSummary (
+    var `id`: kotlin.String, 
+    var `name`: kotlin.String, 
+    var `description`: kotlin.String, 
+    var `quantization`: kotlin.String, 
+    var `sizeBytes`: kotlin.ULong, 
+    var `minRamBytes`: kotlin.ULong, 
+    var `downloaded`: kotlin.Boolean, 
+    var `verified`: kotlin.Boolean, 
+    var `path`: kotlin.String?, 
+    var `backendId`: kotlin.String?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLocalModelSummary: FfiConverterRustBuffer<LocalModelSummary> {
+    override fun read(buf: ByteBuffer): LocalModelSummary {
+        return LocalModelSummary(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: LocalModelSummary) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`description`) +
+            FfiConverterString.allocationSize(value.`quantization`) +
+            FfiConverterULong.allocationSize(value.`sizeBytes`) +
+            FfiConverterULong.allocationSize(value.`minRamBytes`) +
+            FfiConverterBoolean.allocationSize(value.`downloaded`) +
+            FfiConverterBoolean.allocationSize(value.`verified`) +
+            FfiConverterOptionalString.allocationSize(value.`path`) +
+            FfiConverterOptionalString.allocationSize(value.`backendId`)
+    )
+
+    override fun write(value: LocalModelSummary, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`description`, buf)
+            FfiConverterString.write(value.`quantization`, buf)
+            FfiConverterULong.write(value.`sizeBytes`, buf)
+            FfiConverterULong.write(value.`minRamBytes`, buf)
+            FfiConverterBoolean.write(value.`downloaded`, buf)
+            FfiConverterBoolean.write(value.`verified`, buf)
+            FfiConverterOptionalString.write(value.`path`, buf)
+            FfiConverterOptionalString.write(value.`backendId`, buf)
+    }
+}
+
+
+
+data class LocalPreprocessing (
+    var `compressHistory`: kotlin.Boolean, 
+    var `rewriteRagQuery`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLocalPreprocessing: FfiConverterRustBuffer<LocalPreprocessing> {
+    override fun read(buf: ByteBuffer): LocalPreprocessing {
+        return LocalPreprocessing(
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: LocalPreprocessing) = (
+            FfiConverterBoolean.allocationSize(value.`compressHistory`) +
+            FfiConverterBoolean.allocationSize(value.`rewriteRagQuery`)
+    )
+
+    override fun write(value: LocalPreprocessing, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`compressHistory`, buf)
+            FfiConverterBoolean.write(value.`rewriteRagQuery`, buf)
     }
 }
 
@@ -3341,6 +4393,118 @@ public object FfiConverterTypeOrchestratedComponent: FfiConverterRustBuffer<Orch
 
 
 
+data class PlatformHttpHeader (
+    var `name`: kotlin.String, 
+    var `value`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePlatformHttpHeader: FfiConverterRustBuffer<PlatformHttpHeader> {
+    override fun read(buf: ByteBuffer): PlatformHttpHeader {
+        return PlatformHttpHeader(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PlatformHttpHeader) = (
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`value`)
+    )
+
+    override fun write(value: PlatformHttpHeader, buf: ByteBuffer) {
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`value`, buf)
+    }
+}
+
+
+
+data class PlatformHttpRequest (
+    var `method`: kotlin.String, 
+    var `url`: kotlin.String, 
+    var `headers`: List<PlatformHttpHeader>, 
+    var `body`: kotlin.ByteArray, 
+    var `timeoutSecs`: kotlin.ULong
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePlatformHttpRequest: FfiConverterRustBuffer<PlatformHttpRequest> {
+    override fun read(buf: ByteBuffer): PlatformHttpRequest {
+        return PlatformHttpRequest(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterSequenceTypePlatformHttpHeader.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PlatformHttpRequest) = (
+            FfiConverterString.allocationSize(value.`method`) +
+            FfiConverterString.allocationSize(value.`url`) +
+            FfiConverterSequenceTypePlatformHttpHeader.allocationSize(value.`headers`) +
+            FfiConverterByteArray.allocationSize(value.`body`) +
+            FfiConverterULong.allocationSize(value.`timeoutSecs`)
+    )
+
+    override fun write(value: PlatformHttpRequest, buf: ByteBuffer) {
+            FfiConverterString.write(value.`method`, buf)
+            FfiConverterString.write(value.`url`, buf)
+            FfiConverterSequenceTypePlatformHttpHeader.write(value.`headers`, buf)
+            FfiConverterByteArray.write(value.`body`, buf)
+            FfiConverterULong.write(value.`timeoutSecs`, buf)
+    }
+}
+
+
+
+data class PlatformHttpResponse (
+    var `statusCode`: kotlin.UShort, 
+    var `headers`: List<PlatformHttpHeader>, 
+    var `body`: kotlin.ByteArray
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePlatformHttpResponse: FfiConverterRustBuffer<PlatformHttpResponse> {
+    override fun read(buf: ByteBuffer): PlatformHttpResponse {
+        return PlatformHttpResponse(
+            FfiConverterUShort.read(buf),
+            FfiConverterSequenceTypePlatformHttpHeader.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PlatformHttpResponse) = (
+            FfiConverterUShort.allocationSize(value.`statusCode`) +
+            FfiConverterSequenceTypePlatformHttpHeader.allocationSize(value.`headers`) +
+            FfiConverterByteArray.allocationSize(value.`body`)
+    )
+
+    override fun write(value: PlatformHttpResponse, buf: ByteBuffer) {
+            FfiConverterUShort.write(value.`statusCode`, buf)
+            FfiConverterSequenceTypePlatformHttpHeader.write(value.`headers`, buf)
+            FfiConverterByteArray.write(value.`body`, buf)
+    }
+}
+
+
+
 /**
  * A known provider preset for the Add Backend form.
  * UniFFI-exported so all platforms share the same preset data.
@@ -3431,6 +4595,157 @@ public object FfiConverterTypeRouter: FfiConverterRustBuffer<Router> {
     override fun write(value: Router, buf: ByteBuffer) {
             FfiConverterTypeScreen.write(value.`currentScreen`, buf)
             FfiConverterSequenceTypeScreen.write(value.`screenStack`, buf)
+    }
+}
+
+
+
+data class RoutingPolicy (
+    var `escalateIfAttachment`: kotlin.Boolean, 
+    var `preferLocalWhenOffline`: kotlin.Boolean, 
+    var `escalateIfMessageLongerThan`: kotlin.ULong?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRoutingPolicy: FfiConverterRustBuffer<RoutingPolicy> {
+    override fun read(buf: ByteBuffer): RoutingPolicy {
+        return RoutingPolicy(
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RoutingPolicy) = (
+            FfiConverterBoolean.allocationSize(value.`escalateIfAttachment`) +
+            FfiConverterBoolean.allocationSize(value.`preferLocalWhenOffline`) +
+            FfiConverterOptionalULong.allocationSize(value.`escalateIfMessageLongerThan`)
+    )
+
+    override fun write(value: RoutingPolicy, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`escalateIfAttachment`, buf)
+            FfiConverterBoolean.write(value.`preferLocalWhenOffline`, buf)
+            FfiConverterOptionalULong.write(value.`escalateIfMessageLongerThan`, buf)
+    }
+}
+
+
+
+/**
+ * Phase 38 — one entry in the user's trusted-providers list.
+ */
+data class TrustedProvider (
+    /**
+     * Nostr hex pubkey.
+     */
+    var `pubkey`: kotlin.String, 
+    /**
+     * Optional user-supplied label.
+     */
+    var `label`: kotlin.String?, 
+    /**
+     * Unix seconds when the user added this entry.
+     */
+    var `addedAt`: kotlin.Long, 
+    /**
+     * Bech32 npub1… encoding, pre-computed for display.
+     */
+    var `npub`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeTrustedProvider: FfiConverterRustBuffer<TrustedProvider> {
+    override fun read(buf: ByteBuffer): TrustedProvider {
+        return TrustedProvider(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: TrustedProvider) = (
+            FfiConverterString.allocationSize(value.`pubkey`) +
+            FfiConverterOptionalString.allocationSize(value.`label`) +
+            FfiConverterLong.allocationSize(value.`addedAt`) +
+            FfiConverterString.allocationSize(value.`npub`)
+    )
+
+    override fun write(value: TrustedProvider, buf: ByteBuffer) {
+            FfiConverterString.write(value.`pubkey`, buf)
+            FfiConverterOptionalString.write(value.`label`, buf)
+            FfiConverterLong.write(value.`addedAt`, buf)
+            FfiConverterString.write(value.`npub`, buf)
+    }
+}
+
+
+
+data class TurnRoutingSummary (
+    var `conversationId`: kotlin.String?, 
+    var `profileId`: kotlin.String?, 
+    var `backendId`: kotlin.String, 
+    var `modelId`: kotlin.String, 
+    var `decision`: BackendRole, 
+    var `reason`: kotlin.String, 
+    var `providerName`: kotlin.String, 
+    var `teeLabel`: kotlin.String, 
+    var `teeVerified`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeTurnRoutingSummary: FfiConverterRustBuffer<TurnRoutingSummary> {
+    override fun read(buf: ByteBuffer): TurnRoutingSummary {
+        return TurnRoutingSummary(
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeBackendRole.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: TurnRoutingSummary) = (
+            FfiConverterOptionalString.allocationSize(value.`conversationId`) +
+            FfiConverterOptionalString.allocationSize(value.`profileId`) +
+            FfiConverterString.allocationSize(value.`backendId`) +
+            FfiConverterString.allocationSize(value.`modelId`) +
+            FfiConverterTypeBackendRole.allocationSize(value.`decision`) +
+            FfiConverterString.allocationSize(value.`reason`) +
+            FfiConverterString.allocationSize(value.`providerName`) +
+            FfiConverterString.allocationSize(value.`teeLabel`) +
+            FfiConverterBoolean.allocationSize(value.`teeVerified`)
+    )
+
+    override fun write(value: TurnRoutingSummary, buf: ByteBuffer) {
+            FfiConverterOptionalString.write(value.`conversationId`, buf)
+            FfiConverterOptionalString.write(value.`profileId`, buf)
+            FfiConverterString.write(value.`backendId`, buf)
+            FfiConverterString.write(value.`modelId`, buf)
+            FfiConverterTypeBackendRole.write(value.`decision`, buf)
+            FfiConverterString.write(value.`reason`, buf)
+            FfiConverterString.write(value.`providerName`, buf)
+            FfiConverterString.write(value.`teeLabel`, buf)
+            FfiConverterBoolean.write(value.`teeVerified`, buf)
     }
 }
 
@@ -3561,10 +4876,11 @@ sealed class AppAction {
     
     
     /**
-     * Send a chat message to the active backend (per D-04, D-05)
+     * Send a chat message to the active backend. `force_role` applies only to hybrid profiles.
      */
     data class SendMessage(
-        val `text`: kotlin.String) : AppAction() {
+        val `text`: kotlin.String, 
+        val `forceRole`: BackendRole?) : AppAction() {
         companion object
     }
     
@@ -3744,6 +5060,54 @@ sealed class AppAction {
      */
     data class SetDefaultModel(
         val `modelId`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Enable or disable on-device local inference globally.
+     */
+    data class SetLocalInferenceEnabled(
+        val `enabled`: kotlin.Boolean) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Download and verify a built-in local model.
+     */
+    data class DownloadLocalModel(
+        val `modelId`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Delete a downloaded local model after unloading it if safe.
+     */
+    data class DeleteLocalModel(
+        val `modelId`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Save or update a hybrid local/remote routing profile.
+     */
+    data class SaveHybridProfile(
+        val `profile`: HybridProfile) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Delete a saved hybrid profile.
+     */
+    data class DeleteHybridProfile(
+        val `profileId`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Make a hybrid profile the active/default conversation target.
+     */
+    data class SetActiveHybridProfile(
+        val `profileId`: kotlin.String) : AppAction() {
         companion object
     }
     
@@ -4155,6 +5519,25 @@ sealed class AppAction {
     object RetryContextvmDiscovery : AppAction()
     
     
+    /**
+     * Add a provider pubkey to the trust list. `label` is optional.
+     * When `auto_discover_tools_enabled`, only trusted providers' tools
+     * are offered to the LLM automatically.
+     */
+    data class AddTrustedProvider(
+        val `pubkey`: kotlin.String, 
+        val `label`: kotlin.String?) : AppAction() {
+        companion object
+    }
+    
+    /**
+     * Remove a provider from the trust list by pubkey.
+     */
+    data class RemoveTrustedProvider(
+        val `pubkey`: kotlin.String) : AppAction() {
+        companion object
+    }
+    
 
     
     companion object
@@ -4180,6 +5563,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             6 -> AppAction.Noop
             7 -> AppAction.SendMessage(
                 FfiConverterString.read(buf),
+                FfiConverterOptionalTypeBackendRole.read(buf),
                 )
             8 -> AppAction.StopGeneration
             9 -> AppAction.SetActiveBackend(
@@ -4247,139 +5631,164 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             29 -> AppAction.SetDefaultModel(
                 FfiConverterString.read(buf),
                 )
-            30 -> AppAction.OverrideConversationBackend(
+            30 -> AppAction.SetLocalInferenceEnabled(
+                FfiConverterBoolean.read(buf),
+                )
+            31 -> AppAction.DownloadLocalModel(
+                FfiConverterString.read(buf),
+                )
+            32 -> AppAction.DeleteLocalModel(
+                FfiConverterString.read(buf),
+                )
+            33 -> AppAction.SaveHybridProfile(
+                FfiConverterTypeHybridProfile.read(buf),
+                )
+            34 -> AppAction.DeleteHybridProfile(
+                FfiConverterString.read(buf),
+                )
+            35 -> AppAction.SetActiveHybridProfile(
+                FfiConverterString.read(buf),
+                )
+            36 -> AppAction.OverrideConversationBackend(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            31 -> AppAction.NextOnboardingStep
-            32 -> AppAction.PreviousOnboardingStep
-            33 -> AppAction.UpdateBackendApiKey(
+            37 -> AppAction.NextOnboardingStep
+            38 -> AppAction.PreviousOnboardingStep
+            39 -> AppAction.UpdateBackendApiKey(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            34 -> AppAction.ValidateApiKey(
+            40 -> AppAction.ValidateApiKey(
                 FfiConverterString.read(buf),
                 )
-            35 -> AppAction.CompleteOnboarding
-            36 -> AppAction.SkipOnboarding
-            37 -> AppAction.AddBackendFromPreset(
+            41 -> AppAction.CompleteOnboarding
+            42 -> AppAction.SkipOnboarding
+            43 -> AppAction.AddBackendFromPreset(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            38 -> AppAction.IngestDocument(
+            44 -> AppAction.IngestDocument(
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            39 -> AppAction.DeleteDocument(
+            45 -> AppAction.DeleteDocument(
                 FfiConverterString.read(buf),
                 )
-            40 -> AppAction.AttachDocumentToConversation(
+            46 -> AppAction.AttachDocumentToConversation(
                 FfiConverterString.read(buf),
                 )
-            41 -> AppAction.DetachDocumentFromConversation(
+            47 -> AppAction.DetachDocumentFromConversation(
                 FfiConverterString.read(buf),
                 )
-            42 -> AppAction.LaunchAgentSession(
+            48 -> AppAction.LaunchAgentSession(
                 FfiConverterString.read(buf),
                 )
-            43 -> AppAction.PauseAgentSession(
+            49 -> AppAction.PauseAgentSession(
                 FfiConverterString.read(buf),
                 )
-            44 -> AppAction.ResumeAgentSession(
+            50 -> AppAction.ResumeAgentSession(
                 FfiConverterString.read(buf),
                 )
-            45 -> AppAction.CancelAgentSession(
+            51 -> AppAction.CancelAgentSession(
                 FfiConverterString.read(buf),
                 )
-            46 -> AppAction.LoadAgentSession(
+            52 -> AppAction.LoadAgentSession(
                 FfiConverterString.read(buf),
                 )
-            47 -> AppAction.ClearAgentDetail
-            48 -> AppAction.SetAttestationInterval(
+            53 -> AppAction.ClearAgentDetail
+            54 -> AppAction.SetAttestationInterval(
                 FfiConverterUInt.read(buf),
                 )
-            49 -> AppAction.SetGlobalSystemPrompt(
+            55 -> AppAction.SetGlobalSystemPrompt(
                 FfiConverterOptionalString.read(buf),
                 )
-            50 -> AppAction.ListMemories
-            51 -> AppAction.DeleteMemory(
+            56 -> AppAction.ListMemories
+            57 -> AppAction.DeleteMemory(
                 FfiConverterString.read(buf),
                 )
-            52 -> AppAction.UpdateMemory(
+            58 -> AppAction.UpdateMemory(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            53 -> AppAction.SetBraveApiKey(
+            59 -> AppAction.SetBraveApiKey(
                 FfiConverterString.read(buf),
                 )
-            54 -> AppAction.ValidateBraveApiKey(
+            60 -> AppAction.ValidateBraveApiKey(
                 FfiConverterString.read(buf),
                 )
-            55 -> AppAction.SetMemoriesEnabled(
+            61 -> AppAction.SetMemoriesEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            56 -> AppAction.SetConversationToolsEnabled(
+            62 -> AppAction.SetConversationToolsEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            57 -> AppAction.SetupPin(
+            63 -> AppAction.SetupPin(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            58 -> AppAction.SetDuressPin(
+            64 -> AppAction.SetDuressPin(
                 FfiConverterOptionalString.read(buf),
                 )
-            59 -> AppAction.UnlockWithDek(
+            65 -> AppAction.UnlockWithDek(
                 FfiConverterString.read(buf),
                 )
-            60 -> AppAction.UnlockWithPin(
+            66 -> AppAction.UnlockWithPin(
                 FfiConverterString.read(buf),
                 )
-            61 -> AppAction.LockApp
-            62 -> AppAction.AttemptBiometricUnlock
-            63 -> AppAction.SetBiometricLoginEnabled(
+            67 -> AppAction.LockApp
+            68 -> AppAction.AttemptBiometricUnlock
+            69 -> AppAction.SetBiometricLoginEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            64 -> AppAction.SetLockTimeout(
+            70 -> AppAction.SetLockTimeout(
                 FfiConverterLong.read(buf),
                 )
-            65 -> AppAction.AddDirectorySource(
+            71 -> AppAction.AddDirectorySource(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalByteArray.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            66 -> AppAction.SyncDirectoryFiles(
+            72 -> AppAction.SyncDirectoryFiles(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceTypeDirectoryFileEntry.read(buf),
                 FfiConverterSequenceString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            67 -> AppAction.RemoveDirectorySource(
+            73 -> AppAction.RemoveDirectorySource(
                 FfiConverterString.read(buf),
                 )
-            68 -> AppAction.SetDirectoryExclusions(
+            74 -> AppAction.SetDirectoryExclusions(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            69 -> AppAction.TriggerDirectorySync(
+            75 -> AppAction.TriggerDirectorySync(
                 FfiConverterString.read(buf),
                 )
-            70 -> AppAction.UpdateDirectorySourceBookmark(
+            76 -> AppAction.UpdateDirectorySourceBookmark(
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            71 -> AppAction.DiscoverContextvmTools
-            72 -> AppAction.SetContextvmToolEnabled(
+            77 -> AppAction.DiscoverContextvmTools
+            78 -> AppAction.SetContextvmToolEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            73 -> AppAction.SetAutoDiscoverTools(
+            79 -> AppAction.SetAutoDiscoverTools(
                 FfiConverterBoolean.read(buf),
                 )
-            74 -> AppAction.RetryContextvmDiscovery
+            80 -> AppAction.RetryContextvmDiscovery
+            81 -> AppAction.AddTrustedProvider(
+                FfiConverterString.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            82 -> AppAction.RemoveTrustedProvider(
+                FfiConverterString.read(buf),
+                )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4429,6 +5838,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`text`)
+                + FfiConverterOptionalTypeBackendRole.allocationSize(value.`forceRole`)
             )
         }
         is AppAction.StopGeneration -> {
@@ -4589,6 +5999,48 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`modelId`)
+            )
+        }
+        is AppAction.SetLocalInferenceEnabled -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterBoolean.allocationSize(value.`enabled`)
+            )
+        }
+        is AppAction.DownloadLocalModel -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`modelId`)
+            )
+        }
+        is AppAction.DeleteLocalModel -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`modelId`)
+            )
+        }
+        is AppAction.SaveHybridProfile -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeHybridProfile.allocationSize(value.`profile`)
+            )
+        }
+        is AppAction.DeleteHybridProfile -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`profileId`)
+            )
+        }
+        is AppAction.SetActiveHybridProfile -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`profileId`)
             )
         }
         is AppAction.OverrideConversationBackend -> {
@@ -4914,6 +6366,21 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 4UL
             )
         }
+        is AppAction.AddTrustedProvider -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`pubkey`)
+                + FfiConverterOptionalString.allocationSize(value.`label`)
+            )
+        }
+        is AppAction.RemoveTrustedProvider -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`pubkey`)
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -4948,6 +6415,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             is AppAction.SendMessage -> {
                 buf.putInt(7)
                 FfiConverterString.write(value.`text`, buf)
+                FfiConverterOptionalTypeBackendRole.write(value.`forceRole`, buf)
                 Unit
             }
             is AppAction.StopGeneration -> {
@@ -5066,183 +6534,213 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.write(value.`modelId`, buf)
                 Unit
             }
-            is AppAction.OverrideConversationBackend -> {
+            is AppAction.SetLocalInferenceEnabled -> {
                 buf.putInt(30)
+                FfiConverterBoolean.write(value.`enabled`, buf)
+                Unit
+            }
+            is AppAction.DownloadLocalModel -> {
+                buf.putInt(31)
+                FfiConverterString.write(value.`modelId`, buf)
+                Unit
+            }
+            is AppAction.DeleteLocalModel -> {
+                buf.putInt(32)
+                FfiConverterString.write(value.`modelId`, buf)
+                Unit
+            }
+            is AppAction.SaveHybridProfile -> {
+                buf.putInt(33)
+                FfiConverterTypeHybridProfile.write(value.`profile`, buf)
+                Unit
+            }
+            is AppAction.DeleteHybridProfile -> {
+                buf.putInt(34)
+                FfiConverterString.write(value.`profileId`, buf)
+                Unit
+            }
+            is AppAction.SetActiveHybridProfile -> {
+                buf.putInt(35)
+                FfiConverterString.write(value.`profileId`, buf)
+                Unit
+            }
+            is AppAction.OverrideConversationBackend -> {
+                buf.putInt(36)
                 FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.NextOnboardingStep -> {
-                buf.putInt(31)
+                buf.putInt(37)
                 Unit
             }
             is AppAction.PreviousOnboardingStep -> {
-                buf.putInt(32)
+                buf.putInt(38)
                 Unit
             }
             is AppAction.UpdateBackendApiKey -> {
-                buf.putInt(33)
+                buf.putInt(39)
                 FfiConverterString.write(value.`backendId`, buf)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.ValidateApiKey -> {
-                buf.putInt(34)
+                buf.putInt(40)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.CompleteOnboarding -> {
-                buf.putInt(35)
+                buf.putInt(41)
                 Unit
             }
             is AppAction.SkipOnboarding -> {
-                buf.putInt(36)
+                buf.putInt(42)
                 Unit
             }
             is AppAction.AddBackendFromPreset -> {
-                buf.putInt(37)
+                buf.putInt(43)
                 FfiConverterString.write(value.`presetId`, buf)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.IngestDocument -> {
-                buf.putInt(38)
+                buf.putInt(44)
                 FfiConverterString.write(value.`filename`, buf)
                 FfiConverterByteArray.write(value.`content`, buf)
                 Unit
             }
             is AppAction.DeleteDocument -> {
-                buf.putInt(39)
+                buf.putInt(45)
                 FfiConverterString.write(value.`documentId`, buf)
                 Unit
             }
             is AppAction.AttachDocumentToConversation -> {
-                buf.putInt(40)
+                buf.putInt(46)
                 FfiConverterString.write(value.`documentId`, buf)
                 Unit
             }
             is AppAction.DetachDocumentFromConversation -> {
-                buf.putInt(41)
+                buf.putInt(47)
                 FfiConverterString.write(value.`documentId`, buf)
                 Unit
             }
             is AppAction.LaunchAgentSession -> {
-                buf.putInt(42)
+                buf.putInt(48)
                 FfiConverterString.write(value.`taskDescription`, buf)
                 Unit
             }
             is AppAction.PauseAgentSession -> {
-                buf.putInt(43)
+                buf.putInt(49)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
             is AppAction.ResumeAgentSession -> {
-                buf.putInt(44)
+                buf.putInt(50)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
             is AppAction.CancelAgentSession -> {
-                buf.putInt(45)
+                buf.putInt(51)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
             is AppAction.LoadAgentSession -> {
-                buf.putInt(46)
+                buf.putInt(52)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
             is AppAction.ClearAgentDetail -> {
-                buf.putInt(47)
+                buf.putInt(53)
                 Unit
             }
             is AppAction.SetAttestationInterval -> {
-                buf.putInt(48)
+                buf.putInt(54)
                 FfiConverterUInt.write(value.`minutes`, buf)
                 Unit
             }
             is AppAction.SetGlobalSystemPrompt -> {
-                buf.putInt(49)
+                buf.putInt(55)
                 FfiConverterOptionalString.write(value.`prompt`, buf)
                 Unit
             }
             is AppAction.ListMemories -> {
-                buf.putInt(50)
+                buf.putInt(56)
                 Unit
             }
             is AppAction.DeleteMemory -> {
-                buf.putInt(51)
+                buf.putInt(57)
                 FfiConverterString.write(value.`memoryId`, buf)
                 Unit
             }
             is AppAction.UpdateMemory -> {
-                buf.putInt(52)
+                buf.putInt(58)
                 FfiConverterString.write(value.`memoryId`, buf)
                 FfiConverterString.write(value.`content`, buf)
                 Unit
             }
             is AppAction.SetBraveApiKey -> {
-                buf.putInt(53)
+                buf.putInt(59)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.ValidateBraveApiKey -> {
-                buf.putInt(54)
+                buf.putInt(60)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.SetMemoriesEnabled -> {
-                buf.putInt(55)
+                buf.putInt(61)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetConversationToolsEnabled -> {
-                buf.putInt(56)
+                buf.putInt(62)
                 FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetupPin -> {
-                buf.putInt(57)
+                buf.putInt(63)
                 FfiConverterString.write(value.`pin`, buf)
                 FfiConverterOptionalString.write(value.`duressPin`, buf)
                 FfiConverterBoolean.write(value.`enableBiometric`, buf)
                 Unit
             }
             is AppAction.SetDuressPin -> {
-                buf.putInt(58)
+                buf.putInt(64)
                 FfiConverterOptionalString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.UnlockWithDek -> {
-                buf.putInt(59)
+                buf.putInt(65)
                 FfiConverterString.write(value.`dekHex`, buf)
                 Unit
             }
             is AppAction.UnlockWithPin -> {
-                buf.putInt(60)
+                buf.putInt(66)
                 FfiConverterString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.LockApp -> {
-                buf.putInt(61)
+                buf.putInt(67)
                 Unit
             }
             is AppAction.AttemptBiometricUnlock -> {
-                buf.putInt(62)
+                buf.putInt(68)
                 Unit
             }
             is AppAction.SetBiometricLoginEnabled -> {
-                buf.putInt(63)
+                buf.putInt(69)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetLockTimeout -> {
-                buf.putInt(64)
+                buf.putInt(70)
                 FfiConverterLong.write(value.`seconds`, buf)
                 Unit
             }
             is AppAction.AddDirectorySource -> {
-                buf.putInt(65)
+                buf.putInt(71)
                 FfiConverterString.write(value.`displayName`, buf)
                 FfiConverterOptionalString.write(value.`path`, buf)
                 FfiConverterOptionalByteArray.write(value.`bookmarkData`, buf)
@@ -5251,7 +6749,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.SyncDirectoryFiles -> {
-                buf.putInt(66)
+                buf.putInt(72)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceTypeDirectoryFileEntry.write(value.`files`, buf)
                 FfiConverterSequenceString.write(value.`removedPaths`, buf)
@@ -5259,44 +6757,55 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.RemoveDirectorySource -> {
-                buf.putInt(67)
+                buf.putInt(73)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.SetDirectoryExclusions -> {
-                buf.putInt(68)
+                buf.putInt(74)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceString.write(value.`globs`, buf)
                 Unit
             }
             is AppAction.TriggerDirectorySync -> {
-                buf.putInt(69)
+                buf.putInt(75)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.UpdateDirectorySourceBookmark -> {
-                buf.putInt(70)
+                buf.putInt(76)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterByteArray.write(value.`bookmarkData`, buf)
                 Unit
             }
             is AppAction.DiscoverContextvmTools -> {
-                buf.putInt(71)
+                buf.putInt(77)
                 Unit
             }
             is AppAction.SetContextvmToolEnabled -> {
-                buf.putInt(72)
+                buf.putInt(78)
                 FfiConverterString.write(value.`toolId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetAutoDiscoverTools -> {
-                buf.putInt(73)
+                buf.putInt(79)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.RetryContextvmDiscovery -> {
-                buf.putInt(74)
+                buf.putInt(80)
+                Unit
+            }
+            is AppAction.AddTrustedProvider -> {
+                buf.putInt(81)
+                FfiConverterString.write(value.`pubkey`, buf)
+                FfiConverterOptionalString.write(value.`label`, buf)
+                Unit
+            }
+            is AppAction.RemoveTrustedProvider -> {
+                buf.putInt(82)
+                FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -5707,6 +7216,36 @@ public object FfiConverterTypeAttestationStatus : FfiConverterRustBuffer<Attesta
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+enum class BackendRole {
+    
+    LOCAL,
+    REMOTE;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeBackendRole: FfiConverterRustBuffer<BackendRole> {
+    override fun read(buf: ByteBuffer) = try {
+        BackendRole.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: BackendRole) = 4UL
+
+    override fun write(value: BackendRole, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
     }
 }
 
@@ -6330,6 +7869,158 @@ public object FfiConverterTypeLlmError : FfiConverterRustBuffer<LlmException> {
 
 
 
+
+
+sealed class LocalLlmException: kotlin.Exception() {
+    
+    class Unsupported(
+        
+        val `reason`: kotlin.String
+        ) : LocalLlmException() {
+        override val message
+            get() = "reason=${ `reason` }"
+    }
+    
+    class ModelMissing(
+        
+        val `path`: kotlin.String
+        ) : LocalLlmException() {
+        override val message
+            get() = "path=${ `path` }"
+    }
+    
+    class LoadFailed(
+        
+        val `reason`: kotlin.String
+        ) : LocalLlmException() {
+        override val message
+            get() = "reason=${ `reason` }"
+    }
+    
+    class NotLoaded(
+        ) : LocalLlmException() {
+        override val message
+            get() = ""
+    }
+    
+    class GenerationFailed(
+        
+        val `reason`: kotlin.String
+        ) : LocalLlmException() {
+        override val message
+            get() = "reason=${ `reason` }"
+    }
+    
+    class Cancelled(
+        ) : LocalLlmException() {
+        override val message
+            get() = ""
+    }
+    
+
+    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<LocalLlmException> {
+        override fun lift(error_buf: RustBuffer.ByValue): LocalLlmException = FfiConverterTypeLocalLlmError.lift(error_buf)
+    }
+
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLocalLlmError : FfiConverterRustBuffer<LocalLlmException> {
+    override fun read(buf: ByteBuffer): LocalLlmException {
+        
+
+        return when(buf.getInt()) {
+            1 -> LocalLlmException.Unsupported(
+                FfiConverterString.read(buf),
+                )
+            2 -> LocalLlmException.ModelMissing(
+                FfiConverterString.read(buf),
+                )
+            3 -> LocalLlmException.LoadFailed(
+                FfiConverterString.read(buf),
+                )
+            4 -> LocalLlmException.NotLoaded()
+            5 -> LocalLlmException.GenerationFailed(
+                FfiConverterString.read(buf),
+                )
+            6 -> LocalLlmException.Cancelled()
+            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: LocalLlmException): ULong {
+        return when(value) {
+            is LocalLlmException.Unsupported -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+            is LocalLlmException.ModelMissing -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`path`)
+            )
+            is LocalLlmException.LoadFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+            is LocalLlmException.NotLoaded -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is LocalLlmException.GenerationFailed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+            is LocalLlmException.Cancelled -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: LocalLlmException, buf: ByteBuffer) {
+        when(value) {
+            is LocalLlmException.Unsupported -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+            is LocalLlmException.ModelMissing -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`path`, buf)
+                Unit
+            }
+            is LocalLlmException.LoadFailed -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+            is LocalLlmException.NotLoaded -> {
+                buf.putInt(4)
+                Unit
+            }
+            is LocalLlmException.GenerationFailed -> {
+                buf.putInt(5)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+            is LocalLlmException.Cancelled -> {
+                buf.putInt(6)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+
+}
+
+
+
 /**
  * Onboarding wizard step (per D-18).
  *
@@ -6472,6 +8163,18 @@ sealed class Screen {
     
     
     /**
+     * Local models management sub-screen -- pushed from Settings (model catalog, download, delete).
+     */
+    object SettingsLocalModels : Screen()
+    
+    
+    /**
+     * Hybrid routing configuration sub-screen -- pushed from Settings.
+     */
+    object SettingsHybridRouting : Screen()
+    
+    
+    /**
      * Phase 35 — Tool Discovery sub-screen (pushed from SettingsTools).
      */
     object ToolDiscovery : Screen()
@@ -6486,6 +8189,12 @@ sealed class Screen {
         val `toolId`: kotlin.String) : Screen() {
         companion object
     }
+    
+    /**
+     * Phase 38 — Trusted Providers management screen.
+     */
+    object TrustedProviders : Screen()
+    
     
     /**
      * Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
@@ -6528,12 +8237,15 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             12 -> Screen.SettingsAppearance
             13 -> Screen.SettingsSecurity
             14 -> Screen.SettingsTools
-            15 -> Screen.ToolDiscovery
-            16 -> Screen.ContextvmToolDetail(
+            15 -> Screen.SettingsLocalModels
+            16 -> Screen.SettingsHybridRouting
+            17 -> Screen.ToolDiscovery
+            18 -> Screen.ContextvmToolDetail(
                 FfiConverterString.read(buf),
                 )
-            17 -> Screen.Locked
-            18 -> Screen.PinSetup
+            19 -> Screen.TrustedProviders
+            20 -> Screen.Locked
+            21 -> Screen.PinSetup
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -6625,6 +8337,18 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 4UL
             )
         }
+        is Screen.SettingsLocalModels -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is Screen.SettingsHybridRouting -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
         is Screen.ToolDiscovery -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -6636,6 +8360,12 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`toolId`)
+            )
+        }
+        is Screen.TrustedProviders -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
             )
         }
         is Screen.Locked -> {
@@ -6712,21 +8442,33 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 buf.putInt(14)
                 Unit
             }
-            is Screen.ToolDiscovery -> {
+            is Screen.SettingsLocalModels -> {
                 buf.putInt(15)
                 Unit
             }
-            is Screen.ContextvmToolDetail -> {
+            is Screen.SettingsHybridRouting -> {
                 buf.putInt(16)
-                FfiConverterString.write(value.`toolId`, buf)
                 Unit
             }
-            is Screen.Locked -> {
+            is Screen.ToolDiscovery -> {
                 buf.putInt(17)
                 Unit
             }
-            is Screen.PinSetup -> {
+            is Screen.ContextvmToolDetail -> {
                 buf.putInt(18)
+                FfiConverterString.write(value.`toolId`, buf)
+                Unit
+            }
+            is Screen.TrustedProviders -> {
+                buf.putInt(19)
+                Unit
+            }
+            is Screen.Locked -> {
+                buf.putInt(20)
+                Unit
+            }
+            is Screen.PinSetup -> {
+                buf.putInt(21)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -7140,6 +8882,169 @@ public object FfiConverterTypeKeychainProvider: FfiConverterCallbackInterface<Ke
 
 
 
+
+public interface LocalLlmProvider {
+    
+    fun `loadModel`(`modelPath`: kotlin.String)
+    
+    fun `downloadModelFile`(`url`: kotlin.String, `destinationPath`: kotlin.String, `context`: LocalModelDownloadContext)
+    
+    fun `platformHttpRequest`(`request`: PlatformHttpRequest): PlatformHttpResponse
+    
+    fun `generate`(`promptJson`: kotlin.String, `context`: LocalGenerationContext)
+    
+    fun `unload`()
+    
+    fun `loadedModelPath`(): kotlin.String?
+    
+    fun `deviceCapability`(): DeviceCapability
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceLocalLlmProvider {
+    internal object `loadModel`: UniffiCallbackInterfaceLocalLlmProviderMethod0 {
+        override fun callback(`uniffiHandle`: Long,`modelPath`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeLocalLlmProvider.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`loadModel`(
+                    FfiConverterString.lift(`modelPath`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCallWithError(
+                uniffiCallStatus,
+                makeCall,
+                writeReturn,
+                { e: LocalLlmException -> FfiConverterTypeLocalLlmError.lower(e) }
+            )
+        }
+    }
+    internal object `downloadModelFile`: UniffiCallbackInterfaceLocalLlmProviderMethod1 {
+        override fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`destinationPath`: RustBuffer.ByValue,`context`: Pointer,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeLocalLlmProvider.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`downloadModelFile`(
+                    FfiConverterString.lift(`url`),
+                    FfiConverterString.lift(`destinationPath`),
+                    FfiConverterTypeLocalModelDownloadContext.lift(`context`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCallWithError(
+                uniffiCallStatus,
+                makeCall,
+                writeReturn,
+                { e: LocalLlmException -> FfiConverterTypeLocalLlmError.lower(e) }
+            )
+        }
+    }
+    internal object `platformHttpRequest`: UniffiCallbackInterfaceLocalLlmProviderMethod2 {
+        override fun callback(`uniffiHandle`: Long,`request`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeLocalLlmProvider.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`platformHttpRequest`(
+                    FfiConverterTypePlatformHttpRequest.lift(`request`),
+                )
+            }
+            val writeReturn = { value: PlatformHttpResponse -> uniffiOutReturn.setValue(FfiConverterTypePlatformHttpResponse.lower(value)) }
+            uniffiTraitInterfaceCallWithError(
+                uniffiCallStatus,
+                makeCall,
+                writeReturn,
+                { e: LocalLlmException -> FfiConverterTypeLocalLlmError.lower(e) }
+            )
+        }
+    }
+    internal object `generate`: UniffiCallbackInterfaceLocalLlmProviderMethod3 {
+        override fun callback(`uniffiHandle`: Long,`promptJson`: RustBuffer.ByValue,`context`: Pointer,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeLocalLlmProvider.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`generate`(
+                    FfiConverterString.lift(`promptJson`),
+                    FfiConverterTypeLocalGenerationContext.lift(`context`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCallWithError(
+                uniffiCallStatus,
+                makeCall,
+                writeReturn,
+                { e: LocalLlmException -> FfiConverterTypeLocalLlmError.lower(e) }
+            )
+        }
+    }
+    internal object `unload`: UniffiCallbackInterfaceLocalLlmProviderMethod4 {
+        override fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeLocalLlmProvider.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`unload`(
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+    internal object `loadedModelPath`: UniffiCallbackInterfaceLocalLlmProviderMethod5 {
+        override fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeLocalLlmProvider.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`loadedModelPath`(
+                )
+            }
+            val writeReturn = { value: kotlin.String? -> uniffiOutReturn.setValue(FfiConverterOptionalString.lower(value)) }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+    internal object `deviceCapability`: UniffiCallbackInterfaceLocalLlmProviderMethod6 {
+        override fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeLocalLlmProvider.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`deviceCapability`(
+                )
+            }
+            val writeReturn = { value: DeviceCapability -> uniffiOutReturn.setValue(FfiConverterTypeDeviceCapability.lower(value)) }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeLocalLlmProvider.handleMap.remove(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceLocalLlmProvider.UniffiByValue(
+        `loadModel`,
+        `downloadModelFile`,
+        `platformHttpRequest`,
+        `generate`,
+        `unload`,
+        `loadedModelPath`,
+        `deviceCapability`,
+        uniffiFree,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_mango_core_fn_init_callback_vtable_localllmprovider(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeLocalLlmProvider: FfiConverterCallbackInterface<LocalLlmProvider>()
+
+
+
+
 /**
  * @suppress
  */
@@ -7399,6 +9304,70 @@ public object FfiConverterOptionalTypeIngestionProgress: FfiConverterRustBuffer<
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeLocalModelDownloadProgress: FfiConverterRustBuffer<LocalModelDownloadProgress?> {
+    override fun read(buf: ByteBuffer): LocalModelDownloadProgress? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeLocalModelDownloadProgress.read(buf)
+    }
+
+    override fun allocationSize(value: LocalModelDownloadProgress?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeLocalModelDownloadProgress.allocationSize(value)
+        }
+    }
+
+    override fun write(value: LocalModelDownloadProgress?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeLocalModelDownloadProgress.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeTurnRoutingSummary: FfiConverterRustBuffer<TurnRoutingSummary?> {
+    override fun read(buf: ByteBuffer): TurnRoutingSummary? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeTurnRoutingSummary.read(buf)
+    }
+
+    override fun allocationSize(value: TurnRoutingSummary?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeTurnRoutingSummary.allocationSize(value)
+        }
+    }
+
+    override fun write(value: TurnRoutingSummary?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeTurnRoutingSummary.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeAttestationStatus: FfiConverterRustBuffer<AttestationStatus?> {
     override fun read(buf: ByteBuffer): AttestationStatus? {
         if (buf.get().toInt() == 0) {
@@ -7421,6 +9390,38 @@ public object FfiConverterOptionalTypeAttestationStatus: FfiConverterRustBuffer<
         } else {
             buf.put(1)
             FfiConverterTypeAttestationStatus.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeBackendRole: FfiConverterRustBuffer<BackendRole?> {
+    override fun read(buf: ByteBuffer): BackendRole? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeBackendRole.read(buf)
+    }
+
+    override fun allocationSize(value: BackendRole?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeBackendRole.allocationSize(value)
+        }
+    }
+
+    override fun write(value: BackendRole?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeBackendRole.write(value, buf)
         }
     }
 }
@@ -7799,6 +9800,90 @@ public object FfiConverterSequenceTypeDocumentSummary: FfiConverterRustBuffer<Li
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeHybridProfile: FfiConverterRustBuffer<List<HybridProfile>> {
+    override fun read(buf: ByteBuffer): List<HybridProfile> {
+        val len = buf.getInt()
+        return List<HybridProfile>(len) {
+            FfiConverterTypeHybridProfile.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<HybridProfile>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeHybridProfile.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<HybridProfile>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeHybridProfile.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeLocalModelPreset: FfiConverterRustBuffer<List<LocalModelPreset>> {
+    override fun read(buf: ByteBuffer): List<LocalModelPreset> {
+        val len = buf.getInt()
+        return List<LocalModelPreset>(len) {
+            FfiConverterTypeLocalModelPreset.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<LocalModelPreset>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeLocalModelPreset.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<LocalModelPreset>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeLocalModelPreset.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeLocalModelSummary: FfiConverterRustBuffer<List<LocalModelSummary>> {
+    override fun read(buf: ByteBuffer): List<LocalModelSummary> {
+        val len = buf.getInt()
+        return List<LocalModelSummary>(len) {
+            FfiConverterTypeLocalModelSummary.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<LocalModelSummary>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeLocalModelSummary.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<LocalModelSummary>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeLocalModelSummary.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeMemorySummary: FfiConverterRustBuffer<List<MemorySummary>> {
     override fun read(buf: ByteBuffer): List<MemorySummary> {
         val len = buf.getInt()
@@ -7855,6 +9940,34 @@ public object FfiConverterSequenceTypeOrchestratedComponent: FfiConverterRustBuf
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypePlatformHttpHeader: FfiConverterRustBuffer<List<PlatformHttpHeader>> {
+    override fun read(buf: ByteBuffer): List<PlatformHttpHeader> {
+        val len = buf.getInt()
+        return List<PlatformHttpHeader>(len) {
+            FfiConverterTypePlatformHttpHeader.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<PlatformHttpHeader>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypePlatformHttpHeader.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<PlatformHttpHeader>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypePlatformHttpHeader.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeProviderPreset: FfiConverterRustBuffer<List<ProviderPreset>> {
     override fun read(buf: ByteBuffer): List<ProviderPreset> {
         val len = buf.getInt()
@@ -7873,6 +9986,34 @@ public object FfiConverterSequenceTypeProviderPreset: FfiConverterRustBuffer<Lis
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeProviderPreset.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeTrustedProvider: FfiConverterRustBuffer<List<TrustedProvider>> {
+    override fun read(buf: ByteBuffer): List<TrustedProvider> {
+        val len = buf.getInt()
+        return List<TrustedProvider>(len) {
+            FfiConverterTypeTrustedProvider.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<TrustedProvider>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeTrustedProvider.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<TrustedProvider>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeTrustedProvider.write(it, buf)
         }
     }
 }
@@ -7939,6 +10080,25 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
             return FfiConverterSequenceTypeProviderPreset.lift(
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_mango_core_fn_func_known_provider_presets(
+        _status)
+}
+    )
+    }
+    
+
+        /**
+         * Built-in local model catalog shared by all platforms.
+         *
+         * Sources: Hugging Face LFS metadata (X-Linked-ETag = content sha256,
+         * X-Linked-Size = byte length), verified 2026-06-26. Qwen presets verified
+         * 2026-06-23. Android uses the platform HTTPS stack for model downloads; the
+         * file is installed only after the pinned SHA-256 matches. Prompt formatting
+         * uses each model's embedded `tokenizer.chat_template` via libllama-common, so
+         * the `chat_template` field below is informational only (native ignores it).
+         */ fun `localModelCatalog`(): List<LocalModelPreset> {
+            return FfiConverterSequenceTypeLocalModelPreset.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_func_local_model_catalog(
         _status)
 }
     )
