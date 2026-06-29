@@ -68,8 +68,13 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.foundation.layout.Row
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
+import dev.disobey.mango.rust.BackendRole
+import dev.disobey.mango.rust.DiscoverableTool
+import dev.disobey.mango.rust.HybridProfile
+import dev.disobey.mango.rust.Screen
 import dev.disobey.mango.rust.AttestationStatusEntry
 import dev.disobey.mango.rust.BusyState
 import dev.disobey.mango.rust.DocumentSummary
@@ -86,7 +91,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun ChatScreen(
     state: AppState,
-    onSend: (String) -> Unit,
+    onSend: (String, BackendRole?) -> Unit,
     onStop: () -> Unit,
     onRetry: () -> Unit,
     onEdit: (String, String) -> Unit,
@@ -104,13 +109,29 @@ fun ChatScreen(
     onDispatchAction: (AppAction) -> Unit = {},
     // IMG-07: decrypt-on-read for encrypted image thumbnails
     onReadEncryptedImage: ((String) -> ByteArray)? = null,
+    fontScale: Float = 1f,
 ) {
     val listState = rememberLazyListState()
     val isStreaming = state.busyState is BusyState.Streaming
+    val isChatBusy = isStreaming || state.busyState is BusyState.Loading
+    val loadingMessage = (state.busyState as? BusyState.Loading)?.message
+    val isAttestationLoading =
+        loadingMessage?.contains("attestation", ignoreCase = true) == true
     var showSystemPromptSheet by remember { mutableStateOf(false) }
     var showDocAttachSheet by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val currentConversation = state.currentConversationId?.let { id ->
+        state.conversations.firstOrNull { it.id == id }
+    }
+    val activeHybridProfile = currentConversation?.backendId
+        ?.takeIf { it.startsWith("hybrid:") }
+        ?.removePrefix("hybrid:")
+        ?.let { profileId -> state.hybridProfiles.firstOrNull { it.id == profileId } }
+    var forceRemoteNext by remember(currentConversation?.id, activeHybridProfile?.id) {
+        mutableStateOf(false)
+    }
+    val routeChip = hybridRouteChip(state, activeHybridProfile, forceRemoteNext)
 
     // The LazyColumn uses reverseLayout = true, so item 0 is at the bottom.
     // "Scroll to bottom" = scrollToItem(0). All effects use this.
@@ -223,16 +244,25 @@ fun ChatScreen(
                 onShowSystemPrompt = { showSystemPromptSheet = true },
                 onShowDocAttach = { showDocAttachSheet = true },
                 onDispatchAction = onDispatchAction,
+                forceRemoteNext = forceRemoteNext,
+                onToggleForceRemoteNext = { forceRemoteNext = !forceRemoteNext },
             )
         },
         bottomBar = {
             ComposeBar(
                 pendingAttachment = state.pendingAttachment,
                 isStreaming = isStreaming,
-                onSend = onSend,
+                isInputBlocked = isChatBusy,
+                showStopButton = isStreaming || isAttestationLoading,
+                onSend = { text ->
+                    onSend(text, if (forceRemoteNext) BackendRole.REMOTE else null)
+                    forceRemoteNext = false
+                },
                 onStop = onStop,
                 onAttach = { showAttachSheet = true },
                 onClearAttachment = onClearAttachment,
+                routingLabel = routeChip?.label,
+                routingDetail = routeChip?.detail,
             )
         },
         modifier = Modifier.imePadding(),
@@ -279,7 +309,7 @@ fun ChatScreen(
             state.streamingText?.let { text ->
                 if (text.isNotEmpty()) {
                     item(key = "streaming") {
-                        StreamingMessageBubble(text = text)
+                        StreamingMessageBubble(text = text, fontScale = fontScale)
                     }
                 }
             }
@@ -303,6 +333,7 @@ fun ChatScreen(
                     onRetry = onRetry,
                     onEdit = { onEdit(message.id, message.content) },
                     onReadEncryptedImage = onReadEncryptedImage,
+                    fontScale = fontScale,
                 )
             }
         }
@@ -326,9 +357,10 @@ fun ChatScreen(
     // image entries are hidden when the selected model is not vision-capable so
     // the user never gets into the silent-failure path of sending a photo to a
     // text-only model.
-    val currentModelId = state.currentConversationId
-        ?.let { id -> state.conversations.firstOrNull { it.id == id }?.modelId }
-        .orEmpty()
+    val currentModelId = activeHybridProfile?.remoteModelId
+        ?: state.currentConversationId
+            ?.let { id -> state.conversations.firstOrNull { it.id == id }?.modelId }
+            .orEmpty()
     val showImageOptions = currentModelId.isNotEmpty() && modelSupportsVision(currentModelId)
     if (showAttachSheet) {
         val attachSheetState = rememberModalBottomSheetState()
@@ -400,20 +432,28 @@ private fun ChatTopBar(
     onShowSystemPrompt: () -> Unit,
     onShowDocAttach: () -> Unit = {},
     onDispatchAction: (AppAction) -> Unit = {},
+    forceRemoteNext: Boolean = false,
+    onToggleForceRemoteNext: () -> Unit = {},
 ) {
     val currentConversation = state.currentConversationId?.let { id ->
         state.conversations.firstOrNull { it.id == id }
     }
     val selectedModelId = currentConversation?.modelId
+    val activeHybridProfile = currentConversation?.backendId
+        ?.takeIf { it.startsWith("hybrid:") }
+        ?.removePrefix("hybrid:")
+        ?.let { profileId -> state.hybridProfiles.firstOrNull { it.id == profileId } }
     // Aggregate models from ALL healthy (or degraded) backends so the picker
     // shows every TEE-capable model across providers, not just the active one.
     val availableModelEntries: List<Pair<String, String>> = state.backends
         .filter { it.healthStatus != HealthStatus.FAILED && it.models.isNotEmpty() }
         .flatMap { backend -> backend.models.map { modelId -> Pair(modelId, backend.name) } }
     var showModelMenu by remember { mutableStateOf(false) }
-    val activeAttestation = state.activeBackendId?.let { backendId ->
+    val attestationBackendId = activeHybridProfile?.remoteBackendId ?: state.activeBackendId
+    val activeAttestation = attestationBackendId?.let { backendId ->
         state.attestationStatuses.firstOrNull { it.backendId == backendId }?.status
     }
+    val hasLocalBackend = state.backends.any { it.id.startsWith("local-") && it.models.isNotEmpty() }
 
     var showConvMenu by remember { mutableStateOf(false) }
     var showToolsSheet by remember { mutableStateOf(false) }
@@ -470,7 +510,9 @@ private fun ChatTopBar(
                         Spacer(Modifier.size(4.dp))
                     }
                     Text(
-                        text = selectedModelId?.let { shortModelName(it) } ?: "Model",
+                        text = activeHybridProfile?.name
+                            ?: selectedModelId?.let { shortModelName(it) }
+                            ?: "Model",
                         style = MaterialTheme.typography.labelMedium,
                     )
                 }
@@ -503,6 +545,46 @@ private fun ChatTopBar(
                                 showModelMenu = false
                             },
                         )
+                    }
+                    if (hasLocalBackend && state.hybridProfiles.isNotEmpty()) {
+                        HorizontalDivider()
+                        state.hybridProfiles.forEach { profile ->
+                            val selected = activeHybridProfile?.id == profile.id
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(
+                                            text = profile.name,
+                                            fontWeight = if (selected)
+                                                FontWeight.Bold else FontWeight.Normal,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                        )
+                                        Text(
+                                            text = "${shortModelName(profile.localModelId)} -> ${shortModelName(profile.remoteModelId)}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                leadingIcon = if (selected) {
+                                    { Icon(Icons.Default.Check, contentDescription = "Selected") }
+                                } else null,
+                                onClick = {
+                                    currentConversation?.let { conversation ->
+                                        onDispatchAction(
+                                            AppAction.OverrideConversationBackend(
+                                                conversationId = conversation.id,
+                                                backendId = "hybrid:${profile.id}",
+                                            ),
+                                        )
+                                    }
+                                    onDispatchAction(
+                                        AppAction.SetActiveHybridProfile(profileId = profile.id),
+                                    )
+                                    showModelMenu = false
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -558,6 +640,24 @@ private fun ChatTopBar(
                             showToolsSheet = true
                         },
                     )
+                    if (activeHybridProfile != null) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (forceRemoteNext) "Remote next: On" else "Use remote this turn",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (forceRemoteNext)
+                                        MaterialTheme.colorScheme.primary
+                                    else
+                                        MaterialTheme.colorScheme.onSurface,
+                                )
+                            },
+                            onClick = {
+                                showConvMenu = false
+                                onToggleForceRemoteNext()
+                            },
+                        )
+                    }
                     // Fork chat: duplicate the current conversation into a new
                     // independent one. Only enabled when a conversation is
                     // active AND has at least one message (mirrors Desktop).
@@ -628,6 +728,7 @@ private fun ChatTopBar(
         ToolsSheet(
             toolsEnabled = toolsEnabled,
             braveApiKeySet = state.braveApiKeySet,
+            contextvmTools = state.contextvmTools,
             onSetToolsEnabled = { enabled ->
                 if (convId != null) {
                     onDispatchAction(
@@ -637,6 +738,18 @@ private fun ChatTopBar(
                         )
                     )
                 }
+            },
+            onToggleContextvmTool = { tool, enabled ->
+                onDispatchAction(
+                    AppAction.SetContextvmToolEnabled(
+                        toolId = tool.id,
+                        enabled = enabled,
+                    )
+                )
+            },
+            onOpenToolSettings = {
+                showToolsSheet = false
+                onDispatchAction(AppAction.PushScreen(screen = Screen.SettingsTools))
             },
             onDismiss = { showToolsSheet = false },
         )
@@ -648,6 +761,48 @@ private fun ChatTopBar(
 private fun isLastAssistantMessage(messages: List<UiMessage>, message: UiMessage): Boolean {
     if (message.role != "assistant") return false
     return messages.lastOrNull { it.role == "assistant" }?.id == message.id
+}
+
+private data class RouteChip(val label: String, val detail: String)
+
+private fun hybridRouteChip(
+    state: AppState,
+    profile: HybridProfile?,
+    forceRemoteNext: Boolean,
+): RouteChip? {
+    if (profile == null) return null
+    if (forceRemoteNext) {
+        return RouteChip(
+            label = "Remote next turn · ${shortModelName(profile.remoteModelId)}",
+            detail = "Routing reason: user override",
+        )
+    }
+
+    val lastRoute = state.lastTurnRouting
+    if (
+        lastRoute?.profileId == profile.id &&
+            lastRoute.conversationId == state.currentConversationId
+    ) {
+        val label = when (lastRoute.decision) {
+            BackendRole.LOCAL -> "Answered locally · on-device"
+            BackendRole.REMOTE -> {
+                if (lastRoute.teeVerified) {
+                    "Escalated to ${lastRoute.providerName} · ${lastRoute.teeLabel} verified"
+                } else {
+                    "Escalated to ${lastRoute.providerName} · verifying"
+                }
+            }
+        }
+        return RouteChip(
+            label = label,
+            detail = "Routing reason: ${lastRoute.reason}",
+        )
+    }
+
+    return RouteChip(
+        label = "Hybrid ready · local by default",
+        detail = "Routing reason: local default",
+    )
 }
 
 // MARK: - Document Attachment Sheet
@@ -722,51 +877,114 @@ private fun DocAttachSheet(
 private fun ToolsSheet(
     toolsEnabled: Boolean,
     braveApiKeySet: Boolean,
+    contextvmTools: List<DiscoverableTool>,
     onSetToolsEnabled: (Boolean) -> Unit,
+    onToggleContextvmTool: (DiscoverableTool, Boolean) -> Unit,
+    onOpenToolSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
+    val enabledContextvmTools = contextvmTools.filter { it.enabled }
+    val hasAnyTool = braveApiKeySet || enabledContextvmTools.isNotEmpty()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
-        Text(
-            text = "Tools",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Tools",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onOpenToolSettings) {
+                Text("Configure")
+            }
+        }
         HorizontalDivider()
-        ListItem(
-            headlineContent = {
-                Text(
-                    text = "Brave Search",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            },
-            supportingContent = if (!braveApiKeySet) {
-                {
+
+        if (!hasAnyTool) {
+            ListItem(
+                headlineContent = {
                     Text(
-                        text = "API key not configured — set it in Settings",
+                        text = "No tools configured",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                supportingContent = {
+                    Text(
+                        text = "Add a Brave Search key or enable discovered tools to get started.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-            } else null,
-            trailingContent = {
-                androidx.compose.material3.Switch(
-                    checked = toolsEnabled,
-                    onCheckedChange = { onSetToolsEnabled(it) },
-                    enabled = braveApiKeySet,
+                },
+            )
+        } else {
+            // Master toggle — controls whether tools run in this conversation.
+            ListItem(
+                headlineContent = {
+                    Text(
+                        text = "Use tools in this conversation",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                },
+                trailingContent = {
+                    androidx.compose.material3.Switch(
+                        checked = toolsEnabled,
+                        onCheckedChange = { onSetToolsEnabled(it) },
+                    )
+                },
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            // Brave Search row — only shown when key is configured.
+            if (braveApiKeySet) {
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            text = "Brave Search",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    },
+                    supportingContent = {
+                        Text(
+                            text = "Web search",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
                 )
-            },
-        )
-        Text(
-            text = "Tools let the assistant search the web and access other capabilities during this conversation.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
+            }
+
+            // One row per enabled contextvm tool.
+            enabledContextvmTools.forEach { tool ->
+                val providerName = tool.providerName
+                    ?: tool.providerDisplayName
+                    ?: tool.npub.take(12) + "…"
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            text = tool.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    },
+                    supportingContent = {
+                        Text(
+                            text = providerName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                )
+            }
+        }
+
         Spacer(Modifier.height(16.dp))
     }
 }

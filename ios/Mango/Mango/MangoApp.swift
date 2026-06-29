@@ -162,9 +162,13 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     ) {
         // D-15: extract session_id and navigate to agent session detail
         if let sessionId = response.notification.request.content.userInfo["session_id"] as? String {
-            let manager = AppManager.shared
-            manager.dispatch(.loadAgentSession(sessionId: sessionId))
-            manager.dispatch(.pushScreen(screen: .agents))
+            Task { @MainActor in
+                let manager = AppManager.shared
+                manager.dispatch(.loadAgentSession(sessionId: sessionId))
+                manager.dispatch(.pushScreen(screen: .agents))
+                completionHandler()
+            }
+            return
         }
         completionHandler()
     }

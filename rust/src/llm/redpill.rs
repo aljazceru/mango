@@ -51,6 +51,7 @@ const DEFAULT_REDPILL_MODEL: &str = "openai/gpt-oss-20b";
 
 /// Construct an HTTP client with rustls TLS and the given timeout.
 pub fn build_http_client(timeout: Duration) -> Result<reqwest::Client, LlmError> {
+    crate::net::tls::ensure_default_crypto_provider();
     reqwest::Client::builder()
         .timeout(timeout)
         .build()
@@ -114,10 +115,7 @@ pub async fn verify_backend_attestation(
     let components: Option<Vec<(String, String)>> =
         verified.orchestrated_components.as_ref().map(|c| {
             vec![
-                (
-                    "gateway".to_string(),
-                    c.gateway_signing_address_hex.clone(),
-                ),
+                ("gateway".to_string(), c.gateway_signing_address_hex.clone()),
                 ("model".to_string(), c.model_signing_address_hex.clone()),
                 (
                     "compose_manager".to_string(),
@@ -399,10 +397,7 @@ pub async fn check_model_routable(
     for entry in entries {
         if entry.get("id").and_then(|i| i.as_str()) == Some(model) {
             if let Some(providers) = entry.get("providers").and_then(|p| p.as_array()) {
-                if providers
-                    .iter()
-                    .any(|p| p.as_str() == Some("tinfoil"))
-                {
+                if providers.iter().any(|p| p.as_str() == Some("tinfoil")) {
                     return Err(RedpillError::TinfoilUnsupported);
                 }
             }
@@ -473,8 +468,7 @@ mod tests {
     fn model_list_url_trims_trailing_v1_and_slash() {
         let with_v1 = model_list_url(&redpill_backend("https://api.redpill.ai/v1")).unwrap();
         assert_eq!(with_v1, "https://api.redpill.ai/v1/models");
-        let with_slash =
-            model_list_url(&redpill_backend("https://api.redpill.ai/v1/")).unwrap();
+        let with_slash = model_list_url(&redpill_backend("https://api.redpill.ai/v1/")).unwrap();
         assert_eq!(with_slash, "https://api.redpill.ai/v1/models");
         let bare = model_list_url(&redpill_backend("https://api.redpill.ai")).unwrap();
         assert_eq!(bare, "https://api.redpill.ai/v1/models");

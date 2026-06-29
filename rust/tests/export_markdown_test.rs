@@ -36,7 +36,10 @@ fn test_format_empty_conversation() {
         !out.contains("##"),
         "should have no role headings for empty conv: {out}"
     );
-    assert!(out.ends_with('\n'), "must end with trailing newline: {out:?}");
+    assert!(
+        out.ends_with('\n'),
+        "must end with trailing newline: {out:?}"
+    );
 }
 
 #[test]
@@ -79,12 +82,18 @@ fn test_format_system_and_image_marker() {
     // Image marker must come AFTER the user content, not the system message.
     let user_idx = out.find("What is this?").unwrap();
     let img_idx = out.find("_[image attachment]_").unwrap();
-    assert!(user_idx < img_idx, "image marker placed before user content: {out}");
+    assert!(
+        user_idx < img_idx,
+        "image marker placed before user content: {out}"
+    );
 }
 
 #[test]
 fn test_format_unknown_role_title_cased() {
     let msgs = vec![msg("tool", "ran brave_search")];
     let out = format_conversation_as_markdown_with_now("t", &msgs, FIXED_NOW);
-    assert!(out.contains("## Tool"), "expected title-cased Tool heading: {out}");
+    assert!(
+        out.contains("## Tool"),
+        "expected title-cased Tool heading: {out}"
+    );
 }

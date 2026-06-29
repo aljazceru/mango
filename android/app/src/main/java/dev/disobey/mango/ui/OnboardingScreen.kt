@@ -197,6 +197,10 @@ private fun BackendSetupStep(
     onDispatch: (AppAction) -> Unit,
 ) {
     val presets = knownProviderPresets()
+    val selectedPreset = presets.firstOrNull { it.id == selectedPresetId }
+    val keyOptional = selectedPreset?.let { presetKeyOptional(it.id, it.teeType) } == true
+    val trimmedKey = apiKeyText.trim()
+    val canContinue = selectedPresetId.isNotEmpty() && (keyOptional || trimmedKey.isNotEmpty())
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -209,7 +213,7 @@ private fun BackendSetupStep(
         )
 
         Text(
-            text = "Select a confidential inference provider and enter your API key.",
+            text = "Select a confidential inference provider or local server.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -268,7 +272,7 @@ private fun BackendSetupStep(
         OutlinedTextField(
             value = apiKeyText,
             onValueChange = onApiKeyChanged,
-            label = { Text("API Key") },
+            label = { Text(if (keyOptional) "API Key (optional)" else "API Key") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             visualTransformation = PasswordVisualTransformation()
@@ -298,16 +302,15 @@ private fun BackendSetupStep(
         } else {
             Button(
                 onClick = {
-                    val trimmedKey = apiKeyText.trim()
-                    if (selectedPresetId.isNotEmpty() && trimmedKey.isNotEmpty()) {
+                    if (canContinue) {
                         onDispatch(AppAction.AddBackendFromPreset(presetId = selectedPresetId, apiKey = trimmedKey))
                         onDispatch(AppAction.ValidateApiKey(backendId = selectedPresetId))
                     }
                 },
-                enabled = selectedPresetId.isNotEmpty() && apiKeyText.isNotBlank(),
+                enabled = canContinue,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Validate & Continue")
+                Text(if (keyOptional) "Enable & Continue" else "Validate & Continue")
             }
         }
 
@@ -624,4 +627,8 @@ private fun teeTypeLabel(teeType: TeeType): String = when (teeType) {
     TeeType.NVIDIA_H100_CC -> "NVIDIA H100 CC"
     TeeType.AMD_SEV_SNP -> "AMD SEV-SNP"
     TeeType.UNKNOWN -> "Unknown"
+}
+
+private fun presetKeyOptional(id: String, teeType: TeeType): Boolean {
+    return id == "qvac-local" || teeType == TeeType.UNKNOWN
 }

@@ -55,6 +55,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
     // Allow actor thread to initialize

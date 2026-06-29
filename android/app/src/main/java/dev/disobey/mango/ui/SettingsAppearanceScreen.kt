@@ -33,6 +33,8 @@ fun SettingsAppearanceScreen(
     themeMode: String = "system",
     onBack: () -> Unit,
     onThemeModeChanged: (String) -> Unit,
+    fontSize: String = "normal",
+    onFontSizeChanged: (String) -> Unit = {},
 ) {
     val options = listOf(
         "system" to "Follow System",
@@ -61,7 +63,7 @@ fun SettingsAppearanceScreen(
         ) {
             item {
                 Spacer(Modifier.height(8.dp))
-                SettingsSectionLabel("Appearance")
+                SettingsSectionLabel("Theme")
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column {
                         options.forEach { (value, label) ->
@@ -92,6 +94,41 @@ fun SettingsAppearanceScreen(
                     }
                 }
             }
+
+            item {
+                val fontOptions = listOf(
+                    "small" to "Small",
+                    "normal" to "Normal",
+                    "large" to "Large",
+                    "xlarge" to "Extra Large",
+                )
+                Spacer(Modifier.height(16.dp))
+                SettingsSectionLabel("Text Size")
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column {
+                        fontOptions.forEach { (value, label) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onFontSizeChanged(value) }
+                                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                RadioButton(
+                                    selected = fontSize == value,
+                                    onClick = { onFontSizeChanged(value) },
+                                )
+                                Column {
+                                    Text(label, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item { Spacer(Modifier.height(32.dp)) }
         }
     }
 }

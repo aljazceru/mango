@@ -29,11 +29,8 @@ fn redpill_preset_present() {
 #[test]
 fn attestation_url_format() {
     use crate::llm::redpill::format_redpill_attestation_url;
-    let url = format_redpill_attestation_url(
-        "openai/gpt-oss-20b",
-        "abc123",
-        "https://api.redpill.ai/v1",
-    );
+    let url =
+        format_redpill_attestation_url("openai/gpt-oss-20b", "abc123", "https://api.redpill.ai/v1");
     assert!(
         url.ends_with("/v1/attestation/report?model=openai%2Fgpt-oss-20b&nonce=abc123"),
         "unexpected URL: {url}"
@@ -187,9 +184,7 @@ fn backend_summary_after_add() {
 /// Pure-function test — does NOT spin up the Tokio actor.
 #[test]
 fn actor_loop_threads_redpill_fields() {
-    use crate::attestation::{
-        map_event_to_record_and_status, AttestationEvent, AttestationStatus,
-    };
+    use crate::attestation::{map_event_to_record_and_status, AttestationEvent, AttestationStatus};
 
     let cases = vec![
         (
@@ -234,7 +229,11 @@ fn actor_loop_threads_redpill_fields() {
             map_event_to_record_and_status(event, 1_700_000_000);
 
         assert_eq!(backend_id, "redpill-test", "case={}", name);
-        assert!(matches!(status, AttestationStatus::Verified { .. }), "case={}", name);
+        assert!(
+            matches!(status, AttestationStatus::Verified { .. }),
+            "case={}",
+            name
+        );
         let (record, _, _, _, _) = record_opt.expect(name);
         assert_eq!(record.shape, shape, "case={}: shape", name);
         assert_eq!(record.freshness, freshness, "case={}: freshness", name);
@@ -258,16 +257,32 @@ fn attestation_status_verified_carries_redpill_fields() {
         shape: Some("Orchestrated".to_string()),
         freshness: Some("PerRequest".to_string()),
         orchestrated_components: Some(vec![
-            OrchestratedComponent { label: "gateway".to_string(), value: "0xAA".to_string() },
-            OrchestratedComponent { label: "model".to_string(), value: "0xBB".to_string() },
-            OrchestratedComponent { label: "compose_manager".to_string(), value: "0xCC".to_string() },
+            OrchestratedComponent {
+                label: "gateway".to_string(),
+                value: "0xAA".to_string(),
+            },
+            OrchestratedComponent {
+                label: "model".to_string(),
+                value: "0xBB".to_string(),
+            },
+            OrchestratedComponent {
+                label: "compose_manager".to_string(),
+                value: "0xCC".to_string(),
+            },
         ]),
     };
 
-    if let AttestationStatus::Verified { shape, freshness, orchestrated_components } = &status {
+    if let AttestationStatus::Verified {
+        shape,
+        freshness,
+        orchestrated_components,
+    } = &status
+    {
         assert_eq!(shape.as_deref(), Some("Orchestrated"));
         assert_eq!(freshness.as_deref(), Some("PerRequest"));
-        let comps = orchestrated_components.as_ref().expect("components present");
+        let comps = orchestrated_components
+            .as_ref()
+            .expect("components present");
         assert_eq!(comps.len(), 3);
         assert_eq!(comps[0].label, "gateway");
         assert_eq!(comps[0].value, "0xAA");

@@ -1,0 +1,103 @@
+name: android_emulator_remote_smoke
+steps:
+  - launch: {}
+  - clear_logcat: {}
+
+  - maybe:
+      when_text: Get Started
+      steps:
+        - maybe:
+            when_text: Skip setup
+            steps:
+              - tap_text: Skip setup
+        - maybe:
+            when_text: Get Started
+            steps:
+              - tap_text: Get Started
+  - maybe:
+      when_text: Secure Your App
+      steps:
+        - type_into_text:
+            field: PIN (min 4 characters)
+            text: "{{MANGO_SMOKE_PIN}}"
+        - type_into_text:
+            field: Confirm PIN
+            text: "{{MANGO_SMOKE_PIN}}"
+        - tap_text: Set PIN and Continue
+  - maybe:
+      when_text: Unlock
+      steps:
+        - type_into_text:
+            field: PIN
+            text: "{{MANGO_SMOKE_PIN}}"
+        - tap_text: Unlock
+
+  - wait_for_text:
+      text: Conversations
+      tries: 45
+      label: home
+  - assert_text: RAG
+  - assert_text: Settings
+  - assert_desc: New Conversation
+
+  - tap_text: Settings
+  - wait_for_text:
+      text: Settings
+      label: settings
+  - assert_text: Providers
+  - assert_text: Defaults
+
+  - tap_text: Providers
+  - wait_for_text:
+      text: Providers
+      label: providers
+  - scroll_to_text:
+      text: Custom provider
+      label: custom-provider
+  - type_into_text:
+      field: Name
+      text: "mango-emulator-mock"
+  - hide_keyboard: {}
+  - type_into_text:
+      field: Base URL
+      text: "{{MANGO_SMOKE_LLM_BASE_URL}}"
+  - hide_keyboard: {}
+  - type_into_text:
+      field: API Key
+      text: "{{MANGO_SMOKE_LLM_API_KEY}}"
+  - hide_keyboard: {}
+  - type_into_text:
+      field: Model ID
+      text: "{{MANGO_SMOKE_LLM_MODEL}}"
+  - hide_keyboard: {}
+  - scroll_to_text:
+      text: Add Provider
+      label: add-provider-button
+      tries: 10
+  - tap_text: Add Provider
+  - sleep: 2
+  - back: {}
+  - wait_for_text:
+      text: Settings
+      label: settings-after-provider
+  - back: {}
+  - wait_for_text:
+      text: Conversations
+      label: home-after-provider
+
+  - tap_percent:
+      x: 89
+      y: 92
+  - wait_for_text:
+      text: New Conversation
+      label: new-conversation
+  - type_into_text:
+      field: Message
+      text: "{{MANGO_SMOKE_MESSAGE}}"
+  - hide_keyboard: {}
+  - tap_desc: Send message
+  - wait_for_text:
+      text: "Echo: hello from smoke test"
+      tries: 45
+      label: remote-response
+  - screenshot: after-remote-response

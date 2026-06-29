@@ -208,7 +208,7 @@ private struct DirectorySourceRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Image(systemName: "folder.fill")
-                    .foregroundStyle(.accentColor)
+                    .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(source.displayName)
                         .font(.subheadline)
@@ -401,6 +401,7 @@ enum DirectorySyncScheduler {
     /// is stale, `syncDirectorySource` dispatches `updateDirectorySourceBookmark`
     /// to persist the refreshed BLOB, and we also update the in-process cache so
     /// subsequent foreground activations work without another cold launch.
+    @MainActor
     static func syncAll(appManager: AppManager) {
         let sources = appManager.appState.directorySources
         for source in sources {

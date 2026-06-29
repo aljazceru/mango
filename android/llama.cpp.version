@@ -1,0 +1,4 @@
+LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git
+LLAMA_CPP_TAG=b9771
+LLAMA_CPP_COMMIT=0eb874d37445fb25cc268ad0b2f2cb07ce561b66
+LLAMA_SWIFT_VERSION=2.9771.0

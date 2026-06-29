@@ -1,0 +1,159 @@
+name: contextvm_echo
+# Full contextvm smoke test.
+#
+# Prerequisites (handled by scripts/contextvm_smoke.sh):
+#   - contextvm-echo-server is running on public relays
+#   - ECHO_SERVER_PUBKEY env var is set to the server's hex pubkey
+#   - MANGO_SMOKE_LLM_* env vars point at an OpenAI-compatible test backend
+#   - MANGO_SMOKE_PIN / MANGO_SMOKE_MESSAGE are set
+#
+# What this verifies:
+#   1. App launches and reaches home screen.
+#   2. Settings → Providers → add a deterministic tool-calling test backend.
+#   3. Settings → Trusted providers → add echo server pubkey.
+#   4. Enable "Automatically discover and use tools".
+#   5. Send a message whose intent is to use the echo tool.
+#   6. Assert the chat shows the echoed response.
+steps:
+  - launch: {}
+  - clear_logcat: {}
+
+  # ── Onboarding / PIN (skipped if already done) ───────────────────────
+  - maybe:
+      when_text: Get Started
+      steps:
+        - maybe:
+            when_text: Skip setup
+            steps:
+              - tap_text: Skip setup
+        - maybe:
+            when_text: Get Started
+            steps:
+              - tap_text: Get Started
+  - maybe:
+      when_text: Secure Your App
+      steps:
+        - type_into_text:
+            field: PIN (min 4 characters)
+            text: "{{MANGO_SMOKE_PIN}}"
+        - type_into_text:
+            field: Confirm PIN
+            text: "{{MANGO_SMOKE_PIN}}"
+        - tap_text: Set PIN and Continue
+  - maybe:
+      when_text: Unlock
+      steps:
+        - type_into_text:
+            field: PIN
+            text: "{{MANGO_SMOKE_PIN}}"
+        - tap_text: Unlock
+
+  - wait_for_text:
+      text: Conversations
+      tries: 45
+      label: home
+
+  # ── Settings → Tools → Trusted providers ─────────────────────────────
+  - tap_text: Settings
+  - wait_for_text:
+      text: Settings
+      label: settings
+
+  # Configure deterministic tool-calling LLM backend for the smoke.
+  - tap_desc: Open
+  - wait_for_text:
+      text: Providers
+      label: providers
+  - scroll_to_text:
+      text: Custom provider
+      label: custom-provider
+  - type_into_text:
+      field: Name
+      text: "mango-smoke-mock"
+  - hide_keyboard: {}
+  - type_into_text:
+      field: Base URL
+      text: "{{MANGO_SMOKE_LLM_BASE_URL}}"
+  - hide_keyboard: {}
+  - type_into_text:
+      field: API Key
+      text: "{{MANGO_SMOKE_LLM_API_KEY}}"
+  - hide_keyboard: {}
+  - type_into_text:
+      field: Model ID
+      text: "{{MANGO_SMOKE_LLM_MODEL}}"
+  - hide_keyboard: {}
+  - scroll_to_text:
+      text: Add Provider
+      label: add-provider-button
+      tries: 10
+  - tap_text: Add Provider
+  - sleep: 2
+  - back: {}
+  - wait_for_text:
+      text: Settings
+      label: settings-after-provider
+
+  # ── Settings → Tools → Trusted providers ─────────────────────────────
+  - scroll_to_text:
+      text: Trusted providers
+      label: trusted-providers-row
+  - tap_text: Trusted providers
+  - wait_for_text:
+      text: Trusted Providers
+      label: trusted-providers
+
+  # Add echo server as a trusted provider via the + FAB dialog.
+  - tap_desc: Add provider manually
+  - wait_for_text:
+      text: Add trusted provider
+      label: add-dialog
+  - type_into_text:
+      field: Hex pubkey
+      text: "{{ECHO_SERVER_PUBKEY}}"
+  - hide_keyboard: {}
+  - type_into_text:
+      field: Label (optional)
+      text: "mango-echo-server"
+  - hide_keyboard: {}
+  - tap_text: Add
+  - wait_for_text:
+      text: Trusted Providers
+      label: trusted-providers-after-add
+
+  - back: {}
+  - wait_for_text:
+      text: Settings
+      label: settings-after-add
+
+  # Enable auto-discover toggle (no-op if already on).
+  - scroll_to_desc:
+      desc: Automatically discover and use tools
+      label: auto-discover-toggle
+  - ensure_checked_desc: Automatically discover and use tools
+  - screenshot: settings-tools
+
+  - back: {}
+  - wait_for_text:
+      text: Conversations
+      label: home-for-chat
+
+  # ── Send a message that should trigger the echo tool ─────────────────
+  - tap_percent:
+      x: 89
+      y: 92
+  - wait_for_text:
+      text: New Conversation
+      label: new-conversation
+  - type_into_text:
+      field: Message
+      text: "{{MANGO_SMOKE_MESSAGE}}"
+  - hide_keyboard: {}
+  - tap_desc: Send message
+
+  # ── Assert the echo tool was actually invoked and surfaced in chat ─────
+  - wait_for_text:
+      text: "{{MANGO_SMOKE_ECHO_EXPECTED}}"
+      tries: 90
+      label: echo-tool-response
+  - screenshot: after-echo

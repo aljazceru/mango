@@ -1,6 +1,6 @@
 //! Intel TDX/DCAP quote verification via dcap-qvl.
 //!
-//! Wraps `dcap_qvl::collateral::get_collateral` + `dcap_qvl::verify::verify`
+//! Wraps `dcap_qvl::collateral::CollateralClient` + `dcap_qvl::verify::verify`
 //! for TDX DCAP quote cryptographic verification.
 //!
 //! Per D-04: self-verification is the primary path.
@@ -30,9 +30,11 @@ pub fn decode_quote(s: &str) -> Result<Vec<u8>, AttestationError> {
         // Fall back to base64
         use base64::engine::general_purpose::STANDARD;
         use base64::Engine;
-        STANDARD.decode(s).map_err(|_| AttestationError::QuoteVerification {
-            reason: "Failed to decode quote: neither valid hex nor base64".to_string(),
-        })?
+        STANDARD
+            .decode(s)
+            .map_err(|_| AttestationError::QuoteVerification {
+                reason: "Failed to decode quote: neither valid hex nor base64".to_string(),
+            })?
     };
 
     if decoded.len() < MIN_QUOTE_LEN {
@@ -97,15 +99,18 @@ pub async fn verify_tdx_quote(
     // Fetch collateral from Phala's PCCS (no Intel API key required)
     // Per Pitfall 2 from RESEARCH.md: use Phala PCCS as primary to avoid Intel PCS rate limits.
     log::debug!(target: "attestation", "[attestation] fetching collateral from Phala PCCS backend={}", backend_id);
-    let collateral =
-        dcap_qvl::collateral::get_collateral(dcap_qvl::collateral::PHALA_PCCS_URL, quote_bytes)
-            .await
-            .map_err(|e| {
-                log::warn!(target: "attestation", "[attestation] collateral fetch failed backend={} error={}", backend_id, e);
-                AttestationError::CollateralFetch {
-                    reason: e.to_string(),
-                }
-            })?;
+    let collateral_client = dcap_qvl::collateral::CollateralClient::with_default_http(
+        dcap_qvl::collateral::PHALA_PCCS_URL,
+    )
+    .map_err(|e| AttestationError::CollateralFetch {
+        reason: e.to_string(),
+    })?;
+    let collateral = collateral_client.fetch(quote_bytes).await.map_err(|e| {
+        log::warn!(target: "attestation", "[attestation] collateral fetch failed backend={} error={}", backend_id, e);
+        AttestationError::CollateralFetch {
+            reason: e.to_string(),
+        }
+    })?;
 
     // Verify the quote against the fetched collateral
     let report = dcap_qvl::verify::verify(quote_bytes, &collateral, now_secs).map_err(|e| {
@@ -128,10 +133,7 @@ pub async fn verify_tdx_quote(
         ReportDataLayout::VeniceAddrPadNonce => {
             if report_data.len() < 64 {
                 return Err(AttestationError::QuoteVerification {
-                    reason: format!(
-                        "Venice REPORTDATA too short: {} < 64",
-                        report_data.len()
-                    ),
+                    reason: format!("Venice REPORTDATA too short: {} < 64", report_data.len()),
                 });
             }
             &report_data[32..64]

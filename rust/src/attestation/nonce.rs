@@ -11,6 +11,7 @@ use rand::Rng;
 /// rejects reports where the embedded nonce does not match the challenge nonce.
 ///
 /// Uses `rand::thread_rng()` which internally uses the OS CSPRNG (getrandom).
+#[allow(dead_code)]
 pub fn generate_nonce() -> [u8; 32] {
     let mut nonce = [0u8; 32];
     rand::thread_rng().fill(&mut nonce);

@@ -180,7 +180,7 @@ fn backend_setup_step<'a>(
 ) -> Element<'a, Message> {
     let heading = text("Choose your provider").size(24).color(vc.text);
 
-    let subtitle = text("Select a confidential inference provider and enter your API key.")
+    let subtitle = text("Select a confidential inference provider or local server.")
         .size(14)
         .color(vc.muted);
 
@@ -190,16 +190,24 @@ fn backend_setup_step<'a>(
         name: String,
         description: String,
         tee_type: mango_core::TeeType,
+        key_optional: bool,
     }
     let preset_data: Vec<PresetData> = known_provider_presets()
         .into_iter()
-        .map(|p| PresetData {
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            tee_type: p.tee_type,
+        .map(|p| {
+            let key_optional = p.id == "qvac-local" || p.tee_type == mango_core::TeeType::Unknown;
+            PresetData {
+                id: p.id,
+                name: p.name,
+                description: p.description,
+                tee_type: p.tee_type,
+                key_optional,
+            }
         })
         .collect();
+    let selected_key_optional = preset_data
+        .iter()
+        .any(|preset| preset.id == selected_preset && preset.key_optional);
 
     let accent_color = vc.accent;
     let muted_color = vc.muted;
@@ -259,7 +267,13 @@ fn backend_setup_step<'a>(
 
     let presets_list = column(preset_rows).spacing(6);
 
-    let api_key_label = text("API Key").size(13).color(muted_color);
+    let api_key_label = text(if selected_key_optional {
+        "API Key (optional)"
+    } else {
+        "API Key"
+    })
+    .size(13)
+    .color(muted_color);
     let api_key_input = text_input("Enter your API key...", api_key)
         .secure(true)
         .on_input(Message::OnboardingApiKeyChanged)
@@ -270,7 +284,8 @@ fn backend_setup_step<'a>(
     let validate_area: Element<'_, Message> = if _state.onboarding.validating_api_key {
         row![text("Validating...").size(14).color(muted_color),].into()
     } else {
-        let can_validate = !selected_preset.is_empty() && !api_key.trim().is_empty();
+        let can_validate =
+            !selected_preset.is_empty() && (selected_key_optional || !api_key.trim().is_empty());
         let validate_btn: Element<'_, Message> = if can_validate {
             button(text("Validate & Continue").size(14).color(vc.bg))
                 .on_press(Message::OnboardingValidateKey)
@@ -302,7 +317,9 @@ fn backend_setup_step<'a>(
     };
 
     // "Don't have an API key?" help section
-    let no_key_label = text("Don't have an API key? Get one from:").size(13).color(muted_color);
+    let no_key_label = text("Don't have an API key? Get one from:")
+        .size(13)
+        .color(muted_color);
     let tinfoil_link = button(text("tinfoil.sh").size(13).color(accent_color))
         .on_press(Message::OpenUrl("https://tinfoil.sh".into()))
         .padding(Padding::from([2u16, 0]))

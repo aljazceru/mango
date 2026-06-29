@@ -7,6 +7,20 @@ use crate::persistence::Database;
 use crate::KeychainProvider;
 use crate::{EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider};
 
+fn wait_until<F>(timeout: std::time::Duration, mut predicate: F) -> bool
+where
+    F: FnMut() -> bool,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if predicate() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    predicate()
+}
+
 // ── Migration tests ───────────────────────────────────────────────────────────
 
 /// Verify that opening a v1-state database applies MIGRATION_V2 and data survives.
@@ -60,8 +74,8 @@ fn test_migration_v1_to_v2() {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(
-            version, 20,
-            "user_version should be 20 after all migrations (v20 adds contextvm_tools + agent_steps.tool_origin)"
+            version, 23,
+            "user_version should be 23 after all migrations"
         );
 
         // Verify pre-existing data survived
@@ -156,8 +170,8 @@ fn test_migration_version_increments() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 20,
-        "user_version should be 20 after all migrations (v1+v2+...+v20)"
+        version, 23,
+        "user_version should be 23 after all migrations"
     );
 }
 
@@ -177,8 +191,8 @@ fn test_migration_idempotent() {
             .unwrap();
         // Second open should not re-run migrations, so version stays put.
         assert_eq!(
-            version, 20,
-            "user_version must still be 20 on second open (idempotent)"
+            version, 23,
+            "user_version must still be 23 on second open (idempotent)"
         );
     }
     let _ = std::fs::remove_file(&tmp);
@@ -498,9 +512,17 @@ fn test_ffiapp_loads_backends_from_db() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        wait_until(std::time::Duration::from_secs(2), || app
+            .state()
+            .backends
+            .len()
+            >= 2),
+        "timed out waiting for seeded backends to load into AppState"
+    );
     let state = app.state();
     // v1 seeds tinfoil (active), v10 seeds ppq-ai (inactive) = 2 total backends
     assert_eq!(
@@ -562,6 +584,7 @@ fn test_ffiapp_loads_conversations_from_db() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -671,6 +694,7 @@ fn test_ffiapp_loads_agent_sessions_from_db() {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -735,8 +759,8 @@ fn test_migration_v11_seeds_ppq_ai_private_transport() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 20,
-        "user_version should be 20 after all migrations including v20"
+        version, 23,
+        "user_version should be 23 after all migrations including v23"
     );
 
     // Query the ppq-ai row directly
@@ -800,6 +824,88 @@ fn test_migration_v20_creates_contextvm_tools_table() {
         )
         .unwrap();
     assert_eq!(idx_count, 2, "contextvm_tools indices missing");
+}
+
+#[test]
+fn test_migration_v21_backfills_contextvm_provider_profile_columns() {
+    let tmp = std::env::temp_dir().join(format!("test_v20v21_{}.db", uuid::Uuid::new_v4()));
+    let path = tmp.to_str().unwrap();
+
+    {
+        let mut conn = rusqlite::Connection::open(path).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let tx = conn.transaction().unwrap();
+        for sql in crate::persistence::schema::MIGRATIONS.iter().take(20) {
+            tx.execute_batch(sql).unwrap();
+        }
+        tx.pragma_update(None, "user_version", 20i32).unwrap();
+        tx.commit().unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(contextvm_tools)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            !cols.iter().any(|c| c == "provider_name"),
+            "fixture should model the old v20 schema before profile columns"
+        );
+    }
+
+    {
+        let db = Database::open(path).unwrap();
+        let conn = db.conn();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(contextvm_tools)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        for col in [
+            "provider_name",
+            "provider_about",
+            "provider_picture",
+            "provider_nip05",
+        ] {
+            assert!(
+                cols.iter().any(|c| c == col),
+                "contextvm_tools.{} missing after v21 migration; cols: {:?}",
+                col,
+                cols
+            );
+        }
+
+        let row = queries::ContextvmToolRow {
+            provider_name: Some("Echo Provider".into()),
+            provider_about: Some("Smoke-test provider".into()),
+            provider_picture: Some("https://example.invalid/pic.png".into()),
+            provider_nip05: Some("echo@example.invalid".into()),
+            ..fixture_contextvm_row("pkA:echo", "echo", true, 1_700_000_010)
+        };
+        queries::upsert_contextvm_tool(conn, &row).unwrap();
+        let fetched = queries::get_contextvm_tool_by_name(conn, "echo")
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.provider_name.as_deref(), Some("Echo Provider"));
+        assert_eq!(
+            fetched.provider_about.as_deref(),
+            Some("Smoke-test provider")
+        );
+        assert_eq!(
+            fetched.provider_picture.as_deref(),
+            Some("https://example.invalid/pic.png")
+        );
+        assert_eq!(
+            fetched.provider_nip05.as_deref(),
+            Some("echo@example.invalid")
+        );
+    }
+
+    let _ = std::fs::remove_file(&tmp);
 }
 
 #[test]
@@ -875,6 +981,10 @@ fn fixture_contextvm_row(
         description: format!("Description of {}", name),
         provider_pubkey: id.split(':').next().unwrap().into(),
         provider_display_name: None,
+        provider_name: None,
+        provider_about: None,
+        provider_picture: None,
+        provider_nip05: None,
         schema_json: "{\"type\":\"object\"}".into(),
         enabled,
         last_seen_at: ts,

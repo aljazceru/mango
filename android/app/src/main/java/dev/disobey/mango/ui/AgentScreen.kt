@@ -295,7 +295,7 @@ fun AgentDetailSection(
                         Text("Cancel", color = if (isDark) DarkAgentFailed else LightAgentFailed)
                     }
                 }
-                Divider()
+                HorizontalDivider()
             }
 
             // Step list

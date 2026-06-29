@@ -73,6 +73,8 @@ Supported step types:
 - `wait_for_foreground`
 - `maybe`
 - `screenshot`
+- `wait_logcat_contains`
+- `assert_logcat_contains`
 
 ## Mango Compatibility Wrapper
 

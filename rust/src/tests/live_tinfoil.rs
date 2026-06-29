@@ -16,8 +16,8 @@ const SERVICE: &str = "mango";
 const TINFOIL_KEY_ID: &str = "tinfoil";
 const CREDS_PATH: &str = "~/.credentials/tinfoil.txt";
 /// Model available on Tinfoil inference enclave.
-/// Must match the short IDs used by Tinfoil's API (see MIGRATION_V7 in schema.rs).
-const TINFOIL_MODEL: &str = "llama3-3-70b";
+/// Must match the short IDs used by Tinfoil's API (see MIGRATION_V23 in schema.rs).
+const TINFOIL_MODEL: &str = "qwen3-vl-30b";
 
 fn read_api_key() -> String {
     let path = CREDS_PATH.replace('~', &std::env::var("HOME").unwrap_or_default());
@@ -53,6 +53,7 @@ fn make_app_with_real_keychain() -> std::sync::Arc<FfiApp> {
         Box::new(DesktopKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
     // Allow actor init + attestation task to start.
@@ -128,6 +129,7 @@ fn live_streaming_tinfoil() {
 
     app.dispatch(AppAction::SendMessage {
         text: "Reply with exactly three words: yes I work".to_string(),
+        force_role: None,
     });
 
     std::thread::sleep(Duration::from_millis(600));
@@ -236,6 +238,7 @@ fn live_e2e_tinfoil() {
     std::thread::sleep(Duration::from_millis(50));
     app.dispatch(AppAction::SendMessage {
         text: "Reply with exactly two words: it works".to_string(),
+        force_role: None,
     });
     std::thread::sleep(Duration::from_millis(600));
 

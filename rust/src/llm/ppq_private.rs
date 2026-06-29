@@ -105,13 +105,9 @@ pub fn model_list_url(backend: &BackendConfig) -> Result<String, LlmError> {
 }
 
 pub fn build_http_client(timeout: Duration) -> Result<reqwest::Client, LlmError> {
-    reqwest::Client::builder()
-        .hickory_dns(false)
-        .timeout(timeout)
-        .build()
-        .map_err(|error| LlmError::NetworkError {
-            reason: error.to_string(),
-        })
+    crate::net::tls::attested_reqwest_client(timeout).map_err(|error| LlmError::NetworkError {
+        reason: error.to_string(),
+    })
 }
 
 pub async fn verify_backend_attestation(
@@ -1084,7 +1080,13 @@ async fn verify_hpke_key_endpoint(
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
-    if content_type != APPLICATION_OHTTP_KEYS {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if media_type != APPLICATION_OHTTP_KEYS {
         return Err(LlmError::NetworkError {
             reason: format!(
                 "Invalid HPKE key endpoint content type: expected {APPLICATION_OHTTP_KEYS}, got {content_type}"

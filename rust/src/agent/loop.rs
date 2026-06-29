@@ -166,6 +166,12 @@ pub async fn run_agent_step_for_backend(
             .await?;
             return agent_step_result_from_response(response);
         }
+        ProviderTransportKind::LocalOnDevice => {
+            return Err(LlmError::NetworkError {
+                reason: "Local on-device backends do not support tool-use agent calls yet"
+                    .to_string(),
+            });
+        }
         ProviderTransportKind::OpenAiCompatible => {}
     }
 

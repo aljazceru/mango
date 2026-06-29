@@ -6,7 +6,9 @@
 //! Loaded-with-tools) for Nostr-based tool discovery. Mirrors the Android
 //! equivalent shipped in 35-06 / 36-02.
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler};
+use iced::widget::{
+    button, column, container, pick_list, row, scrollable, text, text_input, toggler,
+};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
 
 use mango_core::{AppAction, AppState, ContextvmDiscoveryState, DiscoverableTool, Screen};
@@ -18,6 +20,7 @@ use crate::Message;
 pub fn view<'a>(
     state: &'a AppState,
     search_query: &'a str,
+    provider_filter: &'a Option<String>,
     is_dark: bool,
 ) -> Element<'a, Message> {
     let vc = crate::theme::view_colors(is_dark);
@@ -102,25 +105,132 @@ pub fn view<'a>(
         })
         .width(Length::Fill);
 
+    // Extract unique providers from the tool list
+    // Use provider_name (from Nostr profile) if available, otherwise fall back to
+    // provider_display_name, and finally to npub if neither is available
+    let mut providers: Vec<(String, String)> = state
+        .contextvm_tools
+        .iter()
+        .map(|t| {
+            let display_name = t
+                .provider_name
+                .clone()
+                .or_else(|| t.provider_display_name.clone())
+                .unwrap_or_else(|| {
+                    // Fallback to npub if no name is available
+                    let npub = &t.npub;
+                    if npub.len() > 8 {
+                        format!("{}…", &npub[..8])
+                    } else {
+                        npub.clone()
+                    }
+                });
+            let pubkey = t.provider_pubkey.clone();
+            (display_name, pubkey)
+        })
+        .collect();
+    providers.sort_by(|a, b| a.0.cmp(&b.0));
+    providers.dedup_by(|a, b| a.1 == b.1); // Dedup by pubkey
+
+    // Provider filter dropdown - use provider pubkey as the filter value
+    let provider_options: Vec<String> = providers.iter().map(|(name, _)| name.clone()).collect();
+    let _provider_pubkeys: Vec<String> = providers.iter().map(|(_, pk)| pk.clone()).collect();
+    let selected_provider_name = provider_filter.as_ref().and_then(|filter| {
+        providers
+            .iter()
+            .find(|(_, pk)| pk == filter)
+            .map(|(name, _)| name.clone())
+    });
+    let provider_dropdown = pick_list(provider_options, selected_provider_name, move |name| {
+        let pubkey = providers
+            .iter()
+            .find(|(n, _)| n == &name)
+            .map(|(_, pk)| pk.clone());
+        Message::ContextvmProviderFilterChanged(pubkey)
+    })
+    .placeholder("All Providers")
+    .text_size(14)
+    .padding(Padding::from([7u16, 10]));
+
+    let provider_block = container(provider_dropdown)
+        .padding(Padding {
+            top: 8.0,
+            bottom: 8.0,
+            left: 16.0,
+            right: 16.0,
+        })
+        .width(Length::Fill);
+
     // Apply live filter (case-insensitive substring across name +
-    // description + provider_display_name).
+    // description + provider_display_name) and provider filter.
     let q = search_query.trim().to_lowercase();
     let filtered: Vec<&DiscoverableTool> = state
         .contextvm_tools
         .iter()
         .filter(|t| {
-            if q.is_empty() {
-                return true;
-            }
-            t.name.to_lowercase().contains(&q)
-                || t.description.to_lowercase().contains(&q)
-                || t.provider_display_name
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains(&q)
+            // Text search filter
+            let text_match = if q.is_empty() {
+                true
+            } else {
+                t.name.to_lowercase().contains(&q)
+                    || t.description.to_lowercase().contains(&q)
+                    || t.provider_display_name
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&q)
+            };
+
+            // Provider filter
+            let provider_match = match provider_filter {
+                Some(filter) => &t.provider_pubkey == filter,
+                None => true,
+            };
+
+            text_match && provider_match
         })
         .collect();
+
+    // Group filtered tools by provider for display (Phase 37)
+    let mut grouped: std::collections::HashMap<String, Vec<&DiscoverableTool>> =
+        std::collections::HashMap::new();
+    for tool in &filtered {
+        grouped
+            .entry(tool.provider_pubkey.clone())
+            .or_insert_with(Vec::new)
+            .push(tool);
+    }
+    // Sort groups by provider name
+    let mut grouped_vec: Vec<_> = grouped.into_iter().collect();
+    grouped_vec.sort_by(|(pk1, _), (pk2, _)| {
+        let name1 = state
+            .contextvm_tools
+            .iter()
+            .find(|t| &t.provider_pubkey == pk1)
+            .and_then(|t| t.provider_name.as_ref())
+            .or_else(|| {
+                state
+                    .contextvm_tools
+                    .iter()
+                    .find(|t| &t.provider_pubkey == pk1)
+                    .and_then(|t| t.provider_display_name.as_ref())
+            })
+            .unwrap_or(pk1);
+        let name2 = state
+            .contextvm_tools
+            .iter()
+            .find(|t| &t.provider_pubkey == pk2)
+            .and_then(|t| t.provider_name.as_ref())
+            .or_else(|| {
+                state
+                    .contextvm_tools
+                    .iter()
+                    .find(|t| &t.provider_pubkey == pk2)
+                    .and_then(|t| t.provider_display_name.as_ref())
+            })
+            .unwrap_or(pk2);
+        name1.cmp(name2)
+    });
 
     // ── Cache-first state-dependent body ─────────────────────────────────────
     // During Loading the cached list stays visible if non-empty (UI-SPEC §C
@@ -130,7 +240,7 @@ pub fn view<'a>(
             if state.contextvm_tools.is_empty() {
                 loading_view(vc)
             } else {
-                tool_list_or_empty_search(&filtered, search_query, vc)
+                tool_list_grouped_or_empty_search(&grouped_vec, search_query, vc)
             }
         }
         ContextvmDiscoveryState::Error { .. } => error_view(vc),
@@ -138,13 +248,13 @@ pub fn view<'a>(
             if state.contextvm_tools.is_empty() {
                 empty_view(vc)
             } else {
-                tool_list_or_empty_search(&filtered, search_query, vc)
+                tool_list_grouped_or_empty_search(&grouped_vec, search_query, vc)
             }
         }
     };
 
     let bg_color = vc.bg;
-    let page = column![header, search_block, body]
+    let page = column![header, search_block, provider_block, body]
         .spacing(0)
         .width(Length::Fill)
         .height(Length::Fill);
@@ -162,17 +272,13 @@ pub fn view<'a>(
 // ── Centred state panes (mirror memories.rs:74-89) ───────────────────────────
 
 fn loading_view(vc: ViewColors) -> Element<'static, Message> {
-    container(
-        text("Searching Nostr relays…")
-            .size(14)
-            .color(vc.muted),
-    )
-    .padding(48)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .into()
+    container(text("Searching Nostr relays…").size(14).color(vc.muted))
+        .padding(48)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .into()
 }
 
 fn empty_view(vc: ViewColors) -> Element<'static, Message> {
@@ -235,8 +341,79 @@ fn try_again_button(vc: ViewColors) -> Element<'static, Message> {
 
 // ── Loaded list (state F) ────────────────────────────────────────────────────
 
-/// Render either the filtered tool list, or, when the search query yielded
+/// Render either the grouped tool list, or, when the search query yielded
 /// no matches, the empty-search caption (UI-SPEC §M).
+fn tool_list_grouped_or_empty_search<'a>(
+    grouped: &[(String, Vec<&'a DiscoverableTool>)],
+    query: &'a str,
+    vc: ViewColors,
+) -> Element<'a, Message> {
+    let total_tools: usize = grouped.iter().map(|(_, tools)| tools.len()).sum();
+
+    if total_tools == 0 && !query.trim().is_empty() {
+        // Locked copy per UI-SPEC §M — straight ASCII quotes.
+        container(
+            text(format!("No tools match \"{}\"", query))
+                .size(14)
+                .color(vc.muted),
+        )
+        .padding(32)
+        .width(Length::Fill)
+        .align_x(Alignment::Center)
+        .into()
+    } else {
+        let mut rows: Vec<Element<'a, Message>> = Vec::new();
+
+        for (_provider_pubkey, tools) in grouped {
+            // Get provider name for header
+            let provider_name: String = tools
+                .first()
+                .and_then(|t| t.provider_name.as_ref())
+                .or_else(|| tools.first().and_then(|t| t.provider_display_name.as_ref()))
+                .cloned()
+                .unwrap_or_else(|| {
+                    let npub = tools.first().map(|t| t.npub.as_str()).unwrap_or("");
+                    if npub.len() > 8 {
+                        format!("{}…", &npub[..8])
+                    } else {
+                        npub.to_string()
+                    }
+                });
+
+            // Provider header
+            rows.push(
+                container(text(provider_name).size(12).color(vc.muted))
+                    .padding(Padding {
+                        top: 16.0,
+                        right: 16.0,
+                        bottom: 4.0,
+                        left: 16.0,
+                    })
+                    .width(Length::Fill)
+                    .into(),
+            );
+
+            // Tool rows for this provider
+            for tool in tools {
+                rows.push(tool_row(tool, vc));
+            }
+        }
+
+        let list = column(rows).spacing(0).padding(Padding::from([8u16, 16]));
+
+        scrollable(list)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into()
+    }
+}
+
+/**
+ * Phase 36 §M — renders either the filtered tool list or the centered
+ * "No tools match \"{query}\"" caption when a non-empty query yields no
+ * results.
+ */
+#[allow(dead_code)]
 fn tool_list_or_empty_search<'a>(
     tools: &[&'a DiscoverableTool],
     query: &'a str,
@@ -254,12 +431,9 @@ fn tool_list_or_empty_search<'a>(
         .align_x(Alignment::Center)
         .into()
     } else {
-        let rows: Vec<Element<'a, Message>> =
-            tools.iter().map(|t| tool_row(t, vc)).collect();
+        let rows: Vec<Element<'a, Message>> = tools.iter().map(|t| tool_row(t, vc)).collect();
 
-        let list = column(rows)
-            .spacing(8)
-            .padding(Padding::from([8u16, 16]));
+        let list = column(rows).spacing(8).padding(Padding::from([8u16, 16]));
 
         scrollable(list)
             .height(Length::Fill)
@@ -346,9 +520,7 @@ fn tool_row<'a>(tool: &'a DiscoverableTool, vc: ViewColors) -> Element<'a, Messa
         .size(20);
 
     // Compose the row — body fills, then optional badge, chevron, toggler.
-    let mut trailing = row![]
-        .spacing(8)
-        .align_y(Alignment::Center);
+    let mut trailing = row![].spacing(8).align_y(Alignment::Center);
     if let Some(b) = used_badge {
         trailing = trailing.push(b);
     }

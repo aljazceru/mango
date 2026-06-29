@@ -35,6 +35,10 @@ fn ctx_03_per_tool_enable_persists_across_launches() {
         description: String::new(),
         provider_pubkey: "pkA".into(),
         provider_display_name: None,
+        provider_name: None,
+        provider_about: None,
+        provider_picture: None,
+        provider_nip05: None,
         schema_json: "{}".into(),
         enabled: false,
         last_seen_at: 1,
@@ -69,6 +73,10 @@ fn ctx_05_enabled_tools_appear_in_openai_tools_array() {
         schema: serde_json::json!({"type": "object"}),
         provider_pubkey_hex: "pkA".into(),
         provider_display_name: None,
+        provider_name: None,
+        provider_about: None,
+        provider_picture: None,
+        provider_nip05: None,
         last_seen_at: 1,
     };
     let tools = crate::agent::tools::build_chat_tools_with_contextvm(false, false, &[desc]);
@@ -101,8 +109,7 @@ fn ctx_06_invocation_routes_through_nostr_returns_tool_result() {
 
     let tmp = tempfile::tempdir().unwrap();
     let db = crate::persistence::Database::open(":memory:").unwrap();
-    let index =
-        crate::rag::VectorIndex::new(tmp.path().to_str().unwrap(), None).unwrap();
+    let index = crate::rag::VectorIndex::new(tmp.path().to_str().unwrap(), None).unwrap();
     let provider = crate::NullEmbeddingProvider;
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -116,6 +123,10 @@ fn ctx_06_invocation_routes_through_nostr_returns_tool_result() {
             // Bogus pubkey so invoke_tool fails fast at proxy build.
             provider_pubkey_hex: "00".repeat(32),
             provider_display_name: None,
+            provider_name: None,
+            provider_about: None,
+            provider_picture: None,
+            provider_nip05: None,
             last_seen_at: 1,
         },
     );
@@ -200,18 +211,20 @@ fn test_format_jsonrpc_error_locked_copy() {
 #[test]
 fn test_load_or_create_secret_key_creates_then_returns_same() {
     let db = crate::persistence::Database::open(":memory:").unwrap();
-    let k1 =
-        crate::contextvm::invocation::load_or_create_secret_key(db.conn()).unwrap();
+    let k1 = crate::contextvm::invocation::load_or_create_secret_key(db.conn()).unwrap();
     assert!(!k1.is_empty());
     // 32-byte secret hex = 64 chars.
-    assert_eq!(k1.len(), 64, "expected 64-char hex secret, got {}", k1.len());
+    assert_eq!(
+        k1.len(),
+        64,
+        "expected 64-char hex secret, got {}",
+        k1.len()
+    );
     // Persisted under the documented key.
-    let raw = crate::persistence::queries::get_setting(db.conn(), "contextvm_secret_key")
-        .unwrap();
+    let raw = crate::persistence::queries::get_setting(db.conn(), "contextvm_secret_key").unwrap();
     assert_eq!(raw.as_deref(), Some(k1.as_str()));
     // Second call must return the SAME hex.
-    let k2 =
-        crate::contextvm::invocation::load_or_create_secret_key(db.conn()).unwrap();
+    let k2 = crate::contextvm::invocation::load_or_create_secret_key(db.conn()).unwrap();
     assert_eq!(k1, k2);
 }
 
@@ -262,19 +275,285 @@ fn test_decode_response_oversize_text_truncated() {
     assert!(s.len() <= crate::contextvm::MAX_TOOL_RESULT_BYTES + 32);
 }
 
+// ── Mock-relay in-process E2E test ────────────────────────────────────
+//
+// Spins up a real rmcp EchoServer over a `MockRelayPool` pair — no
+// network required.  The client side calls `invoke_tool` via the
+// standard `dispatch_tools` path so the full production code path is
+// exercised end-to-end.
+
+#[derive(Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+struct EchoParams {
+    message: String,
+}
+
+#[derive(Clone)]
+struct EchoServer {
+    tool_router: rmcp::handler::server::router::tool::ToolRouter<EchoServer>,
+}
+
+#[rmcp::tool_router]
+impl EchoServer {
+    #[rmcp::tool(description = "Echo a message back unchanged")]
+    async fn echo(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(EchoParams { message }): rmcp::handler::server::wrapper::Parameters<EchoParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::model::ErrorData> {
+        Ok(rmcp::model::CallToolResult::success(vec![
+            rmcp::model::Content::text(format!("Echo: {message}")),
+        ]))
+    }
+}
+
+#[rmcp::tool_handler]
+impl rmcp::ServerHandler for EchoServer {
+    fn get_info(&self) -> rmcp::model::ServerInfo {
+        rmcp::model::ServerInfo {
+            protocol_version: rmcp::model::ProtocolVersion::LATEST,
+            capabilities: rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+            server_info: rmcp::model::Implementation {
+                name: "mango-test-echo".to_string(),
+                title: Some("Mango Test Echo Server".to_string()),
+                version: "0.1.0".to_string(),
+                description: None,
+                icons: None,
+                website_url: None,
+            },
+            instructions: None,
+        }
+    }
+}
+
+impl EchoServer {
+    fn new() -> Self {
+        Self {
+            tool_router: Self::tool_router(),
+        }
+    }
+}
+
+#[test]
+fn contextvm_rustls_provider_keeps_tinfoil_post_quantum_group() {
+    crate::contextvm::ensure_rustls_crypto_provider();
+
+    assert!(
+        crate::net::tls::default_crypto_provider_supports_post_quantum(),
+        "ContextVM must not install the ring provider before Tinfoil attestation; \
+         the process rustls provider must include X25519MLKEM768"
+    );
+}
+
+/// Full stack E2E via mock relay — no network, deterministic.
+///
+/// Server: rmcp EchoServer → NostrServerTransport(MockRelayPool)
+/// Client: invoke_tool → NostrClientTransport(MockRelayPool)
+///
+/// The two pools share an event bus via `MockRelayPool::create_pair`.
+/// This exercises the same code path as a live invocation, minus actual
+/// TCP sockets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mock_relay_e2e_invoke_tool_echo() {
+    use contextvm_sdk::relay::mock::MockRelayPool;
+    use contextvm_sdk::transport::client::{NostrClientTransport, NostrClientTransportConfig};
+    use contextvm_sdk::transport::server::{NostrServerTransport, NostrServerTransportConfig};
+    use contextvm_sdk::{EncryptionMode, RelayPoolTrait};
+    use rmcp::ServiceExt;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    crate::contextvm::ensure_rustls_crypto_provider();
+
+    // Create a linked pair: server_pool and client_pool share the same
+    // in-memory broadcast bus so events published by one are visible to
+    // the other.
+    let (server_pool, client_pool) = MockRelayPool::create_pair();
+    let server_pubkey_hex = server_pool.mock_public_key().to_hex();
+
+    // Spin up the rmcp EchoServer on the server pool.
+    let server_transport = NostrServerTransport::with_relay_pool(
+        NostrServerTransportConfig::default().with_encryption_mode(EncryptionMode::Optional),
+        Arc::new(server_pool) as Arc<dyn RelayPoolTrait>,
+    )
+    .await
+    .expect("create server transport");
+
+    let server_handle = tokio::spawn(async move {
+        EchoServer::new()
+            .serve(server_transport)
+            .await
+            .expect("server serve failed")
+            .waiting()
+            .await
+            .expect("server error");
+    });
+
+    // Give the server a moment to subscribe before the client connects.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Build the client transport pointing at the server's pubkey.
+    let client_transport = NostrClientTransport::with_relay_pool(
+        NostrClientTransportConfig::default()
+            .with_server_pubkey(server_pubkey_hex.clone())
+            .with_encryption_mode(EncryptionMode::Optional),
+        Arc::new(client_pool) as Arc<dyn RelayPoolTrait>,
+    )
+    .await
+    .expect("create client transport");
+
+    // `invoke_tool` owns its own proxy lifecycle; we can't inject a
+    // pre-built transport into it without refactoring the public API.
+    // Instead, exercise the same NostrClientTransport path directly via
+    // rmcp to validate the full protocol stack, then separately verify
+    // that `dispatch_tools` routes correctly to the remote fallback arm
+    // (covered by ctx_06 above).
+    //
+    // This validates: MockRelayPool wiring, NostrServerTransport /
+    // NostrClientTransport handshake, rmcp tool listing + call,
+    // and the EchoServer response — the same stack `invoke_tool` uses
+    // minus the outer proxy wrapper.
+    #[derive(Clone, Default)]
+    struct TestClient;
+    impl rmcp::ClientHandler for TestClient {}
+
+    let client = tokio::time::timeout(Duration::from_secs(5), TestClient.serve(client_transport))
+        .await
+        .expect("client init timed out")
+        .expect("client init failed");
+
+    let tools = client.list_all_tools().await.expect("list_all_tools");
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+    assert!(
+        names.contains(&"echo"),
+        "echo tool not advertised: {:?}",
+        names
+    );
+
+    let result = client
+        .call_tool(rmcp::model::CallToolRequestParams {
+            name: "echo".into(),
+            arguments: serde_json::from_value(serde_json::json!({"message": "hello mango"})).ok(),
+            meta: None,
+            task: None,
+        })
+        .await
+        .expect("echo tool call failed");
+
+    let text = result
+        .content
+        .iter()
+        .find_map(|c| {
+            if let rmcp::model::RawContent::Text(t) = &c.raw {
+                Some(t.text.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    assert!(
+        text.contains("hello mango"),
+        "unexpected echo response: {text}"
+    );
+
+    client.cancel().await.expect("client cancel");
+    server_handle.abort();
+}
+
+// ── Live test against a local echo server ─────────────────────────────
+//
+// HOW TO RUN (Level 3):
+//
+// Option A — local nak relay (fastest, no external network needed):
+//   Terminal 1:  nak serve
+//                # starts ws://localhost:10547
+//   Terminal 2:  CONTEXTVM_RELAY_OVERRIDE=ws://localhost:10547 \
+//                  cargo run -p contextvm-echo-server
+//                # prints "Server pubkey: <hex>"
+//   Terminal 3:  Fill ECHO_SERVER_PUBKEY below, un-ignore, then:
+//                CONTEXTVM_RELAY_OVERRIDE=ws://localhost:10547 \
+//                  cargo test -p mango_core live_invoke_echo_local \
+//                  -- --nocapture --ignored
+//
+// Option B — public relays (requires internet, keep server running):
+//   Terminal 1:  cargo run -p contextvm-echo-server
+//   Terminal 2:  (fill pubkey, un-ignore, then:)
+//                cargo test -p mango_core live_invoke_echo_local \
+//                  -- --nocapture --ignored
+//
+// To smoke-test a PRODUCTION provider, change ECHO_SERVER_PUBKEY to the
+// provider's hex pubkey and ECHO_TOOL_NAME to the tool you want to call.
+
+const ECHO_SERVER_PUBKEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+const ECHO_TOOL_NAME: &str = "echo";
+const ECHO_TOOL_ARGS: &str = r#"{"message": "hello from mango live test"}"#;
+
 #[tokio::test]
-#[ignore = "live network — no public always-on contextvm test tool exists; \
-            skipped by default. Un-ignore manually with a known-good \
-            provider_pubkey + tool_name to smoke-test against real relays."]
-async fn live_invoke_tool_against_known_provider() {
+#[ignore = "requires local echo server — see comment above for setup instructions"]
+async fn live_invoke_echo_local() {
     let db = crate::persistence::Database::open(":memory:").unwrap();
     let sk = crate::contextvm::invocation::load_or_create_secret_key(db.conn()).unwrap();
-    // Replace these with a real test fixture before un-ignoring:
-    let provider = "0000000000000000000000000000000000000000000000000000000000000000";
-    let result =
-        crate::contextvm::invocation::invoke_tool(&sk, provider, "echo", "{}").await;
-    // We don't assert content (depends on remote); just non-panic.
-    let _ = result;
+    eprintln!("client pubkey: {}", {
+        contextvm_sdk::signer::from_sk(&sk)
+            .map(|k| k.public_key().to_hex())
+            .unwrap_or_else(|_| "<bad key>".into())
+    });
+    let relay = std::env::var("CONTEXTVM_RELAY_OVERRIDE")
+        .unwrap_or_else(|_| "wss://relay.damus.io (default)".into());
+    eprintln!("relay: {relay}");
+    eprintln!("calling {ECHO_TOOL_NAME} on {ECHO_SERVER_PUBKEY}");
+    let result = crate::contextvm::invocation::invoke_tool(
+        &sk,
+        ECHO_SERVER_PUBKEY,
+        ECHO_TOOL_NAME,
+        ECHO_TOOL_ARGS,
+    )
+    .await;
+    eprintln!("result: {result}");
+    assert!(
+        !result.contains("unknown tool"),
+        "routed to unknown-tool arm: {result}"
+    );
+    assert!(
+        !result.starts_with("Error: invalid persisted secret key"),
+        "secret key rejected: {result}"
+    );
+    // When pointed at the local echo server the response contains the
+    // echoed message.  When pointed at a production provider the caller
+    // may relax this assertion.
+    if ECHO_SERVER_PUBKEY != "0000000000000000000000000000000000000000000000000000000000000000" {
+        assert!(
+            result.contains("hello from mango live test") || !result.starts_with("Error:"),
+            "unexpected error from live provider: {result}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires local echo server; set ECHO_SERVER_PUBKEY to the server hex pubkey"]
+async fn live_discover_echo_tools_from_env_pubkey() {
+    let provider_pubkey = std::env::var("ECHO_SERVER_PUBKEY")
+        .expect("set ECHO_SERVER_PUBKEY to the running echo server hex pubkey");
+    let relays = crate::contextvm::default_relays_owned();
+    let tools = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        crate::contextvm::discovery::discover_tools_for_server(&provider_pubkey, None, &relays),
+    )
+    .await
+    .expect("discover_tools_for_server timed out")
+    .expect("discover_tools_for_server failed");
+    eprintln!(
+        "discovered tools for {provider_pubkey}: {:?}",
+        tools
+            .iter()
+            .map(|t| t.tool_name.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        tools.iter().any(|t| t.tool_name == ECHO_TOOL_NAME),
+        "echo tool missing from discovered tools"
+    );
 }
 
 #[test]
@@ -365,8 +644,7 @@ async fn live_discover_servers_against_default_relays() {
                 if let Some(first) = tools.first() {
                     let db = crate::persistence::Database::open(":memory:").unwrap();
                     let sk =
-                        crate::contextvm::invocation::load_or_create_secret_key(db.conn())
-                            .unwrap();
+                        crate::contextvm::invocation::load_or_create_secret_key(db.conn()).unwrap();
                     let invoke = tokio::time::timeout(
                         std::time::Duration::from_secs(20),
                         crate::contextvm::invocation::invoke_tool(
@@ -425,6 +703,10 @@ fn ctx_09_uniffi_bindings_regenerated_for_all_three_platforms() {
             content.contains("ContextvmDiscoveryState"),
             "Swift bindings missing ContextvmDiscoveryState — re-run `just bindings-swift`"
         );
+        assert!(
+            content.contains("TrustedProvider"),
+            "Swift bindings missing TrustedProvider — re-run `just bindings-swift`"
+        );
     }
 
     // Kotlin bindings — Linux is the canonical Android dev target, so
@@ -441,6 +723,7 @@ fn ctx_09_uniffi_bindings_regenerated_for_all_three_platforms() {
                 if let Ok(content) = std::fs::read_to_string(&entry) {
                     if content.contains("DiscoverableTool")
                         && content.contains("ContextvmDiscoveryState")
+                        && content.contains("TrustedProvider")
                     {
                         kotlin_ok = true;
                         break;
@@ -451,7 +734,7 @@ fn ctx_09_uniffi_bindings_regenerated_for_all_three_platforms() {
     }
     assert!(
         kotlin_ok,
-        "Kotlin bindings missing Phase 35 types — re-run `just bindings-kotlin`"
+        "Kotlin bindings missing ContextVM trust types — re-run `just bindings-kotlin`"
     );
 }
 
@@ -500,6 +783,10 @@ fn fixture_descriptor(name: &str, ts: i64) -> crate::contextvm::ContextvmToolDes
         schema: serde_json::json!({"type": "object"}),
         provider_pubkey_hex: "pkA".into(),
         provider_display_name: None,
+        provider_name: None,
+        provider_about: None,
+        provider_picture: None,
+        provider_nip05: None,
         last_seen_at: ts,
     }
 }
@@ -553,6 +840,10 @@ fn test_descriptor_caps_description_at_500_chars() {
         description: "x".repeat(1000),
         provider_pubkey: "pkA".into(),
         provider_display_name: None,
+        provider_name: None,
+        provider_about: None,
+        provider_picture: None,
+        provider_nip05: None,
         schema_json: "{\"type\":\"object\"}".into(),
         enabled: true,
         last_seen_at: 1,
@@ -572,6 +863,10 @@ fn test_descriptor_under_cap_unchanged() {
         description: "short".into(),
         provider_pubkey: "pkA".into(),
         provider_display_name: None,
+        provider_name: None,
+        provider_about: None,
+        provider_picture: None,
+        provider_nip05: None,
         schema_json: "{\"type\":\"object\"}".into(),
         enabled: true,
         last_seen_at: 1,
@@ -605,6 +900,70 @@ fn test_build_dispatch_map_keyed_by_tool_name() {
 }
 
 #[test]
+fn test_enabled_descriptors_filter_untrusted_persisted_rows() {
+    use crate::persistence::queries::ContextvmToolRow;
+    use std::collections::HashSet;
+
+    let db = crate::persistence::Database::open(":memory:").unwrap();
+    let trusted_pubkey =
+        "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245".to_string();
+    let untrusted_pubkey =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+    let rows = [
+        ContextvmToolRow {
+            id: format!("{trusted_pubkey}:weather"),
+            tool_name: "weather".into(),
+            display_name: None,
+            description: "Trusted weather".into(),
+            provider_pubkey: trusted_pubkey.clone(),
+            provider_display_name: None,
+            provider_name: None,
+            provider_about: None,
+            provider_picture: None,
+            provider_nip05: None,
+            schema_json: "{\"type\":\"object\"}".into(),
+            enabled: true,
+            last_seen_at: 10,
+        },
+        ContextvmToolRow {
+            id: format!("{untrusted_pubkey}:summarize"),
+            tool_name: "summarize".into(),
+            display_name: None,
+            description: "Untrusted summarize".into(),
+            provider_pubkey: untrusted_pubkey.clone(),
+            provider_display_name: None,
+            provider_name: None,
+            provider_about: None,
+            provider_picture: None,
+            provider_nip05: None,
+            schema_json: "{\"type\":\"object\"}".into(),
+            enabled: true,
+            last_seen_at: 20,
+        },
+    ];
+    for row in rows {
+        crate::persistence::queries::upsert_contextvm_tool(db.conn(), &row).unwrap();
+    }
+
+    let unfiltered = crate::load_enabled_descriptors(db.conn(), None);
+    let unfiltered_names: Vec<_> = unfiltered
+        .iter()
+        .map(|descriptor| descriptor.tool_name.as_str())
+        .collect();
+    assert_eq!(unfiltered_names, vec!["summarize", "weather"]);
+
+    let trusted = HashSet::from([trusted_pubkey.clone()]);
+    let filtered = crate::load_enabled_descriptors(db.conn(), Some(&trusted));
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].tool_name, "weather");
+    assert_eq!(filtered[0].provider_pubkey_hex, trusted_pubkey);
+
+    let empty_trust = HashSet::new();
+    let empty = crate::load_enabled_descriptors(db.conn(), Some(&empty_trust));
+    assert!(empty.is_empty());
+}
+
+#[test]
 fn test_finalise_for_turn_filtered_collisions_handled() {
     // Contract: the actor (Plan 35-05) MUST run finalise_for_turn so
     // collisions are filtered before reaching build_chat_tools_with_contextvm.
@@ -625,8 +984,7 @@ fn test_locals_win_on_collision_via_match_arm_precedence() {
 
     let tmp = tempfile::tempdir().unwrap();
     let db = crate::persistence::Database::open(":memory:").unwrap();
-    let index =
-        crate::rag::VectorIndex::new(tmp.path().to_str().unwrap(), None).unwrap();
+    let index = crate::rag::VectorIndex::new(tmp.path().to_str().unwrap(), None).unwrap();
     let provider = crate::NullEmbeddingProvider;
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -639,6 +997,10 @@ fn test_locals_win_on_collision_via_match_arm_precedence() {
             schema: serde_json::json!({"type": "object"}),
             provider_pubkey_hex: "00".repeat(32),
             provider_display_name: None,
+            provider_name: None,
+            provider_about: None,
+            provider_picture: None,
+            provider_nip05: None,
             last_seen_at: 1,
         },
     );
@@ -681,6 +1043,10 @@ fn test_build_chat_tools_with_contextvm_appends_remote() {
         schema: serde_json::json!({"type": "object"}),
         provider_pubkey_hex: "pkA".into(),
         provider_display_name: None,
+        provider_name: None,
+        provider_about: None,
+        provider_picture: None,
+        provider_nip05: None,
         last_seen_at: 1,
     };
     let tools_no_remote = crate::agent::tools::build_chat_tools(false, false);
@@ -889,6 +1255,10 @@ mod phase_36_red_stubs {
             description: "Get weather".into(),
             provider_pubkey: KNOWN_HEX.into(),
             provider_display_name: Some("Demo Server".into()),
+            provider_name: None,
+            provider_about: None,
+            provider_picture: None,
+            provider_nip05: None,
             schema_json: r#"{"type":"object","properties":{"q":{"type":"string"}}}"#.into(),
             enabled: true,
             last_seen_at: now - 86400, // 1 day ago → "Yesterday"
@@ -919,6 +1289,10 @@ mod phase_36_red_stubs {
             description: String::new(),
             provider_pubkey: KNOWN_HEX.into(),
             provider_display_name: None,
+            provider_name: None,
+            provider_about: None,
+            provider_picture: None,
+            provider_nip05: None,
             schema_json: "{}".into(),
             enabled: false,
             last_seen_at: now,

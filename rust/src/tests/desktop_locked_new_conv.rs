@@ -20,11 +20,7 @@ use std::time::Duration;
 /// Create a filesystem-backed data dir with bootstrap auth_params already
 /// populated so FfiApp::new goes down the Case D (locked) path.
 fn make_locked_data_dir(tag: &str) -> String {
-    let base = std::env::temp_dir().join(format!(
-        "mango_locked_{}_{}",
-        tag,
-        uuid::Uuid::new_v4()
-    ));
+    let base = std::env::temp_dir().join(format!("mango_locked_{}_{}", tag, uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&base).expect("create test data dir");
 
     // Write auth_params into mango_auth.db so has_auth_params() returns true.
@@ -32,9 +28,8 @@ fn make_locked_data_dir(tag: &str) -> String {
     // row to exist so FfiApp::new takes the "Case D deferred" branch and
     // leaves actor_state.db as None.
     let bootstrap_path = base.join("mango_auth.db");
-    let bootstrap =
-        crypto::bootstrap_db::BootstrapDb::open(bootstrap_path.to_str().unwrap())
-            .expect("open bootstrap db");
+    let bootstrap = crypto::bootstrap_db::BootstrapDb::open(bootstrap_path.to_str().unwrap())
+        .expect("open bootstrap db");
     // Derive KEK from a dummy PIN to generate a real wrapped_dek (so the
     // cryptographic shape of auth_params is realistic; content doesn't matter
     // for this test because we never attempt to unlock).
@@ -71,6 +66,7 @@ fn make_locked_app(data_dir: String) -> std::sync::Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(200));

@@ -48,6 +48,11 @@ pub struct ContextvmToolDescriptor {
     pub schema: serde_json::Value,
     pub provider_pubkey_hex: String,
     pub provider_display_name: Option<String>,
+    /// Phase 37: Provider profile fields from Nostr kind 0 metadata
+    pub provider_name: Option<String>,
+    pub provider_about: Option<String>,
+    pub provider_picture: Option<String>,
+    pub provider_nip05: Option<String>,
     pub last_seen_at: i64,
 }
 
@@ -61,6 +66,10 @@ impl ContextvmToolDescriptor {
             schema,
             provider_pubkey_hex: row.provider_pubkey.clone(),
             provider_display_name: row.provider_display_name.clone(),
+            provider_name: row.provider_name.clone(),
+            provider_about: row.provider_about.clone(),
+            provider_picture: row.provider_picture.clone(),
+            provider_nip05: row.provider_nip05.clone(),
             last_seen_at: row.last_seen_at,
         })
     }

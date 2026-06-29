@@ -40,6 +40,13 @@ pub enum InternalEvent {
         success: bool,
         models: Vec<String>,
     },
+    /// Progress from a background local model download.
+    LocalModelDownloadProgress(super::local_models::LocalModelDownloadProgress),
+    /// Completion from a background local model download and integrity check.
+    LocalModelDownloadComplete {
+        model_id: String,
+        result: Result<(), String>,
+    },
     /// Embedding computation completed for a document ingestion batch (Phase 8, D-15).
     ///
     /// Delivered to the actor loop after spawn_blocking returns from the EmbeddingProvider.

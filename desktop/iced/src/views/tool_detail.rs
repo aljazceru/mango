@@ -139,10 +139,18 @@ fn render_tool_body<'a>(
     col = col.push(heading);
 
     // ── Section 2: ADVERTISED BY ─────────────────────────────────────────────
+    // Phase 37: Use provider_name from Nostr profile if available, fallback to
+    // provider_display_name, then "Unnamed provider"
     let provider = tool
-        .provider_display_name
-        .clone()
+        .provider_name
+        .as_ref()
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            tool.provider_display_name
+                .as_ref()
+                .filter(|s| !s.is_empty())
+        })
+        .cloned()
         // Locked fallback copy.
         .unwrap_or_else(|| "Unnamed provider".to_string());
 
@@ -242,23 +250,18 @@ fn render_tool_body<'a>(
                 .size(12)
                 .font(Font::MONOSPACE)
                 .color(vc.text);
-            let scroll = scrollable(
-                container(body_text)
-                    .padding(12)
-                    .width(Length::Fill),
-            )
-            .height(Length::Fixed(320.0))
-            .width(Length::Fill);
-            let card = container(scroll)
-                .style(move |_theme| container::Style {
-                    background: Some(Background::Color(card_bg)),
-                    border: Border {
-                        radius: 8.0.into(),
-                        color: card_border,
-                        width: 1.0,
-                    },
-                    ..Default::default()
-                });
+            let scroll = scrollable(container(body_text).padding(12).width(Length::Fill))
+                .height(Length::Fixed(320.0))
+                .width(Length::Fill);
+            let card = container(scroll).style(move |_theme| container::Style {
+                background: Some(Background::Color(card_bg)),
+                border: Border {
+                    radius: 8.0.into(),
+                    color: card_border,
+                    width: 1.0,
+                },
+                ..Default::default()
+            });
             s = s.push(card);
         }
         s.into()
@@ -287,7 +290,10 @@ fn render_tool_body<'a>(
 
     // Spacer + scrollable so long schemas / descriptions don't overflow.
     col = col.push(Space::new().height(Length::Fixed(24.0)));
-    scrollable(col).height(Length::Fill).width(Length::Fill).into()
+    scrollable(col)
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .into()
 }
 
 /// First 8 hex chars + ellipsis — visual only. Copy actions emit the full

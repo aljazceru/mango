@@ -8,6 +8,7 @@ struct SettingsProvidersView: View {
     @State private var addName: String = ""
     @State private var addUrl: String = ""
     @State private var addApiKey: String = ""
+    @State private var addModel: String = ""
     @State private var addTeeType: String = "IntelTdx"
     @State private var attestationIntervalInput: String = ""
 
@@ -34,13 +35,24 @@ struct SettingsProvidersView: View {
         Section("Providers") {
             let presets = knownProviderPresets()
             ForEach(presets, id: \.id) { preset in
-                let isEnabled = appState.backends.contains(where: { $0.id == preset.id && $0.hasApiKey })
+                let keyOptional = presetKeyOptional(preset)
+                let isEnabled = appState.backends.contains(where: { $0.id == preset.id && ($0.hasApiKey || keyOptional) })
                 if isEnabled {
                     enabledRow(preset)
                 } else {
                     disabledRow(preset)
                 }
             }
+            ForEach(customBackends, id: \.id) { backend in
+                customBackendRow(backend)
+            }
+        }
+    }
+
+    private var customBackends: [BackendSummary] {
+        let presetIds = Set(knownProviderPresets().map(\.id))
+        return appState.backends.filter { backend in
+            !presetIds.contains(backend.id) && !backend.id.hasPrefix("local-")
         }
     }
 
@@ -84,11 +96,18 @@ struct SettingsProvidersView: View {
 
                 TextField("Name", text: $addName)
                     .autocorrectionDisabled()
+                    .accessibilityLabel("Custom Provider Name")
                 TextField("Base URL", text: $addUrl)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                    .accessibilityLabel("Custom Provider Base URL")
                 SecureField("API Key", text: $addApiKey)
+                    .accessibilityLabel("Custom Provider API Key")
+                TextField("Model ID", text: $addModel)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityLabel("Custom Provider Model ID")
                 Picker("TEE Type", selection: $addTeeType) {
                     Text("Intel TDX").tag("IntelTdx")
                     Text("NVIDIA H100 CC").tag("NvidiaH100Cc")
@@ -102,11 +121,13 @@ struct SettingsProvidersView: View {
                         baseUrl: addUrl,
                         apiKey: addApiKey,
                         teeType: parseTeeType(addTeeType),
-                        models: []
+                        models: [addModel.trimmingCharacters(in: .whitespacesAndNewlines)]
+                            .filter { !$0.isEmpty }
                     ))
                     addName = ""
                     addUrl = ""
                     addApiKey = ""
+                    addModel = ""
                     addTeeType = "IntelTdx"
                 }
                 .buttonStyle(.borderedProminent)
@@ -114,6 +135,7 @@ struct SettingsProvidersView: View {
                     addName.trimmingCharacters(in: .whitespaces).isEmpty
                     || addUrl.trimmingCharacters(in: .whitespaces).isEmpty
                     || addApiKey.isEmpty
+                    || addModel.trimmingCharacters(in: .whitespaces).isEmpty
                 )
             }
             .padding(.vertical, 4)
@@ -216,6 +238,8 @@ struct SettingsProvidersView: View {
 
     @ViewBuilder
     private func disabledRow(_ preset: ProviderPreset) -> some View {
+        let keyOptional = presetKeyOptional(preset)
+        let key = (presetKeys[preset.id] ?? "").trimmingCharacters(in: .whitespaces)
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(preset.name).font(.body).fontWeight(.medium)
@@ -223,7 +247,7 @@ struct SettingsProvidersView: View {
                 Text(teeTypeLabel(preset.teeType)).font(.caption2).foregroundStyle(.tertiary)
             }
 
-            SecureField("API Key", text: Binding(
+            SecureField(keyOptional ? "API Key (optional)" : "API Key", text: Binding(
                 get: { presetKeys[preset.id] ?? "" },
                 set: { presetKeys[preset.id] = $0 }
             ))
@@ -233,16 +257,84 @@ struct SettingsProvidersView: View {
 
             Button("Enable") {
                 let key = (presetKeys[preset.id] ?? "").trimmingCharacters(in: .whitespaces)
-                guard !key.isEmpty else { return }
+                guard keyOptional || !key.isEmpty else { return }
                 appManager.dispatch(.addBackendFromPreset(presetId: preset.id, apiKey: key))
                 presetKeys[preset.id] = ""
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .tint(AppColors.healthSuccess(colorScheme))
-            .disabled((presetKeys[preset.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(!keyOptional && key.isEmpty)
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func customBackendRow(_ backend: BackendSummary) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(backend.name).font(.body).fontWeight(.medium)
+                    Text(teeTypeLabel(backend.teeType))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("Custom")
+                    .font(.caption2).fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            HStack(spacing: 6) {
+                Text(healthLabel(backend.healthStatus))
+                    .font(.caption2).fontWeight(.medium)
+                    .foregroundStyle(healthColor(backend.healthStatus, colorScheme))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(healthColor(backend.healthStatus, colorScheme).opacity(0.10))
+                    .clipShape(Capsule())
+
+                if let att = appState.attestationStatuses.first(where: { $0.backendId == backend.id }) {
+                    let (label, color) = attestationStyle(att.status, colorScheme)
+                    Text(label)
+                        .font(.caption2)
+                        .foregroundStyle(color)
+                }
+            }
+
+            if !backend.models.isEmpty {
+                Text(backend.models.prefix(3).joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 8) {
+                if backend.isActive {
+                    Label("Default", systemImage: "checkmark.seal.fill")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(AppColors.healthSuccess(colorScheme))
+                } else {
+                    Button("Set Default") {
+                        appManager.dispatch(.setDefaultBackend(backendId: backend.id))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .accessibilityLabel("Set Default \(backend.name)")
+                }
+                Spacer()
+                Button("Remove") {
+                    appManager.dispatch(.removeBackend(backendId: backend.id))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .tint(.red)
+                .accessibilityLabel("Remove \(backend.name)")
+            }
+        }
+        .padding(.vertical, 6)
     }
 
     private func healthLabel(_ s: HealthStatus) -> String {
@@ -288,5 +380,9 @@ struct SettingsProvidersView: View {
         case "Unknown": return .unknown
         default: return .intelTdx
         }
+    }
+
+    private func presetKeyOptional(_ preset: ProviderPreset) -> Bool {
+        preset.id == "qvac-local" || preset.teeType == .unknown
     }
 }

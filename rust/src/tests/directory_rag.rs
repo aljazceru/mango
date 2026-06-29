@@ -19,6 +19,7 @@ fn make_app() -> Arc<FfiApp> {
         Box::new(NullKeychainProvider),
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(NullBiometricProvider),
     );
     // Allow the actor to finish startup (VectorIndex init + load queries).

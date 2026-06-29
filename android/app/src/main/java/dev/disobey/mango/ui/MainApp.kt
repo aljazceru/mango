@@ -9,6 +9,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import dev.disobey.mango.AppManager
@@ -21,6 +23,8 @@ fun MainApp(
     manager: AppManager,
     themeMode: String = "system",
     onThemeModeChanged: (String) -> Unit = {},
+    fontSize: String = "normal",
+    onFontSizeChanged: (String) -> Unit = {},
 ) {
     // Wait for the Rust actor's first state emission before rendering any screen.
     // Without this guard, Compose renders the hardcoded Screen.Home default state
@@ -31,7 +35,7 @@ fun MainApp(
         return
     }
 
-    val state = manager.state
+    val state by manager.stateFlow.collectAsState(initial = manager.state)
     val context = LocalContext.current
 
     // Intercept the Android system back gesture / button at the Compose root so it
@@ -63,12 +67,15 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) },
                 themeMode = themeMode,
                 onThemeModeChanged = onThemeModeChanged,
+                fontSize = fontSize,
             )
         }
         is Screen.Chat -> {
             ChatScreen(
                 state = state,
-                onSend = { text -> manager.dispatch(AppAction.SendMessage(text = text)) },
+                onSend = { text, forceRole ->
+                    manager.dispatch(AppAction.SendMessage(text = text, forceRole = forceRole))
+                },
                 onStop = { manager.dispatch(AppAction.StopGeneration) },
                 onRetry = { manager.dispatch(AppAction.RetryLastMessage) },
                 onEdit = { id, text -> manager.dispatch(AppAction.EditMessage(messageId = id, newText = text)) },
@@ -96,6 +103,7 @@ fun MainApp(
                 onDetachDocument = { docId -> manager.dispatch(AppAction.DetachDocumentFromConversation(documentId = docId)) },
                 onDispatchAction = { action -> manager.dispatch(action) },
                 onReadEncryptedImage = { messageId -> manager.readEncryptedImage(messageId) },
+                fontScale = fontSizeToScale(fontSize),
             )
         }
         is Screen.Home -> {
@@ -170,6 +178,8 @@ fun MainApp(
                 themeMode = themeMode,
                 onBack = { manager.dispatch(AppAction.PopScreen) },
                 onThemeModeChanged = onThemeModeChanged,
+                fontSize = fontSize,
+                onFontSizeChanged = onFontSizeChanged,
             )
         }
         is Screen.SettingsSecurity -> {
@@ -181,6 +191,20 @@ fun MainApp(
         }
         is Screen.SettingsTools -> {
             SettingsToolsScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
+        is Screen.SettingsLocalModels -> {
+            SettingsLocalModelsScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
+        is Screen.SettingsHybridRouting -> {
+            SettingsHybridRoutingScreen(
                 appState = state,
                 onDispatch = { action -> manager.dispatch(action) },
                 onBack = { manager.dispatch(AppAction.PopScreen) }
@@ -202,6 +226,14 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) }
             )
         }
+        // Phase 38: trusted providers management screen.
+        is Screen.TrustedProviders -> {
+            TrustedProvidersScreen(
+                appState = state,
+                onDispatch = { action -> manager.dispatch(action) },
+                onBack = { manager.dispatch(AppAction.PopScreen) }
+            )
+        }
         // Phase 28: lock gate and PIN setup screens
         is Screen.Locked -> {
             LockScreen(
@@ -215,6 +247,12 @@ fun MainApp(
                 onDispatchAction = { action -> manager.dispatch(action) }
             )
         }
-        else -> {}
     }
+}
+
+internal fun fontSizeToScale(fontSize: String): Float = when (fontSize) {
+    "small" -> 0.85f
+    "large" -> 1.15f
+    "xlarge" -> 1.3f
+    else -> 1f
 }

@@ -3,6 +3,23 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val defaultLlamaCppDir = rootProject.layout.projectDirectory.asFile
+    .parentFile
+    .parentFile
+    .resolve("llama.cpp")
+    .absolutePath
+val llamaCppDir = providers.gradleProperty("llamaCppDir")
+    .orElse(providers.environmentVariable("LLAMA_CPP_DIR"))
+    .orElse(defaultLlamaCppDir)
+    .get()
+val llamaVersionFile = rootProject.layout.projectDirectory.file("llama.cpp.version").asFile
+val expectedLlamaCppCommit = llamaVersionFile
+    .readLines()
+    .firstOrNull { it.startsWith("LLAMA_CPP_COMMIT=") }
+    ?.substringAfter("=")
+    ?.trim()
+    ?: error("Missing LLAMA_CPP_COMMIT in ${llamaVersionFile.absolutePath}")
+
 android {
     namespace = "dev.disobey.mango"
     compileSdk = 36
@@ -14,6 +31,12 @@ android {
         targetSdk = 36
         versionCode = 2
         versionName = "0.2.2"
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DLLAMA_CPP_DIR=$llamaCppDir")
+            }
+        }
     }
 
     signingConfigs {
@@ -33,8 +56,8 @@ android {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
             ndk {
-                // Debug builds support arm64 device + x86_64 emulator
-                abiFilters += listOf("arm64-v8a", "x86_64")
+                // Local llama.cpp inference currently ships arm64 Android libs.
+                abiFilters += listOf("arm64-v8a")
             }
         }
         release {
@@ -75,6 +98,12 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
 }
 
 tasks.register("ensureUniffiGenerated") {
@@ -86,8 +115,47 @@ tasks.register("ensureUniffiGenerated") {
     }
 }
 
+tasks.register("verifyLlamaCppInputs") {
+    doLast {
+        val llamaDir = file(llamaCppDir)
+        val missingHeaders = listOf(
+            llamaDir.resolve("include/llama.h"),
+            llamaDir.resolve("ggml/include/ggml.h"),
+        ).filterNot { it.exists() }
+        if (missingHeaders.isNotEmpty()) {
+            throw GradleException(
+                "Missing llama.cpp headers under $llamaDir. Set LLAMA_CPP_DIR or -PllamaCppDir to a llama.cpp checkout."
+            )
+        }
+        val actualCommit = providers.exec {
+            commandLine("git", "-C", llamaDir.absolutePath, "rev-parse", "HEAD")
+        }.standardOutput.asText.get().trim()
+        if (actualCommit != expectedLlamaCppCommit) {
+            throw GradleException(
+                "llama.cpp checkout at $llamaDir is not pinned to $expectedLlamaCppCommit (actual $actualCommit). Run `just fetch-llama-cpp`."
+            )
+        }
+
+        val llamaLibDir = file("src/main/jniLibs/arm64-v8a")
+        val missingLibs = listOf(
+            "libggml-base.so",
+            "libggml-cpu.so",
+            "libggml.so",
+            "libllama.so",
+        )
+            .map { llamaLibDir.resolve(it) }
+            .filterNot { it.exists() }
+        if (missingLibs.isNotEmpty()) {
+            throw GradleException(
+                "Missing llama.cpp Android libraries in $llamaLibDir. Run `just build-android` or set LLAMA_ANDROID_BIN before assembling."
+            )
+        }
+    }
+}
+
 tasks.named("preBuild") {
     dependsOn("ensureUniffiGenerated")
+    dependsOn("verifyLlamaCppInputs")
 }
 
 dependencies {

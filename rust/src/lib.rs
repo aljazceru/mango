@@ -18,6 +18,7 @@ pub mod memory;
 mod net;
 mod persistence;
 pub mod rag;
+pub mod routing;
 
 pub use attestation::{AttestationError, AttestationStatus, OrchestratedComponent};
 pub use embedding::{EmbeddingProvider, NullEmbeddingProvider};
@@ -34,8 +35,16 @@ pub enum EmbeddingStatus {
     Unavailable,
 }
 pub use llm::known_provider_presets;
-pub use llm::{is_vision_model, BackendSummary, HealthStatus, LlmError, ProviderPreset, TeeType};
+pub use llm::{
+    is_vision_model, local_model_catalog, BackendSummary, DeviceCapability, HealthStatus, LlmError,
+    LocalGenerationContext, LocalLlmError, LocalLlmProvider, LocalModelDownloadContext,
+    LocalModelDownloadProgress, LocalModelPreset, LocalModelSummary, NullLocalLlmProvider,
+    PlatformHttpHeader, PlatformHttpRequest, PlatformHttpResponse, ProviderPreset, TeeType,
+};
 pub use persistence::PersistenceError;
+pub use routing::{
+    BackendRole, HybridProfile, LocalPreprocessing, RoutingPolicy, TurnRoutingSummary,
+};
 
 uniffi::setup_scaffolding!();
 
@@ -170,6 +179,14 @@ pub struct DiscoverableTool {
     /// `server_info.name` from the announcement, or None.
     /// UI falls back to `pubkey[..8]…` per UI-SPEC §F.
     pub provider_display_name: Option<String>,
+    /// Provider profile name from kind 0 metadata (Phase 37).
+    pub provider_name: Option<String>,
+    /// Provider profile "about" text from kind 0 metadata (Phase 37).
+    pub provider_about: Option<String>,
+    /// Provider profile picture URL from kind 0 metadata (Phase 37).
+    pub provider_picture: Option<String>,
+    /// Provider NIP-05 identifier from kind 0 metadata (Phase 37).
+    pub provider_nip05: Option<String>,
     pub enabled: bool,
     // ── Phase 36 additions (CTX36-USED-01, CTX36-NPUB-01, CTX36-LABELS-01) ──
     /// Times the user has invoked this tool via the agent loop. 0 if never used.
@@ -181,14 +198,28 @@ pub struct DiscoverableTool {
     pub last_used_label: Option<String>,
     /// Unix seconds when this announcement was last seen on the Nostr relay set.
     pub last_seen_at: i64,
-    /// Pre-computed relative-time label for last_seen_at (always populated).
+    /// Pre-computed "3d ago" / "Just now" label (relative to now at projection
+    /// time). Always present (non-None).
     pub last_seen_label: String,
-    /// bech32 npub1… encoding of provider_pubkey. Falls back to "invalid:<prefix>"
-    /// on malformed hex (never panics).
+    /// Bech32 npub1… encoding of the provider pubkey (Phase 36, CTX36-NPUB-01).
+    /// UI uses this for copy-to-clipboard on the Tool Detail screen.
     pub npub: String,
-    /// `serde_json::to_string_pretty` of the parsed schema_json, or raw schema_json
-    /// if parse fails. Used by the Tool Detail SCHEMA expander.
+    /// Pretty-printed JSON schema (Phase 36, CTX36-NPUB-01). UI renders this
+    /// in the Tool Detail screen SCHEMA expander.
     pub schema_pretty: String,
+}
+
+/// Phase 38 — one entry in the user's trusted-providers list.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TrustedProvider {
+    /// Nostr hex pubkey.
+    pub pubkey: String,
+    /// Optional user-supplied label.
+    pub label: Option<String>,
+    /// Unix seconds when the user added this entry.
+    pub added_at: i64,
+    /// Bech32 npub1… encoding, pre-computed for display.
+    pub npub: String,
 }
 
 /// Phase 35 — discovery query lifecycle state for the Tool Discovery
@@ -312,6 +343,14 @@ pub struct AppState {
     /// Active: real provider running. Degraded: init failed, NullEmbeddingProvider in use.
     /// Unavailable: no provider supplied by design.
     pub embedding_status: EmbeddingStatus,
+    /// Device-local LLM capability reported by the native local provider.
+    pub local_device_capability: DeviceCapability,
+    /// Downloadable local models with verified on-disk status.
+    pub local_models: Vec<LocalModelSummary>,
+    /// Progress for the active local model download, if any.
+    pub local_download_progress: Option<LocalModelDownloadProgress>,
+    /// Global kill switch for on-device LLM inference.
+    pub local_inference_enabled: bool,
     // Phase 23 additions:
     /// Memory summaries loaded on demand when user navigates to Screen::Memories (per D-14).
     pub memories: Vec<MemorySummary>,
@@ -366,6 +405,14 @@ pub struct AppState {
     /// Phase 35 — current discovery query state for the Tool Discovery
     /// screen. Updated by AppAction::DiscoverContextvmTools handler.
     pub contextvm_discovery_state: ContextvmDiscoveryState,
+    /// Phase 38 — saved local/remote hybrid routing profiles.
+    pub hybrid_profiles: Vec<HybridProfile>,
+    /// Phase 38 — route selected for the most recent hybrid turn, for UI route chips.
+    pub last_turn_routing: Option<TurnRoutingSummary>,
+    /// Phase 38 — list of providers the user has explicitly trusted.
+    /// When `auto_discover_tools_enabled` is true, only tools from these
+    /// providers are offered to the LLM automatically.
+    pub trusted_providers: Vec<TrustedProvider>,
 }
 
 impl Default for AppState {
@@ -398,6 +445,10 @@ impl Default for AppState {
             attestation_interval_minutes: 15,
             global_system_prompt: None,
             embedding_status: EmbeddingStatus::Active,
+            local_device_capability: DeviceCapability::default(),
+            local_models: vec![],
+            local_download_progress: None,
+            local_inference_enabled: true,
             memories: vec![],
             memory_count: 0,
             brave_api_key_set: false,
@@ -413,6 +464,9 @@ impl Default for AppState {
             directory_sources: vec![],
             contextvm_tools: vec![],
             auto_discover_tools_enabled: false,
+            hybrid_profiles: vec![],
+            last_turn_routing: None,
+            trusted_providers: vec![],
             contextvm_discovery_state: ContextvmDiscoveryState::Idle,
         }
     }
@@ -495,12 +549,18 @@ pub enum Screen {
     SettingsSecurity,
     /// Tools settings sub-screen (Phase 30).
     SettingsTools,
+    /// Local models management sub-screen -- pushed from Settings (model catalog, download, delete).
+    SettingsLocalModels,
+    /// Hybrid routing configuration sub-screen -- pushed from Settings.
+    SettingsHybridRouting,
     /// Phase 35 — Tool Discovery sub-screen (pushed from SettingsTools).
     ToolDiscovery,
     /// Phase 36 — per-tool detail screen reached by tapping a row on
     /// ToolDiscovery. Carries the `DiscoverableTool.id` ("<pubkey>:<name>")
     /// so the native UI can look the row up in `app_state.contextvm_tools`.
     ContextvmToolDetail { tool_id: String },
+    /// Phase 38 — Trusted Providers management screen.
+    TrustedProviders,
     /// Lock gate screen -- shown on cold launch (always) and after background timeout (Phase 28, D-09).
     Locked,
     /// PIN/password setup screen -- shown on first launch after onboarding (Phase 28, D-14).
@@ -533,8 +593,11 @@ pub enum AppAction {
     ClearToast,
     /// Proof-of-life action for testing round-trip
     Noop,
-    /// Send a chat message to the active backend (per D-04, D-05)
-    SendMessage { text: String },
+    /// Send a chat message to the active backend. `force_role` applies only to hybrid profiles.
+    SendMessage {
+        text: String,
+        force_role: Option<BackendRole>,
+    },
     /// Stop the active generation (per D-06, LLMC-07)
     StopGeneration,
     /// Set the active backend by ID (per D-09)
@@ -607,6 +670,18 @@ pub enum AppAction {
     SetDefaultBackend { backend_id: String },
     /// Persist a model as the global default for new conversations.
     SetDefaultModel { model_id: String },
+    /// Enable or disable on-device local inference globally.
+    SetLocalInferenceEnabled { enabled: bool },
+    /// Download and verify a built-in local model.
+    DownloadLocalModel { model_id: String },
+    /// Delete a downloaded local model after unloading it if safe.
+    DeleteLocalModel { model_id: String },
+    /// Save or update a hybrid local/remote routing profile.
+    SaveHybridProfile { profile: HybridProfile },
+    /// Delete a saved hybrid profile.
+    DeleteHybridProfile { profile_id: String },
+    /// Make a hybrid profile the active/default conversation target.
+    SetActiveHybridProfile { profile_id: String },
     /// Override the backend used for a specific conversation.
     OverrideConversationBackend {
         conversation_id: String,
@@ -782,6 +857,16 @@ pub enum AppAction {
     /// Phase 35 — re-run a discovery query (UI-SPEC §E "Try again" button).
     /// Same effect as DiscoverContextvmTools but explicit for telemetry.
     RetryContextvmDiscovery,
+    // Phase 38 — trusted providers management.
+    /// Add a provider pubkey to the trust list. `label` is optional.
+    /// When `auto_discover_tools_enabled`, only trusted providers' tools
+    /// are offered to the LLM automatically.
+    AddTrustedProvider {
+        pubkey: String,
+        label: Option<String>,
+    },
+    /// Remove a provider from the trust list by pubkey.
+    RemoveTrustedProvider { pubkey: String },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -1165,6 +1250,7 @@ pub enum CoreMsg {
 ///
 /// Stored in ActorState until the next SendMessage, when its content is prepended
 /// to the user message as a context block. Cleared after SendMessage or ClearAttachment.
+#[derive(Clone, Debug)]
 struct PendingAttachment {
     filename: String,
     /// Full UTF-8 text content of the file
@@ -1182,6 +1268,19 @@ struct PendingImageAttachment {
     mime_type: String, // "image/jpeg" | "image/png"
 }
 
+#[derive(Clone, Debug)]
+struct PendingAttestedSend {
+    backend_id: String,
+    text: String,
+    force_role: Option<BackendRole>,
+    pending_attachment: Option<PendingAttachment>,
+    pending_image_attachment: Option<PendingImageAttachment>,
+    app_pending_attachment: Option<AttachmentInfo>,
+    attestation_attempts: u32,
+}
+
+const MAX_PENDING_ATTESTATION_TRANSIENT_RETRIES: u32 = 2;
+
 /// Actor-internal state -- holds secrets and Tokio types that must NOT enter AppState.
 /// Per Pitfall 3: BackendConfig (with api_key) and CancellationToken never cross FFI.
 /// Per Pitfall 6 in RESEARCH.md: rusqlite::Connection is not Send -- must stay on actor thread.
@@ -1195,6 +1294,10 @@ struct ActorState {
     /// Latest attested TLS leaf public key fingerprint per backend.
     /// Used to opportunistically pin transport to the attested endpoint.
     attested_tls_public_keys: HashMap<String, String>,
+    /// Unix seconds when the latest successful attestation for a backend expires.
+    /// Display status stays in AppState; routing and TLS pinning use this actor-only
+    /// map so stale in-memory attestations are not accepted after their TTL.
+    attestation_expires_at: HashMap<String, u64>,
     active_stream_token: Option<CancellationToken>,
     runtime: tokio::runtime::Runtime,
     /// Unified application database -- None until unlock, Some after successful DEK delivery (Phase 28, D-12).
@@ -1206,21 +1309,34 @@ struct ActorState {
     pending_attachment: Option<PendingAttachment>,
     /// Phase 31: pending image attachment (mutually exclusive with pending_attachment).
     pending_image_attachment: Option<PendingImageAttachment>,
+    /// Hybrid remote turn waiting for attestation preflight to finish.
+    pending_attested_send: Option<PendingAttestedSend>,
     // Phase 6 additions:
     /// In-memory failover router -- health state persisted to SQLite on failure/success.
     router: llm::FailoverRouter,
     /// The backend_id that is currently streaming, for failover on StreamError.
     current_streaming_backend_id: Option<String>,
+    /// The concrete model_id used by the currently active chat stream.
+    ///
+    /// Hybrid conversations can store a virtual backend plus a local default model
+    /// in the conversation row, so post-stream work must use this routed model id.
+    current_streaming_model_id: Option<String>,
     /// The conversation that owns the currently active chat stream.
     current_streaming_conversation_id: Option<String>,
     /// Canonical buffer for the active stream. AppState.streaming_text mirrors this
     /// only while the owning conversation is visible.
     current_streaming_text: String,
+    /// True when the active stream's user turn included an image attachment.
+    /// Generic failover cannot safely replay multipart image payloads, and local
+    /// on-device backends cannot see images.
+    current_streaming_has_image_attachment: bool,
     /// Backend IDs already excluded in the current failover chain (tried and failed).
     failover_exclude: Vec<String>,
     // Phase 8 additions:
     /// On-device embedding provider (UniFFI callback_interface or DesktopEmbeddingProvider).
     embedding_provider: Arc<dyn EmbeddingProvider>,
+    /// On-device local LLM provider. Desktop/tests use NullLocalLlmProvider.
+    local_llm_provider: Arc<dyn LocalLlmProvider>,
     /// HNSW vector index for RAG retrieval (usearch, serialised to disk on mutation).
     vector_index: rag::VectorIndex,
     /// Pending RAG doc count for the current LLM turn (set before API call in SendMessage).
@@ -1347,11 +1463,14 @@ fn wipe_local_install(
     actor_state.pending_attachment = None;
     actor_state.active_agent_sessions.clear();
     actor_state.current_streaming_backend_id = None;
+    actor_state.current_streaming_model_id = None;
     actor_state.current_streaming_conversation_id = None;
     actor_state.current_streaming_text.clear();
+    actor_state.current_streaming_has_image_attachment = false;
     actor_state.failover_exclude.clear();
     actor_state.current_conv_tools_enabled = false;
     actor_state.attested_tls_public_keys.clear();
+    actor_state.attestation_expires_at.clear();
 
     let preserved_rev = actor_state.app_state.rev;
     let biometric_available = actor_state.biometric_provider.biometric_status() == "available";
@@ -1427,9 +1546,73 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+fn unix_time_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Generate a new UUID v4 as a lowercase hyphenated string.
 fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+fn strip_image_placeholder(content: &str) -> String {
+    if let Some(prefix) = content.strip_suffix(']') {
+        if let Some((text, placeholder)) = prefix.rsplit_once("\n\n[Image: ") {
+            if !placeholder.is_empty() {
+                return text.to_string();
+            }
+        }
+        if let Some(placeholder) = prefix.strip_prefix("[Image: ") {
+            if !placeholder.is_empty() {
+                return String::new();
+            }
+        }
+    }
+    content.to_string()
+}
+
+fn retry_image_filename(content: &str) -> String {
+    if let Some(prefix) = content.strip_suffix(']') {
+        if let Some((_, placeholder)) = prefix.rsplit_once("[Image: ") {
+            let name = placeholder.trim();
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
+    }
+    "retry-image.jpg".to_string()
+}
+
+fn rehydrate_retry_image_attachment(
+    actor_state: &ActorState,
+    message: &UiMessage,
+) -> Result<Option<PendingImageAttachment>, String> {
+    let Some(image_path) = message.image_path.as_ref() else {
+        return Ok(None);
+    };
+    let dek = actor_state
+        .dek
+        .as_ref()
+        .ok_or_else(|| "Cannot retry image message while the database is locked.".to_string())?;
+    let encrypted = std::fs::read(image_path)
+        .map_err(|e| format!("Failed to read retry image {image_path}: {e}"))?;
+    let plaintext = crypto::file_crypto::decrypt_file(dek, &encrypted)
+        .map_err(|e| format!("Failed to decrypt retry image: {e}"))?;
+    let retry_dir = format!("{}/images/retry", actor_state.data_dir);
+    std::fs::create_dir_all(&retry_dir)
+        .map_err(|e| format!("Failed to create retry image directory: {e}"))?;
+    let retry_path = format!("{}/{}.jpg", retry_dir, new_uuid());
+    std::fs::write(&retry_path, plaintext)
+        .map_err(|e| format!("Failed to write retry image {retry_path}: {e}"))?;
+
+    Ok(Some(PendingImageAttachment {
+        filename: retry_image_filename(&message.content),
+        file_path: retry_path,
+        mime_type: "image/jpeg".to_string(),
+    }))
 }
 
 /// Format a byte count as a human-readable size string.
@@ -1721,6 +1904,968 @@ fn filter_models_for_backend(backend_id: &str, models: Vec<String>) -> Vec<Strin
     }
 }
 
+fn is_local_on_device_backend(backend: &llm::BackendConfig) -> bool {
+    backend.transport_kind() == llm::ProviderTransportKind::LocalOnDevice
+}
+
+fn default_model_for_preferred(
+    actor_state: &ActorState,
+    preferred_id: Option<&str>,
+) -> Option<String> {
+    let preferred_id = preferred_id?;
+    if let Some(profile_id) = routing::profile_id_from_backend_id(preferred_id) {
+        return actor_state
+            .app_state
+            .hybrid_profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .map(|profile| profile.local_model_id.clone());
+    }
+    actor_state
+        .backends
+        .iter()
+        .find(|b| b.id == preferred_id)
+        .and_then(|b| b.models.first().cloned())
+}
+
+fn model_id_for_stream_retry(actor_state: &ActorState) -> String {
+    actor_state
+        .current_streaming_model_id
+        .clone()
+        .or_else(|| {
+            actor_state
+                .app_state
+                .current_conversation_id
+                .as_ref()
+                .and_then(|cid| {
+                    actor_state
+                        .app_state
+                        .conversations
+                        .iter()
+                        .find(|c| &c.id == cid)
+                })
+                .map(|c| c.model_id.clone())
+        })
+        .unwrap_or_default()
+}
+
+fn replay_force_role_for_latest_user_turn(
+    actor_state: &ActorState,
+    conversation_id: &str,
+    user_message_id: &str,
+) -> Option<BackendRole> {
+    let route = actor_state.app_state.last_turn_routing.as_ref()?;
+    if route.conversation_id.as_deref() != Some(conversation_id) || route.reason != "user override"
+    {
+        return None;
+    }
+
+    let latest_user_id = actor_state
+        .app_state
+        .messages
+        .iter()
+        .rfind(|message| message.role == "user")
+        .map(|message| message.id.as_str());
+    if latest_user_id != Some(user_message_id) {
+        return None;
+    }
+
+    Some(route.decision.clone())
+}
+
+fn reject_chat_action_while_attestation_pending(actor_state: &mut ActorState) -> bool {
+    if actor_state.pending_attested_send.is_none() {
+        return false;
+    }
+
+    actor_state.app_state.last_error =
+        Some("Remote attestation is still being verified. Wait for that turn to finish before sending another message.".to_string());
+    true
+}
+
+fn restore_pending_attested_send_snapshot(
+    actor_state: &mut ActorState,
+    pending: PendingAttestedSend,
+) {
+    actor_state.pending_attachment = pending.pending_attachment;
+    actor_state.pending_image_attachment = pending.pending_image_attachment;
+    actor_state.app_state.pending_attachment = pending.app_pending_attachment;
+}
+
+fn cancel_pending_attested_send(actor_state: &mut ActorState, message: String) -> bool {
+    let Some(pending) = actor_state.pending_attested_send.take() else {
+        return false;
+    };
+
+    restore_pending_attested_send_snapshot(actor_state, pending);
+    actor_state.app_state.busy_state = BusyState::Idle;
+    actor_state.app_state.last_error = Some(message);
+    true
+}
+
+fn image_capability_model_id(actor_state: &ActorState) -> Option<String> {
+    let conv_id = actor_state.app_state.current_conversation_id.as_ref()?;
+    let conversation = actor_state
+        .app_state
+        .conversations
+        .iter()
+        .find(|c| &c.id == conv_id)?;
+
+    if let Some(profile_id) = routing::profile_id_from_backend_id(&conversation.backend_id) {
+        return actor_state
+            .app_state
+            .hybrid_profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .map(|profile| profile.remote_model_id.clone())
+            .or_else(|| Some(conversation.model_id.clone()));
+    }
+
+    Some(conversation.model_id.clone())
+}
+
+fn backend_requires_attestation(backend: &llm::BackendConfig) -> bool {
+    !is_local_on_device_backend(backend) && backend.tee_type != llm::TeeType::Unknown
+}
+
+fn is_keyless_local_server_backend(backend: &llm::BackendConfig) -> bool {
+    backend.id == "qvac-local" && backend.tee_type == llm::TeeType::Unknown
+}
+
+fn backend_is_user_configured(backend: &llm::BackendConfig) -> bool {
+    !backend.api_key.is_empty() || is_keyless_local_server_backend(backend)
+}
+
+fn backend_or_hybrid_profile_exists(
+    backend_id: &str,
+    backends: &[llm::BackendConfig],
+    hybrid_profiles: &[HybridProfile],
+) -> bool {
+    if backends.iter().any(|backend| backend.id == backend_id) {
+        return true;
+    }
+
+    routing::profile_id_from_backend_id(backend_id).is_some_and(|profile_id| {
+        hybrid_profiles
+            .iter()
+            .any(|profile| profile.id == profile_id)
+    })
+}
+
+fn backend_uses_inline_secure_attestation(backend: &llm::BackendConfig) -> bool {
+    matches!(
+        backend.transport_kind(),
+        llm::ProviderTransportKind::TinfoilSecure
+            | llm::ProviderTransportKind::PpqPrivateE2ee
+            | llm::ProviderTransportKind::VeniceE2ee
+            | llm::ProviderTransportKind::Redpill
+    )
+}
+
+fn tee_label(tee_type: &llm::TeeType) -> String {
+    match tee_type {
+        llm::TeeType::IntelTdx => "Intel TDX",
+        llm::TeeType::NvidiaH100Cc => "NVIDIA H100 CC",
+        llm::TeeType::AmdSevSnp => "AMD SEV-SNP",
+        llm::TeeType::Unknown => "local",
+    }
+    .to_string()
+}
+
+fn backend_attestation_verified(actor_state: &ActorState, backend_id: &str) -> bool {
+    let Some(expires_at) = actor_state.attestation_expires_at.get(backend_id) else {
+        return false;
+    };
+    if *expires_at <= unix_time_secs() {
+        return false;
+    }
+    actor_state
+        .app_state
+        .attestation_statuses
+        .iter()
+        .any(|entry| {
+            entry.backend_id == backend_id
+                && matches!(entry.status, AttestationStatus::Verified { .. })
+        })
+}
+
+fn turn_routing_summary(
+    actor_state: &ActorState,
+    route: &routing::TurnRouting,
+    backend: &llm::BackendConfig,
+    conversation_id: Option<String>,
+) -> TurnRoutingSummary {
+    TurnRoutingSummary {
+        conversation_id,
+        profile_id: route.profile_id.clone(),
+        backend_id: route.backend_id.clone(),
+        model_id: route.model_id.clone(),
+        decision: route.decision.clone(),
+        reason: route.reason.clone(),
+        provider_name: backend.name.clone(),
+        tee_label: tee_label(&backend.tee_type),
+        tee_verified: !backend_requires_attestation(backend)
+            || backend_attestation_verified(actor_state, &backend.id),
+    }
+}
+
+fn inline_secure_remote_route_requires_stream_proof(
+    route: &routing::TurnRouting,
+    backend: &llm::BackendConfig,
+) -> bool {
+    route.decision == BackendRole::Remote
+        && backend_requires_attestation(backend)
+        && backend_uses_inline_secure_attestation(backend)
+}
+
+fn turn_routing_summary_at_stream_start(
+    actor_state: &ActorState,
+    route: &routing::TurnRouting,
+    backend: &llm::BackendConfig,
+    conversation_id: Option<String>,
+) -> TurnRoutingSummary {
+    let mut summary = turn_routing_summary(actor_state, route, backend, conversation_id);
+    if inline_secure_remote_route_requires_stream_proof(route, backend) {
+        // Tinfoil/PPQ/Venice/Redpill prove attestation inside the stream
+        // handshake. Cached attestation can satisfy preflight, but the UI must
+        // not claim this specific turn is verified until the stream finishes
+        // without an inline attestation error.
+        summary.tee_verified = false;
+    }
+    summary
+}
+
+fn active_hybrid_profile_for_stream(actor_state: &ActorState) -> Option<&HybridProfile> {
+    let summary = actor_state.app_state.last_turn_routing.as_ref()?;
+    if summary.conversation_id.as_deref()
+        != actor_state.current_streaming_conversation_id.as_deref()
+    {
+        return None;
+    }
+    let profile_id = summary.profile_id.as_ref()?;
+    actor_state
+        .app_state
+        .hybrid_profiles
+        .iter()
+        .find(|profile| &profile.id == profile_id)
+}
+
+fn hybrid_role_for_backend(profile: &HybridProfile, backend_id: &str) -> Option<BackendRole> {
+    if backend_id == profile.local_backend_id {
+        Some(BackendRole::Local)
+    } else if backend_id == profile.remote_backend_id {
+        Some(BackendRole::Remote)
+    } else {
+        None
+    }
+}
+
+fn hybrid_retry_candidate_allowed(
+    actor_state: &ActorState,
+    candidate: &llm::BackendConfig,
+) -> bool {
+    let Some(summary) = actor_state.app_state.last_turn_routing.as_ref() else {
+        return true;
+    };
+    if summary.profile_id.is_none() {
+        return true;
+    }
+    if summary.conversation_id.as_deref()
+        != actor_state.current_streaming_conversation_id.as_deref()
+    {
+        return true;
+    }
+
+    let Some(profile) = active_hybrid_profile_for_stream(actor_state) else {
+        return false;
+    };
+
+    match summary.decision {
+        BackendRole::Local => candidate.id == profile.local_backend_id,
+        BackendRole::Remote => {
+            candidate.id == profile.remote_backend_id || backend_requires_attestation(candidate)
+        }
+    }
+}
+
+fn set_inline_secure_turn_verified(actor_state: &mut ActorState, backend_id: &str, verified: bool) {
+    let Some(summary) = actor_state.app_state.last_turn_routing.as_mut() else {
+        return;
+    };
+    if summary.backend_id != backend_id || summary.decision != BackendRole::Remote {
+        return;
+    }
+    let Some(backend) = actor_state.backends.iter().find(|b| b.id == backend_id) else {
+        return;
+    };
+    if backend_requires_attestation(backend) && backend_uses_inline_secure_attestation(backend) {
+        summary.tee_verified = verified;
+    }
+}
+
+fn should_failover_stream_error(error: &llm::LlmError, has_image_attachment: bool) -> bool {
+    if has_image_attachment {
+        return false;
+    }
+
+    match error {
+        llm::LlmError::NetworkError { .. } => true,
+        llm::LlmError::ApiError { status_code, .. } => *status_code == 0 || *status_code >= 500,
+        llm::LlmError::RateLimited { .. } => true,
+        _ => false,
+    }
+}
+
+fn spawn_attestation_if_required(
+    actor_state: &ActorState,
+    backend: &llm::BackendConfig,
+    core_tx: flume::Sender<CoreMsg>,
+) {
+    if !backend_requires_attestation(backend) {
+        log::debug!(
+            target: "attestation",
+            "[attestation] skipping backend={} tee={:?} transport={:?}",
+            backend.id,
+            backend.tee_type,
+            backend.transport_kind()
+        );
+        return;
+    }
+
+    let tee_policy = crate::persistence::queries::get_tee_policy(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+    )
+    .unwrap_or_else(|e| {
+        log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
+        crate::attestation::TeePolicy::default()
+    });
+    attestation::spawn_attestation_task(
+        &actor_state.runtime,
+        backend,
+        core_tx,
+        Arc::clone(&actor_state.vcek_cache),
+        tee_policy,
+    );
+}
+
+fn hybrid_remote_backend_for_preferred<'a>(
+    actor_state: &'a ActorState,
+    preferred_id: &str,
+) -> Option<&'a llm::BackendConfig> {
+    let profile_id = routing::profile_id_from_backend_id(preferred_id)?;
+    let profile = actor_state
+        .app_state
+        .hybrid_profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)?;
+    actor_state
+        .backends
+        .iter()
+        .find(|backend| backend.id == profile.remote_backend_id)
+}
+
+fn spawn_attestation_for_preferred(
+    actor_state: &ActorState,
+    preferred_id: &str,
+    core_tx: flume::Sender<CoreMsg>,
+) {
+    if let Some(remote_backend) = hybrid_remote_backend_for_preferred(actor_state, preferred_id) {
+        spawn_attestation_if_required(actor_state, remote_backend, core_tx);
+        return;
+    }
+
+    if let Some(backend) = actor_state
+        .backends
+        .iter()
+        .find(|backend| backend.id == preferred_id)
+    {
+        spawn_attestation_if_required(actor_state, backend, core_tx);
+    }
+}
+
+fn handle_pending_attested_send_after_attestation(
+    actor_state: &mut ActorState,
+    backend_id: &str,
+    status_is_verified: bool,
+    failed_is_transient: bool,
+    failure_reason: Option<&str>,
+    core_tx: &flume::Sender<CoreMsg>,
+) {
+    if !actor_state
+        .pending_attested_send
+        .as_ref()
+        .is_some_and(|pending| pending.backend_id == backend_id)
+    {
+        return;
+    }
+
+    if status_is_verified || backend_attestation_verified(actor_state, backend_id) {
+        if let Some(pending) = actor_state.pending_attested_send.take() {
+            restore_pending_attested_send_snapshot(actor_state, pending.clone());
+            actor_state.app_state.busy_state = BusyState::Idle;
+            actor_state.app_state.last_error = None;
+            do_send_message(actor_state, pending.text, pending.force_role, core_tx);
+        }
+        return;
+    }
+
+    if failed_is_transient {
+        let attempts = actor_state
+            .pending_attested_send
+            .as_mut()
+            .map(|pending| {
+                pending.attestation_attempts = pending.attestation_attempts.saturating_add(1);
+                pending.attestation_attempts
+            })
+            .unwrap_or(0);
+
+        if attempts <= MAX_PENDING_ATTESTATION_TRANSIENT_RETRIES {
+            actor_state.app_state.busy_state = BusyState::Loading {
+                message: format!(
+                    "Remote attestation temporarily unavailable. Retrying ({attempts}/{MAX_PENDING_ATTESTATION_TRANSIENT_RETRIES})..."
+                ),
+            };
+            actor_state.app_state.last_error = None;
+            if let Some(backend) = actor_state
+                .backends
+                .iter()
+                .find(|backend| backend.id == backend_id)
+                .cloned()
+            {
+                spawn_attestation_if_required(actor_state, &backend, core_tx.clone());
+            }
+            return;
+        }
+    }
+
+    let message = if failed_is_transient {
+        match failure_reason {
+            Some(reason) if !reason.trim().is_empty() => format!(
+                "Remote attestation could not be completed after temporary network failures: {reason}. The message was not sent."
+            ),
+            _ => "Remote attestation could not be completed after temporary network failures. The message was not sent.".to_string(),
+        }
+    } else {
+        match failure_reason {
+            Some(reason) if !reason.trim().is_empty() => {
+                format!("Remote attestation failed: {reason}. The message was not sent.")
+            }
+            _ => "Remote attestation failed. The message was not sent.".to_string(),
+        }
+    };
+    cancel_pending_attested_send(actor_state, message);
+}
+
+fn refresh_local_model_state(actor_state: &mut ActorState) {
+    actor_state.app_state.local_device_capability =
+        actor_state.local_llm_provider.device_capability();
+    actor_state.app_state.local_models =
+        llm::local_models::local_model_summaries(&actor_state.data_dir);
+}
+
+fn reconcile_local_model_backends(actor_state: &mut ActorState) {
+    if actor_state.db.is_none() {
+        refresh_local_model_state(actor_state);
+        return;
+    }
+
+    refresh_local_model_state(actor_state);
+
+    let verified_model_ids: std::collections::HashSet<String> = actor_state
+        .app_state
+        .local_models
+        .iter()
+        .filter(|summary| {
+            summary.verified
+                && actor_state
+                    .app_state
+                    .local_device_capability
+                    .total_ram_bytes
+                    >= summary.min_ram_bytes
+                && actor_state
+                    .app_state
+                    .local_device_capability
+                    .max_model_bytes
+                    >= summary.size_bytes
+                && actor_state
+                    .app_state
+                    .local_device_capability
+                    .max_model_bytes
+                    > 0
+        })
+        .map(|summary| summary.id.clone())
+        .collect();
+
+    let now = now_secs();
+    let next_order =
+        persistence::queries::list_backends(actor_state.db.as_ref().expect("db unlocked").conn())
+            .unwrap_or_default()
+            .len() as i64;
+    for (idx, preset) in llm::local_models::local_model_catalog()
+        .into_iter()
+        .enumerate()
+    {
+        if !verified_model_ids.contains(&preset.id) {
+            continue;
+        }
+        let row = persistence::BackendRow {
+            id: llm::local_models::local_backend_id(&preset.id),
+            name: format!("Local: {}", preset.name),
+            base_url: llm::local_models::local_backend_base_url(&preset.id),
+            model_list: serde_json::to_string(&vec![preset.id.clone()])
+                .unwrap_or_else(|_| "[]".to_string()),
+            tee_type: "Unknown".to_string(),
+            display_order: next_order + idx as i64,
+            is_active: 0,
+            created_at: now,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        };
+        let _ = persistence::queries::upsert_local_backend(
+            actor_state.db.as_ref().expect("db unlocked").conn(),
+            &row,
+        );
+    }
+
+    let rows =
+        persistence::queries::list_backends(actor_state.db.as_ref().expect("db unlocked").conn())
+            .unwrap_or_default();
+    for row in rows {
+        if let Some(model_id) = llm::local_models::local_model_id_from_backend_id(&row.id) {
+            if !verified_model_ids.contains(&model_id) {
+                remove_backend_row_and_reassign(actor_state, &row.id);
+            }
+        }
+    }
+
+    reload_backends(actor_state);
+    refresh_backend_summaries(actor_state);
+    refresh_local_model_state(actor_state);
+}
+
+fn remove_backend_row_and_reassign(actor_state: &mut ActorState, backend_id: &str) {
+    let replacement: Option<(String, String)> = actor_state
+        .backends
+        .iter()
+        .find(|b| b.id != backend_id)
+        .map(|b| (b.id.clone(), b.models.first().cloned().unwrap_or_default()));
+
+    if let Some((repl_id, repl_model)) = replacement.as_ref() {
+        let conv_ids: Vec<String> = actor_state
+            .app_state
+            .conversations
+            .iter()
+            .filter(|c| c.backend_id == backend_id)
+            .map(|c| c.id.clone())
+            .collect();
+        for cid in conv_ids {
+            let _ = persistence::queries::update_conversation_backend_and_model(
+                actor_state.db.as_ref().expect("db unlocked").conn(),
+                &cid,
+                repl_id,
+                repl_model,
+                now_secs(),
+            );
+        }
+    }
+
+    let _ = persistence::queries::delete_backend(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+        backend_id,
+    );
+    let _ = persistence::queries::delete_backend_health(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+        backend_id,
+    );
+    actor_state
+        .keychain
+        .delete("mango".to_string(), backend_id.to_string());
+
+    let was_active = actor_state.app_state.active_backend_id.as_deref() == Some(backend_id);
+    if was_active {
+        match replacement.as_ref() {
+            Some((repl_id, _)) => {
+                let _ = persistence::queries::set_setting(
+                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                    "default_backend_id",
+                    repl_id,
+                );
+                actor_state.app_state.active_backend_id = Some(repl_id.clone());
+            }
+            None => {
+                let _ = persistence::queries::set_setting(
+                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                    "default_backend_id",
+                    "",
+                );
+                actor_state.app_state.active_backend_id = None;
+            }
+        }
+    }
+    refresh_conversations(actor_state);
+}
+
+fn reassign_virtual_backend_references(actor_state: &mut ActorState, virtual_id: &str) {
+    reassign_virtual_backend_references_excluding(actor_state, virtual_id, None);
+}
+
+fn reassign_virtual_backend_references_excluding(
+    actor_state: &mut ActorState,
+    virtual_id: &str,
+    excluded_backend_id: Option<&str>,
+) {
+    let replacement: Option<(String, String)> = actor_state
+        .backends
+        .iter()
+        .find(|backend| Some(backend.id.as_str()) != excluded_backend_id)
+        .map(|backend| {
+            (
+                backend.id.clone(),
+                backend.models.first().cloned().unwrap_or_default(),
+            )
+        });
+
+    if let Some((repl_id, repl_model)) = replacement.as_ref() {
+        let conv_ids: Vec<String> = actor_state
+            .app_state
+            .conversations
+            .iter()
+            .filter(|conversation| conversation.backend_id == virtual_id)
+            .map(|conversation| conversation.id.clone())
+            .collect();
+        for conv_id in conv_ids {
+            let _ = persistence::queries::update_conversation_backend_and_model(
+                actor_state.db.as_ref().expect("db unlocked").conn(),
+                &conv_id,
+                repl_id,
+                repl_model,
+                now_secs(),
+            );
+        }
+    }
+
+    if actor_state.app_state.active_backend_id.as_deref() == Some(virtual_id) {
+        match replacement.as_ref() {
+            Some((repl_id, _)) => {
+                let _ = persistence::queries::set_setting(
+                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                    "default_backend_id",
+                    repl_id,
+                );
+                actor_state.app_state.active_backend_id = Some(repl_id.clone());
+            }
+            None => {
+                let _ = persistence::queries::set_setting(
+                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                    "default_backend_id",
+                    "",
+                );
+                actor_state.app_state.active_backend_id = None;
+            }
+        }
+    }
+
+    refresh_conversations(actor_state);
+}
+
+fn delete_hybrid_profiles_referencing_backend(actor_state: &mut ActorState, backend_id: &str) {
+    let profile_ids: Vec<String> = actor_state
+        .app_state
+        .hybrid_profiles
+        .iter()
+        .filter(|profile| {
+            profile.local_backend_id == backend_id || profile.remote_backend_id == backend_id
+        })
+        .map(|profile| profile.id.clone())
+        .collect();
+
+    for profile_id in profile_ids {
+        let virtual_id = routing::hybrid_backend_id(&profile_id);
+        let _ = persistence::queries::delete_hybrid_profile(
+            actor_state.db.as_ref().expect("db unlocked").conn(),
+            &profile_id,
+        );
+        reassign_virtual_backend_references_excluding(actor_state, &virtual_id, Some(backend_id));
+    }
+    refresh_hybrid_profiles(actor_state);
+}
+
+fn spawn_local_model_download(
+    runtime: &tokio::runtime::Runtime,
+    local_llm_provider: Arc<dyn LocalLlmProvider>,
+    data_dir: String,
+    model_id: String,
+    core_tx: flume::Sender<CoreMsg>,
+) {
+    runtime.spawn(async move {
+        let result = download_local_model(
+            local_llm_provider,
+            data_dir,
+            model_id.clone(),
+            core_tx.clone(),
+        )
+        .await;
+        let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+            llm::InternalEvent::LocalModelDownloadComplete { model_id, result },
+        )));
+    });
+}
+
+async fn download_local_model(
+    local_llm_provider: Arc<dyn LocalLlmProvider>,
+    data_dir: String,
+    model_id: String,
+    core_tx: flume::Sender<CoreMsg>,
+) -> Result<(), String> {
+    use futures::StreamExt;
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+
+    let preset = llm::local_models::find_local_model(&model_id)
+        .ok_or_else(|| format!("unknown local model: {model_id}"))?;
+    let dir = llm::local_models::local_model_dir(&data_dir);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create local model directory: {e}"))?;
+    let final_path = llm::local_models::local_model_path(&data_dir, &preset);
+
+    if final_path.is_file()
+        && llm::local_models::local_model_verified(&data_dir, &preset)
+            .map_err(|e| format!("failed to verify existing model: {e}"))?
+    {
+        let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+            llm::InternalEvent::LocalModelDownloadProgress(LocalModelDownloadProgress {
+                model_id,
+                downloaded_bytes: preset.size_bytes,
+                total_bytes: Some(preset.size_bytes),
+                stage: "complete".to_string(),
+            }),
+        )));
+        return Ok(());
+    }
+
+    let partial_path = final_path.with_extension("gguf.partial");
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        let native_provider = local_llm_provider.clone();
+        let native_url = preset.url.clone();
+        let native_destination = partial_path.to_string_lossy().to_string();
+        let native_context = LocalModelDownloadContext::new(preset.id.clone(), core_tx.clone());
+        let native_result = tokio::task::spawn_blocking(move || {
+            native_provider.download_model_file(native_url, native_destination, native_context)
+        })
+        .await
+        .map_err(|e| format!("native model download task failed: {e}"))?;
+        match native_result {
+            Ok(()) => {
+                let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                    llm::InternalEvent::LocalModelDownloadProgress(LocalModelDownloadProgress {
+                        model_id: preset.id.clone(),
+                        downloaded_bytes: preset.size_bytes,
+                        total_bytes: Some(preset.size_bytes),
+                        stage: "verifying".to_string(),
+                    }),
+                )));
+                if !llm::local_models::verify_file_sha256(&partial_path, &preset.sha256)
+                    .map_err(|e| format!("failed to verify native model download: {e}"))?
+                {
+                    let _ = std::fs::remove_file(&partial_path);
+                    let _ = llm::local_models::remove_verified_marker(&data_dir, &preset);
+                    return Err(format!(
+                        "native model integrity check failed for {}",
+                        preset.id
+                    ));
+                } else {
+                    std::fs::rename(&partial_path, &final_path)
+                        .map_err(|e| format!("failed to install model file: {e}"))?;
+                    if let Err(error) = llm::local_models::write_verified_marker(&data_dir, &preset)
+                    {
+                        log::warn!(
+                            "[local-model] failed to persist verification marker for {}: {error}",
+                            preset.id
+                        );
+                    }
+                    let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                        llm::InternalEvent::LocalModelDownloadProgress(
+                            LocalModelDownloadProgress {
+                                model_id: preset.id.clone(),
+                                downloaded_bytes: preset.size_bytes,
+                                total_bytes: Some(preset.size_bytes),
+                                stage: "complete".to_string(),
+                            },
+                        ),
+                    )));
+                    return Ok(());
+                }
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&partial_path);
+                let _ = llm::local_models::remove_verified_marker(&data_dir, &preset);
+                return Err(format!("native model download failed: {error}"));
+            }
+        }
+    }
+
+    let is_modelscope_direct = preset.url.starts_with("http://modelscope.cn/")
+        || preset.url.starts_with("https://modelscope.cn/");
+    crate::net::tls::ensure_default_crypto_provider();
+    let client_builder = reqwest::Client::builder()
+        .no_hickory_dns()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .read_timeout(std::time::Duration::from_secs(30))
+        .http1_only()
+        .user_agent(format!("Mango/{}", env!("CARGO_PKG_VERSION")));
+    let client_builder = if is_modelscope_direct {
+        client_builder.redirect(reqwest::redirect::Policy::none())
+    } else {
+        client_builder
+    };
+    let client = client_builder
+        .build()
+        .map_err(|e| format!("failed to create download client: {e}"))?;
+    log::info!("[local-model] requesting model bytes from {}", preset.url);
+    let mut response = client
+        .get(&preset.url)
+        .send()
+        .await
+        .map_err(|e| format!("model download failed: {e:?}"))?;
+    if is_modelscope_direct && response.status().is_redirection() {
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| "model download redirect was missing a Location header".to_string())?;
+        let cdn_url = normalize_modelscope_download_url(location)?;
+        log::info!("[local-model] following ModelScope CDN redirect to {cdn_url}");
+        response = client
+            .get(&cdn_url)
+            .send()
+            .await
+            .map_err(|e| format!("model download redirect failed: {e:?}"))?;
+    } else if is_modelscope_direct
+        && response.status().is_success()
+        && response.content_length().is_some_and(|len| len <= 8 * 1024)
+    {
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| format!("model download redirect body failed: {e}"))?;
+        let body_text = String::from_utf8_lossy(&body);
+        let location = body_text
+            .split_once("<a href=\"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(href, _)| href.to_string())
+            .or_else(|| {
+                let lower = body_text.to_ascii_lowercase();
+                let index = lower.find("url=")?;
+                let raw = &body_text[index + "url=".len()..];
+                let end = raw
+                    .find(|ch| ch == '"' || ch == '\'' || ch == '>')
+                    .unwrap_or(raw.len());
+                Some(raw[..end].trim().to_string())
+            })
+            .ok_or_else(|| {
+                let snippet: String = body_text.chars().take(160).collect();
+                format!("model download returned a small non-model response: {snippet}")
+            })?;
+        let cdn_url = normalize_modelscope_download_url(&location)?;
+        log::info!("[local-model] following ModelScope body redirect to {cdn_url}");
+        response = client
+            .get(&cdn_url)
+            .send()
+            .await
+            .map_err(|e| format!("model download body redirect failed: {e:?}"))?;
+    }
+    log::info!(
+        "[local-model] model response status={} content_length={:?}",
+        response.status(),
+        response.content_length()
+    );
+    if !response.status().is_success() {
+        return Err(format!(
+            "model download failed with HTTP {}",
+            response.status()
+        ));
+    }
+
+    let total = response.content_length().or(Some(preset.size_bytes));
+    let mut file = std::fs::File::create(&partial_path)
+        .map_err(|e| format!("failed to create partial model file: {e}"))?;
+    let mut downloaded = 0_u64;
+    let mut last_progress_emit = 0_u64;
+    let mut hasher = Sha256::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("model download stream failed: {e}"))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("failed to write model chunk: {e}"))?;
+        hasher.update(&chunk);
+        downloaded += chunk.len() as u64;
+        if downloaded.saturating_sub(last_progress_emit) >= 1024 * 1024 {
+            last_progress_emit = downloaded;
+            let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                llm::InternalEvent::LocalModelDownloadProgress(LocalModelDownloadProgress {
+                    model_id: preset.id.clone(),
+                    downloaded_bytes: downloaded,
+                    total_bytes: total,
+                    stage: "downloading".to_string(),
+                }),
+            )));
+        }
+    }
+    file.sync_all()
+        .map_err(|e| format!("failed to flush model file: {e}"))?;
+
+    let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+        llm::InternalEvent::LocalModelDownloadProgress(LocalModelDownloadProgress {
+            model_id: preset.id.clone(),
+            downloaded_bytes: downloaded,
+            total_bytes: total,
+            stage: "verifying".to_string(),
+        }),
+    )));
+
+    let actual = format!("{:x}", hasher.finalize());
+    if !actual.eq_ignore_ascii_case(&preset.sha256) {
+        let _ = std::fs::remove_file(&partial_path);
+        let _ = llm::local_models::remove_verified_marker(&data_dir, &preset);
+        return Err(format!(
+            "model integrity check failed: expected {}, got {}",
+            preset.sha256, actual
+        ));
+    }
+
+    std::fs::rename(&partial_path, &final_path)
+        .map_err(|e| format!("failed to install model file: {e}"))?;
+    if let Err(error) = llm::local_models::write_verified_marker(&data_dir, &preset) {
+        log::warn!(
+            "[local-model] failed to persist verification marker for {}: {error}",
+            preset.id
+        );
+    }
+
+    let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+        llm::InternalEvent::LocalModelDownloadProgress(LocalModelDownloadProgress {
+            model_id: preset.id.clone(),
+            downloaded_bytes: downloaded,
+            total_bytes: total,
+            stage: "complete".to_string(),
+        }),
+    )));
+    Ok(())
+}
+
+fn normalize_modelscope_download_url(location: &str) -> Result<String, String> {
+    let decoded = location.replace("&amp;", "&");
+    if decoded.starts_with("https://cdn-lfs-cn-1.modelscope.cn/") {
+        Ok(decoded)
+    } else {
+        let snippet: String = decoded.chars().take(120).collect();
+        Err(format!(
+            "model download redirected to unexpected URL: {snippet}"
+        ))
+    }
+}
+
 /// Build a Vec<ChatMessage> from the current conversation's in-memory messages and system prompt.
 ///
 /// Used both in do_send_message (initial send) and StreamError failover (retry).
@@ -1769,10 +2914,97 @@ fn pinned_tls_public_key_fp_for_backend(
     actor_state: &ActorState,
     backend_id: &str,
 ) -> Option<String> {
+    let expires_at = actor_state.attestation_expires_at.get(backend_id)?;
+    if *expires_at <= unix_time_secs() {
+        return None;
+    }
     actor_state
         .attested_tls_public_keys
         .get(backend_id)
         .cloned()
+}
+
+fn retry_backend_satisfies_preflight(
+    actor_state: &ActorState,
+    backend: &llm::BackendConfig,
+    core_tx: flume::Sender<CoreMsg>,
+) -> bool {
+    if is_local_on_device_backend(backend) && !actor_state.app_state.local_inference_enabled {
+        return false;
+    }
+
+    if !backend_requires_attestation(backend) {
+        return true;
+    }
+
+    if backend_uses_inline_secure_attestation(backend) {
+        if backend_attestation_verified(actor_state, &backend.id) {
+            return true;
+        }
+        spawn_attestation_if_required(actor_state, backend, core_tx);
+        return false;
+    }
+
+    if backend.transport_kind() == llm::ProviderTransportKind::OpenAiCompatible
+        && pinned_tls_public_key_fp_for_backend(actor_state, &backend.id).is_none()
+    {
+        spawn_attestation_if_required(actor_state, backend, core_tx);
+        return false;
+    }
+
+    if backend_attestation_verified(actor_state, &backend.id) {
+        true
+    } else {
+        spawn_attestation_if_required(actor_state, backend, core_tx);
+        false
+    }
+}
+
+fn update_hybrid_route_summary_for_retry(
+    actor_state: &mut ActorState,
+    backend: &llm::BackendConfig,
+    model_id: &str,
+    failed_backend_id: &str,
+) {
+    let conversation_id = actor_state.current_streaming_conversation_id.clone();
+    let retry_decision = active_hybrid_profile_for_stream(actor_state)
+        .and_then(|profile| hybrid_role_for_backend(profile, &backend.id))
+        .unwrap_or_else(|| {
+            if backend_requires_attestation(backend) {
+                BackendRole::Remote
+            } else {
+                BackendRole::Local
+            }
+        });
+    let mut tee_verified = !backend_requires_attestation(backend)
+        || backend_attestation_verified(actor_state, &backend.id);
+    if backend_requires_attestation(backend) && backend_uses_inline_secure_attestation(backend) {
+        tee_verified = false;
+    }
+
+    let Some(summary) = actor_state.app_state.last_turn_routing.as_mut() else {
+        return;
+    };
+    if summary.profile_id.is_none() {
+        return;
+    }
+    if summary.conversation_id.as_deref() != conversation_id.as_deref() {
+        return;
+    }
+
+    let base_reason = summary
+        .reason
+        .split("; failover from ")
+        .next()
+        .unwrap_or(summary.reason.as_str())
+        .to_string();
+    summary.backend_id = backend.id.clone();
+    summary.model_id = model_id.to_string();
+    summary.decision = retry_decision;
+    summary.provider_name = backend.name.clone();
+    summary.tee_label = tee_label(&backend.tee_type);
+    summary.reason = format!("{base_reason}; failover from {failed_backend_id}");
+    summary.tee_verified = tee_verified;
 }
 
 /// Spawn a background health-check probe for a backend.
@@ -1979,8 +3211,9 @@ fn spawn_brave_api_key_validation(
     core_tx: flume::Sender<CoreMsg>,
 ) {
     runtime.spawn(async move {
+        crate::net::tls::ensure_default_crypto_provider();
         let client = match reqwest::Client::builder()
-            .hickory_dns(false)
+            .no_hickory_dns()
             .timeout(std::time::Duration::from_secs(10))
             .build()
         {
@@ -2108,7 +3341,16 @@ fn spawn_attestation_timer(
 /// Looks up the active backend, builds the full message history with system prompt,
 /// persists the user message to SQLite, appends it to app_state.messages,
 /// handles the pending attachment if any, and spawns the streaming task.
-fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::Sender<CoreMsg>) {
+fn do_send_message(
+    actor_state: &mut ActorState,
+    text: String,
+    force_role: Option<BackendRole>,
+    core_tx: &flume::Sender<CoreMsg>,
+) {
+    if reject_chat_action_while_attestation_pending(actor_state) {
+        return;
+    }
+
     // Guard: must have an active conversation
     let conv_id = match actor_state.app_state.current_conversation_id.clone() {
         Some(id) => id,
@@ -2126,6 +3368,10 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         .find(|c| c.id == conv_id)
         .map(|c| c.backend_id.clone());
     let preferred_id = conv_backend_id.or(actor_state.app_state.active_backend_id.clone());
+    if preferred_id.is_none() {
+        actor_state.app_state.last_error = Some("No backend selected".to_string());
+        return;
+    }
 
     // Determine model from conversation row, falling back to first model on backend
     let model = actor_state
@@ -2136,33 +3382,8 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         .map(|c| c.model_id.clone())
         .filter(|m| !m.is_empty())
         .unwrap_or_else(|| {
-            preferred_id
-                .as_deref()
-                .and_then(|pid| actor_state.backends.iter().find(|b| b.id == pid))
-                .and_then(|b| b.models.first().cloned())
-                .unwrap_or_default()
+            default_model_for_preferred(actor_state, preferred_id.as_deref()).unwrap_or_default()
         });
-
-    // Route through the FailoverRouter
-    let backend = match actor_state.router.select_backend(
-        &actor_state.backends,
-        preferred_id.as_deref(),
-        &model,
-        &[],
-    ) {
-        Some(b) => b.clone(),
-        None => {
-            actor_state.app_state.last_error = Some("No healthy backend available".into());
-            return;
-        }
-    };
-
-    // Track which backend is streaming for failover
-    actor_state.current_streaming_backend_id = Some(backend.id.clone());
-    actor_state.current_streaming_conversation_id = Some(conv_id.clone());
-    actor_state.current_streaming_text.clear();
-    actor_state.failover_exclude = vec![];
-    let now = now_secs();
 
     // Phase 31: image attachment branch is separate — does NOT augment text.
     // IMPORTANT: `final_text` is the PERSISTENCE string (SQLite `content` column +
@@ -2173,6 +3394,8 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     // the model does not see a bracketed filename and treat it as a truncated
     // attachment reference.
     let has_image_attachment = actor_state.pending_image_attachment.is_some();
+    let now = now_secs();
+
     let (final_text, api_text, has_attachment, attachment_name) = if has_image_attachment {
         // Image path: image is added as a multipart part below; user text is sent verbatim on the wire.
         // Persisted content is plain text + a "[Image: {filename}]" placeholder — never base64 (T-31-04).
@@ -2185,7 +3408,7 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         };
         // api_text is the original user input, without the "[Image: ...]" placeholder.
         (persisted, text.clone(), true, Some(name))
-    } else if let Some(att) = actor_state.pending_attachment.take() {
+    } else if let Some(att) = actor_state.pending_attachment.as_ref() {
         let augmented = format!(
             "[Attached: {}]\n\n{}\n\n---\n\n{}",
             att.filename, att.content, text
@@ -2195,10 +3418,51 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         // the full augmented context; keep api_text == final_text.
         (augmented.clone(), augmented, true, Some(name))
     } else {
-        (text.clone(), text, false, None)
+        (text.clone(), text.clone(), false, None)
     };
 
-    // Clear pending_attachment from AppState too
+    let (backend, model, turn_routing) = match resolve_turn_backend_and_model(
+        actor_state,
+        preferred_id.as_deref(),
+        &model,
+        &final_text,
+        has_attachment,
+        force_role.clone(),
+        core_tx,
+    ) {
+        Ok(resolved) => resolved,
+        Err(TurnResolutionError::AttestationPending { backend_id }) => {
+            actor_state.pending_attested_send = Some(PendingAttestedSend {
+                backend_id,
+                text,
+                force_role,
+                pending_attachment: actor_state.pending_attachment.clone(),
+                pending_image_attachment: actor_state.pending_image_attachment.clone(),
+                app_pending_attachment: actor_state.app_state.pending_attachment.clone(),
+                attestation_attempts: 0,
+            });
+            actor_state.app_state.busy_state = BusyState::Loading {
+                message: "Verifying remote attestation...".to_string(),
+            };
+            actor_state.app_state.last_error = None;
+            return;
+        }
+        Err(error) => {
+            actor_state.app_state.last_error = Some(error.user_message());
+            return;
+        }
+    };
+
+    if is_local_on_device_backend(&backend) && has_image_attachment {
+        actor_state.app_state.last_error =
+            Some("Local on-device models do not support image attachments yet.".into());
+        return;
+    }
+
+    if !has_image_attachment {
+        actor_state.pending_attachment = None;
+    }
+    // Clear pending_attachment from AppState once this send is accepted.
     actor_state.app_state.pending_attachment = None;
 
     // QT-ECE: If this is an image turn, encrypt the source JPEG to disk under data_dir/images/.
@@ -2288,6 +3552,23 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     );
     refresh_conversations(actor_state);
 
+    actor_state.app_state.last_turn_routing = turn_routing.profile_id.as_ref().map(|_| {
+        turn_routing_summary_at_stream_start(
+            actor_state,
+            &turn_routing,
+            &backend,
+            Some(conv_id.clone()),
+        )
+    });
+
+    // Track which backend is streaming for failover
+    actor_state.current_streaming_backend_id = Some(backend.id.clone());
+    actor_state.current_streaming_model_id = Some(model.clone());
+    actor_state.current_streaming_conversation_id = Some(conv_id.clone());
+    actor_state.current_streaming_text.clear();
+    actor_state.current_streaming_has_image_attachment = has_image_attachment;
+    actor_state.failover_exclude = vec![];
+
     // Build full message history for the LLM (system prompt + all messages)
     let mut chat_messages: Vec<llm::streaming::ChatMessage> = Vec::new();
 
@@ -2310,9 +3591,11 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         .unwrap_or_default();
 
     // Hoist embedding: used by both RAG context and memory injection (computed once).
-    let query_emb = actor_state
-        .embedding_provider
-        .embed(vec![final_text.clone()]);
+    let retrieval_text = turn_routing
+        .retrieval_query
+        .clone()
+        .unwrap_or_else(|| final_text.clone());
+    let query_emb = actor_state.embedding_provider.embed(vec![retrieval_text]);
 
     // Phase 8: RAG context injection (D-04, D-05, D-06).
     // If documents are attached to this conversation, search the vector index for
@@ -2432,9 +3715,11 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
         });
     }
 
-    // Phase 27: Chat tool use branch.
-    // When tools are enabled for this conversation and the backend supports tool calling,
-    // run a non-streaming first round to detect tool calls before streaming the answer.
+    // Phase 27/35: Chat tool use branch.
+    // Per-conversation tools enable the normal local tool set. Global
+    // ContextVM auto-discovery is also allowed to enter this branch so a fresh
+    // conversation can discover and use trusted remote tools before any cached
+    // tool rows exist.
     //
     // Precedence (debug session `android-image-upload-sent-as-text-placeholder` —
     // latent issue 3): image-bearing turns MUST bypass this branch and fall
@@ -2445,10 +3730,12 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     // send. Tools + vision multipart is out of scope for this fix; when a
     // message carries an image, vision takes precedence over tools for that
     // turn.
-    if actor_state.current_conv_tools_enabled
+    let contextvm_auto_discover_for_turn = actor_state.app_state.auto_discover_tools_enabled;
+    let should_prepare_tools_for_turn = (actor_state.current_conv_tools_enabled
+        || contextvm_auto_discover_for_turn)
         && backend.supports_tool_use
-        && !has_image_attachment
-    {
+        && !has_image_attachment;
+    if should_prepare_tools_for_turn {
         let brave_key_set = persistence::queries::get_setting(
             actor_state.db.as_ref().expect("db unlocked").conn(),
             "brave_api_key",
@@ -2462,26 +3749,64 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
             .current_conversation_attached_docs
             .is_empty();
 
+        // Ensure the contextvm secret key is loaded any time tools may be used,
+        // not only during auto-discovery. Without this, manually-enabled tools
+        // always fail with "invalid persisted secret key".
+        if actor_state.contextvm_secret_key.is_empty() {
+            let conn = actor_state.db.as_ref().expect("db unlocked").conn();
+            if let Ok(k) = crate::contextvm::invocation::load_or_create_secret_key(conn) {
+                actor_state.contextvm_secret_key = k;
+            }
+        }
+
         // Phase 35 auto-discover hook (CTX-04 / CTX-05): if the user has the
         // toggle on and the per-conversation dispatch map is empty, run a
         // single blocking discovery sweep, persist new announcements, build
         // a turn-only dispatch map combining persisted-enabled + auto-
         // discovered descriptors. Failure degrades silently.
-        if actor_state.app_state.auto_discover_tools_enabled
-            && actor_state.current_conv_contextvm_tools.is_empty()
-        {
+        if contextvm_auto_discover_for_turn && actor_state.current_conv_contextvm_tools.is_empty() {
             let conn = actor_state.db.as_ref().expect("db unlocked").conn();
-            if actor_state.contextvm_secret_key.is_empty() {
-                if let Ok(k) =
-                    crate::contextvm::invocation::load_or_create_secret_key(conn)
-                {
-                    actor_state.contextvm_secret_key = k;
-                }
-            }
             let relays = crate::contextvm::default_relays_owned();
-            let discovery_res = actor_state
-                .runtime
-                .block_on(crate::contextvm::discovery::discover_all(&relays));
+            let trusted_provider_pubkeys = trusted_provider_pubkey_filter(&actor_state.app_state);
+            let discovery_res = if let Some(trusted_pubkeys) = trusted_provider_pubkeys.as_ref() {
+                if trusted_pubkeys.is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    actor_state.runtime.block_on(async {
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS),
+                            crate::contextvm::discovery::discover_all_for_providers(
+                                &relays,
+                                &trusted_pubkeys,
+                            ),
+                        )
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(crate::contextvm::ContextvmError::Timeout {
+                                tool_name: "auto-discovery".to_string(),
+                                secs: CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS,
+                            })
+                        })
+                    })
+                }
+            } else {
+                actor_state.runtime.block_on(async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS),
+                        crate::contextvm::discovery::discover_all(&relays),
+                    )
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(crate::contextvm::ContextvmError::Timeout {
+                            tool_name: "auto-discovery".to_string(),
+                            secs: CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS,
+                        })
+                    })
+                })
+            };
+            if let Err(e) = &discovery_res {
+                log::warn!("contextvm auto-discovery failed: {}", e);
+            }
             if let Ok(discovered) = discovery_res {
                 let now = now_secs();
                 for t in &discovered {
@@ -2492,6 +3817,7 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                             .flatten()
                             .map(|r| r.enabled)
                             .unwrap_or(false);
+
                     let _ = persistence::queries::upsert_contextvm_tool(
                         conn,
                         &persistence::queries::ContextvmToolRow {
@@ -2501,10 +3827,11 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                             description: t.description.clone(),
                             provider_pubkey: t.provider_pubkey_hex.clone(),
                             provider_display_name: t.provider_display_name.clone(),
+                            provider_name: t.provider_name.clone(),
+                            provider_about: t.provider_about.clone(),
+                            provider_picture: t.provider_picture.clone(),
+                            provider_nip05: t.provider_nip05.clone(),
                             schema_json: t.schema_json.clone(),
-                            // Auto-discover does NOT auto-enable. The
-                            // descriptor overlay below is what surfaces
-                            // it to the LLM this turn.
                             enabled: preserved_enabled,
                             last_seen_at: now,
                         },
@@ -2513,14 +3840,14 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                 // Build a turn-only dispatch map: enabled rows + the
                 // auto-discovered descriptors, dedup by tool_name (enabled
                 // wins on tie since iterated first).
-                let mut combined: Vec<_> =
-                    persistence::queries::list_enabled_contextvm_tools(conn)
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|r| {
-                            crate::contextvm::ContextvmToolDescriptor::from_row(r).ok()
-                        })
-                        .collect();
+                let mut combined: Vec<_> = persistence::queries::list_enabled_contextvm_tools(conn)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|r| {
+                        contextvm_row_allowed_by_trust_filter(r, trusted_provider_pubkeys.as_ref())
+                    })
+                    .filter_map(|r| crate::contextvm::ContextvmToolDescriptor::from_row(r).ok())
+                    .collect();
                 for t in discovered {
                     if combined.iter().any(|d| d.tool_name == t.tool_name) {
                         continue;
@@ -2532,9 +3859,7 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                         .chars()
                         .take(crate::contextvm::DESCRIPTION_CAP_CHARS)
                         .collect();
-                    let description = if chars.chars().count()
-                        < t.description.chars().count()
-                    {
+                    let description = if chars.chars().count() < t.description.chars().count() {
                         format!("{}…", chars)
                     } else {
                         chars
@@ -2545,6 +3870,10 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                         schema,
                         provider_pubkey_hex: t.provider_pubkey_hex,
                         provider_display_name: t.provider_display_name,
+                        provider_name: t.provider_name,
+                        provider_about: t.provider_about,
+                        provider_picture: t.provider_picture,
+                        provider_nip05: t.provider_nip05,
                         last_seen_at: now,
                     });
                 }
@@ -2553,9 +3882,7 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                     crate::contextvm::build_dispatch_map(&finalised);
                 // Refresh AppState.contextvm_tools so any UI bound to the
                 // list reflects newly-seen announcements.
-                if let Ok(rows) =
-                    persistence::queries::list_all_contextvm_tools(conn)
-                {
+                if let Ok(rows) = persistence::queries::list_all_contextvm_tools(conn) {
                     let usage_map = aggregate_contextvm_tool_usage(conn);
                     let now_secs_proj = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -2576,8 +3903,8 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
             .cloned()
             .collect();
         let tools = agent::build_chat_tools_with_contextvm(
-            has_docs,
-            brave_key_set,
+            has_docs && actor_state.current_conv_tools_enabled,
+            brave_key_set && actor_state.current_conv_tools_enabled,
             &remote_descriptors,
         );
 
@@ -2646,7 +3973,19 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
     actor_state.app_state.streaming_text = Some(String::new());
     actor_state.app_state.last_error = None;
 
-    if has_image_attachment {
+    if is_local_on_device_backend(&backend) {
+        let token = llm::spawn_local_streaming_task(
+            &actor_state.runtime,
+            actor_state.local_llm_provider.clone(),
+            actor_state.data_dir.clone(),
+            &backend,
+            &model,
+            chat_messages,
+            core_tx.clone(),
+            actor_state.router.get_semaphore(&backend.id),
+        );
+        actor_state.active_stream_token = Some(token);
+    } else if has_image_attachment {
         // Phase 31: convert ChatMessage history → API messages, then replace the
         // last user message with a multipart message carrying the image part.
         use async_openai::types::chat::{
@@ -2662,12 +4001,10 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                         .build()
                         .map(ChatCompletionRequestMessage::from)
                 }
-                llm::streaming::ChatRole::User => {
-                    ChatCompletionRequestUserMessageArgs::default()
-                        .content(msg.content.as_str())
-                        .build()
-                        .map(ChatCompletionRequestMessage::from)
-                }
+                llm::streaming::ChatRole::User => ChatCompletionRequestUserMessageArgs::default()
+                    .content(msg.content.as_str())
+                    .build()
+                    .map(ChatCompletionRequestMessage::from),
                 llm::streaming::ChatRole::Assistant => {
                     ChatCompletionRequestAssistantMessageArgs::default()
                         .content(msg.content.as_str())
@@ -2694,8 +4031,7 @@ fn do_send_message(actor_state: &mut ActorState, text: String, core_tx: &flume::
                     api_messages[last] = multipart;
                 }
                 Err(e) => {
-                    actor_state.app_state.last_error =
-                        Some(format!("Image prepare failed: {}", e));
+                    actor_state.app_state.last_error = Some(format!("Image prepare failed: {}", e));
                     actor_state.pending_image_attachment = None;
                     actor_state.app_state.busy_state = BusyState::Idle;
                     actor_state.app_state.streaming_text = None;
@@ -2986,14 +4322,11 @@ fn handle_agent_step_complete(
             // tool calls in this step targets a name in the current
             // conversation's contextvm dispatch map, mark the whole step
             // as "contextvm". Otherwise, mark it "local".
-            let tool_origin = if calls
-                .iter()
-                .any(|c| {
-                    actor_state
-                        .current_conv_contextvm_tools
-                        .contains_key(c.function.name.as_str())
-                })
-            {
+            let tool_origin = if calls.iter().any(|c| {
+                actor_state
+                    .current_conv_contextvm_tools
+                    .contains_key(c.function.name.as_str())
+            }) {
                 Some("contextvm".to_string())
             } else {
                 Some("local".to_string())
@@ -3242,6 +4575,176 @@ fn handle_agent_step_complete(
             emit_state(&actor_state.app_state, shared, update_tx);
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TurnResolutionError {
+    UserFacing(String),
+    AttestationPending { backend_id: String },
+}
+
+impl TurnResolutionError {
+    fn user_message(&self) -> String {
+        match self {
+            Self::UserFacing(message) => message.clone(),
+            Self::AttestationPending { .. } => {
+                "Verifying remote attestation before sending this turn...".to_string()
+            }
+        }
+    }
+}
+
+fn resolve_turn_backend_and_model(
+    actor_state: &mut ActorState,
+    preferred_id: Option<&str>,
+    model: &str,
+    text: &str,
+    has_attachment: bool,
+    force_role: Option<BackendRole>,
+    core_tx: &flume::Sender<CoreMsg>,
+) -> Result<(llm::BackendConfig, String, routing::TurnRouting), TurnResolutionError> {
+    let Some(preferred_id) = preferred_id else {
+        return Err(TurnResolutionError::UserFacing(
+            "No backend selected".to_string(),
+        ));
+    };
+
+    if let Some(profile_id) = routing::profile_id_from_backend_id(preferred_id) {
+        let Some(profile) = actor_state
+            .app_state
+            .hybrid_profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .cloned()
+        else {
+            return Err(TurnResolutionError::UserFacing(format!(
+                "Hybrid profile not found: {profile_id}"
+            )));
+        };
+
+        actor_state
+            .router
+            .maybe_restore(&profile.remote_backend_id, std::time::Instant::now());
+        let remote_backend = actor_state
+            .backends
+            .iter()
+            .find(|backend| backend.id == profile.remote_backend_id)
+            .ok_or_else(|| {
+                TurnResolutionError::UserFacing(format!(
+                    "Hybrid remote backend is missing: {}",
+                    profile.remote_backend_id
+                ))
+            })?;
+        // Privacy guard: resolving a default-local hybrid turn must not make a
+        // network reachability probe to the remote backend. The router's
+        // in-memory health is the only availability hint used before a remote
+        // leg is explicitly selected.
+        let force_role_is_remote = matches!(force_role, Some(BackendRole::Remote));
+        let remote_reachable =
+            actor_state.router.health_status(&remote_backend.id) != llm::HealthStatus::Failed;
+        let route = routing::resolve_turn_routing(
+            &profile,
+            text,
+            has_attachment,
+            force_role,
+            remote_reachable,
+        );
+        actor_state
+            .router
+            .maybe_restore(&route.backend_id, std::time::Instant::now());
+        let backend = actor_state
+            .backends
+            .iter()
+            .find(|backend| backend.id == route.backend_id)
+            .ok_or_else(|| {
+                TurnResolutionError::UserFacing(format!(
+                    "Hybrid route backend is missing: {}",
+                    route.backend_id
+                ))
+            })?;
+
+        if !backend
+            .models
+            .iter()
+            .any(|candidate| candidate == &route.model_id)
+        {
+            return Err(TurnResolutionError::UserFacing(format!(
+                "Hybrid route model is missing: {}/{}",
+                backend.id, route.model_id
+            )));
+        }
+
+        if route.decision == BackendRole::Local
+            && is_local_on_device_backend(backend)
+            && !actor_state.app_state.local_inference_enabled
+        {
+            return Err(TurnResolutionError::UserFacing(
+                "Local inference is turned off. Enable it in settings to use this model."
+                    .to_string(),
+            ));
+        }
+
+        if route.decision == BackendRole::Remote {
+            if actor_state.router.health_status(&backend.id) == llm::HealthStatus::Failed
+                && !force_role_is_remote
+            {
+                return Err(TurnResolutionError::UserFacing(
+                    "Remote backend is unavailable for this hybrid turn.".to_string(),
+                ));
+            }
+
+            if backend_requires_attestation(backend) {
+                if backend_uses_inline_secure_attestation(backend) {
+                    if !backend_attestation_verified(actor_state, &backend.id) {
+                        spawn_attestation_if_required(actor_state, backend, core_tx.clone());
+                        return Err(TurnResolutionError::AttestationPending {
+                            backend_id: backend.id.clone(),
+                        });
+                    }
+                } else {
+                    if backend.transport_kind() == llm::ProviderTransportKind::OpenAiCompatible
+                        && pinned_tls_public_key_fp_for_backend(actor_state, &backend.id).is_none()
+                    {
+                        spawn_attestation_if_required(actor_state, backend, core_tx.clone());
+                        return Err(TurnResolutionError::AttestationPending {
+                            backend_id: backend.id.clone(),
+                        });
+                    }
+
+                    if !backend_attestation_verified(actor_state, &backend.id) {
+                        spawn_attestation_if_required(actor_state, backend, core_tx.clone());
+                        return Err(TurnResolutionError::AttestationPending {
+                            backend_id: backend.id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        return Ok((backend.clone(), route.model_id.clone(), route));
+    }
+
+    let Some(backend) =
+        actor_state
+            .router
+            .select_backend(&actor_state.backends, Some(preferred_id), model, &[])
+    else {
+        return Err(TurnResolutionError::UserFacing(
+            "No healthy backend available".to_string(),
+        ));
+    };
+
+    if is_local_on_device_backend(backend) && !actor_state.app_state.local_inference_enabled {
+        return Err(TurnResolutionError::UserFacing(
+            "Local inference is turned off. Enable it in settings to use this model.".to_string(),
+        ));
+    }
+
+    Ok((
+        backend.clone(),
+        model.to_string(),
+        routing::single_backend_routing(backend.id.clone(), model.to_string()),
+    ))
 }
 
 /// Pause an active agent session.
@@ -3617,6 +5120,9 @@ pub(crate) fn aggregate_contextvm_tool_usage(
 /// display fields (usage_count, last_used_at, last_used_label, last_seen_label,
 /// npub, schema_pretty) are pre-computed by the actor. UI never branches on
 /// integers (RMP rule, mirrors DirectorySourceSummary.last_synced_label).
+///
+/// Phase 37: added provider profile fields (provider_name, provider_about,
+/// provider_picture, provider_nip05) from fetched Nostr kind 0 metadata.
 pub(crate) fn row_to_discoverable_tool(
     row: persistence::queries::ContextvmToolRow,
     usage_map: &std::collections::HashMap<String, (u32, i64)>,
@@ -3633,12 +5139,17 @@ pub(crate) fn row_to_discoverable_tool(
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| row.schema_json.clone());
+
     DiscoverableTool {
         id: row.id,
         name: row.tool_name,
         description: row.description,
         provider_pubkey: row.provider_pubkey,
         provider_display_name: row.provider_display_name,
+        provider_name: row.provider_name,
+        provider_about: row.provider_about,
+        provider_picture: row.provider_picture,
+        provider_nip05: row.provider_nip05,
         enabled: row.enabled,
         usage_count,
         last_used_at,
@@ -3656,14 +5167,92 @@ pub(crate) fn row_to_discoverable_tool(
 /// the 8-tool cap is honoured, and the list is sorted last_seen_at DESC.
 fn load_enabled_descriptors(
     conn: &rusqlite::Connection,
+    trusted_provider_pubkeys: Option<&std::collections::HashSet<String>>,
 ) -> Vec<crate::contextvm::ContextvmToolDescriptor> {
     let rows = persistence::queries::list_enabled_contextvm_tools(conn).unwrap_or_default();
     let descs: Vec<_> = rows
         .iter()
+        .filter(|r| contextvm_row_allowed_by_trust_filter(r, trusted_provider_pubkeys))
         .filter_map(|r| crate::contextvm::ContextvmToolDescriptor::from_row(r).ok())
         .collect();
     crate::contextvm::finalise_for_turn(descs)
 }
+
+fn contextvm_row_allowed_by_trust_filter(
+    row: &persistence::queries::ContextvmToolRow,
+    trusted_provider_pubkeys: Option<&std::collections::HashSet<String>>,
+) -> bool {
+    match trusted_provider_pubkeys {
+        Some(trusted) => trusted.contains(&row.provider_pubkey),
+        None => true,
+    }
+}
+
+fn trusted_provider_pubkey_filter(
+    app_state: &AppState,
+) -> Option<std::collections::HashSet<String>> {
+    if auto_discovery_requires_trusted_providers() && app_state.auto_discover_tools_enabled {
+        Some(
+            app_state
+                .trusted_providers
+                .iter()
+                .map(|provider| provider.pubkey.clone())
+                .collect(),
+        )
+    } else {
+        None
+    }
+}
+
+fn load_enabled_descriptors_for_state(
+    actor_state: &ActorState,
+) -> Vec<crate::contextvm::ContextvmToolDescriptor> {
+    let Some(db) = actor_state.db.as_ref() else {
+        return Vec::new();
+    };
+    let trusted_provider_pubkeys = trusted_provider_pubkey_filter(&actor_state.app_state);
+    load_enabled_descriptors(db.conn(), trusted_provider_pubkeys.as_ref())
+}
+
+fn refresh_current_contextvm_dispatch(actor_state: &mut ActorState) {
+    let descs = load_enabled_descriptors_for_state(actor_state);
+    actor_state.current_conv_contextvm_tools = crate::contextvm::build_dispatch_map(&descs);
+}
+
+/// Phase 38 — load trusted providers from DB and project to UniFFI records.
+fn load_trusted_providers(conn: &rusqlite::Connection) -> Vec<TrustedProvider> {
+    persistence::queries::list_trusted_providers(conn)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            let npub = crate::contextvm::npub::encode_npub(&r.pubkey);
+            TrustedProvider {
+                npub,
+                pubkey: r.pubkey,
+                label: r.label,
+                added_at: r.added_at,
+            }
+        })
+        .collect()
+}
+
+fn refresh_hybrid_profiles(actor_state: &mut ActorState) {
+    let Some(db) = actor_state.db.as_ref() else {
+        actor_state.app_state.hybrid_profiles.clear();
+        return;
+    };
+    actor_state.app_state.hybrid_profiles =
+        persistence::queries::list_hybrid_profiles(db.conn()).unwrap_or_default();
+}
+
+fn auto_discovery_requires_trusted_providers() -> bool {
+    // Android currently exposes the trusted-provider management UI. Desktop
+    // and iOS keep the pre-trust auto-discovery behavior until equivalent UI
+    // paths exist, otherwise the toggle cannot surface newly discovered tools.
+    cfg!(target_os = "android")
+}
+
+const CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS: u64 = 20;
 
 /// Emit state snapshot to shared RwLock and update channel.
 ///
@@ -4204,12 +5793,14 @@ fn load_post_unlock(
         }
     }
 
+    let hybrid_profiles = persistence::queries::list_hybrid_profiles(db.conn()).unwrap_or_default();
+
     // Determine active backend (settings default > active_id).
     let settings_default_bid = persistence::queries::get_setting(db.conn(), "default_backend_id")
         .ok()
         .flatten();
     let final_active_id = settings_default_bid
-        .filter(|id| backends.iter().any(|b| &b.id == id))
+        .filter(|id| backend_or_hybrid_profile_exists(id, &backends, &hybrid_profiles))
         .or(active_id);
 
     // Rebuild backend summaries with live health state.
@@ -4243,6 +5834,9 @@ fn load_post_unlock(
         let mut map = HashMap::new();
         for b in &backends {
             if let Ok(Some(record)) = cache.get_latest_for_backend(&b.id) {
+                actor_state
+                    .attestation_expires_at
+                    .insert(b.id.clone(), record.expires_at);
                 actor_state
                     .app_state
                     .attestation_statuses
@@ -4306,6 +5900,12 @@ fn load_post_unlock(
         .flatten()
         .map(|v| v != "0")
         .unwrap_or(true);
+    let local_inference_enabled =
+        persistence::queries::get_setting(db.conn(), "local_inference_enabled")
+            .ok()
+            .flatten()
+            .map(|v| v != "0")
+            .unwrap_or(true);
     // Phase 35: load auto-discover toggle and known contextvm tools.
     let auto_discover_tools_enabled =
         persistence::queries::get_setting(db.conn(), "auto_discover_tools")
@@ -4406,12 +6006,15 @@ fn load_post_unlock(
     actor_state.app_state.memory_count = memory_count;
     actor_state.app_state.brave_api_key_set = brave_api_key_set;
     actor_state.app_state.memories_enabled = memories_enabled;
+    actor_state.app_state.local_inference_enabled = local_inference_enabled;
     // Phase 35: contextvm AppState hydration.
     actor_state.app_state.auto_discover_tools_enabled = auto_discover_tools_enabled;
     actor_state.app_state.contextvm_tools = contextvm_tools_for_state;
-    let initial_descs = load_enabled_descriptors(actor_state.db.as_ref().expect("db unlocked").conn());
-    actor_state.current_conv_contextvm_tools =
-        crate::contextvm::build_dispatch_map(&initial_descs);
+    actor_state.app_state.hybrid_profiles = hybrid_profiles;
+    // Phase 38: load trusted providers.
+    actor_state.app_state.trusted_providers =
+        load_trusted_providers(actor_state.db.as_ref().expect("db unlocked").conn());
+    refresh_current_contextvm_dispatch(actor_state);
     actor_state.app_state.lock_timeout_seconds = lock_timeout_seconds;
     actor_state.app_state.biometric_login_enabled = biometric_login_enabled;
     actor_state.app_state.duress_pin_configured = duress_pin_configured;
@@ -4420,6 +6023,7 @@ fn load_post_unlock(
     actor_state.attested_tls_public_keys = cached_attested_tls_public_keys;
     actor_state.router = router;
     actor_state.vcek_cache = new_vcek_cache.clone();
+    reconcile_local_model_backends(actor_state);
 
     // Initialize per-backend concurrency semaphores.
     for backend in &actor_state.backends {
@@ -4430,22 +6034,7 @@ fn load_post_unlock(
 
     // Spawn initial attestation task for the active backend.
     if let Some(active_id) = &final_active_id {
-        if let Some(backend) = actor_state.backends.iter().find(|b| b.id == *active_id) {
-            let tee_policy = crate::persistence::queries::get_tee_policy(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
-            )
-            .unwrap_or_else(|e| {
-                log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
-                crate::attestation::TeePolicy::default()
-            });
-            attestation::spawn_attestation_task(
-                &actor_state.runtime,
-                backend,
-                core_tx.clone(),
-                Arc::clone(&new_vcek_cache),
-                tee_policy,
-            );
-        }
+        spawn_attestation_for_preferred(actor_state, active_id, core_tx.clone());
     }
 
     // Start (or restart) the periodic attestation timer.
@@ -4491,12 +6080,15 @@ impl FfiApp {
     /// `embedding_provider` provides on-device embedding inference; use `NullEmbeddingProvider` for tests.
     /// `embedding_status` reflects whether the real embedding provider loaded successfully
     /// (`Active`) or fell back to `NullEmbeddingProvider` due to an init failure (`Degraded`).
+    /// `local_llm_provider` provides on-device local chat inference; use `NullLocalLlmProvider`
+    /// on platforms without a native local runtime.
     #[uniffi::constructor]
     pub fn new(
         data_dir: String,
         keychain: Box<dyn KeychainProvider>,
         embedding_provider: Box<dyn EmbeddingProvider>,
         embedding_status: EmbeddingStatus,
+        local_llm_provider: Box<dyn LocalLlmProvider>,
         biometric_provider: Box<dyn BiometricProvider>,
     ) -> Arc<Self> {
         // Initialize logger once -- idempotent if FfiApp::new is called more than once.
@@ -4515,6 +6107,7 @@ impl FfiApp {
             #[cfg(not(target_os = "android"))]
             env_logger::init();
         });
+        crate::net::tls::ensure_default_crypto_provider();
         log::info!("mango_core initialized");
 
         let (update_tx, update_rx) = flume::unbounded::<AppUpdate>();
@@ -4599,8 +6192,8 @@ impl FfiApp {
             // In that case we can open the encrypted DB immediately without a PIN prompt.
             // The keychain item is OS-gated (device unlock required), which is the same
             // protection level as biometric login with a PIN bypass.
-            let cold_launch_bypass = has_auth
-                && bootstrap.read_cold_launch_bypass().unwrap_or(false);
+            let cold_launch_bypass =
+                has_auth && bootstrap.read_cold_launch_bypass().unwrap_or(false);
             let cold_launch_dek_hex: Option<zeroize::Zeroizing<String>> = if cold_launch_bypass {
                 keychain
                     .load("mango".to_string(), "dek".to_string())
@@ -4609,33 +6202,34 @@ impl FfiApp {
                 None
             };
 
-            let (db_opt, encryption_enabled, auth_initialized, bypass_succeeded) =
-                if db_path == ":memory:" {
-                    // Case A: in-memory / test mode
-                    let db = persistence::Database::open(":memory:").expect("in-memory DB open");
-                    (Some(db), false, false, false)
-                } else if !has_auth {
-                    // Case B/C: no auth params → open plaintext (or create new plaintext)
-                    let db = persistence::Database::open(&db_path)
-                        .expect("database open and migration");
-                    (Some(db), false, false, false)
-                } else if let Some(ref dek_hex) = cold_launch_dek_hex {
-                    // Case D (Never bypass): auth params exist but user selected Never timeout.
-                    // DEK is in keychain — open encrypted DB directly, skip lock screen.
-                    match persistence::Database::open_encrypted(&db_path, dek_hex) {
-                        Ok(db) => {
-                            log::info!("[auth] Cold-launch bypass succeeded — skipping lock screen");
-                            (Some(db), true, true, true)
-                        }
-                        Err(e) => {
-                            log::warn!("[auth] Cold-launch bypass: open_encrypted failed ({e}); falling back to lock screen");
-                            (None, true, true, false)
-                        }
+            let (db_opt, encryption_enabled, auth_initialized, bypass_succeeded) = if db_path
+                == ":memory:"
+            {
+                // Case A: in-memory / test mode
+                let db = persistence::Database::open(":memory:").expect("in-memory DB open");
+                (Some(db), false, false, false)
+            } else if !has_auth {
+                // Case B/C: no auth params → open plaintext (or create new plaintext)
+                let db =
+                    persistence::Database::open(&db_path).expect("database open and migration");
+                (Some(db), false, false, false)
+            } else if let Some(ref dek_hex) = cold_launch_dek_hex {
+                // Case D (Never bypass): auth params exist but user selected Never timeout.
+                // DEK is in keychain — open encrypted DB directly, skip lock screen.
+                match persistence::Database::open_encrypted(&db_path, dek_hex) {
+                    Ok(db) => {
+                        log::info!("[auth] Cold-launch bypass succeeded — skipping lock screen");
+                        (Some(db), true, true, true)
                     }
-                } else {
-                    // Case D: auth params exist → deferred open, show lock screen
-                    (None, true, true, false)
-                };
+                    Err(e) => {
+                        log::warn!("[auth] Cold-launch bypass: open_encrypted failed ({e}); falling back to lock screen");
+                        (None, true, true, false)
+                    }
+                }
+            } else {
+                // Case D: auth params exist → deferred open, show lock screen
+                (None, true, true, false)
+            };
 
             // Phase 8: load or create the HNSW vector index from disk.
             // Phase 29 (D-03/D-05): In encrypted mode (Case D), defer VectorIndex to post-unlock.
@@ -4650,12 +6244,15 @@ impl FfiApp {
                     .and_then(|arr| {
                         rag::VectorIndex::new(&vector_data_dir, Some(&arr))
                             .map_err(|e| {
-                                log::warn!("[auth] Cold-launch bypass: VectorIndex open failed: {e}");
+                                log::warn!(
+                                    "[auth] Cold-launch bypass: VectorIndex open failed: {e}"
+                                );
                             })
                             .ok()
                     })
                     .unwrap_or_else(|| {
-                        rag::VectorIndex::new("", None).expect("fallback VectorIndex creation failed")
+                        rag::VectorIndex::new("", None)
+                            .expect("fallback VectorIndex creation failed")
                     });
                 opened
             } else if has_auth {
@@ -4682,11 +6279,14 @@ impl FfiApp {
             };
 
             let embedding_provider_arc: Arc<dyn EmbeddingProvider> = Arc::from(embedding_provider);
+            let local_llm_provider_arc: Arc<dyn LocalLlmProvider> = Arc::from(local_llm_provider);
+            llm::set_platform_local_provider(local_llm_provider_arc.clone());
 
             // Build minimal initial AppState. If DB is available, load_post_unlock will
             // populate conversations, backends, documents, etc. below.
             let mut initial_state = AppState {
                 embedding_status,
+                local_device_capability: local_llm_provider_arc.device_capability(),
                 biometric_available,
                 biometric_login_enabled,
                 auth_initialized,
@@ -4708,18 +6308,23 @@ impl FfiApp {
                 app_state: initial_state,
                 backends: vec![],
                 attested_tls_public_keys: HashMap::new(),
+                attestation_expires_at: HashMap::new(),
                 active_stream_token: None,
                 runtime,
                 db: db_opt,
                 keychain,
                 pending_attachment: None,
                 pending_image_attachment: None,
+                pending_attested_send: None,
                 router: llm::FailoverRouter::new(),
                 current_streaming_backend_id: None,
+                current_streaming_model_id: None,
                 current_streaming_conversation_id: None,
                 current_streaming_text: String::new(),
+                current_streaming_has_image_attachment: false,
                 failover_exclude: vec![],
                 embedding_provider: embedding_provider_arc,
+                local_llm_provider: local_llm_provider_arc,
                 vector_index,
                 pending_rag_doc_count: None,
                 active_agent_sessions: HashMap::new(),
@@ -4763,11 +6368,8 @@ impl FfiApp {
                     CoreMsg::Action(action) => {
                         match action {
                             AppAction::PushScreen { screen } => {
-                                actor_state
-                                    .app_state
-                                    .router
-                                    .screen_stack
-                                    .push(screen.clone());
+                                // Save current screen so PopScreen can return to it.
+                                push_nav_history(&mut actor_state.app_state.router);
                                 // Auto-load memories when navigating to the Memories screen (per Pitfall 4)
                                 if screen == Screen::Memories {
                                     actor_state.app_state.memories =
@@ -4776,14 +6378,13 @@ impl FfiApp {
                                 actor_state.app_state.router.current_screen = screen;
                             }
                             AppAction::PopScreen => {
-                                actor_state.app_state.router.screen_stack.pop();
-                                actor_state.app_state.router.current_screen = actor_state
+                                let previous = actor_state
                                     .app_state
                                     .router
                                     .screen_stack
-                                    .last()
-                                    .cloned()
+                                    .pop()
                                     .unwrap_or(Screen::Home);
+                                actor_state.app_state.router.current_screen = previous;
                             }
                             AppAction::SetBusyState { state: busy } => {
                                 actor_state.app_state.busy_state = busy;
@@ -4797,7 +6398,12 @@ impl FfiApp {
                             AppAction::Noop => {
                                 // Proof-of-life: no state mutation, just increment rev below
                             }
-                            AppAction::SendMessage { text } => {
+                            AppAction::SendMessage { text, force_role } => {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 // Per D-17: clear the first-chat welcome placeholder on first send.
                                 actor_state.app_state.show_first_chat_placeholder = false;
                                 // If no active conversation, create one first (auto-create per D-04)
@@ -4816,6 +6422,12 @@ impl FfiApp {
                                         .iter()
                                         .find(|b| b.id == active_backend_id)
                                         .and_then(|b| b.models.first().cloned())
+                                        .or_else(|| {
+                                            default_model_for_preferred(
+                                                &actor_state,
+                                                Some(active_backend_id.as_str()),
+                                            )
+                                        })
                                         .unwrap_or_default();
                                     let row = persistence::ConversationRow {
                                         id: conv_id.clone(),
@@ -4843,7 +6455,12 @@ impl FfiApp {
                                     };
                                     refresh_conversations(&mut actor_state);
                                 }
-                                do_send_message(&mut actor_state, text, &core_tx_for_thread);
+                                do_send_message(
+                                    &mut actor_state,
+                                    text,
+                                    force_role,
+                                    &core_tx_for_thread,
+                                );
                             }
                             AppAction::StopGeneration => {
                                 // Signal the streaming task to stop cooperatively.
@@ -4851,30 +6468,37 @@ impl FfiApp {
                                 // StreamCancelled InternalEvent to confirm the task exited.
                                 if let Some(token) = actor_state.active_stream_token.take() {
                                     token.cancel();
+                                } else if cancel_pending_attested_send(
+                                    &mut actor_state,
+                                    "Remote attestation was cancelled. The message was not sent."
+                                        .to_string(),
+                                ) {
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
                                 }
                             }
                             AppAction::SetActiveBackend { backend_id } => {
-                                if actor_state.backends.iter().any(|b| b.id == backend_id) {
+                                if actor_state.backends.iter().any(|b| b.id == backend_id)
+                                    || routing::profile_id_from_backend_id(&backend_id).is_some_and(
+                                        |profile_id| {
+                                            actor_state
+                                                .app_state
+                                                .hybrid_profiles
+                                                .iter()
+                                                .any(|profile| profile.id == profile_id)
+                                        },
+                                    )
+                                {
                                     actor_state.app_state.active_backend_id =
                                         Some(backend_id.clone());
                                     refresh_backend_summaries(&mut actor_state);
                                     // Per D-01: trigger attestation on backend switch
-                                    if let Some(backend) =
-                                        actor_state.backends.iter().find(|b| b.id == backend_id)
-                                    {
-                                        let tee_policy = crate::persistence::queries::get_tee_policy(actor_state.db.as_ref().expect("db unlocked").conn())
-                                            .unwrap_or_else(|e| {
-                                                log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
-                                                crate::attestation::TeePolicy::default()
-                                            });
-                                        attestation::spawn_attestation_task(
-                                            &actor_state.runtime,
-                                            backend,
-                                            core_tx_for_thread.clone(),
-                                            Arc::clone(&actor_state.vcek_cache),
-                                            tee_policy,
-                                        );
-                                    }
+                                    spawn_attestation_for_preferred(
+                                        &actor_state,
+                                        &backend_id,
+                                        core_tx_for_thread.clone(),
+                                    );
                                     // Reset the periodic timer so the next tick is relative
                                     // to this switch, not the old schedule.
                                     if let Some(token) = actor_state.attestation_timer_token.take()
@@ -4930,11 +6554,10 @@ impl FfiApp {
                                 .ok()
                                 .flatten()
                                 .or_else(|| {
-                                    actor_state
-                                        .backends
-                                        .iter()
-                                        .find(|b| b.id == default_backend)
-                                        .and_then(|b| b.models.first().cloned())
+                                    default_model_for_preferred(
+                                        &actor_state,
+                                        Some(default_backend.as_str()),
+                                    )
                                 })
                                 .unwrap_or_default();
                                 let row = persistence::ConversationRow {
@@ -4962,11 +6585,7 @@ impl FfiApp {
                                 // Phase 27: new conversations start with tools disabled.
                                 actor_state.current_conv_tools_enabled = false;
                                 // Phase 35: hydrate per-conversation contextvm dispatch map.
-                                let descs = load_enabled_descriptors(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                );
-                                actor_state.current_conv_contextvm_tools =
-                                    crate::contextvm::build_dispatch_map(&descs);
+                                refresh_current_contextvm_dispatch(&mut actor_state);
                                 sync_visible_streaming_text(&mut actor_state);
                             }
 
@@ -4997,11 +6616,7 @@ impl FfiApp {
                                 actor_state.app_state.router.current_screen =
                                     Screen::Chat { conversation_id };
                                 // Phase 35: hydrate per-conversation contextvm dispatch map.
-                                let descs = load_enabled_descriptors(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                );
-                                actor_state.current_conv_contextvm_tools =
-                                    crate::contextvm::build_dispatch_map(&descs);
+                                refresh_current_contextvm_dispatch(&mut actor_state);
                                 sync_visible_streaming_text(&mut actor_state);
                             }
 
@@ -5038,11 +6653,7 @@ impl FfiApp {
                                 let new_id = new_uuid();
                                 let now = now_secs();
                                 let result = persistence::queries::fork_conversation(
-                                    actor_state
-                                        .db
-                                        .as_mut()
-                                        .expect("db unlocked")
-                                        .conn_mut(),
+                                    actor_state.db.as_mut().expect("db unlocked").conn_mut(),
                                     &id,
                                     &new_id,
                                     now,
@@ -5127,6 +6738,11 @@ impl FfiApp {
                             },
 
                             AppAction::RetryLastMessage => {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 let conv_id = match actor_state
                                     .app_state
                                     .current_conversation_id
@@ -5156,14 +6772,37 @@ impl FfiApp {
                                         &msg_id,
                                     );
                                 }
-                                // Find last user message text to re-send
-                                let last_user_text = actor_state
+                                // Find last user message to re-send. Image messages store
+                                // a render-only "[Image: ...]" placeholder in content; retry
+                                // must strip that placeholder and rehydrate the encrypted image.
+                                let last_user_message = actor_state
                                     .app_state
                                     .messages
                                     .iter()
                                     .rfind(|m| m.role == "user")
-                                    .map(|m| m.content.clone());
-                                if let Some(text) = last_user_text {
+                                    .cloned();
+                                if let Some(message) = last_user_message {
+                                    let replay_force_role = replay_force_role_for_latest_user_turn(
+                                        &actor_state,
+                                        &conv_id,
+                                        &message.id,
+                                    );
+                                    let retry_image = match rehydrate_retry_image_attachment(
+                                        &actor_state,
+                                        &message,
+                                    ) {
+                                        Ok(image) => image,
+                                        Err(error) => {
+                                            actor_state.app_state.last_error = Some(error);
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            continue;
+                                        }
+                                    };
                                     // Remove the last user message too (do_send_message will re-insert)
                                     let last_user_pos = actor_state
                                         .app_state
@@ -5180,7 +6819,16 @@ impl FfiApp {
                                     }
                                     // Keep conv_id active and re-send
                                     actor_state.app_state.current_conversation_id = Some(conv_id);
-                                    do_send_message(&mut actor_state, text, &core_tx_for_thread);
+                                    if let Some(image) = retry_image {
+                                        actor_state.pending_attachment = None;
+                                        actor_state.pending_image_attachment = Some(image);
+                                    }
+                                    do_send_message(
+                                        &mut actor_state,
+                                        strip_image_placeholder(&message.content),
+                                        replay_force_role,
+                                        &core_tx_for_thread,
+                                    );
                                 }
                             }
 
@@ -5188,6 +6836,11 @@ impl FfiApp {
                                 message_id,
                                 new_text,
                             } => {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 let conv_id = match actor_state
                                     .app_state
                                     .current_conversation_id
@@ -5203,12 +6856,21 @@ impl FfiApp {
                                     }
                                 };
                                 // Find the edited message's created_at
-                                let edited_at = actor_state
+                                let edited_message = actor_state
                                     .app_state
                                     .messages
                                     .iter()
                                     .find(|m| m.id == message_id)
-                                    .map(|m| m.created_at);
+                                    .cloned();
+                                let replay_force_role =
+                                    edited_message.as_ref().and_then(|message| {
+                                        replay_force_role_for_latest_user_turn(
+                                            &actor_state,
+                                            &conv_id,
+                                            &message.id,
+                                        )
+                                    });
+                                let edited_at = edited_message.as_ref().map(|m| m.created_at);
                                 if let Some(at) = edited_at {
                                     // Delete messages after the edited point
                                     let _ = persistence::queries::delete_messages_after(
@@ -5227,6 +6889,7 @@ impl FfiApp {
                                     do_send_message(
                                         &mut actor_state,
                                         new_text,
+                                        replay_force_role,
                                         &core_tx_for_thread,
                                     );
                                 }
@@ -5237,6 +6900,11 @@ impl FfiApp {
                                 content,
                                 size_bytes,
                             } => {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 let size_display = format_size_display(size_bytes);
                                 // Mutually exclusive with any pending image attachment.
                                 actor_state.pending_image_attachment = None;
@@ -5252,6 +6920,11 @@ impl FfiApp {
                             }
 
                             AppAction::ClearAttachment => {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 actor_state.pending_attachment = None;
                                 actor_state.pending_image_attachment = None;
                                 actor_state.app_state.pending_attachment = None;
@@ -5262,25 +6935,19 @@ impl FfiApp {
                                 file_path,
                                 mime_type,
                             } => {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 // Defense-in-depth vision capability gate (follow-up to
                                 // "image-upload-still-broken-after-fix" debug session):
                                 // UIs hide the image-picker entry points for non-vision
                                 // models, but a stale state or a model-switch-after-attach
                                 // could still dispatch this action. Reject with a clear
                                 // error before the image ever enters the pending slot.
-                                let current_model_id = actor_state
-                                    .app_state
-                                    .current_conversation_id
-                                    .as_ref()
-                                    .and_then(|conv_id| {
-                                        actor_state
-                                            .app_state
-                                            .conversations
-                                            .iter()
-                                            .find(|c| &c.id == conv_id)
-                                            .map(|c| c.model_id.clone())
-                                    })
-                                    .unwrap_or_default();
+                                let current_model_id =
+                                    image_capability_model_id(&actor_state).unwrap_or_default();
                                 if !current_model_id.is_empty()
                                     && !llm::is_vision_model(&current_model_id)
                                 {
@@ -5300,9 +6967,8 @@ impl FfiApp {
                                         Some("AttachImage requires absolute file_path".into());
                                 } else {
                                     // Stat file for size (DoS bound — T-31-02). Reject > 50 MB raw input.
-                                    let size_bytes = std::fs::metadata(&file_path)
-                                        .map(|m| m.len())
-                                        .unwrap_or(0);
+                                    let size_bytes =
+                                        std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
                                     if size_bytes > 50 * 1024 * 1024 {
                                         actor_state.app_state.last_error =
                                             Some("Image exceeds 50 MB limit".into());
@@ -5331,12 +6997,37 @@ impl FfiApp {
                                     actor_state.app_state.current_conversation_id.clone()
                                 {
                                     let now = now_secs();
-                                    let _ = persistence::queries::update_conversation_model(
-                                        actor_state.db.as_ref().expect("db unlocked").conn(),
-                                        &conv_id,
-                                        &model_id,
-                                        now,
-                                    );
+                                    let matching_backend_id = actor_state
+                                        .backends
+                                        .iter()
+                                        .find(|backend| {
+                                            backend
+                                                .models
+                                                .iter()
+                                                .any(|candidate| candidate == &model_id)
+                                        })
+                                        .map(|backend| backend.id.clone());
+                                    if let Some(backend_id) = matching_backend_id {
+                                        let _ =
+                                            persistence::queries::update_conversation_backend_and_model(
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
+                                                &conv_id,
+                                                &backend_id,
+                                                &model_id,
+                                                now,
+                                            );
+                                    } else {
+                                        let _ = persistence::queries::update_conversation_model(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &conv_id,
+                                            &model_id,
+                                            now,
+                                        );
+                                    }
                                     refresh_conversations(&mut actor_state);
                                 }
                             }
@@ -5392,9 +7083,20 @@ impl FfiApp {
                                 );
                                 reload_backends(&mut actor_state);
                                 // If no active backend exists yet, auto-promote this first backend
-                                // to default so the app is immediately usable without a manual
-                                // "Set Default" click (Issue 4: first added backend becomes default).
-                                if actor_state.app_state.active_backend_id.is_none() {
+                                // to default. Also promote over a seeded-but-unconfigured default
+                                // (fresh installs start with Tinfoil selected but no API key).
+                                let active_is_configured = actor_state
+                                    .app_state
+                                    .active_backend_id
+                                    .as_ref()
+                                    .and_then(|active_id| {
+                                        actor_state.backends.iter().find(|b| &b.id == active_id)
+                                    })
+                                    .map(backend_is_user_configured)
+                                    .unwrap_or(false);
+                                if actor_state.app_state.active_backend_id.is_none()
+                                    || !active_is_configured
+                                {
                                     let _ = persistence::queries::set_setting(
                                         actor_state.db.as_ref().expect("db unlocked").conn(),
                                         "default_backend_id",
@@ -5416,17 +7118,11 @@ impl FfiApp {
                                         pinned_tls_public_key_fp_for_backend(&actor_state, &b.id),
                                         core_tx_for_thread.clone(),
                                     );
-                                    let tee_policy = crate::persistence::queries::get_tee_policy(actor_state.db.as_ref().expect("db unlocked").conn())
-                                        .unwrap_or_else(|e| {
-                                            log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
-                                            crate::attestation::TeePolicy::default()
-                                        });
-                                    attestation::spawn_attestation_task(
-                                        &actor_state.runtime,
-                                        b,
+                                    let backend = b.clone();
+                                    spawn_attestation_if_required(
+                                        &actor_state,
+                                        &backend,
                                         core_tx_for_thread.clone(),
-                                        Arc::clone(&actor_state.vcek_cache),
-                                        tee_policy,
                                     );
                                 }
                                 actor_state.app_state.rev += 1;
@@ -5434,79 +7130,12 @@ impl FfiApp {
                             }
 
                             AppAction::RemoveBackend { backend_id } => {
-                                // Determine replacement before deleting (first remaining backend
-                                // that is not the one being removed).
-                                let replacement_id: Option<String> = actor_state
-                                    .backends
-                                    .iter()
-                                    .find(|b| b.id != backend_id)
-                                    .map(|b| b.id.clone());
-
-                                // Reassign conversations on this backend to the replacement (if any)
-                                if let Some(ref repl_id) = replacement_id {
-                                    let conv_ids: Vec<String> = actor_state
-                                        .app_state
-                                        .conversations
-                                        .iter()
-                                        .filter(|c| c.backend_id == backend_id)
-                                        .map(|c| c.id.clone())
-                                        .collect();
-                                    for cid in conv_ids {
-                                        let _ = persistence::queries::update_conversation_backend(
-                                            actor_state.db.as_ref().expect("db unlocked").conn(),
-                                            &cid,
-                                            repl_id,
-                                            now_secs(),
-                                        );
-                                    }
-                                }
-                                let _ = persistence::queries::delete_backend(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                delete_hybrid_profiles_referencing_backend(
+                                    &mut actor_state,
                                     &backend_id,
                                 );
-                                let _ = persistence::queries::delete_backend_health(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                    &backend_id,
-                                );
-                                actor_state
-                                    .keychain
-                                    .delete("mango".to_string(), backend_id.clone());
+                                remove_backend_row_and_reassign(&mut actor_state, &backend_id);
                                 reload_backends(&mut actor_state);
-                                // If the removed backend was the active/default one, auto-promote
-                                // the first remaining backend so the app stays in a valid state
-                                // (Issue 3: deleting the default provider should not leave a void).
-                                let was_active = actor_state.app_state.active_backend_id.as_deref()
-                                    == Some(&backend_id);
-                                if was_active {
-                                    match replacement_id {
-                                        Some(ref repl_id) => {
-                                            let _ = persistence::queries::set_setting(
-                                                actor_state
-                                                    .db
-                                                    .as_ref()
-                                                    .expect("db unlocked")
-                                                    .conn(),
-                                                "default_backend_id",
-                                                repl_id,
-                                            );
-                                            actor_state.app_state.active_backend_id =
-                                                Some(repl_id.clone());
-                                        }
-                                        None => {
-                                            // No backends remain -- clear active and default
-                                            let _ = persistence::queries::set_setting(
-                                                actor_state
-                                                    .db
-                                                    .as_ref()
-                                                    .expect("db unlocked")
-                                                    .conn(),
-                                                "default_backend_id",
-                                                "",
-                                            );
-                                            actor_state.app_state.active_backend_id = None;
-                                        }
-                                    }
-                                }
                                 refresh_backend_summaries(&mut actor_state);
                                 refresh_conversations(&mut actor_state);
                             }
@@ -5549,17 +7178,11 @@ impl FfiApp {
                                 if let Some(b) =
                                     actor_state.backends.iter().find(|b| b.id == backend_id)
                                 {
-                                    let tee_policy = crate::persistence::queries::get_tee_policy(actor_state.db.as_ref().expect("db unlocked").conn())
-                                        .unwrap_or_else(|e| {
-                                            log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
-                                            crate::attestation::TeePolicy::default()
-                                        });
-                                    attestation::spawn_attestation_task(
-                                        &actor_state.runtime,
-                                        b,
+                                    let backend = b.clone();
+                                    spawn_attestation_if_required(
+                                        &actor_state,
+                                        &backend,
                                         core_tx_for_thread.clone(),
-                                        Arc::clone(&actor_state.vcek_cache),
-                                        tee_policy,
                                     );
                                 }
                                 // Reset the periodic timer so the next tick is relative
@@ -5583,6 +7206,227 @@ impl FfiApp {
                                     "default_model_id",
                                     &model_id,
                                 );
+                            }
+
+                            AppAction::SaveHybridProfile { profile } => {
+                                let now = now_secs();
+                                let profile_id = profile.id.clone();
+                                let _ = persistence::queries::upsert_hybrid_profile(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    &profile,
+                                    now,
+                                );
+                                refresh_hybrid_profiles(&mut actor_state);
+                                let virtual_id = routing::hybrid_backend_id(&profile_id);
+                                if actor_state.app_state.active_backend_id.as_deref()
+                                    == Some(virtual_id.as_str())
+                                {
+                                    spawn_attestation_for_preferred(
+                                        &actor_state,
+                                        &virtual_id,
+                                        core_tx_for_thread.clone(),
+                                    );
+                                }
+                            }
+
+                            AppAction::DeleteHybridProfile { profile_id } => {
+                                let virtual_id = routing::hybrid_backend_id(&profile_id);
+                                let _ = persistence::queries::delete_hybrid_profile(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    &profile_id,
+                                );
+                                reassign_virtual_backend_references(&mut actor_state, &virtual_id);
+                                refresh_hybrid_profiles(&mut actor_state);
+                            }
+
+                            AppAction::SetActiveHybridProfile { profile_id } => {
+                                if actor_state
+                                    .app_state
+                                    .hybrid_profiles
+                                    .iter()
+                                    .any(|profile| profile.id == profile_id)
+                                {
+                                    let backend_id = routing::hybrid_backend_id(&profile_id);
+                                    let _ = persistence::queries::set_setting(
+                                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                                        "default_backend_id",
+                                        &backend_id,
+                                    );
+                                    actor_state.app_state.active_backend_id =
+                                        Some(backend_id.clone());
+                                    spawn_attestation_for_preferred(
+                                        &actor_state,
+                                        &backend_id,
+                                        core_tx_for_thread.clone(),
+                                    );
+                                }
+                            }
+
+                            AppAction::SetLocalInferenceEnabled { enabled } => {
+                                log::info!(
+                                    "[local-model] SetLocalInferenceEnabled enabled={enabled}"
+                                );
+                                if !enabled {
+                                    if let Some(active_id) =
+                                        actor_state.current_streaming_backend_id.as_deref()
+                                    {
+                                        if llm::local_models::is_local_backend_id(active_id) {
+                                            actor_state.app_state.last_error = Some(
+                                                "Stop the local generation before turning local inference off."
+                                                    .to_string(),
+                                            );
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                                let _ = persistence::queries::set_setting(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    "local_inference_enabled",
+                                    if enabled { "1" } else { "0" },
+                                );
+                                actor_state.app_state.local_inference_enabled = enabled;
+                                actor_state.app_state.last_error = None;
+                                if !enabled {
+                                    actor_state.local_llm_provider.unload();
+                                }
+                                reconcile_local_model_backends(&mut actor_state);
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
+                            AppAction::DownloadLocalModel { model_id } => {
+                                log::info!(
+                                    "[local-model] DownloadLocalModel action model_id={model_id}"
+                                );
+                                if actor_state.app_state.local_download_progress.is_some() {
+                                    log::warn!(
+                                        "[local-model] download rejected: another download is active"
+                                    );
+                                    actor_state.app_state.last_error =
+                                        Some("A local model download is already running.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                let maybe_preset = llm::local_models::find_local_model(&model_id);
+                                let Some(preset) = maybe_preset else {
+                                    log::warn!(
+                                        "[local-model] download rejected: unknown model {model_id}"
+                                    );
+                                    actor_state.app_state.last_error =
+                                        Some(format!("Unknown local model: {model_id}"));
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                };
+
+                                refresh_local_model_state(&mut actor_state);
+                                let cap = &actor_state.app_state.local_device_capability;
+                                if cap.max_model_bytes == 0
+                                    || cap.max_model_bytes < preset.size_bytes
+                                    || cap.total_ram_bytes < preset.min_ram_bytes
+                                {
+                                    log::warn!(
+                                        "[local-model] download rejected: capability max={} total_ram={} required_size={} required_ram={} reason={:?}",
+                                        cap.max_model_bytes,
+                                        cap.total_ram_bytes,
+                                        preset.size_bytes,
+                                        preset.min_ram_bytes,
+                                        cap.reason
+                                    );
+                                    actor_state.app_state.last_error = Some(
+                                        cap.reason.clone().unwrap_or_else(|| {
+                                            "This device is not marked capable of running the selected local model."
+                                                .to_string()
+                                        }),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                actor_state.app_state.local_download_progress =
+                                    Some(LocalModelDownloadProgress {
+                                        model_id: preset.id.clone(),
+                                        downloaded_bytes: 0,
+                                        total_bytes: Some(preset.size_bytes),
+                                        stage: "downloading".to_string(),
+                                    });
+                                actor_state.app_state.last_error = None;
+                                log::info!(
+                                    "[local-model] starting download model_id={} url={}",
+                                    preset.id,
+                                    preset.url
+                                );
+                                spawn_local_model_download(
+                                    &actor_state.runtime,
+                                    actor_state.local_llm_provider.clone(),
+                                    actor_state.data_dir.clone(),
+                                    preset.id,
+                                    core_tx_for_thread.clone(),
+                                );
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
+                            AppAction::DeleteLocalModel { model_id } => {
+                                let Some(preset) = llm::local_models::find_local_model(&model_id)
+                                else {
+                                    actor_state.app_state.last_error =
+                                        Some(format!("Unknown local model: {model_id}"));
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                };
+                                let backend_id = llm::local_models::local_backend_id(&preset.id);
+                                if actor_state.current_streaming_backend_id.as_deref()
+                                    == Some(backend_id.as_str())
+                                {
+                                    actor_state.app_state.last_error = Some(
+                                        "Stop the local generation before deleting this model."
+                                            .to_string(),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                let path = llm::local_models::local_model_path(
+                                    &actor_state.data_dir,
+                                    &preset,
+                                );
+                                let path_string = path.to_string_lossy().to_string();
+                                if actor_state
+                                    .local_llm_provider
+                                    .loaded_model_path()
+                                    .as_deref()
+                                    == Some(path_string.as_str())
+                                {
+                                    actor_state.local_llm_provider.unload();
+                                }
+                                let _ = std::fs::remove_file(&path);
+                                let _ = std::fs::remove_file(path.with_extension("gguf.partial"));
+                                let _ = llm::local_models::remove_verified_marker(
+                                    &actor_state.data_dir,
+                                    &preset,
+                                );
+                                delete_hybrid_profiles_referencing_backend(
+                                    &mut actor_state,
+                                    &backend_id,
+                                );
+                                remove_backend_row_and_reassign(&mut actor_state, &backend_id);
+                                reconcile_local_model_backends(&mut actor_state);
+                                actor_state.app_state.toast =
+                                    Some(format!("Deleted local model: {}", preset.name));
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
                             AppAction::OverrideConversationBackend {
@@ -5609,15 +7453,16 @@ impl FfiApp {
                                             Some(OnboardingStep::BackendSetup)
                                         }
                                         OnboardingStep::BackendSetup => {
-                                            // Require at least one backend with a non-empty api_key
-                                            let has_key = actor_state
+                                            // Require at least one configured backend. Local
+                                            // Ollama/llama.cpp is intentionally keyless.
+                                            let has_configured_backend = actor_state
                                                 .backends
                                                 .iter()
-                                                .any(|b| !b.api_key.is_empty());
-                                            if has_key {
+                                                .any(backend_is_user_configured);
+                                            if has_configured_backend {
                                                 Some(OnboardingStep::AttestationDemo)
                                             } else {
-                                                None // no-op: no api key set yet
+                                                None // no-op: no provider configured yet
                                             }
                                         }
                                         OnboardingStep::AttestationDemo => {
@@ -5720,11 +7565,10 @@ impl FfiApp {
                                 .ok()
                                 .flatten()
                                 .or_else(|| {
-                                    actor_state
-                                        .backends
-                                        .iter()
-                                        .find(|b| b.id == default_backend)
-                                        .and_then(|b| b.models.first().cloned())
+                                    default_model_for_preferred(
+                                        &actor_state,
+                                        Some(default_backend.as_str()),
+                                    )
                                 })
                                 .unwrap_or_default();
                                 let row = persistence::ConversationRow {
@@ -5840,17 +7684,11 @@ impl FfiApp {
                                             ),
                                             core_tx_for_thread.clone(),
                                         );
-                                        let tee_policy = crate::persistence::queries::get_tee_policy(actor_state.db.as_ref().expect("db unlocked").conn())
-                                            .unwrap_or_else(|e| {
-                                                log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
-                                                crate::attestation::TeePolicy::default()
-                                            });
-                                        attestation::spawn_attestation_task(
-                                            &actor_state.runtime,
-                                            b,
+                                        let backend = b.clone();
+                                        spawn_attestation_if_required(
+                                            &actor_state,
+                                            &backend,
                                             core_tx_for_thread.clone(),
-                                            Arc::clone(&actor_state.vcek_cache),
-                                            tee_policy,
                                         );
                                     }
                                     refresh_backend_summaries(&mut actor_state);
@@ -6312,38 +8150,73 @@ impl FfiApp {
                                     );
                                 }
                                 actor_state.app_state.auto_discover_tools_enabled = enabled;
+                                if actor_state.db.is_some() {
+                                    refresh_current_contextvm_dispatch(&mut actor_state);
+                                }
                             }
 
                             AppAction::SetContextvmToolEnabled { tool_id, enabled } => {
-                                if let Some(db) = actor_state.db.as_ref() {
-                                    let conn = db.conn();
-                                    let _ =
-                                        persistence::queries::update_contextvm_tool_enabled(
+                                if let Some(contextvm_tools) =
+                                    actor_state.db.as_ref().and_then(|db| {
+                                        let conn = db.conn();
+                                        let _ = persistence::queries::update_contextvm_tool_enabled(
                                             conn, &tool_id, enabled,
                                         );
-                                    if let Ok(rows) =
                                         persistence::queries::list_all_contextvm_tools(conn)
-                                    {
-                                        let usage_map = aggregate_contextvm_tool_usage(conn);
-                                        let now_secs_proj = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .map(|d| d.as_secs() as i64)
-                                            .unwrap_or(0);
-                                        actor_state.app_state.contextvm_tools = rows
-                                            .into_iter()
-                                            .map(|r| {
-                                                row_to_discoverable_tool(
-                                                    r,
-                                                    &usage_map,
-                                                    now_secs_proj,
-                                                )
+                                            .ok()
+                                            .map(|rows| {
+                                                let usage_map =
+                                                    aggregate_contextvm_tool_usage(conn);
+                                                let now_secs_proj = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .map(|d| d.as_secs() as i64)
+                                                    .unwrap_or(0);
+                                                rows.into_iter()
+                                                    .map(|r| {
+                                                        row_to_discoverable_tool(
+                                                            r,
+                                                            &usage_map,
+                                                            now_secs_proj,
+                                                        )
+                                                    })
+                                                    .collect()
                                             })
-                                            .collect();
-                                    }
-                                    // Re-hydrate the active conversation's dispatch map.
-                                    let descs = load_enabled_descriptors(conn);
-                                    actor_state.current_conv_contextvm_tools =
-                                        crate::contextvm::build_dispatch_map(&descs);
+                                    })
+                                {
+                                    actor_state.app_state.contextvm_tools = contextvm_tools;
+                                }
+                                if actor_state.db.is_some() {
+                                    refresh_current_contextvm_dispatch(&mut actor_state);
+                                }
+                            }
+
+                            // ── Phase 38: trusted providers ──────────────────────
+                            AppAction::AddTrustedProvider { pubkey, label } => {
+                                if let Some(trusted_providers) = actor_state.db.as_ref().map(|db| {
+                                    let conn = db.conn();
+                                    let row = persistence::queries::TrustedProviderRow {
+                                        pubkey: pubkey.clone(),
+                                        label: label.clone(),
+                                        added_at: now_secs(),
+                                    };
+                                    let _ = persistence::queries::add_trusted_provider(conn, &row);
+                                    load_trusted_providers(conn)
+                                }) {
+                                    actor_state.app_state.trusted_providers = trusted_providers;
+                                    refresh_current_contextvm_dispatch(&mut actor_state);
+                                }
+                            }
+
+                            AppAction::RemoveTrustedProvider { pubkey } => {
+                                if let Some(trusted_providers) = actor_state.db.as_ref().map(|db| {
+                                    let conn = db.conn();
+                                    let _ = persistence::queries::remove_trusted_provider(
+                                        conn, &pubkey,
+                                    );
+                                    load_trusted_providers(conn)
+                                }) {
+                                    actor_state.app_state.trusted_providers = trusted_providers;
+                                    refresh_current_contextvm_dispatch(&mut actor_state);
                                 }
                             }
 
@@ -6357,8 +8230,7 @@ impl FfiApp {
                                 }
                                 // Lazy-load the secret key.
                                 if actor_state.contextvm_secret_key.is_empty() {
-                                    let conn =
-                                        actor_state.db.as_ref().expect("db unlocked").conn();
+                                    let conn = actor_state.db.as_ref().expect("db unlocked").conn();
                                     if let Ok(k) =
                                         crate::contextvm::invocation::load_or_create_secret_key(
                                             conn,
@@ -6374,11 +8246,7 @@ impl FfiApp {
                                 // (UI-SPEC §Interaction → Optimistic render).
                                 actor_state.app_state.contextvm_discovery_state =
                                     ContextvmDiscoveryState::Loading;
-                                emit_state(
-                                    &actor_state.app_state,
-                                    &shared_for_core,
-                                    &update_tx,
-                                );
+                                emit_state(&actor_state.app_state, &shared_for_core, &update_tx);
 
                                 let core_tx_disc = core_tx_for_thread.clone();
                                 actor_state.runtime.spawn(async move {
@@ -6398,20 +8266,26 @@ impl FfiApp {
                                 conversation_id,
                                 enabled,
                             } => {
-                                let now = now_secs();
-                                let _ = persistence::queries::update_conversation_tools_enabled(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                    &conversation_id,
-                                    enabled,
-                                    now,
-                                );
-                                // Update in-memory tracking if this is the active conversation.
-                                if actor_state.app_state.current_conversation_id.as_deref()
-                                    == Some(&conversation_id)
-                                {
-                                    actor_state.current_conv_tools_enabled = enabled;
+                                if let Some(db) = actor_state.db.as_ref() {
+                                    let now = now_secs();
+                                    let _ = persistence::queries::update_conversation_tools_enabled(
+                                        db.conn(),
+                                        &conversation_id,
+                                        enabled,
+                                        now,
+                                    );
+                                    // Update in-memory tracking if this is the active conversation.
+                                    if actor_state.app_state.current_conversation_id.as_deref()
+                                        == Some(&conversation_id)
+                                    {
+                                        actor_state.current_conv_tools_enabled = enabled;
+                                    }
+                                    refresh_conversations(&mut actor_state);
+                                } else {
+                                    log::warn!(
+                                        "[action] SetConversationToolsEnabled dispatched while DB is locked; ignoring"
+                                    );
                                 }
-                                refresh_conversations(&mut actor_state);
                             }
 
                             // ── Phase 28: Authentication actions ─────────────────────────
@@ -6989,7 +8863,8 @@ impl FfiApp {
                                             "dek".to_string(),
                                             dek_hex,
                                         );
-                                        let _ = actor_state.bootstrap.write_cold_launch_bypass(true);
+                                        let _ =
+                                            actor_state.bootstrap.write_cold_launch_bypass(true);
                                         log::info!("[auth] SetLockTimeout(Never): DEK cached in keychain for cold-launch bypass");
                                     } else {
                                         log::warn!("[auth] SetLockTimeout(Never) with no live DEK — cache not written; next unlock will re-cache");
@@ -7019,9 +8894,9 @@ impl FfiApp {
                                 // inserting on the first invalid pattern.
                                 let mut invalid: Option<String> = None;
                                 for g in &exclusion_globs {
-                                    if let Err(e) = rag::directory_sync::validate_glob_pattern(g)
-                                    {
-                                        invalid = Some(format!("invalid exclusion glob '{g}': {e}"));
+                                    if let Err(e) = rag::directory_sync::validate_glob_pattern(g) {
+                                        invalid =
+                                            Some(format!("invalid exclusion glob '{g}': {e}"));
                                         break;
                                     }
                                 }
@@ -7056,8 +8931,9 @@ impl FfiApp {
                                                 load_directory_sources_summary(&actor_state);
                                         }
                                         Err(e) => {
-                                            actor_state.app_state.last_error =
-                                                Some(format!("Failed to add directory source: {e}"));
+                                            actor_state.app_state.last_error = Some(format!(
+                                                "Failed to add directory source: {e}"
+                                            ));
                                         }
                                     }
                                 }
@@ -7108,21 +8984,29 @@ impl FfiApp {
 
                                     // 1) Removals — delete doc + chunks + usearch keys.
                                     for rel_path in &removed_paths {
-                                        let maybe_doc_id = existing_by_path
-                                            .get(rel_path)
-                                            .and_then(|d| d.clone());
+                                        let maybe_doc_id =
+                                            existing_by_path.get(rel_path).and_then(|d| d.clone());
                                         if let Some(doc_id) = maybe_doc_id {
-                                            let rowids = persistence::queries::delete_chunks_for_document(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
-                                                &doc_id,
-                                            )
-                                            .unwrap_or_default();
+                                            let rowids =
+                                                persistence::queries::delete_chunks_for_document(
+                                                    actor_state
+                                                        .db
+                                                        .as_ref()
+                                                        .expect("db unlocked")
+                                                        .conn(),
+                                                    &doc_id,
+                                                )
+                                                .unwrap_or_default();
                                             for rid in &rowids {
                                                 let _ =
                                                     actor_state.vector_index.remove(*rid as u64);
                                             }
                                             let _ = persistence::queries::delete_document(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
                                                 &doc_id,
                                             );
                                             actor_state
@@ -7148,17 +9032,26 @@ impl FfiApp {
                                             .get(&entry.relative_path)
                                             .and_then(|d| d.clone())
                                         {
-                                            let old_rowids = persistence::queries::delete_chunks_for_document(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
-                                                &old_doc_id,
-                                            )
-                                            .unwrap_or_default();
+                                            let old_rowids =
+                                                persistence::queries::delete_chunks_for_document(
+                                                    actor_state
+                                                        .db
+                                                        .as_ref()
+                                                        .expect("db unlocked")
+                                                        .conn(),
+                                                    &old_doc_id,
+                                                )
+                                                .unwrap_or_default();
                                             for rid in &old_rowids {
                                                 let _ =
                                                     actor_state.vector_index.remove(*rid as u64);
                                             }
                                             let _ = persistence::queries::delete_document(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
                                                 &old_doc_id,
                                             );
                                             actor_state
@@ -7223,7 +9116,11 @@ impl FfiApp {
                                         let mut texts: Vec<String> = Vec::new();
                                         for (i, ch) in chunks.iter().enumerate() {
                                             if let Ok(rid) = persistence::queries::insert_chunk(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
                                                 &document_id,
                                                 i as i64,
                                                 &ch.text,
@@ -7262,7 +9159,11 @@ impl FfiApp {
                                             // the next sync retry this file.
                                             let rollback_rowids =
                                                 persistence::queries::delete_chunks_for_document(
-                                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                    actor_state
+                                                        .db
+                                                        .as_ref()
+                                                        .expect("db unlocked")
+                                                        .conn(),
                                                     &document_id,
                                                 )
                                                 .unwrap_or_default();
@@ -7271,7 +9172,11 @@ impl FfiApp {
                                                     actor_state.vector_index.remove(*rid as u64);
                                             }
                                             let _ = persistence::queries::delete_document(
-                                                actor_state.db.as_ref().expect("db unlocked").conn(),
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
                                                 &document_id,
                                             );
                                             batch_errors.push(format!(
@@ -7319,11 +9224,16 @@ impl FfiApp {
 
                                     // Update source bookkeeping.
                                     if is_final_batch {
-                                        let new_count = persistence::queries::count_directory_files(
-                                            actor_state.db.as_ref().expect("db unlocked").conn(),
-                                            &source_id,
-                                        )
-                                        .unwrap_or(0);
+                                        let new_count =
+                                            persistence::queries::count_directory_files(
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
+                                                &source_id,
+                                            )
+                                            .unwrap_or(0);
                                         let _ =
                                             persistence::queries::update_directory_source_last_synced(
                                                 actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -7341,8 +9251,9 @@ impl FfiApp {
                                         let msg = batch_errors.join("; ");
                                         for s in &mut actor_state.app_state.directory_sources {
                                             if s.id == source_id {
-                                                s.sync_status =
-                                                    DirectorySyncStatus::Error { message: msg.clone() };
+                                                s.sync_status = DirectorySyncStatus::Error {
+                                                    message: msg.clone(),
+                                                };
                                             }
                                         }
                                     } else if is_final_batch {
@@ -7367,23 +9278,24 @@ impl FfiApp {
                                 .unwrap_or_default();
                                 for f in &files {
                                     if let Some(doc_id) = &f.document_id {
-                                        let rowids = persistence::queries::delete_chunks_for_document(
-                                            actor_state.db.as_ref().expect("db unlocked").conn(),
-                                            doc_id,
-                                        )
-                                        .unwrap_or_default();
+                                        let rowids =
+                                            persistence::queries::delete_chunks_for_document(
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
+                                                doc_id,
+                                            )
+                                            .unwrap_or_default();
                                         for rid in &rowids {
-                                            let _ =
-                                                actor_state.vector_index.remove(*rid as u64);
+                                            let _ = actor_state.vector_index.remove(*rid as u64);
                                         }
                                         let _ = persistence::queries::delete_document(
                                             actor_state.db.as_ref().expect("db unlocked").conn(),
                                             doc_id,
                                         );
-                                        actor_state
-                                            .app_state
-                                            .documents
-                                            .retain(|d| &d.id != doc_id);
+                                        actor_state.app_state.documents.retain(|d| &d.id != doc_id);
                                     }
                                 }
                                 if !files.is_empty() {
@@ -7401,9 +9313,9 @@ impl FfiApp {
                             AppAction::SetDirectoryExclusions { source_id, globs } => {
                                 let mut invalid: Option<String> = None;
                                 for g in &globs {
-                                    if let Err(e) = rag::directory_sync::validate_glob_pattern(g)
-                                    {
-                                        invalid = Some(format!("invalid exclusion glob '{g}': {e}"));
+                                    if let Err(e) = rag::directory_sync::validate_glob_pattern(g) {
+                                        invalid =
+                                            Some(format!("invalid exclusion glob '{g}': {e}"));
                                         break;
                                     }
                                 }
@@ -7584,12 +9496,19 @@ impl FfiApp {
                                 // Phase 20: Capture backend ID before take() for extraction task
                                 let extraction_backend_id =
                                     actor_state.current_streaming_backend_id.clone();
+                                let extraction_model_id =
+                                    actor_state.current_streaming_model_id.clone();
 
                                 // Mark the streaming backend as healthy and clear failover state
                                 if let Some(backend_id) =
                                     actor_state.current_streaming_backend_id.take()
                                 {
                                     actor_state.router.mark_success(&backend_id);
+                                    set_inline_secure_turn_verified(
+                                        &mut actor_state,
+                                        &backend_id,
+                                        true,
+                                    );
                                     let _ = persistence::queries::upsert_backend_health(
                                         actor_state.db.as_ref().expect("db unlocked").conn(),
                                         &persistence::BackendHealthRow {
@@ -7601,7 +9520,9 @@ impl FfiApp {
                                         },
                                     );
                                 }
+                                actor_state.current_streaming_model_id = None;
                                 actor_state.failover_exclude.clear();
+                                actor_state.current_streaming_has_image_attachment = false;
 
                                 actor_state.app_state.busy_state = BusyState::Idle;
                                 actor_state.active_stream_token = None;
@@ -7631,16 +9552,18 @@ impl FfiApp {
                                                 .backends
                                                 .iter()
                                                 .find(|b| b.id == *bid)
+                                                .filter(|b| !is_local_on_device_backend(b))
                                                 .cloned()
                                             {
                                                 let conv_id = completed_conv_id.clone();
-                                                let model = actor_state
-                                                    .app_state
-                                                    .conversations
-                                                    .iter()
-                                                    .find(|c| c.id == conv_id)
-                                                    .map(|c| c.model_id.clone())
-                                                    .filter(|m| !m.is_empty())
+                                                let model = extraction_model_id
+                                                    .clone()
+                                                    .filter(|m| {
+                                                        backend
+                                                            .models
+                                                            .iter()
+                                                            .any(|candidate| candidate == m)
+                                                    })
                                                     .unwrap_or_else(|| {
                                                         backend
                                                             .models
@@ -7679,17 +9602,27 @@ impl FfiApp {
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
                             llm::InternalEvent::StreamError { error } => {
+                                if let Some(backend_id) =
+                                    actor_state.current_streaming_backend_id.clone()
+                                {
+                                    set_inline_secure_turn_verified(
+                                        &mut actor_state,
+                                        &backend_id,
+                                        false,
+                                    );
+                                }
                                 // Determine if this error class warrants failover
                                 let is_rate_limited =
                                     matches!(&error, llm::LlmError::RateLimited { .. });
-                                let should_failover = match &error {
-                                    llm::LlmError::NetworkError { .. } => true,
-                                    llm::LlmError::ApiError { status_code, .. } => {
-                                        *status_code == 0 || *status_code >= 500
-                                    }
-                                    llm::LlmError::RateLimited {
+                                let should_failover = should_failover_stream_error(
+                                    &error,
+                                    actor_state.current_streaming_has_image_attachment,
+                                );
+                                if should_failover {
+                                    if let llm::LlmError::RateLimited {
                                         retry_after_secs, ..
-                                    } => {
+                                    } = &error
+                                    {
                                         // Mark 429-specific backoff (shorter curve than general failure)
                                         if let Some(failed_id) =
                                             &actor_state.current_streaming_backend_id
@@ -7700,10 +9633,8 @@ impl FfiApp {
                                                 *retry_after_secs,
                                             );
                                         }
-                                        true // trigger failover attempt
                                     }
-                                    _ => false, // AuthError, ModelNotFound: no failover
-                                };
+                                }
 
                                 if should_failover {
                                     if let Some(failed_id) =
@@ -7755,52 +9686,72 @@ impl FfiApp {
                                         if let Some(b) =
                                             actor_state.backends.iter().find(|b| b.id == failed_id)
                                         {
-                                            spawn_health_check(
-                                                &actor_state.runtime,
-                                                b.id.clone(),
-                                                b.base_url.clone(),
-                                                b.api_key.clone(),
-                                                pinned_tls_public_key_fp_for_backend(
-                                                    &actor_state,
-                                                    &b.id,
-                                                ),
-                                                core_tx_for_thread.clone(),
-                                            );
+                                            if !is_local_on_device_backend(b) {
+                                                spawn_health_check(
+                                                    &actor_state.runtime,
+                                                    b.id.clone(),
+                                                    b.base_url.clone(),
+                                                    b.api_key.clone(),
+                                                    pinned_tls_public_key_fp_for_backend(
+                                                        &actor_state,
+                                                        &b.id,
+                                                    ),
+                                                    core_tx_for_thread.clone(),
+                                                );
+                                            }
                                         }
 
-                                        // Try next backend in the failover chain
-                                        let model_id = actor_state
-                                            .app_state
-                                            .current_conversation_id
-                                            .as_ref()
-                                            .and_then(|cid| {
-                                                actor_state
-                                                    .app_state
-                                                    .conversations
-                                                    .iter()
-                                                    .find(|c| &c.id == cid)
-                                            })
-                                            .map(|c| c.model_id.clone())
-                                            .unwrap_or_default();
-                                        let exclude_refs: Vec<&str> = actor_state
-                                            .failover_exclude
-                                            .iter()
-                                            .map(|s| s.as_str())
-                                            .collect();
-                                        let next = actor_state
-                                            .router
-                                            .select_backend(
-                                                &actor_state.backends,
-                                                actor_state.app_state.active_backend_id.as_deref(),
-                                                &model_id,
-                                                &exclude_refs,
-                                            )
-                                            .cloned();
+                                        // Try next backend in the failover chain. For hybrid
+                                        // conversations, the persisted conversation model is
+                                        // the local default; retries must use the concrete
+                                        // model picked by the resolver for this stream.
+                                        let model_id = model_id_for_stream_retry(&actor_state);
+                                        let mut retry_exclude =
+                                            actor_state.failover_exclude.clone();
+                                        let mut next = None;
+                                        loop {
+                                            let exclude_refs: Vec<&str> =
+                                                retry_exclude.iter().map(|s| s.as_str()).collect();
+                                            let candidate = actor_state
+                                                .router
+                                                .select_backend(
+                                                    &actor_state.backends,
+                                                    actor_state
+                                                        .app_state
+                                                        .active_backend_id
+                                                        .as_deref(),
+                                                    &model_id,
+                                                    &exclude_refs,
+                                                )
+                                                .cloned();
+                                            let Some(candidate) = candidate else {
+                                                break;
+                                            };
+                                            if !hybrid_retry_candidate_allowed(
+                                                &actor_state,
+                                                &candidate,
+                                            ) {
+                                                retry_exclude.push(candidate.id.clone());
+                                                continue;
+                                            }
+                                            if retry_backend_satisfies_preflight(
+                                                &actor_state,
+                                                &candidate,
+                                                core_tx_for_thread.clone(),
+                                            ) {
+                                                next = Some(candidate);
+                                                break;
+                                            }
+                                            retry_exclude.push(candidate.id.clone());
+                                        }
+                                        actor_state.failover_exclude = retry_exclude;
 
                                         if let Some(next_backend) = next {
                                             actor_state.current_streaming_backend_id =
                                                 Some(next_backend.id.clone());
                                             actor_state.current_streaming_text.clear();
+                                            actor_state.current_streaming_has_image_attachment =
+                                                false;
                                             sync_visible_streaming_text(&mut actor_state);
                                             let chat_messages = actor_state
                                                 .current_streaming_conversation_id
@@ -7823,22 +9774,48 @@ impl FfiApp {
                                                     .cloned()
                                                     .unwrap_or_default()
                                             };
+                                            actor_state.current_streaming_model_id =
+                                                Some(next_model.clone());
+                                            update_hybrid_route_summary_for_retry(
+                                                &mut actor_state,
+                                                &next_backend,
+                                                &next_model,
+                                                &failed_id,
+                                            );
                                             actor_state.app_state.busy_state =
                                                 BusyState::Streaming {
                                                     model: next_model.clone(),
                                                 };
-                                            let token = llm::spawn_streaming_task(
-                                                &actor_state.runtime,
-                                                &next_backend,
-                                                &next_model,
-                                                chat_messages,
-                                                pinned_tls_public_key_fp_for_backend(
-                                                    &actor_state,
-                                                    &next_backend.id,
-                                                ),
-                                                core_tx_for_thread.clone(),
-                                                actor_state.router.get_semaphore(&next_backend.id),
-                                            );
+                                            let token = if is_local_on_device_backend(&next_backend)
+                                            {
+                                                llm::spawn_local_streaming_task(
+                                                    &actor_state.runtime,
+                                                    actor_state.local_llm_provider.clone(),
+                                                    actor_state.data_dir.clone(),
+                                                    &next_backend,
+                                                    &next_model,
+                                                    chat_messages,
+                                                    core_tx_for_thread.clone(),
+                                                    actor_state
+                                                        .router
+                                                        .get_semaphore(&next_backend.id),
+                                                )
+                                            } else {
+                                                llm::spawn_streaming_task(
+                                                    &actor_state.runtime,
+                                                    &next_backend,
+                                                    &next_model,
+                                                    chat_messages,
+                                                    pinned_tls_public_key_fp_for_backend(
+                                                        &actor_state,
+                                                        &next_backend.id,
+                                                    ),
+                                                    core_tx_for_thread.clone(),
+                                                    actor_state
+                                                        .router
+                                                        .get_semaphore(&next_backend.id),
+                                                )
+                                            };
                                             actor_state.active_stream_token = Some(token);
                                             refresh_backend_summaries(&mut actor_state);
                                             actor_state.app_state.rev += 1;
@@ -7870,8 +9847,10 @@ impl FfiApp {
                                     actor_state.app_state.streaming_text = None;
                                 }
                                 actor_state.current_streaming_backend_id = None;
+                                actor_state.current_streaming_model_id = None;
                                 actor_state.current_streaming_conversation_id = None;
                                 actor_state.current_streaming_text.clear();
+                                actor_state.current_streaming_has_image_attachment = false;
                                 actor_state.failover_exclude.clear();
                                 refresh_backend_summaries(&mut actor_state);
                                 actor_state.app_state.rev += 1;
@@ -7893,8 +9872,13 @@ impl FfiApp {
                                     actor_state.app_state.streaming_text =
                                         Some(actor_state.current_streaming_text.clone());
                                 }
+                                actor_state.current_streaming_backend_id = None;
+                                actor_state.current_streaming_model_id = None;
                                 actor_state.current_streaming_conversation_id = None;
                                 actor_state.current_streaming_text.clear();
+                                actor_state.current_streaming_has_image_attachment = false;
+                                actor_state.failover_exclude.clear();
+                                refresh_backend_summaries(&mut actor_state);
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
@@ -7910,7 +9894,15 @@ impl FfiApp {
                                 // Helper threads shape/freshness/orchestrated_components from
                                 // AttestationEvent::Verified into AttestationRecord (RED-09 / RED-11).
                                 let (backend_id, status, record_opt, failed_is_transient) =
-                                    attestation::map_event_to_record_and_status(att_event, now_secs);
+                                    attestation::map_event_to_record_and_status(
+                                        att_event, now_secs,
+                                    );
+                                let status_is_verified =
+                                    matches!(status, AttestationStatus::Verified { .. });
+                                let failure_reason = match &status {
+                                    AttestationStatus::Failed { reason } => Some(reason.clone()),
+                                    _ => None,
+                                };
 
                                 // Upsert into AppState.attestation_statuses.
                                 //
@@ -7933,7 +9925,9 @@ impl FfiApp {
                                         // Transient fetch/network error AND current status is Verified:
                                         // preserve the Verified status — the backend is probably fine,
                                         // we just couldn't reach AMD KDS / the attestation endpoint.
-                                        (AttestationStatus::Verified { .. }, _) if failed_is_transient => {
+                                        (AttestationStatus::Verified { .. }, _)
+                                            if failed_is_transient =>
+                                        {
                                             false
                                         }
                                         // Genuine verification failure: always downgrade, even from Verified.
@@ -7994,6 +9988,9 @@ impl FfiApp {
                                         actor_state.db.as_ref().expect("db unlocked").conn(),
                                     );
                                     let _ = cache.put(&record);
+                                    actor_state
+                                        .attestation_expires_at
+                                        .insert(record.backend_id.clone(), record.expires_at);
                                     if let Some(fp) = tls_public_key_fp {
                                         actor_state
                                             .attested_tls_public_keys
@@ -8021,15 +10018,16 @@ impl FfiApp {
                                     // Write blob to shared HashMap for FFI access (D-12)
                                     match shared_reports_for_core.write() {
                                         Ok(mut g) => {
-                                            g.insert(backend_id, blob);
+                                            g.insert(backend_id.clone(), blob);
                                         }
                                         Err(p) => {
-                                            p.into_inner().insert(backend_id, blob);
+                                            p.into_inner().insert(backend_id.clone(), blob);
                                         }
                                     }
                                 } else {
                                     if !failed_is_transient {
                                         actor_state.attested_tls_public_keys.remove(&backend_id);
+                                        actor_state.attestation_expires_at.remove(&backend_id);
                                     }
                                     // Failed attestation: also clear attestation_stage for onboarding
                                     if matches!(
@@ -8041,6 +10039,15 @@ impl FfiApp {
                                         actor_state.app_state.onboarding.attestation_stage = None;
                                     }
                                 }
+
+                                handle_pending_attested_send_after_attestation(
+                                    &mut actor_state,
+                                    &backend_id,
+                                    status_is_verified,
+                                    failed_is_transient,
+                                    failure_reason.as_deref(),
+                                    &core_tx_for_thread,
+                                );
 
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
@@ -8076,20 +10083,16 @@ impl FfiApp {
                                             };
                                         actor_state.app_state.onboarding.attestation_stage =
                                             Some("Connecting to backend...".to_string());
-                                        if let Some(b) =
-                                            actor_state.backends.iter().find(|b| b.id == backend_id)
+                                        if let Some(b) = actor_state
+                                            .backends
+                                            .iter()
+                                            .find(|b| b.id == backend_id)
+                                            .cloned()
                                         {
-                                            let tee_policy = crate::persistence::queries::get_tee_policy(actor_state.db.as_ref().expect("db unlocked").conn())
-                                                .unwrap_or_else(|e| {
-                                                    log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
-                                                    crate::attestation::TeePolicy::default()
-                                                });
-                                            attestation::spawn_attestation_task(
-                                                &actor_state.runtime,
-                                                b,
+                                            spawn_attestation_if_required(
+                                                &actor_state,
+                                                &b,
                                                 core_tx_for_thread.clone(),
-                                                Arc::clone(&actor_state.vcek_cache),
-                                                tee_policy,
                                             );
                                         }
                                     } else {
@@ -8138,6 +10141,41 @@ impl FfiApp {
                                     log::warn!(target: "health_check", "[health_check] backend={} probe failed consecutive_failures={}", backend_id, failures);
                                 }
                                 refresh_backend_summaries(&mut actor_state);
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+                            llm::InternalEvent::LocalModelDownloadProgress(progress) => {
+                                actor_state.app_state.local_download_progress = Some(progress);
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+                            llm::InternalEvent::LocalModelDownloadComplete { model_id, result } => {
+                                actor_state.app_state.local_download_progress = None;
+                                match result {
+                                    Ok(()) => {
+                                        log::info!(
+                                            "[local-model] download complete model_id={model_id}"
+                                        );
+                                        reconcile_local_model_backends(&mut actor_state);
+                                        let model_name = actor_state
+                                            .app_state
+                                            .local_models
+                                            .iter()
+                                            .find(|m| m.id == model_id)
+                                            .map(|m| m.name.clone())
+                                            .unwrap_or(model_id);
+                                        actor_state.app_state.toast =
+                                            Some(format!("Downloaded local model: {model_name}"));
+                                        actor_state.app_state.last_error = None;
+                                    }
+                                    Err(message) => {
+                                        log::warn!(
+                                            "[local-model] download failed model_id={model_id}: {message}"
+                                        );
+                                        refresh_local_model_state(&mut actor_state);
+                                        actor_state.app_state.last_error = Some(message);
+                                    }
+                                }
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
@@ -8193,22 +10231,11 @@ impl FfiApp {
                                 if let Some(active_id) =
                                     actor_state.app_state.active_backend_id.clone()
                                 {
-                                    if let Some(backend) =
-                                        actor_state.backends.iter().find(|b| b.id == active_id)
-                                    {
-                                        let tee_policy = crate::persistence::queries::get_tee_policy(actor_state.db.as_ref().expect("db unlocked").conn())
-                                            .unwrap_or_else(|e| {
-                                                log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
-                                                crate::attestation::TeePolicy::default()
-                                            });
-                                        attestation::spawn_attestation_task(
-                                            &actor_state.runtime,
-                                            backend,
-                                            core_tx_for_thread.clone(),
-                                            Arc::clone(&actor_state.vcek_cache),
-                                            tee_policy,
-                                        );
-                                    }
+                                    spawn_attestation_for_preferred(
+                                        &actor_state,
+                                        &active_id,
+                                        core_tx_for_thread.clone(),
+                                    );
                                 }
                                 // No state mutation needed — attestation result arrives separately.
                                 continue;
@@ -8590,31 +10617,31 @@ impl FfiApp {
                                                     .flatten()
                                                     .map(|r| r.enabled)
                                                     .unwrap_or(false);
-                                                let row =
-                                                    persistence::queries::ContextvmToolRow {
-                                                        id,
-                                                        tool_name: tool.tool_name.clone(),
-                                                        display_name: None,
-                                                        description: tool.description.clone(),
-                                                        provider_pubkey: tool
-                                                            .provider_pubkey_hex
-                                                            .clone(),
-                                                        provider_display_name: tool
-                                                            .provider_display_name
-                                                            .clone(),
-                                                        schema_json: tool.schema_json.clone(),
-                                                        enabled: preserved_enabled,
-                                                        last_seen_at: now,
-                                                    };
-                                                let _ =
-                                                    persistence::queries::upsert_contextvm_tool(
-                                                        conn, &row,
-                                                    );
+                                                let row = persistence::queries::ContextvmToolRow {
+                                                    id,
+                                                    tool_name: tool.tool_name.clone(),
+                                                    display_name: None,
+                                                    description: tool.description.clone(),
+                                                    provider_pubkey: tool
+                                                        .provider_pubkey_hex
+                                                        .clone(),
+                                                    provider_display_name: tool
+                                                        .provider_display_name
+                                                        .clone(),
+                                                    provider_name: tool.provider_name.clone(),
+                                                    provider_about: tool.provider_about.clone(),
+                                                    provider_picture: tool.provider_picture.clone(),
+                                                    provider_nip05: tool.provider_nip05.clone(),
+                                                    schema_json: tool.schema_json.clone(),
+                                                    enabled: preserved_enabled,
+                                                    last_seen_at: now,
+                                                };
+                                                let _ = persistence::queries::upsert_contextvm_tool(
+                                                    conn, &row,
+                                                );
                                             }
                                             if let Ok(rows) =
-                                                persistence::queries::list_all_contextvm_tools(
-                                                    conn,
-                                                )
+                                                persistence::queries::list_all_contextvm_tools(conn)
                                             {
                                                 let usage_map =
                                                     aggregate_contextvm_tool_usage(conn);
@@ -8635,9 +10662,7 @@ impl FfiApp {
                                             }
                                             actor_state.app_state.contextvm_discovery_state =
                                                 ContextvmDiscoveryState::Loaded;
-                                            let descs = load_enabled_descriptors(conn);
-                                            actor_state.current_conv_contextvm_tools =
-                                                crate::contextvm::build_dispatch_map(&descs);
+                                            refresh_current_contextvm_dispatch(&mut actor_state);
                                         }
                                         Err(message) => {
                                             actor_state.app_state.contextvm_discovery_state =
@@ -8670,7 +10695,8 @@ impl FfiApp {
                                     size_bytes: r.size_bytes,
                                 })
                                 .collect())
-                        })();
+                        })(
+                        );
                         let _ = reply.send(result);
                     }
 
@@ -8680,14 +10706,18 @@ impl FfiApp {
                                 .db
                                 .as_ref()
                                 .ok_or_else(|| "database locked".to_string())?;
-                            let row = persistence::queries::get_directory_source(db.conn(), &source_id)
-                                .map_err(|e| format!("get_directory_source failed: {e}"))?;
+                            let row =
+                                persistence::queries::get_directory_source(db.conn(), &source_id)
+                                    .map_err(|e| format!("get_directory_source failed: {e}"))?;
                             Ok(row.and_then(|r| r.bookmark_data))
                         })();
                         let _ = reply.send(result);
                     }
 
-                    CoreMsg::ExportConversationMarkdown { conversation_id, reply } => {
+                    CoreMsg::ExportConversationMarkdown {
+                        conversation_id,
+                        reply,
+                    } => {
                         // Read-only: load messages, render markdown, send back.
                         // No AppState mutation, no emit.
                         let result: Result<String, String> = (|| {
@@ -8702,8 +10732,9 @@ impl FfiApp {
                                 .find(|c| c.id == conversation_id)
                                 .map(|c| c.title.clone())
                                 .unwrap_or_default();
-                            let rows = persistence::queries::list_messages(db.conn(), &conversation_id)
-                                .map_err(|e| format!("list_messages failed: {e}"))?;
+                            let rows =
+                                persistence::queries::list_messages(db.conn(), &conversation_id)
+                                    .map_err(|e| format!("list_messages failed: {e}"))?;
                             let export_msgs: Vec<ExportMessage> = rows
                                 .into_iter()
                                 .map(|r| ExportMessage {
@@ -8729,10 +10760,13 @@ impl FfiApp {
                                 Some(d) => d,
                                 None => return Err("db not available".to_string()),
                             };
-                            let row = persistence::queries::get_message_by_id(db.conn(), &message_id)
-                                .map_err(|e| format!("db error: {e}"))?
-                                .ok_or_else(|| format!("message not found: {message_id}"))?;
-                            let path = row.image_path.ok_or_else(|| "no image for this message".to_string())?;
+                            let row =
+                                persistence::queries::get_message_by_id(db.conn(), &message_id)
+                                    .map_err(|e| format!("db error: {e}"))?
+                                    .ok_or_else(|| format!("message not found: {message_id}"))?;
+                            let path = row
+                                .image_path
+                                .ok_or_else(|| "no image for this message".to_string())?;
                             let encrypted = std::fs::read(&path)
                                 .map_err(|e| format!("read error {path}: {e}"))?;
                             crypto::file_crypto::decrypt_file(dek, &encrypted)
@@ -8801,7 +10835,10 @@ impl FfiApp {
     /// native layer is responsible for writing the returned string to disk (via
     /// `rfd::FileDialog` on desktop, `ShareLink`/`ACTION_CREATE_DOCUMENT` on mobile).
     /// No network or telemetry — export is strictly local.
-    pub fn export_conversation_markdown(&self, conversation_id: String) -> Result<String, FfiError> {
+    pub fn export_conversation_markdown(
+        &self,
+        conversation_id: String,
+    ) -> Result<String, FfiError> {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.core_tx
             .send(CoreMsg::ExportConversationMarkdown {
@@ -8848,10 +10885,7 @@ impl FfiApp {
     /// Used by iOS AppManager at init time to rehydrate the in-process
     /// DirectorySyncScheduler.bookmarkCache before the first ScenePhase.active
     /// fires (closes HI-01 / VERIFICATION truth #12).
-    pub fn get_directory_bookmark(
-        &self,
-        source_id: String,
-    ) -> Result<Option<Vec<u8>>, FfiError> {
+    pub fn get_directory_bookmark(&self, source_id: String) -> Result<Option<Vec<u8>>, FfiError> {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.core_tx
             .send(CoreMsg::GetDirectoryBookmark {
@@ -8913,6 +10947,54 @@ impl FfiApp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod hybrid_startup_tests {
+    use super::*;
+
+    fn backend(id: &str) -> llm::BackendConfig {
+        llm::BackendConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            base_url: format!("https://{id}.test/v1"),
+            api_key: "test-key".to_string(),
+            models: vec!["model".to_string()],
+            tee_type: llm::TeeType::IntelTdx,
+            max_concurrent_requests: 5,
+            supports_tool_use: true,
+        }
+    }
+
+    fn hybrid_profile(id: &str) -> HybridProfile {
+        HybridProfile {
+            id: id.to_string(),
+            name: "Local to confidential".to_string(),
+            local_backend_id: "local-qwen".to_string(),
+            local_model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        }
+    }
+
+    #[test]
+    fn saved_hybrid_default_is_valid_without_backend_row() {
+        let backends = vec![backend("tinfoil")];
+        let profiles = vec![hybrid_profile("default_hybrid")];
+
+        assert!(backend_or_hybrid_profile_exists(
+            "hybrid:default_hybrid",
+            &backends,
+            &profiles
+        ));
+        assert!(!backend_or_hybrid_profile_exists(
+            "hybrid:missing",
+            &backends,
+            &profiles
+        ));
+    }
+}
 
 // Wave-0 RED tests for Phase 31 multimodal image attachments (IMG-01..04).
 // These tests intentionally reference symbols that do NOT yet exist in this crate:
@@ -8993,8 +11075,8 @@ mod image_red_tests {
         });
 
         // NOTE: `build_user_message_with_image` does not exist yet -- RED.
-        let msg = build_user_message_with_image(&actor_state, "describe")
-            .expect("multipart message");
+        let msg =
+            build_user_message_with_image(&actor_state, "describe").expect("multipart message");
         let json = serde_json::to_string(&msg).expect("serialize");
         assert!(
             json.contains("\"type\":\"image_url\""),
@@ -9043,8 +11125,8 @@ mod image_red_tests {
 
         // Simulate what `do_send_message` now does: pass the RAW user text.
         let raw_user_text = "whats in the photo";
-        let msg = build_user_message_with_image(&actor_state, raw_user_text)
-            .expect("multipart message");
+        let msg =
+            build_user_message_with_image(&actor_state, raw_user_text).expect("multipart message");
         let json = serde_json::to_string(&msg).expect("serialize");
 
         assert!(
@@ -9074,8 +11156,7 @@ mod image_red_tests {
         let actor_state = test_build_actor_state_for_image_tests();
         // `pending_image_attachment` intentionally left None.
         // NOTE: `build_user_message_with_image` does not exist yet -- RED.
-        let msg = build_user_message_with_image(&actor_state, "hello")
-            .expect("text message");
+        let msg = build_user_message_with_image(&actor_state, "hello").expect("text message");
         let json = serde_json::to_string(&msg).expect("serialize");
         assert!(
             !json.contains("\"type\":\"image_url\""),
@@ -9120,7 +11201,10 @@ mod image_red_tests {
             .expect("AttachmentInfo published");
         assert_eq!(info.filename, "a.png");
         // NOTE: `AttachmentInfo::is_image` does not exist yet -- RED.
-        assert!(info.is_image, "AttachmentInfo.is_image must be true for images");
+        assert!(
+            info.is_image,
+            "AttachmentInfo.is_image must be true for images"
+        );
     }
 
     /// Follow-up (vision-capability gating): AttachImage must be rejected with a
@@ -9131,15 +11215,18 @@ mod image_red_tests {
         let mut actor_state = test_build_actor_state_for_image_tests();
         // Simulate a conversation whose selected model is text-only.
         actor_state.app_state.current_conversation_id = Some("conv-1".to_string());
-        actor_state.app_state.conversations.push(ConversationSummary {
-            id: "conv-1".to_string(),
-            title: "Test".to_string(),
-            model_id: "llama3-3-70b".to_string(),
-            backend_id: "tinfoil".to_string(),
-            updated_at: 0,
-            system_prompt: None,
-            tools_enabled: false,
-        });
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-1".to_string(),
+                title: "Test".to_string(),
+                model_id: "llama3-3-70b".to_string(),
+                backend_id: "tinfoil".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
 
         let action = AppAction::AttachImage {
             filename: "a.png".to_string(),
@@ -9175,15 +11262,18 @@ mod image_red_tests {
     fn attach_image_allowed_for_vision_model() {
         let mut actor_state = test_build_actor_state_for_image_tests();
         actor_state.app_state.current_conversation_id = Some("conv-1".to_string());
-        actor_state.app_state.conversations.push(ConversationSummary {
-            id: "conv-1".to_string(),
-            title: "Test".to_string(),
-            model_id: "gemma3:27b".to_string(),
-            backend_id: "tinfoil".to_string(),
-            updated_at: 0,
-            system_prompt: None,
-            tools_enabled: false,
-        });
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-1".to_string(),
+                title: "Test".to_string(),
+                model_id: "gemma3:27b".to_string(),
+                backend_id: "tinfoil".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
 
         // Write a tiny tmp file so metadata() succeeds inside the handler.
         let tmp = std::env::temp_dir().join("vision-gate-probe.png");
@@ -9209,6 +11299,1444 @@ mod image_red_tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
+    #[test]
+    fn attach_image_allowed_for_hybrid_vision_remote() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.app_state.current_conversation_id = Some("conv-hybrid".to_string());
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-hybrid".to_string(),
+                title: "Hybrid".to_string(),
+                model_id: "qwen2_5-0_5b-instruct-q4_0".to_string(),
+                backend_id: "hybrid:default_hybrid".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
+        actor_state.app_state.hybrid_profiles.push(HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to PPQ".to_string(),
+            local_backend_id: "local-qwen2_5-0_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-0_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "ppq-ai".to_string(),
+            remote_model_id: "private/qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        });
+
+        let tmp = std::env::temp_dir().join("hybrid-vision-gate-probe.png");
+        std::fs::write(&tmp, b"not-a-real-png-but-non-empty").expect("tmp write");
+
+        handle_attach_image_for_test(
+            &mut actor_state,
+            AppAction::AttachImage {
+                filename: "probe.png".to_string(),
+                file_path: tmp.to_string_lossy().to_string(),
+                mime_type: "image/png".to_string(),
+            },
+        );
+
+        assert!(
+            actor_state.pending_image_attachment.is_some(),
+            "hybrid conversations must gate images against the remote model"
+        );
+        assert!(
+            actor_state.app_state.last_error.is_none(),
+            "vision-capable hybrid remote should not reject image attachment, got: {:?}",
+            actor_state.app_state.last_error
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn attach_image_rejected_for_hybrid_text_remote() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.app_state.current_conversation_id = Some("conv-hybrid".to_string());
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-hybrid".to_string(),
+                title: "Hybrid".to_string(),
+                model_id: "qwen2_5-0_5b-instruct-q4_0".to_string(),
+                backend_id: "hybrid:default_hybrid".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
+        actor_state.app_state.hybrid_profiles.push(HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to Tinfoil".to_string(),
+            local_backend_id: "local-qwen2_5-0_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-0_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "kimi-k2-6".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        });
+
+        handle_attach_image_for_test(
+            &mut actor_state,
+            AppAction::AttachImage {
+                filename: "probe.png".to_string(),
+                file_path: "/tmp/probe.png".to_string(),
+                mime_type: "image/png".to_string(),
+            },
+        );
+
+        assert!(
+            actor_state.pending_image_attachment.is_none(),
+            "text-only hybrid remote must reject image attachment"
+        );
+        let err = actor_state
+            .app_state
+            .last_error
+            .as_ref()
+            .expect("last_error must be set");
+        assert!(
+            err.contains("kimi-k2-6") && err.contains("does not support image"),
+            "error message should name the hybrid remote model, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn hybrid_retry_model_uses_routed_stream_model_not_persisted_local_default() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.app_state.current_conversation_id = Some("conv-hybrid".to_string());
+        actor_state.current_streaming_model_id = Some("qwen3-vl-30b".to_string());
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-hybrid".to_string(),
+                title: "Hybrid".to_string(),
+                model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+                backend_id: "hybrid:default_hybrid".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
+
+        assert_eq!(model_id_for_stream_retry(&actor_state), "qwen3-vl-30b");
+    }
+
+    #[test]
+    fn hybrid_qvac_local_server_is_not_blocked_by_on_device_toggle() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.app_state.local_inference_enabled = false;
+        actor_state.backends = vec![
+            llm::BackendConfig {
+                id: "qvac-local".to_string(),
+                name: "Local server".to_string(),
+                base_url: "http://127.0.0.1:11434/v1/".to_string(),
+                api_key: String::new(),
+                models: vec!["llama3.2".to_string()],
+                tee_type: llm::TeeType::Unknown,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+            llm::BackendConfig {
+                id: "tinfoil".to_string(),
+                name: "Tinfoil".to_string(),
+                base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["qwen3-vl-30b".to_string()],
+                tee_type: llm::TeeType::IntelTdx,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+        ];
+        actor_state.app_state.hybrid_profiles.push(HybridProfile {
+            id: "desktop_hybrid".to_string(),
+            name: "Local server to Tinfoil".to_string(),
+            local_backend_id: "qvac-local".to_string(),
+            local_model_id: "llama3.2".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        });
+        let (tx, _rx) = flume::unbounded();
+
+        let (backend, model, route) = resolve_turn_backend_and_model(
+            &mut actor_state,
+            Some("hybrid:desktop_hybrid"),
+            "llama3.2",
+            "ordinary local-server turn",
+            false,
+            None,
+            &tx,
+        )
+        .expect("keyless local server should not be blocked by on-device local toggle");
+
+        assert_eq!(route.decision, BackendRole::Local);
+        assert_eq!(backend.id, "qvac-local");
+        assert_eq!(model, "llama3.2");
+    }
+
+    #[test]
+    fn hybrid_remote_turn_restores_expired_failed_health_before_blocking() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![
+            llm::BackendConfig {
+                id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+                name: "Local: Qwen2.5 1.5B Instruct".to_string(),
+                base_url: "local://qwen2_5-1_5b-instruct-q4_0".to_string(),
+                api_key: String::new(),
+                models: vec!["qwen2_5-1_5b-instruct-q4_0".to_string()],
+                tee_type: llm::TeeType::Unknown,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+            llm::BackendConfig {
+                id: "tinfoil".to_string(),
+                name: "Tinfoil".to_string(),
+                base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["qwen3-vl-30b".to_string()],
+                tee_type: llm::TeeType::IntelTdx,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+        ];
+        actor_state.app_state.hybrid_profiles.push(HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to Tinfoil".to_string(),
+            local_backend_id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        });
+        actor_state.router.health.insert(
+            "tinfoil".to_string(),
+            llm::router::BackendHealth {
+                consecutive_failures: 4,
+                last_failure: Some(std::time::Instant::now()),
+                state: llm::router::HealthState::Failed {
+                    until: std::time::Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(1))
+                        .unwrap(),
+                },
+            },
+        );
+        let (tx, _rx) = flume::unbounded();
+
+        let result = resolve_turn_backend_and_model(
+            &mut actor_state,
+            Some("hybrid:default_hybrid"),
+            "qwen2_5-1_5b-instruct-q4_0",
+            "remote please",
+            false,
+            Some(BackendRole::Remote),
+            &tx,
+        );
+
+        assert_eq!(
+            actor_state.router.health_status("tinfoil"),
+            llm::HealthStatus::Degraded
+        );
+        assert!(
+            matches!(result, Err(TurnResolutionError::AttestationPending { .. })),
+            "expired failed health should restore and proceed to attestation, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn hybrid_explicit_remote_override_retries_failed_remote() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![
+            llm::BackendConfig {
+                id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+                name: "Local: Qwen2.5 1.5B Instruct".to_string(),
+                base_url: "local://qwen2_5-1_5b-instruct-q4_0".to_string(),
+                api_key: String::new(),
+                models: vec!["qwen2_5-1_5b-instruct-q4_0".to_string()],
+                tee_type: llm::TeeType::Unknown,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+            llm::BackendConfig {
+                id: "tinfoil".to_string(),
+                name: "Tinfoil".to_string(),
+                base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["qwen3-vl-30b".to_string()],
+                tee_type: llm::TeeType::IntelTdx,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+        ];
+        actor_state.app_state.hybrid_profiles.push(HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to Tinfoil".to_string(),
+            local_backend_id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        });
+        actor_state.router.health.insert(
+            "tinfoil".to_string(),
+            llm::router::BackendHealth {
+                consecutive_failures: 5,
+                last_failure: Some(std::time::Instant::now()),
+                state: llm::router::HealthState::Failed {
+                    until: std::time::Instant::now() + std::time::Duration::from_secs(600),
+                },
+            },
+        );
+        let (tx, _rx) = flume::unbounded();
+
+        let result = resolve_turn_backend_and_model(
+            &mut actor_state,
+            Some("hybrid:default_hybrid"),
+            "qwen2_5-1_5b-instruct-q4_0",
+            "retry remote please",
+            false,
+            Some(BackendRole::Remote),
+            &tx,
+        );
+
+        assert!(
+            matches!(result, Err(TurnResolutionError::AttestationPending { .. })),
+            "explicit remote override should retry failed remote via attestation, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn replay_force_role_preserves_latest_user_override() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.app_state.messages.push(UiMessage {
+            id: "user-1".to_string(),
+            role: "user".to_string(),
+            content: "remote please".to_string(),
+            created_at: 1,
+            has_attachment: false,
+            attachment_name: None,
+            rag_context_count: None,
+            image_path: None,
+        });
+        actor_state.app_state.last_turn_routing = Some(TurnRoutingSummary {
+            conversation_id: Some("conv-hybrid".to_string()),
+            profile_id: Some("default_hybrid".to_string()),
+            backend_id: "tinfoil".to_string(),
+            model_id: "qwen3-vl-30b".to_string(),
+            decision: BackendRole::Remote,
+            reason: "user override".to_string(),
+            provider_name: "Tinfoil".to_string(),
+            tee_label: "Intel TDX".to_string(),
+            tee_verified: false,
+        });
+
+        assert_eq!(
+            replay_force_role_for_latest_user_turn(&actor_state, "conv-hybrid", "user-1"),
+            Some(BackendRole::Remote)
+        );
+    }
+
+    #[test]
+    fn replay_force_role_ignores_non_latest_and_non_override_routes() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.app_state.messages.push(UiMessage {
+            id: "user-1".to_string(),
+            role: "user".to_string(),
+            content: "first".to_string(),
+            created_at: 1,
+            has_attachment: false,
+            attachment_name: None,
+            rag_context_count: None,
+            image_path: None,
+        });
+        actor_state.app_state.messages.push(UiMessage {
+            id: "user-2".to_string(),
+            role: "user".to_string(),
+            content: "second".to_string(),
+            created_at: 2,
+            has_attachment: false,
+            attachment_name: None,
+            rag_context_count: None,
+            image_path: None,
+        });
+        actor_state.app_state.last_turn_routing = Some(TurnRoutingSummary {
+            conversation_id: Some("conv-hybrid".to_string()),
+            profile_id: Some("default_hybrid".to_string()),
+            backend_id: "tinfoil".to_string(),
+            model_id: "qwen3-vl-30b".to_string(),
+            decision: BackendRole::Remote,
+            reason: "user override".to_string(),
+            provider_name: "Tinfoil".to_string(),
+            tee_label: "Intel TDX".to_string(),
+            tee_verified: false,
+        });
+        assert_eq!(
+            replay_force_role_for_latest_user_turn(&actor_state, "conv-hybrid", "user-1"),
+            None
+        );
+
+        actor_state
+            .app_state
+            .last_turn_routing
+            .as_mut()
+            .expect("route")
+            .reason = "attachment present".to_string();
+        assert_eq!(
+            replay_force_role_for_latest_user_turn(&actor_state, "conv-hybrid", "user-2"),
+            None
+        );
+    }
+
+    #[test]
+    fn hybrid_remote_retry_rejects_non_attested_same_model_candidate() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.current_streaming_conversation_id = Some("conv-hybrid".to_string());
+        actor_state.app_state.hybrid_profiles.push(HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to Tinfoil".to_string(),
+            local_backend_id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        });
+        actor_state.app_state.last_turn_routing = Some(TurnRoutingSummary {
+            conversation_id: Some("conv-hybrid".to_string()),
+            profile_id: Some("default_hybrid".to_string()),
+            backend_id: "tinfoil".to_string(),
+            model_id: "qwen3-vl-30b".to_string(),
+            decision: BackendRole::Remote,
+            reason: "attachment present".to_string(),
+            provider_name: "Tinfoil".to_string(),
+            tee_label: "Intel TDX".to_string(),
+            tee_verified: false,
+        });
+
+        let non_attested_same_model = llm::BackendConfig {
+            id: "custom-openai".to_string(),
+            name: "Custom OpenAI".to_string(),
+            base_url: "https://example.invalid/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec!["qwen3-vl-30b".to_string()],
+            tee_type: llm::TeeType::Unknown,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        };
+        let attested_same_model = llm::BackendConfig {
+            id: "redpill".to_string(),
+            name: "Redpill".to_string(),
+            base_url: "https://api.redpill.ai/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec!["qwen3-vl-30b".to_string()],
+            tee_type: llm::TeeType::IntelTdx,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        };
+
+        assert!(
+            !hybrid_retry_candidate_allowed(&actor_state, &non_attested_same_model),
+            "remote hybrid retries must not leave the confidential backend pool"
+        );
+        assert!(
+            hybrid_retry_candidate_allowed(&actor_state, &attested_same_model),
+            "attested same-model remotes remain valid failover candidates"
+        );
+    }
+
+    #[test]
+    fn hybrid_retry_summary_recomputes_decision_from_retry_backend() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.current_streaming_conversation_id = Some("conv-hybrid".to_string());
+        actor_state.app_state.hybrid_profiles.push(HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to Tinfoil".to_string(),
+            local_backend_id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        });
+        actor_state.app_state.last_turn_routing = Some(TurnRoutingSummary {
+            conversation_id: Some("conv-hybrid".to_string()),
+            profile_id: Some("default_hybrid".to_string()),
+            backend_id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+            model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+            decision: BackendRole::Local,
+            reason: "local default".to_string(),
+            provider_name: "Local".to_string(),
+            tee_label: "local".to_string(),
+            tee_verified: true,
+        });
+        let remote_backend = llm::BackendConfig {
+            id: "tinfoil".to_string(),
+            name: "Tinfoil".to_string(),
+            base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec!["qwen3-vl-30b".to_string()],
+            tee_type: llm::TeeType::IntelTdx,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        };
+
+        update_hybrid_route_summary_for_retry(
+            &mut actor_state,
+            &remote_backend,
+            "qwen3-vl-30b",
+            "local-qwen2_5-1_5b-instruct-q4_0",
+        );
+
+        let summary = actor_state.app_state.last_turn_routing.as_ref().unwrap();
+        assert_eq!(summary.decision, BackendRole::Remote);
+        assert_eq!(summary.backend_id, "tinfoil");
+        assert_eq!(summary.model_id, "qwen3-vl-30b");
+        assert_eq!(summary.provider_name, "Tinfoil");
+    }
+
+    #[test]
+    fn hybrid_image_route_blocks_ppq_private_until_attestation_verified() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![
+            llm::BackendConfig {
+                id: "local-qwen2_5-0_5b-instruct-q4_0".to_string(),
+                name: "Local: Qwen2.5 0.5B Instruct".to_string(),
+                base_url: "local://qwen2_5-0_5b-instruct-q4_0".to_string(),
+                api_key: String::new(),
+                models: vec!["qwen2_5-0_5b-instruct-q4_0".to_string()],
+                tee_type: llm::TeeType::Unknown,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+            llm::BackendConfig {
+                id: "ppq-ai".to_string(),
+                name: "PPQ.AI".to_string(),
+                base_url: "https://api.ppq.ai/private/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["private/qwen3-vl-30b".to_string()],
+                tee_type: llm::TeeType::AmdSevSnp,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+        ];
+        actor_state.app_state.hybrid_profiles.push(HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to PPQ".to_string(),
+            local_backend_id: "local-qwen2_5-0_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-0_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "ppq-ai".to_string(),
+            remote_model_id: "private/qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        });
+        let (tx, _rx) = flume::unbounded();
+
+        let pending_result = resolve_turn_backend_and_model(
+            &mut actor_state,
+            Some("hybrid:default_hybrid"),
+            "qwen2_5-0_5b-instruct-q4_0",
+            "describe",
+            true,
+            None,
+            &tx,
+        );
+        match pending_result {
+            Err(TurnResolutionError::AttestationPending { backend_id }) => {
+                assert_eq!(backend_id, "ppq-ai");
+            }
+            Ok(_) => panic!("PPQ private route must wait for cached attestation"),
+            Err(error) => panic!("unexpected route error: {error:?}"),
+        }
+
+        actor_state
+            .attestation_expires_at
+            .insert("ppq-ai".to_string(), unix_time_secs() + 60);
+        actor_state
+            .app_state
+            .attestation_statuses
+            .push(AttestationStatusEntry {
+                backend_id: "ppq-ai".to_string(),
+                status: AttestationStatus::Verified {
+                    shape: None,
+                    freshness: None,
+                    orchestrated_components: None,
+                },
+            });
+
+        let (backend, model, route) = resolve_turn_backend_and_model(
+            &mut actor_state,
+            Some("hybrid:default_hybrid"),
+            "qwen2_5-0_5b-instruct-q4_0",
+            "describe",
+            true,
+            None,
+            &tx,
+        )
+        .expect("PPQ private E2EE route should proceed after attestation");
+
+        assert_eq!(backend.id, "ppq-ai");
+        assert_eq!(model, "private/qwen3-vl-30b");
+        assert_eq!(route.reason, "attachment present");
+        let summary = turn_routing_summary(&actor_state, &route, &backend, None);
+        assert!(
+            summary.tee_verified,
+            "fresh cached attestation should satisfy route preflight"
+        );
+    }
+
+    #[test]
+    fn inline_secure_route_chip_waits_for_stream_success() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![
+            llm::BackendConfig {
+                id: "local-qwen2_5-0_5b-instruct-q4_0".to_string(),
+                name: "Local: Qwen2.5 0.5B Instruct".to_string(),
+                base_url: "local://qwen2_5-0_5b-instruct-q4_0".to_string(),
+                api_key: String::new(),
+                models: vec!["qwen2_5-0_5b-instruct-q4_0".to_string()],
+                tee_type: llm::TeeType::Unknown,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+            llm::BackendConfig {
+                id: "tinfoil".to_string(),
+                name: "Tinfoil".to_string(),
+                base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["qwen3-vl-30b".to_string()],
+                tee_type: llm::TeeType::IntelTdx,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+        ];
+        actor_state.router.mark_success("tinfoil");
+        let route = routing::TurnRouting {
+            backend_id: "tinfoil".to_string(),
+            model_id: "qwen3-vl-30b".to_string(),
+            retrieval_query: None,
+            decision: BackendRole::Remote,
+            reason: "attachment present".to_string(),
+            profile_id: Some("default_hybrid".to_string()),
+        };
+        let backend = actor_state
+            .backends
+            .iter()
+            .find(|backend| backend.id == "tinfoil")
+            .cloned()
+            .unwrap();
+
+        let preflight_summary = turn_routing_summary(&actor_state, &route, &backend, None);
+        assert!(
+            !preflight_summary.tee_verified,
+            "plain transport health must not satisfy attestation preflight"
+        );
+
+        actor_state.app_state.last_turn_routing = Some(turn_routing_summary_at_stream_start(
+            &actor_state,
+            &route,
+            &backend,
+            Some("conv-1".to_string()),
+        ));
+        assert_eq!(
+            actor_state
+                .app_state
+                .last_turn_routing
+                .as_ref()
+                .unwrap()
+                .conversation_id
+                .as_deref(),
+            Some("conv-1")
+        );
+        assert!(
+            !actor_state
+                .app_state
+                .last_turn_routing
+                .as_ref()
+                .unwrap()
+                .tee_verified,
+            "turn chip must not claim inline attestation before the stream succeeds"
+        );
+
+        set_inline_secure_turn_verified(&mut actor_state, "tinfoil", true);
+        assert!(
+            actor_state
+                .app_state
+                .last_turn_routing
+                .as_ref()
+                .unwrap()
+                .tee_verified,
+            "successful stream should mark the inline-attested turn verified"
+        );
+
+        set_inline_secure_turn_verified(&mut actor_state, "tinfoil", false);
+        assert!(
+            !actor_state
+                .app_state
+                .last_turn_routing
+                .as_ref()
+                .unwrap()
+                .tee_verified,
+            "stream errors should clear the verified marker"
+        );
+    }
+
+    #[test]
+    fn hybrid_virtual_backend_resolves_remote_for_attestation_warmup() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![
+            llm::BackendConfig {
+                id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+                name: "Local: Qwen2.5 1.5B Instruct".to_string(),
+                base_url: "local://qwen2_5-1_5b-instruct-q4_0".to_string(),
+                api_key: String::new(),
+                models: vec!["qwen2_5-1_5b-instruct-q4_0".to_string()],
+                tee_type: llm::TeeType::Unknown,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+            llm::BackendConfig {
+                id: "tinfoil".to_string(),
+                name: "Tinfoil".to_string(),
+                base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["qwen3-vl-30b".to_string()],
+                tee_type: llm::TeeType::IntelTdx,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+        ];
+        actor_state.app_state.hybrid_profiles.push(HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to Tinfoil".to_string(),
+            local_backend_id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        });
+
+        let remote = hybrid_remote_backend_for_preferred(&actor_state, "hybrid:default_hybrid")
+            .expect("hybrid attestation warmup must resolve the remote backend");
+
+        assert_eq!(remote.id, "tinfoil");
+        assert!(backend_requires_attestation(remote));
+    }
+
+    #[test]
+    fn attestation_and_tls_pin_require_unexpired_result() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state
+            .app_state
+            .attestation_statuses
+            .push(AttestationStatusEntry {
+                backend_id: "tinfoil".to_string(),
+                status: AttestationStatus::Verified {
+                    shape: None,
+                    freshness: None,
+                    orchestrated_components: None,
+                },
+            });
+        actor_state
+            .attested_tls_public_keys
+            .insert("tinfoil".to_string(), "fp".to_string());
+
+        assert!(
+            !backend_attestation_verified(&actor_state, "tinfoil"),
+            "display status alone must not satisfy routing preflight"
+        );
+        assert!(
+            pinned_tls_public_key_fp_for_backend(&actor_state, "tinfoil").is_none(),
+            "pins without a fresh attestation expiry must not be used"
+        );
+
+        actor_state
+            .attestation_expires_at
+            .insert("tinfoil".to_string(), unix_time_secs() + 60);
+        assert!(backend_attestation_verified(&actor_state, "tinfoil"));
+        assert_eq!(
+            pinned_tls_public_key_fp_for_backend(&actor_state, "tinfoil").as_deref(),
+            Some("fp")
+        );
+
+        actor_state
+            .attestation_expires_at
+            .insert("tinfoil".to_string(), unix_time_secs().saturating_sub(1));
+        assert!(!backend_attestation_verified(&actor_state, "tinfoil"));
+        assert!(pinned_tls_public_key_fp_for_backend(&actor_state, "tinfoil").is_none());
+    }
+
+    #[test]
+    fn deleting_hybrid_profile_reassigns_virtual_conversations() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![llm::BackendConfig {
+            id: "tinfoil".to_string(),
+            name: "Tinfoil".to_string(),
+            base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec!["qwen3-vl-30b".to_string()],
+            tee_type: llm::TeeType::IntelTdx,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        }];
+        actor_state.app_state.active_backend_id = Some("hybrid:default_hybrid".to_string());
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-hybrid".to_string(),
+                title: "Hybrid".to_string(),
+                model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+                backend_id: "hybrid:default_hybrid".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
+        persistence::queries::insert_conversation(
+            actor_state.db.as_ref().unwrap().conn(),
+            &persistence::ConversationRow {
+                id: "conv-hybrid".to_string(),
+                title: "Hybrid".to_string(),
+                model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+                backend_id: "hybrid:default_hybrid".to_string(),
+                system_prompt: None,
+                created_at: 0,
+                updated_at: 0,
+                tools_enabled: false,
+            },
+        )
+        .unwrap();
+
+        reassign_virtual_backend_references(&mut actor_state, "hybrid:default_hybrid");
+
+        let conv = actor_state
+            .app_state
+            .conversations
+            .iter()
+            .find(|conv| conv.id == "conv-hybrid")
+            .unwrap();
+        assert_eq!(conv.backend_id, "tinfoil");
+        assert_eq!(conv.model_id, "qwen3-vl-30b");
+        assert_eq!(
+            actor_state.app_state.active_backend_id.as_deref(),
+            Some("tinfoil")
+        );
+        let rows =
+            persistence::queries::list_conversations(actor_state.db.as_ref().unwrap().conn())
+                .unwrap();
+        let row = rows.iter().find(|row| row.id == "conv-hybrid").unwrap();
+        assert_eq!(row.backend_id, "tinfoil");
+        assert_eq!(row.model_id, "qwen3-vl-30b");
+    }
+
+    #[test]
+    fn deleting_local_backend_removes_dependent_hybrid_profiles() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![llm::BackendConfig {
+            id: "tinfoil".to_string(),
+            name: "Tinfoil".to_string(),
+            base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec!["qwen3-vl-30b".to_string()],
+            tee_type: llm::TeeType::IntelTdx,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        }];
+        let profile = HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to Tinfoil".to_string(),
+            local_backend_id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        };
+        persistence::queries::upsert_hybrid_profile(
+            actor_state.db.as_ref().unwrap().conn(),
+            &profile,
+            0,
+        )
+        .unwrap();
+        actor_state.app_state.hybrid_profiles.push(profile);
+        actor_state.app_state.active_backend_id = Some("hybrid:default_hybrid".to_string());
+
+        delete_hybrid_profiles_referencing_backend(
+            &mut actor_state,
+            "local-qwen2_5-1_5b-instruct-q4_0",
+        );
+
+        assert!(actor_state.app_state.hybrid_profiles.is_empty());
+        assert_eq!(
+            actor_state.app_state.active_backend_id.as_deref(),
+            Some("tinfoil")
+        );
+        assert!(persistence::queries::list_hybrid_profiles(
+            actor_state.db.as_ref().unwrap().conn()
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn removing_backend_reassigns_conversations_with_replacement_model() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![
+            llm::BackendConfig {
+                id: "removed".to_string(),
+                name: "Removed".to_string(),
+                base_url: "https://removed.example/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["old-model".to_string()],
+                tee_type: llm::TeeType::Unknown,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+            llm::BackendConfig {
+                id: "replacement".to_string(),
+                name: "Replacement".to_string(),
+                base_url: "https://replacement.example/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["new-model".to_string()],
+                tee_type: llm::TeeType::Unknown,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+        ];
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-removed".to_string(),
+                title: "Removed".to_string(),
+                model_id: "old-model".to_string(),
+                backend_id: "removed".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
+        persistence::queries::insert_conversation(
+            actor_state.db.as_ref().unwrap().conn(),
+            &persistence::ConversationRow {
+                id: "conv-removed".to_string(),
+                title: "Removed".to_string(),
+                model_id: "old-model".to_string(),
+                backend_id: "removed".to_string(),
+                system_prompt: None,
+                created_at: 0,
+                updated_at: 0,
+                tools_enabled: false,
+            },
+        )
+        .unwrap();
+
+        remove_backend_row_and_reassign(&mut actor_state, "removed");
+
+        let conv = actor_state
+            .app_state
+            .conversations
+            .iter()
+            .find(|conv| conv.id == "conv-removed")
+            .unwrap();
+        assert_eq!(conv.backend_id, "replacement");
+        assert_eq!(conv.model_id, "new-model");
+        let rows =
+            persistence::queries::list_conversations(actor_state.db.as_ref().unwrap().conn())
+                .unwrap();
+        let row = rows.iter().find(|row| row.id == "conv-removed").unwrap();
+        assert_eq!(row.backend_id, "replacement");
+        assert_eq!(row.model_id, "new-model");
+    }
+
+    #[test]
+    fn deleting_remote_backend_removes_hybrid_profiles_without_reassigning_to_removed_backend() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![
+            llm::BackendConfig {
+                id: "tinfoil".to_string(),
+                name: "Tinfoil".to_string(),
+                base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["qwen3-vl-30b".to_string()],
+                tee_type: llm::TeeType::IntelTdx,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+            llm::BackendConfig {
+                id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+                name: "Local: Qwen2.5 1.5B Instruct".to_string(),
+                base_url: "local://qwen2_5-1_5b-instruct-q4_0".to_string(),
+                api_key: String::new(),
+                models: vec!["qwen2_5-1_5b-instruct-q4_0".to_string()],
+                tee_type: llm::TeeType::Unknown,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            },
+        ];
+        let profile = HybridProfile {
+            id: "default_hybrid".to_string(),
+            name: "Local to Tinfoil".to_string(),
+            local_backend_id: "local-qwen2_5-1_5b-instruct-q4_0".to_string(),
+            local_model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+            remote_backend_id: "tinfoil".to_string(),
+            remote_model_id: "qwen3-vl-30b".to_string(),
+            policy: RoutingPolicy::default(),
+            preprocessing: LocalPreprocessing::default(),
+        };
+        persistence::queries::upsert_hybrid_profile(
+            actor_state.db.as_ref().unwrap().conn(),
+            &profile,
+            0,
+        )
+        .unwrap();
+        actor_state.app_state.hybrid_profiles.push(profile);
+        actor_state.app_state.active_backend_id = Some("hybrid:default_hybrid".to_string());
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-hybrid".to_string(),
+                title: "Hybrid".to_string(),
+                model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+                backend_id: "hybrid:default_hybrid".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
+        persistence::queries::insert_conversation(
+            actor_state.db.as_ref().unwrap().conn(),
+            &persistence::ConversationRow {
+                id: "conv-hybrid".to_string(),
+                title: "Hybrid".to_string(),
+                model_id: "qwen2_5-1_5b-instruct-q4_0".to_string(),
+                backend_id: "hybrid:default_hybrid".to_string(),
+                system_prompt: None,
+                created_at: 0,
+                updated_at: 0,
+                tools_enabled: false,
+            },
+        )
+        .unwrap();
+
+        delete_hybrid_profiles_referencing_backend(&mut actor_state, "tinfoil");
+
+        assert!(actor_state.app_state.hybrid_profiles.is_empty());
+        assert_eq!(
+            actor_state.app_state.active_backend_id.as_deref(),
+            Some("local-qwen2_5-1_5b-instruct-q4_0")
+        );
+        let conv = actor_state
+            .app_state
+            .conversations
+            .iter()
+            .find(|conv| conv.id == "conv-hybrid")
+            .unwrap();
+        assert_eq!(conv.backend_id, "local-qwen2_5-1_5b-instruct-q4_0");
+        assert_eq!(conv.model_id, "qwen2_5-1_5b-instruct-q4_0");
+        assert!(persistence::queries::list_hybrid_profiles(
+            actor_state.db.as_ref().unwrap().conn()
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn rejected_local_route_does_not_persist_or_consume_pending_attachment() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        let backend_id = "local-qwen2_5-0_5b-instruct-q4_0".to_string();
+        let model_id = "qwen2_5-0_5b-instruct-q4_0".to_string();
+        actor_state.backends = vec![llm::BackendConfig {
+            id: backend_id.clone(),
+            name: "Local: Qwen2.5 0.5B Instruct".to_string(),
+            base_url: "local://qwen2_5-0_5b-instruct-q4_0".to_string(),
+            api_key: String::new(),
+            models: vec![model_id.clone()],
+            tee_type: llm::TeeType::Unknown,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        }];
+        actor_state.app_state.local_inference_enabled = false;
+        actor_state.app_state.active_backend_id = Some(backend_id.clone());
+        actor_state.app_state.current_conversation_id = Some("conv-local".to_string());
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-local".to_string(),
+                title: "Local".to_string(),
+                model_id: model_id.clone(),
+                backend_id: backend_id.clone(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
+        persistence::queries::insert_conversation(
+            actor_state.db.as_ref().unwrap().conn(),
+            &persistence::ConversationRow {
+                id: "conv-local".to_string(),
+                title: "Local".to_string(),
+                model_id,
+                backend_id,
+                system_prompt: None,
+                created_at: 0,
+                updated_at: 0,
+                tools_enabled: false,
+            },
+        )
+        .unwrap();
+        actor_state.pending_attachment = Some(PendingAttachment {
+            filename: "context.txt".to_string(),
+            content: "keep me pending".to_string(),
+        });
+        actor_state.app_state.pending_attachment = Some(AttachmentInfo {
+            filename: "context.txt".to_string(),
+            size_display: "15 B".to_string(),
+            is_image: false,
+        });
+        let (tx, _rx) = flume::unbounded();
+
+        do_send_message(&mut actor_state, "OFF_BLOCK_TEST".to_string(), None, &tx);
+
+        assert_eq!(
+            actor_state.app_state.messages.len(),
+            0,
+            "route validation failures must not append orphan user messages"
+        );
+        assert!(
+            actor_state
+                .app_state
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Local inference is turned off"),
+            "expected local-disabled error, got {:?}",
+            actor_state.app_state.last_error
+        );
+        assert!(
+            actor_state.pending_attachment.is_some(),
+            "failed sends should preserve the pending text attachment"
+        );
+        assert!(
+            actor_state.app_state.pending_attachment.is_some(),
+            "failed sends should keep the UI attachment pill"
+        );
+        let rows = persistence::queries::list_messages(
+            actor_state.db.as_ref().unwrap().conn(),
+            "conv-local",
+        )
+        .unwrap();
+        assert!(
+            rows.is_empty(),
+            "route validation failures must not persist user messages"
+        );
+    }
+
+    #[test]
+    fn pending_attestation_blocks_new_send_without_replacing_pending_turn() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.pending_attested_send = Some(PendingAttestedSend {
+            backend_id: "tinfoil".to_string(),
+            text: "first remote turn".to_string(),
+            force_role: Some(BackendRole::Remote),
+            pending_attachment: None,
+            pending_image_attachment: None,
+            app_pending_attachment: None,
+            attestation_attempts: 0,
+        });
+        let (tx, _rx) = flume::unbounded();
+
+        do_send_message(
+            &mut actor_state,
+            "second remote turn".to_string(),
+            None,
+            &tx,
+        );
+
+        assert_eq!(
+            actor_state
+                .pending_attested_send
+                .as_ref()
+                .map(|pending| pending.text.as_str()),
+            Some("first remote turn"),
+            "new sends must not overwrite the attestation-gated pending turn"
+        );
+        assert!(
+            actor_state
+                .app_state
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("attestation"),
+            "expected pending attestation error, got {:?}",
+            actor_state.app_state.last_error
+        );
+        assert!(
+            actor_state.app_state.messages.is_empty(),
+            "blocked sends must not append user messages"
+        );
+    }
+
+    #[test]
+    fn pending_attestation_blocks_attachment_mutation() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.pending_attested_send = Some(PendingAttestedSend {
+            backend_id: "tinfoil".to_string(),
+            text: "remote turn".to_string(),
+            force_role: Some(BackendRole::Remote),
+            pending_attachment: Some(PendingAttachment {
+                filename: "original.txt".to_string(),
+                content: "original".to_string(),
+            }),
+            pending_image_attachment: None,
+            app_pending_attachment: Some(AttachmentInfo {
+                filename: "original.txt".to_string(),
+                size_display: "8 B".to_string(),
+                is_image: false,
+            }),
+            attestation_attempts: 0,
+        });
+
+        assert!(reject_chat_action_while_attestation_pending(
+            &mut actor_state
+        ));
+        assert_eq!(
+            actor_state
+                .pending_attested_send
+                .as_ref()
+                .and_then(|pending| pending.pending_attachment.as_ref())
+                .map(|attachment| attachment.filename.as_str()),
+            Some("original.txt")
+        );
+        assert!(
+            actor_state
+                .app_state
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("attestation"),
+            "expected visible attestation error, got {:?}",
+            actor_state.app_state.last_error
+        );
+    }
+
+    #[test]
+    fn cancelling_pending_attestation_restores_attachment_snapshot() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.pending_attested_send = Some(PendingAttestedSend {
+            backend_id: "tinfoil".to_string(),
+            text: "remote turn".to_string(),
+            force_role: Some(BackendRole::Remote),
+            pending_attachment: Some(PendingAttachment {
+                filename: "queued.txt".to_string(),
+                content: "queued".to_string(),
+            }),
+            pending_image_attachment: None,
+            app_pending_attachment: Some(AttachmentInfo {
+                filename: "queued.txt".to_string(),
+                size_display: "6 B".to_string(),
+                is_image: false,
+            }),
+            attestation_attempts: 0,
+        });
+        actor_state.pending_attachment = None;
+        actor_state.app_state.pending_attachment = None;
+
+        assert!(cancel_pending_attested_send(
+            &mut actor_state,
+            "cancelled".to_string()
+        ));
+
+        assert!(actor_state.pending_attested_send.is_none());
+        assert_eq!(
+            actor_state
+                .pending_attachment
+                .as_ref()
+                .map(|attachment| attachment.filename.as_str()),
+            Some("queued.txt")
+        );
+        assert_eq!(
+            actor_state
+                .app_state
+                .pending_attachment
+                .as_ref()
+                .map(|attachment| attachment.filename.as_str()),
+            Some("queued.txt")
+        );
+        assert!(matches!(actor_state.app_state.busy_state, BusyState::Idle));
+    }
+
+    #[test]
+    fn transient_attestation_failures_retry_then_release_pending_turn() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.pending_attested_send = Some(PendingAttestedSend {
+            backend_id: "tinfoil".to_string(),
+            text: "remote turn".to_string(),
+            force_role: Some(BackendRole::Remote),
+            pending_attachment: Some(PendingAttachment {
+                filename: "retry.txt".to_string(),
+                content: "retry".to_string(),
+            }),
+            pending_image_attachment: None,
+            app_pending_attachment: Some(AttachmentInfo {
+                filename: "retry.txt".to_string(),
+                size_display: "5 B".to_string(),
+                is_image: false,
+            }),
+            attestation_attempts: 0,
+        });
+        let (tx, _rx) = flume::unbounded();
+
+        handle_pending_attested_send_after_attestation(
+            &mut actor_state,
+            "tinfoil",
+            false,
+            true,
+            Some("dns timeout"),
+            &tx,
+        );
+        assert_eq!(
+            actor_state
+                .pending_attested_send
+                .as_ref()
+                .map(|pending| pending.attestation_attempts),
+            Some(1)
+        );
+        assert!(matches!(
+            actor_state.app_state.busy_state,
+            BusyState::Loading { .. }
+        ));
+
+        handle_pending_attested_send_after_attestation(
+            &mut actor_state,
+            "tinfoil",
+            false,
+            true,
+            Some("dns timeout"),
+            &tx,
+        );
+        assert!(actor_state.pending_attested_send.is_some());
+
+        handle_pending_attested_send_after_attestation(
+            &mut actor_state,
+            "tinfoil",
+            false,
+            true,
+            Some("dns timeout"),
+            &tx,
+        );
+        assert!(actor_state.pending_attested_send.is_none());
+        assert!(matches!(actor_state.app_state.busy_state, BusyState::Idle));
+        assert_eq!(
+            actor_state
+                .pending_attachment
+                .as_ref()
+                .map(|attachment| attachment.filename.as_str()),
+            Some("retry.txt")
+        );
+        assert!(
+            actor_state
+                .app_state
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("temporary network failures"),
+            "expected retry exhaustion error, got {:?}",
+            actor_state.app_state.last_error
+        );
+        assert!(
+            actor_state
+                .app_state
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("dns timeout"),
+            "expected retry exhaustion error to preserve cause, got {:?}",
+            actor_state.app_state.last_error
+        );
+    }
+
+    #[test]
+    fn image_stream_errors_do_not_failover_to_text_only_local() {
+        let network = llm::LlmError::NetworkError {
+            reason: "remote unavailable".to_string(),
+        };
+        assert!(
+            should_failover_stream_error(&network, false),
+            "plain text network failures may use the normal failover chain"
+        );
+        assert!(
+            !should_failover_stream_error(&network, true),
+            "image failures must not be replayed through generic text failover"
+        );
+
+        let server = llm::LlmError::ApiError {
+            status_code: 503,
+            reason: "temporarily unavailable".to_string(),
+        };
+        assert!(
+            !should_failover_stream_error(&server, true),
+            "image failures must preserve the failed remote path instead of losing the image"
+        );
+    }
+
+    #[test]
+    fn retry_image_helpers_strip_placeholder_and_rehydrate_image() {
+        assert_eq!(
+            strip_image_placeholder("describe\n\n[Image: photo.jpg]"),
+            "describe"
+        );
+        assert_eq!(strip_image_placeholder("[Image: photo.jpg]"), "");
+        assert_eq!(
+            retry_image_filename("describe\n\n[Image: photo.jpg]"),
+            "photo.jpg"
+        );
+
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "mango_retry_image_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        actor_state.data_dir = temp_dir.to_string_lossy().to_string();
+        let dek = zeroize::Zeroizing::new([7u8; 32]);
+        let plaintext = b"retry image bytes".to_vec();
+        let encrypted = crypto::file_crypto::encrypt_file(&dek, &plaintext);
+        let encrypted_path = temp_dir.join("stored-image.mgo1");
+        std::fs::write(&encrypted_path, encrypted).unwrap();
+        actor_state.dek = Some(dek);
+
+        let message = UiMessage {
+            id: "msg-1".to_string(),
+            role: "user".to_string(),
+            content: "describe\n\n[Image: photo.jpg]".to_string(),
+            created_at: 0,
+            has_attachment: true,
+            attachment_name: Some("photo.jpg".to_string()),
+            rag_context_count: None,
+            image_path: Some(encrypted_path.to_string_lossy().to_string()),
+        };
+
+        let attachment = rehydrate_retry_image_attachment(&actor_state, &message)
+            .expect("rehydrate succeeds")
+            .expect("image attachment");
+        assert_eq!(attachment.filename, "photo.jpg");
+        assert_eq!(attachment.mime_type, "image/jpeg");
+        assert_eq!(std::fs::read(&attachment.file_path).unwrap(), plaintext);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
     // --- Test-only helpers. These exist so the test file compiles as far as
     // possible; the assertions still depend on symbols introduced in 31-01.
 
@@ -9231,28 +12759,32 @@ mod image_red_tests {
             .build()
             .expect("tokio runtime");
         let db = persistence::Database::open(":memory:").expect("in-memory DB open");
-        let bootstrap = crypto::bootstrap_db::BootstrapDb::open(":memory:")
-            .expect("in-memory bootstrap DB");
-        let vector_index =
-            rag::VectorIndex::new("", None).expect("fallback VectorIndex creation");
-        let embedding_provider_arc: Arc<dyn EmbeddingProvider> =
-            Arc::new(NullEmbeddingProvider);
+        let bootstrap =
+            crypto::bootstrap_db::BootstrapDb::open(":memory:").expect("in-memory bootstrap DB");
+        let vector_index = rag::VectorIndex::new("", None).expect("fallback VectorIndex creation");
+        let embedding_provider_arc: Arc<dyn EmbeddingProvider> = Arc::new(NullEmbeddingProvider);
+        let local_llm_provider_arc: Arc<dyn LocalLlmProvider> = Arc::new(NullLocalLlmProvider);
         ActorState {
             app_state: AppState::default(),
             backends: vec![],
             attested_tls_public_keys: HashMap::new(),
+            attestation_expires_at: HashMap::new(),
             active_stream_token: None,
             runtime,
             db: Some(db),
             keychain: Box::new(NullKeychainProvider),
             pending_attachment: None,
             pending_image_attachment: None,
+            pending_attested_send: None,
             router: llm::FailoverRouter::new(),
             current_streaming_backend_id: None,
+            current_streaming_model_id: None,
             current_streaming_conversation_id: None,
             current_streaming_text: String::new(),
+            current_streaming_has_image_attachment: false,
             failover_exclude: vec![],
             embedding_provider: embedding_provider_arc,
+            local_llm_provider: local_llm_provider_arc,
             vector_index,
             pending_rag_doc_count: None,
             active_agent_sessions: HashMap::new(),
@@ -9281,22 +12813,8 @@ mod image_red_tests {
                 file_path,
                 mime_type,
             } => {
-                let current_model_id = actor_state
-                    .app_state
-                    .current_conversation_id
-                    .as_ref()
-                    .and_then(|conv_id| {
-                        actor_state
-                            .app_state
-                            .conversations
-                            .iter()
-                            .find(|c| &c.id == conv_id)
-                            .map(|c| c.model_id.clone())
-                    })
-                    .unwrap_or_default();
-                if !current_model_id.is_empty()
-                    && !llm::is_vision_model(&current_model_id)
-                {
+                let current_model_id = image_capability_model_id(actor_state).unwrap_or_default();
+                if !current_model_id.is_empty() && !llm::is_vision_model(&current_model_id) {
                     actor_state.app_state.last_error = Some(format!(
                         "Model \"{}\" does not support image input",
                         current_model_id
@@ -9313,9 +12831,7 @@ mod image_red_tests {
                         Some("AttachImage requires absolute file_path".into());
                     return;
                 }
-                let size_bytes = std::fs::metadata(&file_path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                let size_bytes = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
                 if size_bytes > 50 * 1024 * 1024 {
                     actor_state.app_state.last_error = Some("Image exceeds 50 MB limit".into());
                     return;
@@ -9333,7 +12849,10 @@ mod image_red_tests {
                 });
                 actor_state.app_state.rev += 1;
             }
-            other => panic!("handle_attach_image_for_test only handles AttachImage, got: {:?}", other),
+            other => panic!(
+                "handle_attach_image_for_test only handles AttachImage, got: {:?}",
+                other
+            ),
         }
     }
 }

@@ -22,6 +22,7 @@ fn create_test_app() -> Arc<FfiApp> {
         Box::new(crate::NullKeychainProvider),
         Box::new(crate::NullEmbeddingProvider),
         EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
     std::thread::sleep(Duration::from_millis(50));
@@ -483,7 +484,9 @@ fn test_provider_fallback() {
             other => panic!("Expected AttestationResult(Failed), got: {:?}", other),
         },
         crate::CoreMsg::Action(_) => panic!("Expected InternalEvent, got Action"),
-        crate::CoreMsg::ReadEncryptedImage { .. } => panic!("Expected InternalEvent, got ReadEncryptedImage"),
+        crate::CoreMsg::ReadEncryptedImage { .. } => {
+            panic!("Expected InternalEvent, got ReadEncryptedImage")
+        }
         crate::CoreMsg::ListDirectoryFingerprints { .. } => {
             panic!("Expected InternalEvent, got ListDirectoryFingerprints")
         }

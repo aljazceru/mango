@@ -307,6 +307,55 @@ typedef void (*UniffiCallbackInterfaceKeychainProviderMethod2)(uint64_t, RustBuf
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD0
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod0)(uint64_t, RustBuffer, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD1
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD1
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod1)(uint64_t, RustBuffer, RustBuffer, void*_Nonnull, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD2
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD2
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod2)(uint64_t, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD3
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD3
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod3)(uint64_t, RustBuffer, void*_Nonnull, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD4
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD4
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod4)(uint64_t, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD5
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD5
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod5)(uint64_t, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD6
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD6
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod6)(uint64_t, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_APP_RECONCILER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_APP_RECONCILER
 typedef struct UniffiVTableCallbackInterfaceAppReconciler {
@@ -350,6 +399,20 @@ typedef struct UniffiVTableCallbackInterfaceKeychainProvider {
 } UniffiVTableCallbackInterfaceKeychainProvider;
 
 #endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER
+typedef struct UniffiVTableCallbackInterfaceLocalLlmProvider {
+    UniffiCallbackInterfaceLocalLlmProviderMethod0 _Nonnull loadModel;
+    UniffiCallbackInterfaceLocalLlmProviderMethod1 _Nonnull downloadModelFile;
+    UniffiCallbackInterfaceLocalLlmProviderMethod2 _Nonnull platformHttpRequest;
+    UniffiCallbackInterfaceLocalLlmProviderMethod3 _Nonnull generate;
+    UniffiCallbackInterfaceLocalLlmProviderMethod4 _Nonnull unload;
+    UniffiCallbackInterfaceLocalLlmProviderMethod5 _Nonnull loadedModelPath;
+    UniffiCallbackInterfaceLocalLlmProviderMethod6 _Nonnull deviceCapability;
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+} UniffiVTableCallbackInterfaceLocalLlmProvider;
+
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_FFIAPP
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_FFIAPP
 void*_Nonnull uniffi_mango_core_fn_clone_ffiapp(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -362,7 +425,7 @@ void uniffi_mango_core_fn_free_ffiapp(void*_Nonnull ptr, RustCallStatus *_Nonnul
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CONSTRUCTOR_FFIAPP_NEW
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CONSTRUCTOR_FFIAPP_NEW
-void*_Nonnull uniffi_mango_core_fn_constructor_ffiapp_new(RustBuffer data_dir, uint64_t keychain, uint64_t embedding_provider, RustBuffer embedding_status, uint64_t biometric_provider, RustCallStatus *_Nonnull out_status
+void*_Nonnull uniffi_mango_core_fn_constructor_ffiapp_new(RustBuffer data_dir, uint64_t keychain, uint64_t embedding_provider, RustBuffer embedding_status, uint64_t local_llm_provider, uint64_t biometric_provider, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_DISPATCH
@@ -405,6 +468,46 @@ RustBuffer uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(void*_Nonnull
 RustBuffer uniffi_mango_core_fn_method_ffiapp_state(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALGENERATIONCONTEXT
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALGENERATIONCONTEXT
+void*_Nonnull uniffi_mango_core_fn_clone_localgenerationcontext(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_LOCALGENERATIONCONTEXT
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_LOCALGENERATIONCONTEXT
+void uniffi_mango_core_fn_free_localgenerationcontext(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_EMIT_ERROR
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_EMIT_ERROR
+void uniffi_mango_core_fn_method_localgenerationcontext_emit_error(void*_Nonnull ptr, RustBuffer message, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_EMIT_TOKEN
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_EMIT_TOKEN
+void uniffi_mango_core_fn_method_localgenerationcontext_emit_token(void*_Nonnull ptr, RustBuffer token, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_IS_CANCELLED
+int8_t uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALMODELDOWNLOADCONTEXT
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALMODELDOWNLOADCONTEXT
+void*_Nonnull uniffi_mango_core_fn_clone_localmodeldownloadcontext(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_LOCALMODELDOWNLOADCONTEXT
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_LOCALMODELDOWNLOADCONTEXT
+void uniffi_mango_core_fn_free_localmodeldownloadcontext(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALMODELDOWNLOADCONTEXT_EMIT_PROGRESS
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALMODELDOWNLOADCONTEXT_EMIT_PROGRESS
+void uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(void*_Nonnull ptr, uint64_t downloaded_bytes, RustBuffer total_bytes, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_APPRECONCILER
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_APPRECONCILER
 void uniffi_mango_core_fn_init_callback_vtable_appreconciler(const UniffiVTableCallbackInterfaceAppReconciler* _Nonnull vtable
@@ -430,9 +533,20 @@ void uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(const UniffiVT
 void uniffi_mango_core_fn_init_callback_vtable_keychainprovider(const UniffiVTableCallbackInterfaceKeychainProvider* _Nonnull vtable
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_LOCALLLMPROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_LOCALLLMPROVIDER
+void uniffi_mango_core_fn_init_callback_vtable_localllmprovider(const UniffiVTableCallbackInterfaceLocalLlmProvider* _Nonnull vtable
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_KNOWN_PROVIDER_PRESETS
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_KNOWN_PROVIDER_PRESETS
 RustBuffer uniffi_mango_core_fn_func_known_provider_presets(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_LOCAL_MODEL_CATALOG
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_LOCAL_MODEL_CATALOG
+RustBuffer uniffi_mango_core_fn_func_local_model_catalog(RustCallStatus *_Nonnull out_status
     
 );
 #endif
@@ -727,6 +841,12 @@ uint16_t uniffi_mango_core_checksum_func_known_provider_presets(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_LOCAL_MODEL_CATALOG
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_LOCAL_MODEL_CATALOG
+uint16_t uniffi_mango_core_checksum_func_local_model_catalog(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_MODEL_SUPPORTS_VISION
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_MODEL_SUPPORTS_VISION
 uint16_t uniffi_mango_core_checksum_func_model_supports_vision(void
@@ -781,6 +901,30 @@ uint16_t uniffi_mango_core_checksum_method_ffiapp_state(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALGENERATIONCONTEXT_EMIT_ERROR
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALGENERATIONCONTEXT_EMIT_ERROR
+uint16_t uniffi_mango_core_checksum_method_localgenerationcontext_emit_error(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALGENERATIONCONTEXT_EMIT_TOKEN
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALGENERATIONCONTEXT_EMIT_TOKEN
+uint16_t uniffi_mango_core_checksum_method_localgenerationcontext_emit_token(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALGENERATIONCONTEXT_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALGENERATIONCONTEXT_IS_CANCELLED
+uint16_t uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALMODELDOWNLOADCONTEXT_EMIT_PROGRESS
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALMODELDOWNLOADCONTEXT_EMIT_PROGRESS
+uint16_t uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_CONSTRUCTOR_FFIAPP_NEW
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_CONSTRUCTOR_FFIAPP_NEW
 uint16_t uniffi_mango_core_checksum_constructor_ffiapp_new(void
@@ -832,6 +976,48 @@ uint16_t uniffi_mango_core_checksum_method_keychainprovider_load(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_KEYCHAINPROVIDER_DELETE
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_KEYCHAINPROVIDER_DELETE
 uint16_t uniffi_mango_core_checksum_method_keychainprovider_delete(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_LOAD_MODEL
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_LOAD_MODEL
+uint16_t uniffi_mango_core_checksum_method_localllmprovider_load_model(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_DOWNLOAD_MODEL_FILE
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_DOWNLOAD_MODEL_FILE
+uint16_t uniffi_mango_core_checksum_method_localllmprovider_download_model_file(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_PLATFORM_HTTP_REQUEST
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_PLATFORM_HTTP_REQUEST
+uint16_t uniffi_mango_core_checksum_method_localllmprovider_platform_http_request(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_GENERATE
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_GENERATE
+uint16_t uniffi_mango_core_checksum_method_localllmprovider_generate(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_UNLOAD
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_UNLOAD
+uint16_t uniffi_mango_core_checksum_method_localllmprovider_unload(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_LOADED_MODEL_PATH
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_LOADED_MODEL_PATH
+uint16_t uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_DEVICE_CAPABILITY
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_DEVICE_CAPABILITY
+uint16_t uniffi_mango_core_checksum_method_localllmprovider_device_capability(void
     
 );
 #endif

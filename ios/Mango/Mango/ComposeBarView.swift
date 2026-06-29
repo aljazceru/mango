@@ -7,6 +7,8 @@ struct ComposeBarView: View {
     @Binding var inputText: String
     let pendingAttachment: AttachmentInfo?
     let isStreaming: Bool
+    var isInputBlocked: Bool = false
+    var showStopButton: Bool = false
     let onSend: () -> Void
     let onStop: () -> Void
     let onAttach: () -> Void
@@ -29,6 +31,7 @@ struct ComposeBarView: View {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.secondary)
                     }
+                    .disabled(isInputBlocked)
                     .accessibilityLabel("Remove attachment")
                 }
                 .padding(.horizontal, 16)
@@ -42,6 +45,7 @@ struct ComposeBarView: View {
                         .font(.title3)
                         .foregroundColor(.secondary)
                 }
+                .disabled(isInputBlocked)
                 .accessibilityLabel("Attach file for context")
                 .frame(minWidth: 44, minHeight: 44)
 
@@ -50,15 +54,15 @@ struct ComposeBarView: View {
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...6)
                     .font(.body)
-                    .disabled(isStreaming)
+                    .disabled(isInputBlocked)
                     .onSubmit {
-                        if !isStreaming && !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if !isInputBlocked && !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             onSend()
                         }
                     }
 
                 // Send / Stop button
-                if isStreaming {
+                if showStopButton {
                     Button(action: onStop) {
                         Image(systemName: "stop.fill")
                             .font(.title3)
@@ -76,7 +80,7 @@ struct ComposeBarView: View {
                                     : .accentColor
                             )
                     }
-                    .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(isInputBlocked || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityLabel("Send message")
                     .frame(minWidth: 44, minHeight: 44)
                 }

@@ -8,6 +8,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.neverEqualPolicy
 import androidx.compose.runtime.setValue
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppReconciler
@@ -16,6 +17,7 @@ import dev.disobey.mango.rust.AppUpdate
 import dev.disobey.mango.rust.BiometricProvider
 import dev.disobey.mango.rust.BusyState
 import dev.disobey.mango.rust.ContextvmDiscoveryState
+import dev.disobey.mango.rust.DeviceCapability
 import dev.disobey.mango.rust.DirectoryFingerprint
 import dev.disobey.mango.rust.EmbeddingProvider
 import dev.disobey.mango.rust.EmbeddingStatus
@@ -44,7 +46,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         private set
 
     var state: AppState by mutableStateOf(
-        AppState(
+        value = AppState(
             rev = 0UL,
             router = Router(
                 currentScreen = Screen.Home,
@@ -78,6 +80,16 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             currentAgentSteps = emptyList(),
             attestationIntervalMinutes = 30u,
             embeddingStatus = EmbeddingStatus.ACTIVE,
+            localDeviceCapability = DeviceCapability(
+                abi = "initializing",
+                totalRamBytes = 0UL,
+                maxModelBytes = 0UL,
+                supportsMmap = false,
+                reason = "initializing",
+            ),
+            localModels = emptyList(),
+            localDownloadProgress = null,
+            localInferenceEnabled = true,
             globalSystemPrompt = null,
             memories = emptyList(),
             memoryCount = 0UL,
@@ -95,7 +107,11 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             contextvmTools = emptyList(),
             autoDiscoverToolsEnabled = false,
             contextvmDiscoveryState = ContextvmDiscoveryState.Idle,
+            hybridProfiles = emptyList(),
+            lastTurnRouting = null,
+            trustedProviders = emptyList(),
         ),
+        policy = neverEqualPolicy(),
     )
         private set
 
@@ -142,6 +158,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         }
         val embedding = embeddingResult.first
         val embeddingStatus = embeddingResult.second
+        val localLlm = AndroidLocalLlmProvider(context)
         // Phase 28: inject BiometricProviderImpl when a FragmentActivity is available,
         // fall back to a NullBiometricProvider (always returns false) in test/edge cases.
         val biometric: BiometricProvider = if (activity != null) {
@@ -152,7 +169,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
                 override fun authenticate(reason: String): Boolean = false
             }
         }
-        ffiApp = FfiApp(dataDir, keychain, embedding, embeddingStatus, biometric)
+        ffiApp = FfiApp(dataDir, keychain, embedding, embeddingStatus, localLlm, biometric)
         val initial = ffiApp.state()
         state = initial
         lastRevApplied = initial.rev

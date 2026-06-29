@@ -10,9 +10,7 @@
 #![allow(unused_imports)]
 
 use crate::attestation::policy::TdxPolicy;
-use crate::attestation::redpill::{
-    ensure_verified_redpill_attestation, Freshness, RedpillShape,
-};
+use crate::attestation::redpill::{ensure_verified_redpill_attestation, Freshness, RedpillShape};
 use crate::llm::backend::{BackendConfig, TeeType};
 
 fn redpill_backend(model: &str) -> BackendConfig {
@@ -47,7 +45,10 @@ async fn live_shape_a_phala_pure() {
         verified.freshness
     );
     assert!(verified.orchestrated_components.is_none());
-    eprintln!("[live] shape=Flat freshness=PerRequest model={}", verified.model);
+    eprintln!(
+        "[live] shape=Flat freshness=PerRequest model={}",
+        verified.model
+    );
 }
 
 #[tokio::test]
@@ -92,13 +93,9 @@ async fn live_shape_b_orchestrated_three_way_and() {
 async fn live_shape_c_chutes_per_enclave_freshness() {
     let backend = redpill_backend("deepseek/deepseek-v3.2");
     let policy = TdxPolicy::default();
-    let verified = ensure_verified_redpill_attestation(
-        &backend,
-        "deepseek/deepseek-v3.2",
-        &policy,
-    )
-    .await
-    .expect("Shape C attestation must succeed");
+    let verified = ensure_verified_redpill_attestation(&backend, "deepseek/deepseek-v3.2", &policy)
+        .await
+        .expect("Shape C attestation must succeed");
     assert!(
         matches!(verified.shape, RedpillShape::Chutes),
         "Shape C must dispatch to Chutes, got {:?}",
@@ -120,12 +117,9 @@ async fn live_shape_c_chutes_per_enclave_freshness() {
 async fn live_tinfoil_route_refused() {
     let backend = redpill_backend("meta-llama/llama-3.3-70b-instruct");
     let policy = TdxPolicy::default();
-    let result = ensure_verified_redpill_attestation(
-        &backend,
-        "meta-llama/llama-3.3-70b-instruct",
-        &policy,
-    )
-    .await;
+    let result =
+        ensure_verified_redpill_attestation(&backend, "meta-llama/llama-3.3-70b-instruct", &policy)
+            .await;
     // Either the /v1/models providers check fires upstream, or the orchestrator
     // detects HTTP 502 'Unsupported Tinfoil' inside fetch_and_verify. Both surface
     // as an error — Tinfoil-via-Redpill must NEVER succeed via the aggregator.

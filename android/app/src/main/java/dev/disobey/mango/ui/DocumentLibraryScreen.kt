@@ -353,7 +353,7 @@ private fun DocumentRow(
         ) {
             // Format icon
             Icon(
-                imageVector = if (doc.format == "pdf") Icons.Filled.Description else Icons.Filled.Article,
+                imageVector = if (doc.format == "pdf") Icons.Filled.Description else Icons.Default.Article,
                 contentDescription = doc.format,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier

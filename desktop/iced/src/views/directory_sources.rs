@@ -90,10 +90,7 @@ fn status_pill<'a>(
         DirectorySyncStatus::Syncing => ("Syncing…", vc.accent),
         DirectorySyncStatus::Error { .. } => ("Error", vc.destructive),
     };
-    let bg = Color {
-        a: 0.15,
-        ..color
-    };
+    let bg = Color { a: 0.15, ..color };
     container(text(label).size(11).color(color))
         .padding(Padding::from([2u16, 8]))
         .style(move |_theme| container::Style {
@@ -178,22 +175,14 @@ fn build_source_row<'a>(
     // Build name row: display name + optional full path underneath + status pill.
     let name_col = if let Some(ref path) = src.path {
         let path_text = text(path.as_str()).size(11).color(vc.muted);
-        iced::widget::column![
-            text(display_name).size(15),
-            path_text,
-        ]
-        .spacing(2)
+        iced::widget::column![text(display_name).size(15), path_text,].spacing(2)
     } else {
-        iced::widget::column![text(display_name).size(15)]
-            .spacing(0)
+        iced::widget::column![text(display_name).size(15)].spacing(0)
     };
 
-    let name_row = row![
-        name_col,
-        status_pill(&src.sync_status, vc),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
+    let name_row = row![name_col, status_pill(&src.sync_status, vc),]
+        .spacing(10)
+        .align_y(Alignment::Center);
 
     let meta_row = row![
         text(file_count_str).size(12).color(vc.muted),
@@ -212,17 +201,23 @@ fn build_source_row<'a>(
 
     let src_id_for_edit = src.id.clone();
     let edit_btn = button(text("Edit exclusions").size(12))
-        .on_press(RootMessage::DirSources(Message::EditExclusions(src_id_for_edit)))
+        .on_press(RootMessage::DirSources(Message::EditExclusions(
+            src_id_for_edit,
+        )))
         .padding(Padding::from([4u16, 10]));
 
     let src_id_for_open = src.id.clone();
     let open_btn = button(text("Open folder").size(12))
-        .on_press(RootMessage::DirSources(Message::OpenFolder(src_id_for_open)))
+        .on_press(RootMessage::DirSources(Message::OpenFolder(
+            src_id_for_open,
+        )))
         .padding(Padding::from([4u16, 10]));
 
     let src_id_for_remove = src.id.clone();
     let remove_btn = button(text("Remove").size(12))
-        .on_press(RootMessage::DirSources(Message::RemoveSource(src_id_for_remove)))
+        .on_press(RootMessage::DirSources(Message::RemoveSource(
+            src_id_for_remove,
+        )))
         .padding(Padding::from([4u16, 10]))
         .style(move |_theme, _status| button::Style {
             background: Some(Background::Color(Color {
@@ -253,11 +248,8 @@ fn build_source_row<'a>(
         _ => None,
     };
 
-    let mut col_children: Vec<Element<'_, RootMessage>> = vec![
-        name_row.into(),
-        meta_row.into(),
-        actions.into(),
-    ];
+    let mut col_children: Vec<Element<'_, RootMessage>> =
+        vec![name_row.into(), meta_row.into(), actions.into()];
     if let Some(err) = error_row {
         col_children.push(err);
     }
@@ -300,7 +292,9 @@ fn build_exclusion_editor<'a>(
 ) -> Element<'a, RootMessage> {
     let sid_changed = source_id.to_string();
     let input = text_input("one glob per line, e.g. *.tmp", edit_text)
-        .on_input(move |v| RootMessage::DirSources(Message::ExclusionsChanged(sid_changed.clone(), v)))
+        .on_input(move |v| {
+            RootMessage::DirSources(Message::ExclusionsChanged(sid_changed.clone(), v))
+        })
         .padding(6);
 
     let sid_save = source_id.to_string();
@@ -310,28 +304,26 @@ fn build_exclusion_editor<'a>(
 
     let sid_default = source_id.to_string();
     let restore_btn = button(text("Restore defaults").size(12))
-        .on_press(RootMessage::DirSources(Message::RestoreDefaultExclusions(sid_default)))
+        .on_press(RootMessage::DirSources(Message::RestoreDefaultExclusions(
+            sid_default,
+        )))
         .padding(Padding::from([4u16, 10]));
 
     let cancel_btn = button(text("Cancel").size(12))
         .on_press(RootMessage::DirSources(Message::CancelExclusions))
         .padding(Padding::from([4u16, 10]));
 
-    let help = text(
-        "Globs ending in / exclude directories (e.g. .obsidian/). Use *.ext for extensions.",
-    )
-    .size(11)
-    .color(vc.muted);
+    let help =
+        text("Globs ending in / exclude directories (e.g. .obsidian/). Use *.ext for extensions.")
+            .size(11)
+            .color(vc.muted);
 
     let buttons = row![save_btn, restore_btn, cancel_btn]
         .spacing(8)
         .align_y(Alignment::Center);
 
-    let mut children: Vec<Element<'_, RootMessage>> = vec![
-        help.into(),
-        input.into(),
-        buttons.into(),
-    ];
+    let mut children: Vec<Element<'_, RootMessage>> =
+        vec![help.into(), input.into(), buttons.into()];
     if let Some(msg) = validation_msg {
         children.push(text(msg).size(11).color(vc.destructive).into());
     }
@@ -525,7 +517,10 @@ pub fn view<'a>(
             .collect();
 
         let list = column(rows).spacing(10).padding(Padding::from([8u16, 16]));
-        scrollable(list).height(Length::Fill).width(Length::Fill).into()
+        scrollable(list)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into()
     };
 
     // ── Compose full layout ───────────────────────────────────────────────────

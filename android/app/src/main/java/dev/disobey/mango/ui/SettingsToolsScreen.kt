@@ -37,6 +37,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
+import dev.disobey.mango.rust.Screen
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -130,6 +131,16 @@ fun SettingsToolsScreen(
                         }
                     }
                 }
+            }
+
+            item {
+                Spacer(Modifier.height(8.dp))
+                SettingsSectionLabel("Discover")
+                SettingsLinkCard(
+                    title = "Discover tools",
+                    subtitle = discoverToolsSubtitle(appState.contextvmTools),
+                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.ToolDiscovery)) },
+                )
             }
         }
     }

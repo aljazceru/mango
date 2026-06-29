@@ -114,10 +114,7 @@ fn test_openai_transport_without_pin_builds_standard_client() {
 #[test]
 fn venice_routes_to_venice_e2ee() {
     let venice = backend("venice-ai", "https://api.venice.ai/api/v1/");
-    assert_eq!(
-        venice.transport_kind(),
-        ProviderTransportKind::VeniceE2ee
-    );
+    assert_eq!(venice.transport_kind(), ProviderTransportKind::VeniceE2ee);
 
     // Existing routes still work
     let tinfoil = backend("tinfoil", "https://inference.tinfoil.sh/v1/");
@@ -169,10 +166,7 @@ fn redpill_routes_to_redpill_transport() {
 
     // Existing routes must still resolve correctly (no regression).
     let venice = backend("venice-ai", "https://api.venice.ai/api/v1/");
-    assert_eq!(
-        venice.transport_kind(),
-        ProviderTransportKind::VeniceE2ee
-    );
+    assert_eq!(venice.transport_kind(), ProviderTransportKind::VeniceE2ee);
     let tinfoil = backend("tinfoil", "https://inference.tinfoil.sh/v1/");
     assert_eq!(
         tinfoil.transport_kind(),
@@ -181,20 +175,54 @@ fn redpill_routes_to_redpill_transport() {
 }
 
 #[test]
-fn test_openai_transport_fails_closed_when_pinned_client_cannot_be_built() {
+fn test_openai_transport_with_pin_builds_pinned_client() {
     let custom = backend("custom", "https://example.com/v1/");
-    let error = custom
+    let (_client, used_pin) = custom
         .transport_kind()
         .build_reqwest_client(
             &custom,
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
             std::time::Duration::from_secs(1),
         )
-        .expect_err("pinning errors must fail closed");
+        .expect("valid pinned TLS config should build successfully");
 
     assert!(
-        error.to_string().contains("requires pinned TLS"),
-        "transport must surface a pinning error instead of falling back: {}",
-        error
+        used_pin,
+        "transport should report pinning enabled when a fingerprint is provided"
+    );
+}
+
+#[test]
+fn tinfoil_and_ppq_clients_use_recognized_attested_tls_config() {
+    let timeout = std::time::Duration::from_secs(1);
+    let tinfoil = backend("tinfoil", "https://inference.tinfoil.sh/v1/");
+    let ppq_private = backend("ppq-ai", "https://api.ppq.ai/private/v1/");
+
+    crate::net::tls::attested_reqwest_client(timeout)
+        .expect("attested reqwest client should build");
+    tinfoil
+        .transport_kind()
+        .build_reqwest_client(&tinfoil, None, timeout)
+        .expect("Tinfoil secure transport should build attested TLS client");
+    ppq_private
+        .transport_kind()
+        .build_reqwest_client(&ppq_private, None, timeout)
+        .expect("PPQ private transport should build attested TLS client");
+}
+
+#[test]
+fn attested_tls_provider_documents_android_pq_fallback() {
+    let supports_pq = crate::net::tls::attested_transport_provider_supports_post_quantum();
+
+    #[cfg(target_os = "android")]
+    assert!(
+        !supports_pq,
+        "Android attested transport intentionally disables X25519MLKEM768 until Tinfoil accepts that key share"
+    );
+
+    #[cfg(not(target_os = "android"))]
+    assert!(
+        supports_pq,
+        "non-Android attested transport should keep the aws-lc X25519MLKEM768 group"
     );
 }
