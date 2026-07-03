@@ -402,6 +402,28 @@ async fn decrypt_response_bytes(response: EncryptedResponse) -> Result<Vec<u8>, 
     Ok(plaintext)
 }
 
+fn decrypt_framed_body(
+    key_material: &ResponseKeyMaterial,
+    body: &[u8],
+) -> Result<Vec<u8>, LlmError> {
+    let mut framed = body.to_vec();
+    let mut plaintext = Vec::new();
+    let mut seq = 0u64;
+
+    while let Some(frame) = try_take_frame(&mut framed)? {
+        plaintext.extend_from_slice(&decrypt_chunk(key_material, seq, &frame)?);
+        seq = seq.saturating_add(1);
+    }
+
+    if !framed.is_empty() {
+        return Err(LlmError::NetworkError {
+            reason: "Truncated PPQ private encrypted error response".to_string(),
+        });
+    }
+
+    Ok(plaintext)
+}
+
 struct EncryptedResponse {
     response: reqwest::Response,
     key_material: ResponseKeyMaterial,
@@ -466,6 +488,8 @@ async fn send_private_request(
         })?,
     );
 
+    let response_request_enc = encrypted.request_enc;
+    let response_exported_secret = encrypted.exported_secret;
     let response = client
         .post(endpoint)
         .headers(headers)
@@ -477,7 +501,13 @@ async fn send_private_request(
         })?;
 
     if !response.status().is_success() {
-        let (status, body_text, problem) = parse_problem_response(response).await;
+        let error_key_material = encrypted_error_key_material(
+            &response,
+            &response_exported_secret,
+            &response_request_enc,
+        );
+        let (status, body_text, problem) =
+            parse_problem_response(response, error_key_material.as_ref()).await;
         if status == 422
             && allow_retry
             && problem
@@ -505,8 +535,8 @@ async fn send_private_request(
         reason: format!("Invalid PPQ private response nonce: {error}"),
     })?;
     let key_material = derive_response_key_material(
-        &encrypted.exported_secret,
-        &encrypted.request_enc,
+        &response_exported_secret,
+        &response_request_enc,
         &response_nonce,
     )?;
 
@@ -518,11 +548,48 @@ async fn send_private_request(
 
 async fn parse_problem_response(
     response: reqwest::Response,
+    key_material: Option<&ResponseKeyMaterial>,
 ) -> (u16, String, Option<ProblemDetails>) {
     let status = response.status().as_u16();
-    let body_text = response.text().await.unwrap_or_default();
-    let problem = serde_json::from_str::<ProblemDetails>(&body_text).ok();
+    let body = response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .unwrap_or_default();
+    let body = key_material
+        .and_then(|key_material| decrypt_framed_body(key_material, &body).ok())
+        .unwrap_or(body);
+    let problem = serde_json::from_slice::<ProblemDetails>(&body).ok();
+    let body_text = displayable_error_body(&body);
     (status, body_text, problem)
+}
+
+fn encrypted_error_key_material(
+    response: &reqwest::Response,
+    exported_secret: &[u8; EXPORT_LEN],
+    request_enc: &[u8; 32],
+) -> Option<ResponseKeyMaterial> {
+    let response_nonce = response
+        .headers()
+        .get(EHBP_RESPONSE_NONCE)?
+        .to_str()
+        .ok()
+        .and_then(|nonce| hex::decode(nonce).ok())?;
+    derive_response_key_material(exported_secret, request_enc, &response_nonce).ok()
+}
+
+fn displayable_error_body(body: &[u8]) -> String {
+    if body.is_empty() {
+        return String::new();
+    }
+    match std::str::from_utf8(body) {
+        Ok(text) if text.chars().all(is_displayable_error_char) => text.trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+fn is_displayable_error_char(c: char) -> bool {
+    c == '\n' || c == '\r' || c == '\t' || (!c.is_control() && c != '\u{fffd}')
 }
 
 fn map_plain_error_body(
@@ -1262,4 +1329,75 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_error_body_is_not_rendered_lossy() {
+        let body_text = displayable_error_body(&[0xe7, 0x4c, 0x05, 0x71, 0x9b, 0x3e]);
+        assert!(body_text.is_empty());
+
+        let err = map_plain_error_body(503, &body_text, None);
+        match err {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 503);
+                assert_eq!(reason, "HTTP 503");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_error_body_message_is_preserved() {
+        let body = br#"{"error":{"message":"backend is warming up"}}"#;
+        let body_text = displayable_error_body(body);
+        let err = map_plain_error_body(503, &body_text, None);
+        match err {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 503);
+                assert_eq!(reason, "backend is warming up");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encrypted_error_body_is_decrypted_before_mapping() {
+        let key_material = ResponseKeyMaterial {
+            key: [7u8; KEY_LEN],
+            nonce_base: [3u8; NONCE_LEN],
+        };
+        let plaintext = br#"{"title":"temporary private backend outage"}"#;
+        let cipher = Aes256Gcm::new_from_slice(&key_material.key).unwrap();
+        let nonce = Nonce::from(compute_chunk_nonce(&key_material.nonce_base, 0));
+        let ciphertext = cipher.encrypt(&nonce, plaintext.as_slice()).unwrap();
+        let mut framed = Vec::new();
+        framed.extend_from_slice(&(ciphertext.len() as u32).to_be_bytes());
+        framed.extend_from_slice(&ciphertext);
+
+        let decrypted = decrypt_framed_body(&key_material, &framed).unwrap();
+        let problem = serde_json::from_slice::<ProblemDetails>(&decrypted).ok();
+        let body_text = displayable_error_body(&decrypted);
+        let err = map_plain_error_body(503, &body_text, problem.as_ref());
+
+        match err {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 503);
+                assert_eq!(reason, "temporary private backend outage");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
+    }
 }

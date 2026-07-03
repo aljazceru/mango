@@ -3959,6 +3959,76 @@ public object FfiConverterTypeHybridProfile: FfiConverterRustBuffer<HybridProfil
 
 
 /**
+ * The new profile shape: routing policy separated from backend records.
+ */
+data class InferenceProfile (
+    var `id`: kotlin.String,
+    var `name`: kotlin.String,
+    var `mode`: InferenceMode,
+    var `localTarget`: RouteTarget?,
+    /**
+     * Ordered remote candidates. Index 0 is the default remote for
+     * `RemoteOnly` / `RulesHybrid`.
+     */
+    var `remoteTargets`: List<RouteTarget>,
+    /**
+     * Local model used to make the smart-routing decision. Required for
+     * `SmartRouting`; ignored otherwise.
+     */
+    var `routerTarget`: RouteTarget?,
+    /**
+     * Deterministic rules for `RulesHybrid`. Reused from the legacy cascade.
+     */
+    var `rulesPolicy`: RoutingPolicy,
+    var `fallbackPolicy`: FallbackPolicy
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeInferenceProfile: FfiConverterRustBuffer<InferenceProfile> {
+    override fun read(buf: ByteBuffer): InferenceProfile {
+        return InferenceProfile(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeInferenceMode.read(buf),
+            FfiConverterOptionalTypeRouteTarget.read(buf),
+            FfiConverterSequenceTypeRouteTarget.read(buf),
+            FfiConverterOptionalTypeRouteTarget.read(buf),
+            FfiConverterTypeRoutingPolicy.read(buf),
+            FfiConverterTypeFallbackPolicy.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: InferenceProfile) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterTypeInferenceMode.allocationSize(value.`mode`) +
+            FfiConverterOptionalTypeRouteTarget.allocationSize(value.`localTarget`) +
+            FfiConverterSequenceTypeRouteTarget.allocationSize(value.`remoteTargets`) +
+            FfiConverterOptionalTypeRouteTarget.allocationSize(value.`routerTarget`) +
+            FfiConverterTypeRoutingPolicy.allocationSize(value.`rulesPolicy`) +
+            FfiConverterTypeFallbackPolicy.allocationSize(value.`fallbackPolicy`)
+    )
+
+    override fun write(value: InferenceProfile, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterTypeInferenceMode.write(value.`mode`, buf)
+            FfiConverterOptionalTypeRouteTarget.write(value.`localTarget`, buf)
+            FfiConverterSequenceTypeRouteTarget.write(value.`remoteTargets`, buf)
+            FfiConverterOptionalTypeRouteTarget.write(value.`routerTarget`, buf)
+            FfiConverterTypeRoutingPolicy.write(value.`rulesPolicy`, buf)
+            FfiConverterTypeFallbackPolicy.write(value.`fallbackPolicy`, buf)
+    }
+}
+
+
+
+/**
  * Progress of an ongoing document ingestion (Phase 8).
  *
  * Shown in the UI during the extract -> chunk -> embed -> index pipeline.
@@ -4563,6 +4633,164 @@ public object FfiConverterTypeProviderPreset: FfiConverterRustBuffer<ProviderPre
             FfiConverterString.write(value.`baseUrl`, buf)
             FfiConverterTypeTeeType.write(value.`teeType`, buf)
             FfiConverterString.write(value.`description`, buf)
+    }
+}
+
+
+
+/**
+ * Result of route planning for a single turn. Built before the user message
+ * is persisted.
+ */
+data class ResolvedRoute (
+    var `backendId`: kotlin.String,
+    var `modelId`: kotlin.String,
+    var `decision`: BackendRole,
+    var `mode`: InferenceMode,
+    var `reasonCode`: ReasonCode,
+    var `reason`: kotlin.String,
+    var `attestationRequired`: kotlin.Boolean,
+    var `routerInvoked`: kotlin.Boolean,
+    var `fallbackAllowed`: kotlin.Boolean,
+    var `fallbackTargets`: List<RouteTarget>
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeResolvedRoute: FfiConverterRustBuffer<ResolvedRoute> {
+    override fun read(buf: ByteBuffer): ResolvedRoute {
+        return ResolvedRoute(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeBackendRole.read(buf),
+            FfiConverterTypeInferenceMode.read(buf),
+            FfiConverterTypeReasonCode.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterSequenceTypeRouteTarget.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ResolvedRoute) = (
+            FfiConverterString.allocationSize(value.`backendId`) +
+            FfiConverterString.allocationSize(value.`modelId`) +
+            FfiConverterTypeBackendRole.allocationSize(value.`decision`) +
+            FfiConverterTypeInferenceMode.allocationSize(value.`mode`) +
+            FfiConverterTypeReasonCode.allocationSize(value.`reasonCode`) +
+            FfiConverterString.allocationSize(value.`reason`) +
+            FfiConverterBoolean.allocationSize(value.`attestationRequired`) +
+            FfiConverterBoolean.allocationSize(value.`routerInvoked`) +
+            FfiConverterBoolean.allocationSize(value.`fallbackAllowed`) +
+            FfiConverterSequenceTypeRouteTarget.allocationSize(value.`fallbackTargets`)
+    )
+
+    override fun write(value: ResolvedRoute, buf: ByteBuffer) {
+            FfiConverterString.write(value.`backendId`, buf)
+            FfiConverterString.write(value.`modelId`, buf)
+            FfiConverterTypeBackendRole.write(value.`decision`, buf)
+            FfiConverterTypeInferenceMode.write(value.`mode`, buf)
+            FfiConverterTypeReasonCode.write(value.`reasonCode`, buf)
+            FfiConverterString.write(value.`reason`, buf)
+            FfiConverterBoolean.write(value.`attestationRequired`, buf)
+            FfiConverterBoolean.write(value.`routerInvoked`, buf)
+            FfiConverterBoolean.write(value.`fallbackAllowed`, buf)
+            FfiConverterSequenceTypeRouteTarget.write(value.`fallbackTargets`, buf)
+    }
+}
+
+
+
+/**
+ * Capability flags used to reject turns a target cannot serve (e.g. an image
+ * turn routed to a text-only local model in `LocalOnly` mode).
+ */
+data class RouteCapabilities (
+    var `text`: kotlin.Boolean,
+    var `vision`: kotlin.Boolean,
+    var `tools`: kotlin.Boolean
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRouteCapabilities: FfiConverterRustBuffer<RouteCapabilities> {
+    override fun read(buf: ByteBuffer): RouteCapabilities {
+        return RouteCapabilities(
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RouteCapabilities) = (
+            FfiConverterBoolean.allocationSize(value.`text`) +
+            FfiConverterBoolean.allocationSize(value.`vision`) +
+            FfiConverterBoolean.allocationSize(value.`tools`)
+    )
+
+    override fun write(value: RouteCapabilities, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`text`, buf)
+            FfiConverterBoolean.write(value.`vision`, buf)
+            FfiConverterBoolean.write(value.`tools`, buf)
+    }
+}
+
+
+
+/**
+ * One selectable backend+model inside a profile.
+ */
+data class RouteTarget (
+    var `backendId`: kotlin.String,
+    var `modelId`: kotlin.String,
+    var `role`: RouteTargetRole,
+    var `capabilities`: RouteCapabilities,
+    /**
+     * True when the remote leg must pass attestation preflight before send.
+     */
+    var `requireAttestation`: kotlin.Boolean
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRouteTarget: FfiConverterRustBuffer<RouteTarget> {
+    override fun read(buf: ByteBuffer): RouteTarget {
+        return RouteTarget(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeRouteTargetRole.read(buf),
+            FfiConverterTypeRouteCapabilities.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RouteTarget) = (
+            FfiConverterString.allocationSize(value.`backendId`) +
+            FfiConverterString.allocationSize(value.`modelId`) +
+            FfiConverterTypeRouteTargetRole.allocationSize(value.`role`) +
+            FfiConverterTypeRouteCapabilities.allocationSize(value.`capabilities`) +
+            FfiConverterBoolean.allocationSize(value.`requireAttestation`)
+    )
+
+    override fun write(value: RouteTarget, buf: ByteBuffer) {
+            FfiConverterString.write(value.`backendId`, buf)
+            FfiConverterString.write(value.`modelId`, buf)
+            FfiConverterTypeRouteTargetRole.write(value.`role`, buf)
+            FfiConverterTypeRouteCapabilities.write(value.`capabilities`, buf)
+            FfiConverterBoolean.write(value.`requireAttestation`, buf)
     }
 }
 
@@ -7594,6 +7822,51 @@ public object FfiConverterTypeEmbeddingStatus: FfiConverterRustBuffer<EmbeddingS
 
 
 
+/**
+ * Mode-aware fallback boundary.
+ */
+
+enum class FallbackPolicy {
+
+    /**
+     * Never fall back. Used by `LocalOnly` and the default for `RemoteOnly`.
+     */
+    NEVER,
+    /**
+     * Fall back only to other targets of the same role that are already on
+     * the profile. Used by `RulesHybrid` and `SmartRouting` first retry.
+     */
+    SAME_ROLE_ONLY,
+    /**
+     * Fall back across roles (e.g. remote-only with an explicit local
+     * emergency fallback). Opt-in only.
+     */
+    ALLOW_CROSS_ROLE;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeFallbackPolicy: FfiConverterRustBuffer<FallbackPolicy> {
+    override fun read(buf: ByteBuffer) = try {
+        FallbackPolicy.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: FallbackPolicy) = 4UL
+
+    override fun write(value: FallbackPolicy, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
 
 
 /**
@@ -7701,6 +7974,41 @@ public object FfiConverterTypeHealthStatus: FfiConverterRustBuffer<HealthStatus>
     override fun allocationSize(value: HealthStatus) = 4UL
 
     override fun write(value: HealthStatus, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * User-facing inference mode. Selectable per-conversation and as a default.
+ */
+
+enum class InferenceMode {
+
+    LOCAL_ONLY,
+    REMOTE_ONLY,
+    RULES_HYBRID,
+    SMART_ROUTING;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeInferenceMode: FfiConverterRustBuffer<InferenceMode> {
+    override fun read(buf: ByteBuffer) = try {
+        InferenceMode.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: InferenceMode) = 4UL
+
+    override fun write(value: InferenceMode, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
@@ -8064,6 +8372,84 @@ public object FfiConverterTypeOnboardingStep: FfiConverterRustBuffer<OnboardingS
     override fun allocationSize(value: OnboardingStep) = 4UL
 
     override fun write(value: OnboardingStep, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Stable, structured reason for a route decision. UI maps these to copy so
+ * wording does not drift across platforms.
+ */
+
+enum class ReasonCode {
+
+    LOCAL_DEFAULT,
+    REMOTE_DEFAULT,
+    USER_OVERRIDE,
+    ATTACHMENT_PRESENT,
+    REMOTE_UNAVAILABLE,
+    MESSAGE_TOO_LONG,
+    SMART_ROUTER_LOCAL,
+    SMART_ROUTER_REMOTE,
+    SMART_ROUTER_FALLBACK,
+    DISABLED,
+    NO_TARGET,
+    CAPABILITY_MISMATCH;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeReasonCode: FfiConverterRustBuffer<ReasonCode> {
+    override fun read(buf: ByteBuffer) = try {
+        ReasonCode.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: ReasonCode) = 4UL
+
+    override fun write(value: ReasonCode, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Role a [`RouteTarget`] plays in routing. Mirrors [`BackendRole`] but lives
+ * on the target record so a single profile can carry several remotes.
+ */
+
+enum class RouteTargetRole {
+
+    LOCAL,
+    REMOTE;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRouteTargetRole: FfiConverterRustBuffer<RouteTargetRole> {
+    override fun read(buf: ByteBuffer) = try {
+        RouteTargetRole.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: RouteTargetRole) = 4UL
+
+    override fun write(value: RouteTargetRole, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
@@ -9336,6 +9722,38 @@ public object FfiConverterOptionalTypeLocalModelDownloadProgress: FfiConverterRu
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeRouteTarget: FfiConverterRustBuffer<RouteTarget?> {
+    override fun read(buf: ByteBuffer): RouteTarget? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeRouteTarget.read(buf)
+    }
+
+    override fun allocationSize(value: RouteTarget?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeRouteTarget.allocationSize(value)
+        }
+    }
+
+    override fun write(value: RouteTarget?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeRouteTarget.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeTurnRoutingSummary: FfiConverterRustBuffer<TurnRoutingSummary?> {
     override fun read(buf: ByteBuffer): TurnRoutingSummary? {
         if (buf.get().toInt() == 0) {
@@ -9996,6 +10414,34 @@ public object FfiConverterSequenceTypeProviderPreset: FfiConverterRustBuffer<Lis
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeRouteTarget: FfiConverterRustBuffer<List<RouteTarget>> {
+    override fun read(buf: ByteBuffer): List<RouteTarget> {
+        val len = buf.getInt()
+        return List<RouteTarget>(len) {
+            FfiConverterTypeRouteTarget.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<RouteTarget>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeRouteTarget.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<RouteTarget>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeRouteTarget.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeTrustedProvider: FfiConverterRustBuffer<List<TrustedProvider>> {
     override fun read(buf: ByteBuffer): List<TrustedProvider> {
         val len = buf.getInt()
@@ -10122,5 +10568,4 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
     )
     }
     
-
 

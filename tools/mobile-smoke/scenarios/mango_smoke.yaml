@@ -39,7 +39,6 @@ steps:
   - assert_text: Memory
   - assert_text: Security
   - assert_text: Tools
-  - assert_text: Appearance
   - tap_text: Providers
   - wait_for_text: Providers
   - back: {}
@@ -60,6 +59,11 @@ steps:
   - wait_for_text: Tools
   - back: {}
   - wait_for_text: Settings
+  - scroll_to_text:
+      text: Appearance
+      tries: 8
+      label: settings-appearance
+  - assert_text: Appearance
   - tap_text: Appearance
   - wait_for_text: Appearance
   - back: {}
@@ -69,13 +73,18 @@ steps:
       text: Conversations
       label: home-return
   - tap_text: RAG
-  - wait_for_text:
-      text: RAG Library
+  - wait_for_desc:
+      desc: Add RAG source
       label: rag
-  - assert_desc: Add Document
+  - assert_text: RAG
+  - assert_desc: Add RAG source
   - tap_percent:
       x: 89
       y: 92
+  - wait_for_text:
+      text: Document
+      label: rag-add-menu
+  - tap_text: Document
   - sleep: 2
   - wait_for_any_package:
       packages:
@@ -84,7 +93,7 @@ steps:
       label: document-picker
   - back: {}
   - wait_for_text:
-      text: RAG Library
+      text: RAG
       label: rag-return
   - back: {}
   - wait_for_text:

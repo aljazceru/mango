@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+pub mod inference;
+
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
 pub enum BackendRole {
     Local,
@@ -153,6 +155,12 @@ pub fn single_backend_routing(backend_id: String, model_id: String) -> TurnRouti
 fn estimate_tokens(text: &str) -> u64 {
     let chars = text.chars().count() as u64;
     (chars / 4).max(1)
+}
+
+/// Shared token estimate used by both the legacy cascade and the new
+/// `RulesHybrid` planner so the long-message threshold behaves identically.
+pub fn hybrid_estimate_tokens(text: &str) -> u64 {
+    estimate_tokens(text)
 }
 
 #[cfg(test)]
