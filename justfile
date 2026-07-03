@@ -55,7 +55,7 @@ bindings-kotlin: _host-build
 
 # ── iOS ───────────────────────────────────────────────────────────────────────
 
-# Cross-compile Rust for iOS device and simulator (arm64)
+# Cross-compile Rust for iOS device and simulator.
 build-ios:
   #!/usr/bin/env bash
   set -e
@@ -65,7 +65,8 @@ build-ios:
   SIM_SDK="$DEV_DIR/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
   DEPLOYMENT_TARGET="18.0"
   for pair in "aarch64-apple-ios $IOS_SDK -miphoneos-version-min=$DEPLOYMENT_TARGET" \
-              "aarch64-apple-ios-sim $SIM_SDK -mios-simulator-version-min=$DEPLOYMENT_TARGET"; do
+              "aarch64-apple-ios-sim $SIM_SDK -mios-simulator-version-min=$DEPLOYMENT_TARGET" \
+              "x86_64-apple-ios $SIM_SDK -mios-simulator-version-min=$DEPLOYMENT_TARGET"; do
     set -- $pair; TARGET=$1; SDK=$2; VFLAG=$3
     case "$TARGET" in
       aarch64-apple-ios)
@@ -73,6 +74,9 @@ build-ios:
         ;;
       aarch64-apple-ios-sim)
         CLANG_TARGET="arm64-apple-ios$DEPLOYMENT_TARGET-simulator"
+        ;;
+      x86_64-apple-ios)
+        CLANG_TARGET="x86_64-apple-ios$DEPLOYMENT_TARGET-simulator"
         ;;
       *)
         echo "unsupported iOS target: $TARGET" >&2
@@ -94,9 +98,13 @@ ios-xcframework:
   mkdir -p staging/headers
   cp ios/Bindings/{{LIB_NAME}}FFI.h staging/headers/
   cp ios/Bindings/{{LIB_NAME}}FFI.modulemap staging/headers/module.modulemap
+  lipo -create \
+    target/aarch64-apple-ios-sim/release/lib{{LIB_NAME}}.a \
+    target/x86_64-apple-ios/release/lib{{LIB_NAME}}.a \
+    -output staging/lib{{LIB_NAME}}-ios-simulator.a
   xcodebuild -create-xcframework \
     -library target/aarch64-apple-ios/release/lib{{LIB_NAME}}.a -headers staging/headers \
-    -library target/aarch64-apple-ios-sim/release/lib{{LIB_NAME}}.a -headers staging/headers \
+    -library staging/lib{{LIB_NAME}}-ios-simulator.a -headers staging/headers \
     -output ios/Frameworks/{{XCF_NAME}}.xcframework
   rm -rf staging
 

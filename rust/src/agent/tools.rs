@@ -10,11 +10,14 @@
 /// parameters for the new network/file/math tools.
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use async_openai::types::chat::{
     ChatCompletionMessageToolCall, ChatCompletionTool, ChatCompletionTools, FunctionObject,
 };
+use futures::StreamExt;
+use reqwest::{redirect::Policy, Url};
 use scraper::{Html, Selector};
 use serde_json::json;
 
@@ -515,26 +518,22 @@ pub(crate) fn dispatch_fetch_url(args_str: &str, runtime: &tokio::runtime::Runti
     };
 
     let url = match args.get("url").and_then(|v| v.as_str()) {
-        Some(u) => u.to_string(),
+        Some(u) => match Url::parse(u) {
+            Ok(parsed) => parsed,
+            Err(e) => return format!("Error: invalid fetch_url URL: {}", e),
+        },
         None => return "Error: fetch_url requires 'url' parameter".to_string(),
     };
 
-    let url_for_error = url.clone();
     let result = runtime.block_on(async move {
         crate::net::tls::ensure_default_crypto_provider();
         let client = reqwest::Client::builder()
             .no_hickory_dns()
+            .redirect(Policy::none())
             .timeout(Duration::from_secs(15))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
-        client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("Error: failed to fetch '{}': {}", url, e))?
-            .text()
-            .await
-            .map_err(|e| format!("Error: failed to read response from '{}': {}", url, e))
+        fetch_url_with_guards(&client, url).await
     });
 
     let html = match result {
@@ -558,13 +557,147 @@ pub(crate) fn dispatch_fetch_url(args_str: &str, runtime: &tokio::runtime::Runti
     // Normalize whitespace
     let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    let _ = url_for_error; // suppress unused warning
     const MAX_CHARS: usize = 8000;
     if text.len() > MAX_CHARS {
         format!("{}... [truncated at 8000 chars]", &text[..MAX_CHARS])
     } else {
         text
     }
+}
+
+const FETCH_URL_MAX_BYTES: usize = 1_048_576;
+const FETCH_URL_MAX_REDIRECTS: usize = 5;
+
+async fn fetch_url_with_guards(client: &reqwest::Client, mut url: Url) -> Result<String, String> {
+    for redirect_count in 0..=FETCH_URL_MAX_REDIRECTS {
+        validate_fetch_url(&url).await?;
+        let response = client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|e| format!("Error: failed to fetch '{}': {}", url, e))?;
+
+        if response.status().is_redirection() {
+            if redirect_count == FETCH_URL_MAX_REDIRECTS {
+                return Err(format!(
+                    "Error: fetch_url redirect limit exceeded for '{}'",
+                    url
+                ));
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| format!("Error: redirect from '{}' missing Location", url))?;
+            url = url
+                .join(location)
+                .map_err(|e| format!("Error: invalid redirect from '{}': {}", url, e))?;
+            continue;
+        }
+
+        let source_url = url.clone();
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| {
+                format!(
+                    "Error: failed to read response from '{}': {}",
+                    source_url, e
+                )
+            })?;
+            if bytes.len().saturating_add(chunk.len()) > FETCH_URL_MAX_BYTES {
+                return Err(format!(
+                    "Error: response from '{}' exceeds {} byte limit",
+                    source_url, FETCH_URL_MAX_BYTES
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+
+    Err("Error: fetch_url redirect handling failed".to_string())
+}
+
+async fn validate_fetch_url(url: &Url) -> Result<(), String> {
+    match url.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(format!(
+                "Error: fetch_url scheme '{}' is not allowed",
+                scheme
+            ))
+        }
+    }
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Error: fetch_url requires a host".to_string())?;
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
+        return Err("Error: fetch_url blocks localhost targets".to_string());
+    }
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_blocked_fetch_ip(ip) {
+            return Err(format!(
+                "Error: fetch_url blocks private or local address {}",
+                ip
+            ));
+        }
+        return Ok(());
+    }
+
+    let port = url.port_or_known_default().unwrap_or(443);
+    let resolved = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| format!("Error: failed to resolve '{}': {}", host, e))?;
+    for addr in resolved {
+        let ip = addr.ip();
+        if is_blocked_fetch_ip(ip) {
+            return Err(format!(
+                "Error: fetch_url blocks private or local address {} for host '{}'",
+                ip, host
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_blocked_fetch_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_blocked_fetch_ipv4(ip),
+        IpAddr::V6(ip) => is_blocked_fetch_ipv6(ip),
+    }
+}
+
+fn is_blocked_fetch_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _d] = ip.octets();
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || a == 0
+        || a == 10
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 168)
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 0 && c == 2)
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+        || a >= 224
+}
+
+fn is_blocked_fetch_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || (ip.segments()[0] & 0xfe00) == 0xfc00
+        || (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
 /// Resolve a relative path within the agent sandbox directory.

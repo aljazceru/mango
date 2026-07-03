@@ -101,7 +101,7 @@ private struct AttestationDetailSheet: View {
     private var detailText: String {
         switch status {
         case .verified(_, _, _):
-            return "This conversation is routed to a Trusted Execution Environment. The TEE attestation report has been independently verified by this app."
+            return "This conversation is routed to a Trusted Execution Environment. This client verified recent cryptographic attestation evidence for the backend."
         case .unverified:
             return "Attestation has not been checked for this backend yet."
         case .expired:

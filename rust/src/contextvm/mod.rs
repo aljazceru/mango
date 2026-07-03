@@ -16,13 +16,13 @@ pub mod error;
 pub mod invocation;
 pub mod npub;
 
-pub use discovery::{discover_all, discover_servers, DiscoveredTool};
+pub use discovery::DiscoveredTool;
 pub use dispatch::{
     build_dispatch_map, descriptors_to_chat_tools, finalise_for_turn, ContextvmToolDescriptor,
     DESCRIPTION_CAP_CHARS,
 };
 pub use error::ContextvmError;
-pub use invocation::{invoke_tool, MAX_TOOL_RESULT_BYTES};
+pub use invocation::invoke_tool;
 
 /// Curated default relay list. CTX-07 amendment: no upstream "defaults"
 /// constant exists in contextvm-sdk 0.1.0, so we ship our own.

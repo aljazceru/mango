@@ -1603,14 +1603,6 @@ pub fn list_trusted_providers(
     Ok(rows)
 }
 
-/// Return true if the given pubkey is in the trust list.
-pub fn is_trusted_provider(conn: &Connection, pubkey: &str) -> Result<bool, PersistenceError> {
-    let count: i64 = conn
-        .prepare_cached("SELECT COUNT(*) FROM trusted_providers WHERE pubkey = ?1")?
-        .query_row(rusqlite::params![pubkey], |r| r.get(0))?;
-    Ok(count > 0)
-}
-
 // ── Phase 38 — hybrid profile queries ─────────────────────────────────────────
 
 pub fn upsert_hybrid_profile(
@@ -1667,6 +1659,7 @@ pub fn delete_hybrid_profile(conn: &Connection, id: &str) -> Result<(), Persiste
     Ok(())
 }
 
+#[cfg(test)]
 pub fn get_hybrid_profile(
     conn: &Connection,
     id: &str,

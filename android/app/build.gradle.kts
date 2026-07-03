@@ -42,7 +42,7 @@ android {
     signingConfigs {
         create("release") {
             val ksPath = System.getenv("KEYSTORE_PATH")
-            if (ksPath != null) {
+            if (!ksPath.isNullOrBlank()) {
                 storeFile = file(ksPath)
                 storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
                 keyAlias = System.getenv("KEY_ALIAS") ?: "mango"
@@ -68,11 +68,7 @@ android {
                 // and no real device uses it. Emulators use the debug APK.
                 abiFilters += listOf("arm64-v8a")
             }
-            signingConfig = if (System.getenv("KEYSTORE_PATH") != null) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -153,9 +149,34 @@ tasks.register("verifyLlamaCppInputs") {
     }
 }
 
+tasks.register("requireReleaseSigning") {
+    doLast {
+        val missing = listOf(
+            "KEYSTORE_PATH",
+            "KEYSTORE_PASSWORD",
+            "KEY_ALIAS",
+            "KEY_PASSWORD",
+        ).filter { System.getenv(it).isNullOrBlank() }
+        if (missing.isNotEmpty()) {
+            throw GradleException(
+                "Release signing is required for release builds. Missing environment variables: ${missing.joinToString(", ")}"
+            )
+        }
+    }
+}
+
 tasks.named("preBuild") {
     dependsOn("ensureUniffiGenerated")
     dependsOn("verifyLlamaCppInputs")
+}
+
+tasks.matching {
+    it.name == "assembleRelease" ||
+        it.name == "bundleRelease" ||
+        it.name == "packageRelease" ||
+        it.name == "validateSigningRelease"
+}.configureEach {
+    dependsOn("requireReleaseSigning")
 }
 
 dependencies {

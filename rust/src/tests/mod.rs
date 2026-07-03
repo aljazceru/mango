@@ -32,6 +32,7 @@ mod persistence_encrypted;
 mod rag;
 mod redpill;
 mod routing;
+mod security_regressions;
 mod settings;
 mod streaming;
 mod tee_policy;

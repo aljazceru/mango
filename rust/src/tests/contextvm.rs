@@ -179,7 +179,10 @@ fn test_truncate_result_over_limit_appends_marker() {
     );
     // Body cap (16 KiB) + marker (15 bytes) is the exact upper bound;
     // the slack guards against future char-boundary walk-back.
-    assert!(out.len() <= crate::contextvm::MAX_TOOL_RESULT_BYTES + "... [truncated]".len() + 4);
+    assert!(
+        out.len()
+            <= crate::contextvm::invocation::MAX_TOOL_RESULT_BYTES + "... [truncated]".len() + 4
+    );
 }
 
 #[test]
@@ -187,7 +190,7 @@ fn test_truncate_result_respects_utf8_boundary() {
     // Build a string whose exact 16_384th byte sits inside a multi-byte
     // codepoint. "é" = 2 bytes; pad to push the boundary inside it.
     let mut s = String::with_capacity(20_000);
-    for _ in 0..(crate::contextvm::MAX_TOOL_RESULT_BYTES / 2) {
+    for _ in 0..(crate::contextvm::invocation::MAX_TOOL_RESULT_BYTES / 2) {
         s.push('é');
     }
     s.push_str("tail-payload-tail-payload");
@@ -272,7 +275,7 @@ fn test_decode_response_oversize_text_truncated() {
     });
     let s = crate::contextvm::invocation::decode_response(&msg, "x");
     assert!(s.ends_with("... [truncated]"));
-    assert!(s.len() <= crate::contextvm::MAX_TOOL_RESULT_BYTES + 32);
+    assert!(s.len() <= crate::contextvm::invocation::MAX_TOOL_RESULT_BYTES + 32);
 }
 
 // ── Mock-relay in-process E2E test ────────────────────────────────────
@@ -609,7 +612,7 @@ async fn live_discover_servers_against_default_relays() {
     let relays = crate::contextvm::default_relays_owned();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        crate::contextvm::discover_servers(&relays),
+        crate::contextvm::discovery::discover_servers(&relays),
     )
     .await;
 
@@ -636,7 +639,7 @@ async fn live_discover_servers_against_default_relays() {
             eprintln!("Discovered {} servers", servers.len());
             let all_result = tokio::time::timeout(
                 std::time::Duration::from_secs(20),
-                crate::contextvm::discover_all(&relays),
+                crate::contextvm::discovery::discover_all(&relays),
             )
             .await;
             if let Ok(Ok(tools)) = all_result {

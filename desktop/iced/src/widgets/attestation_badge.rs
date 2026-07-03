@@ -33,7 +33,7 @@ fn detail_text(status: &AttestationStatus) -> &'static str {
     match status {
         AttestationStatus::Verified { .. } => {
             "This conversation is routed to a Trusted Execution Environment. \
-             The TEE attestation report has been independently verified by this app."
+             This client verified recent cryptographic attestation evidence for the backend."
         }
         AttestationStatus::Unverified => "Attestation has not been checked for this backend yet.",
         AttestationStatus::Expired => {
