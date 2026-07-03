@@ -560,6 +560,28 @@ async fn decrypt_response_bytes(response: EncryptedResponse) -> Result<Vec<u8>, 
     Ok(plaintext)
 }
 
+fn decrypt_framed_body(
+    key_material: &ResponseKeyMaterial,
+    body: &[u8],
+) -> Result<Vec<u8>, LlmError> {
+    let mut framed = body.to_vec();
+    let mut plaintext = Vec::new();
+    let mut seq = 0u64;
+
+    while let Some(frame) = try_take_frame(&mut framed) {
+        plaintext.extend_from_slice(&decrypt_chunk(key_material, seq, &frame)?);
+        seq = seq.saturating_add(1);
+    }
+
+    if !framed.is_empty() {
+        return Err(LlmError::NetworkError {
+            reason: "Truncated Tinfoil secure encrypted error response".to_string(),
+        });
+    }
+
+    Ok(plaintext)
+}
+
 struct EncryptedResponse {
     body: EncryptedResponseBody,
     key_material: ResponseKeyMaterial,
@@ -621,6 +643,8 @@ async fn send_secure_request(
         );
     }
 
+    let response_request_enc = encrypted.request_enc;
+    let response_exported_secret = encrypted.exported_secret;
     if use_platform_http_for_secure_request(response_mode) {
         let response = platform_http_request(
             "POST",
@@ -631,28 +655,34 @@ async fn send_secure_request(
         )
         .await?;
         if !(200..=299).contains(&response.status_code) {
-            if response.status_code == 422 && allow_retry {
-                if let Ok(problem) = serde_json::from_slice::<ProblemDetails>(&response.body) {
-                    if problem.r#type == EHBP_KEY_CONFIG_PROBLEM {
-                        invalidate_cached_attestation(backend);
-                        return Box::pin(send_secure_request(
-                            backend,
-                            path,
-                            body,
-                            false,
-                            response_mode,
-                        ))
-                        .await;
-                    }
-                }
-            }
-            let body_text = String::from_utf8_lossy(&response.body).to_string();
-            let problem = serde_json::from_str::<ProblemDetails>(&body_text).ok();
-            return Err(map_plain_error_body(
+            let error_key_material = platform_encrypted_error_key_material(
+                &response.headers,
+                &response_exported_secret,
+                &response_request_enc,
+            );
+            let (status, body_text, problem) = parse_problem_body(
                 response.status_code,
-                &body_text,
-                problem.as_ref(),
-            ));
+                response.body,
+                error_key_material.as_ref(),
+            );
+            if status == 422
+                && allow_retry
+                && problem
+                    .as_ref()
+                    .map(|problem| problem.r#type == EHBP_KEY_CONFIG_PROBLEM)
+                    .unwrap_or(false)
+            {
+                invalidate_cached_attestation(backend);
+                return Box::pin(send_secure_request(
+                    backend,
+                    path,
+                    body,
+                    false,
+                    response_mode,
+                ))
+                .await;
+            }
+            return Err(map_plain_error_body(status, &body_text, problem.as_ref()));
         }
         let response_nonce = platform_header_value(&response.headers, EHBP_RESPONSE_NONCE)
             .ok_or_else(|| LlmError::NetworkError {
@@ -665,8 +695,8 @@ async fn send_secure_request(
                 reason: format!("Invalid Tinfoil secure response nonce: {error}"),
             })?;
         let key_material = derive_response_key_material(
-            &encrypted.exported_secret,
-            &encrypted.request_enc,
+            &response_exported_secret,
+            &response_request_enc,
             &response_nonce,
         )?;
         return Ok(EncryptedResponse {
@@ -687,7 +717,13 @@ async fn send_secure_request(
         })?;
 
     if !response.status().is_success() {
-        let (status, body_text, problem) = parse_problem_response(response).await;
+        let error_key_material = encrypted_error_key_material(
+            &response,
+            &response_exported_secret,
+            &response_request_enc,
+        );
+        let (status, body_text, problem) =
+            parse_problem_response(response, error_key_material.as_ref()).await;
         if status == 422
             && allow_retry
             && problem
@@ -722,8 +758,8 @@ async fn send_secure_request(
         reason: format!("Invalid Tinfoil secure response nonce: {error}"),
     })?;
     let key_material = derive_response_key_material(
-        &encrypted.exported_secret,
-        &encrypted.request_enc,
+        &response_exported_secret,
+        &response_request_enc,
         &response_nonce,
     )?;
 
@@ -735,11 +771,69 @@ async fn send_secure_request(
 
 async fn parse_problem_response(
     response: reqwest::Response,
+    key_material: Option<&ResponseKeyMaterial>,
 ) -> (u16, String, Option<ProblemDetails>) {
     let status = response.status().as_u16();
-    let body_text = response.text().await.unwrap_or_default();
-    let problem = serde_json::from_str::<ProblemDetails>(&body_text).ok();
+    let body = response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .unwrap_or_default();
+    parse_problem_body(status, body, key_material)
+}
+
+fn parse_problem_body(
+    status: u16,
+    body: Vec<u8>,
+    key_material: Option<&ResponseKeyMaterial>,
+) -> (u16, String, Option<ProblemDetails>) {
+    let body = key_material
+        .and_then(|key_material| decrypt_framed_body(key_material, &body).ok())
+        .unwrap_or(body);
+    let problem = serde_json::from_slice::<ProblemDetails>(&body).ok();
+    let body_text = displayable_error_body(&body);
     (status, body_text, problem)
+}
+
+fn encrypted_error_key_material(
+    response: &reqwest::Response,
+    exported_secret: &[u8; EXPORT_LEN],
+    request_enc: &[u8; 32],
+) -> Option<ResponseKeyMaterial> {
+    let response_nonce = response.headers().get(EHBP_RESPONSE_NONCE)?.to_str().ok()?;
+    key_material_from_response_nonce(response_nonce, exported_secret, request_enc)
+}
+
+fn platform_encrypted_error_key_material(
+    headers: &[PlatformHttpHeader],
+    exported_secret: &[u8; EXPORT_LEN],
+    request_enc: &[u8; 32],
+) -> Option<ResponseKeyMaterial> {
+    let response_nonce = platform_header_value(headers, EHBP_RESPONSE_NONCE)?;
+    key_material_from_response_nonce(&response_nonce, exported_secret, request_enc)
+}
+
+fn key_material_from_response_nonce(
+    response_nonce: &str,
+    exported_secret: &[u8; EXPORT_LEN],
+    request_enc: &[u8; 32],
+) -> Option<ResponseKeyMaterial> {
+    let response_nonce = hex::decode(response_nonce).ok()?;
+    derive_response_key_material(exported_secret, request_enc, &response_nonce).ok()
+}
+
+fn displayable_error_body(body: &[u8]) -> String {
+    if body.is_empty() {
+        return String::new();
+    }
+    match std::str::from_utf8(body) {
+        Ok(text) if text.chars().all(is_displayable_error_char) => text.trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+fn is_displayable_error_char(c: char) -> bool {
+    c == '\n' || c == '\r' || c == '\t' || (!c.is_control() && c != '\u{fffd}')
 }
 
 fn map_plain_error_body(
@@ -1476,6 +1570,68 @@ mod tests {
         assert!(!use_platform_http_for_secure_request(
             SecureResponseMode::Streaming
         ));
+    }
+
+    #[test]
+    fn binary_error_body_is_not_rendered_lossy() {
+        let body_text = displayable_error_body(&[0xe7, 0x4c, 0x05, 0x71, 0x9b, 0x3e]);
+        assert!(body_text.is_empty());
+
+        let err = map_plain_error_body(503, &body_text, None);
+        match err {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 503);
+                assert_eq!(reason, "HTTP 503");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_error_body_message_is_preserved() {
+        let body = br#"{"error":{"message":"backend is warming up"}}"#;
+        let body_text = displayable_error_body(body);
+        let err = map_plain_error_body(503, &body_text, None);
+        match err {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 503);
+                assert_eq!(reason, "backend is warming up");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encrypted_error_body_is_decrypted_before_mapping() {
+        let key_material = ResponseKeyMaterial {
+            key: [7; KEY_LEN],
+            nonce_base: [9; NONCE_LEN],
+        };
+        let framed = encrypted_frame(
+            &key_material,
+            0,
+            br#"{"title":"temporary secure backend outage"}"#,
+        );
+
+        let (status, body_text, problem) = parse_problem_body(503, framed, Some(&key_material));
+        let err = map_plain_error_body(status, &body_text, problem.as_ref());
+
+        match err {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 503);
+                assert_eq!(reason, "temporary secure backend outage");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
     }
 }
 
