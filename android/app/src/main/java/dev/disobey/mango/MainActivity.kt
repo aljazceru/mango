@@ -23,6 +23,14 @@ import androidx.compose.runtime.setValue
 import dev.disobey.mango.ui.MainApp
 import dev.disobey.mango.ui.theme.AppTheme
 
+internal fun shouldLockAfterBackground(backgroundedAt: Long, now: Long, timeoutSeconds: Long): Boolean {
+    if (backgroundedAt <= 0 || timeoutSeconds < 0) {
+        return false
+    }
+    val elapsed = now - backgroundedAt
+    return elapsed >= timeoutSeconds * 1000L
+}
+
 class MainActivity : AppCompatActivity() {
     private lateinit var manager: AppManager
 
@@ -37,11 +45,13 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (backgroundedAt > 0) {
-            val elapsed = System.currentTimeMillis() - backgroundedAt
+            val now = System.currentTimeMillis()
             val timeoutSeconds = manager.state.lockTimeoutSeconds
             // -1 = Never. 0 = Immediately (always lock). Any positive value: lock if exceeded.
-            if (timeoutSeconds >= 0 && elapsed >= timeoutSeconds * 1000L) {
+            if (shouldLockAfterBackground(backgroundedAt, now, timeoutSeconds)) {
                 manager.dispatch(AppAction.LockApp)
+                backgroundedAt = 0
+                return
             }
             backgroundedAt = 0
         }

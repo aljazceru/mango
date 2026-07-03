@@ -204,6 +204,8 @@ fun ChatScreen(
             pendingCameraFile?.let { file ->
                 onAttachImage(file.name, file.absolutePath, "image/jpeg")
             }
+        } else {
+            pendingCameraFile?.delete()
         }
         pendingCameraFile = null
     }

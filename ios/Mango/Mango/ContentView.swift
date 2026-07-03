@@ -31,6 +31,9 @@ struct ContentView: View {
             case .settings:
                 SettingsView()
                     .environmentObject(appManager)
+            case .settingsLocalModels, .settingsHybridRouting:
+                SettingsView()
+                    .environmentObject(appManager)
             case .documents:
                 DocumentLibraryView()
                     .environmentObject(appManager)

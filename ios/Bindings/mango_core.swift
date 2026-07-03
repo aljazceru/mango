@@ -8034,6 +8034,14 @@ public enum Screen {
      */
     case settingsTools
     /**
+     * Local models management sub-screen -- pushed from Settings (model catalog, download, delete).
+     */
+    case settingsLocalModels
+    /**
+     * Hybrid routing configuration sub-screen -- pushed from Settings.
+     */
+    case settingsHybridRouting
+    /**
      * Phase 35 — Tool Discovery sub-screen (pushed from SettingsTools).
      */
     case toolDiscovery
@@ -8102,17 +8110,21 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         case 13: return .settingsSecurity
         
         case 14: return .settingsTools
+
+        case 15: return .settingsLocalModels
+
+        case 16: return .settingsHybridRouting
+
+        case 17: return .toolDiscovery
         
-        case 15: return .toolDiscovery
-        
-        case 16: return .contextvmToolDetail(toolId: try FfiConverterString.read(from: &buf)
+        case 18: return .contextvmToolDetail(toolId: try FfiConverterString.read(from: &buf)
         )
         
-        case 17: return .trustedProviders
+        case 19: return .trustedProviders
         
-        case 18: return .locked
+        case 20: return .locked
         
-        case 19: return .pinSetup
+        case 21: return .pinSetup
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -8180,25 +8192,33 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
             writeInt(&buf, Int32(14))
         
         
-        case .toolDiscovery:
+        case .settingsLocalModels:
             writeInt(&buf, Int32(15))
+
+
+        case .settingsHybridRouting:
+            writeInt(&buf, Int32(16))
+
+
+        case .toolDiscovery:
+            writeInt(&buf, Int32(17))
         
         
         case let .contextvmToolDetail(toolId):
-            writeInt(&buf, Int32(16))
+            writeInt(&buf, Int32(18))
             FfiConverterString.write(toolId, into: &buf)
             
         
         case .trustedProviders:
-            writeInt(&buf, Int32(17))
+            writeInt(&buf, Int32(19))
         
         
         case .locked:
-            writeInt(&buf, Int32(18))
+            writeInt(&buf, Int32(20))
         
         
         case .pinSetup:
-            writeInt(&buf, Int32(19))
+            writeInt(&buf, Int32(21))
         
         }
     }
@@ -10181,11 +10201,12 @@ public func knownProviderPresets() -> [ProviderPreset]  {
 /**
  * Built-in local model catalog shared by all platforms.
  *
- * Sources: Hugging Face model metadata APIs for
- * `Qwen/Qwen2.5-1.5B-Instruct-GGUF?blobs=true` and
- * `QuantFactory/Qwen2.5-0.5B-Instruct-GGUF?blobs=true`, verified
+ * Sources: Hugging Face LFS metadata (X-Linked-ETag = content sha256,
+ * X-Linked-Size = byte length), verified 2026-06-26. Qwen presets verified
  * 2026-06-23. Android uses the platform HTTPS stack for model downloads; the
- * file is installed only after the pinned SHA-256 matches.
+ * file is installed only after the pinned SHA-256 matches. Prompt formatting
+ * uses each model's embedded `tokenizer.chat_template` via libllama-common, so
+ * the `chat_template` field below is informational only (native ignores it).
  */
 public func localModelCatalog() -> [LocalModelPreset]  {
     return try!  FfiConverterSequenceTypeLocalModelPreset.lift(try! rustCall() {
@@ -10228,7 +10249,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_func_known_provider_presets() != 26978) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_func_local_model_catalog() != 13685) {
+    if (uniffi_mango_core_checksum_func_local_model_catalog() != 33405) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_func_model_supports_vision() != 37098) {

@@ -31,7 +31,7 @@ use super::{hybrid_estimate_tokens, BackendRole, HybridProfile, RoutingPolicy};
 // ── Mode + target shape ──────────────────────────────────────────────────────
 
 /// User-facing inference mode. Selectable per-conversation and as a default.
-#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InferenceMode {
     LocalOnly,
     RemoteOnly,
@@ -41,7 +41,7 @@ pub enum InferenceMode {
 
 /// Role a [`RouteTarget`] plays in routing. Mirrors [`BackendRole`] but lives
 /// on the target record so a single profile can carry several remotes.
-#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RouteTargetRole {
     Local,
     Remote,
@@ -49,7 +49,7 @@ pub enum RouteTargetRole {
 
 /// Capability flags used to reject turns a target cannot serve (e.g. an image
 /// turn routed to a text-only local model in `LocalOnly` mode).
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct RouteCapabilities {
     pub text: bool,
     pub vision: bool,
@@ -71,7 +71,7 @@ impl RouteCapabilities {
 }
 
 /// One selectable backend+model inside a profile.
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteTarget {
     pub backend_id: String,
     pub model_id: String,
@@ -91,7 +91,7 @@ impl RouteTarget {
 }
 
 /// Mode-aware fallback boundary.
-#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum FallbackPolicy {
     /// Never fall back. Used by `LocalOnly` and the default for `RemoteOnly`.
     #[default]
@@ -105,7 +105,7 @@ pub enum FallbackPolicy {
 }
 
 /// The new profile shape: routing policy separated from backend records.
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InferenceProfile {
     pub id: String,
     pub name: String,
@@ -126,7 +126,7 @@ pub struct InferenceProfile {
 
 /// Stable, structured reason for a route decision. UI maps these to copy so
 /// wording does not drift across platforms.
-#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReasonCode {
     LocalDefault,
     RemoteDefault,
@@ -165,7 +165,7 @@ impl ReasonCode {
 
 /// Result of route planning for a single turn. Built before the user message
 /// is persisted.
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedRoute {
     pub backend_id: String,
     pub model_id: String,

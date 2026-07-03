@@ -257,6 +257,10 @@ Java_dev_disobey_mango_AndroidLlamaEngine_nativeInit(JNIEnv *env, jobject, jstri
 
     llama_log_set(llama_android_log, nullptr);
     const char *dir = env->GetStringUTFChars(native_lib_dir, nullptr);
+    if (dir == nullptr) {
+        set_error("failed to read native library directory");
+        return;
+    }
     LOGI("Loading llama.cpp backends from %s", dir);
     ggml_backend_load_all_from_path(dir);
     env->ReleaseStringUTFChars(native_lib_dir, dir);
@@ -283,6 +287,10 @@ Java_dev_disobey_mango_AndroidLlamaEngine_nativeLoadModel(
     free_model_locked();
 
     const char *path = env->GetStringUTFChars(model_path, nullptr);
+    if (path == nullptr) {
+        set_error("failed to read model path");
+        return 2;
+    }
     llama_model_params model_params = llama_model_default_params();
     model_params.use_mmap = true;
     model_params.use_mlock = false;
@@ -358,6 +366,10 @@ Java_dev_disobey_mango_AndroidLlamaEngine_nativeProcessPrompt(
     }
 
     const char *raw = env->GetStringUTFChars(messages_json, nullptr);
+    if (raw == nullptr) {
+        set_error("failed to read prompt messages");
+        return 2;
+    }
     std::string json_text(raw);
     env->ReleaseStringUTFChars(messages_json, raw);
 

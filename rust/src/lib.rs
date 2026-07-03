@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -1438,6 +1439,50 @@ fn collect_keychain_secret_ids(actor_state: &ActorState) -> Vec<String> {
     ids
 }
 
+fn path_parent_is(parent: &Path, child: &str) -> bool {
+    let child_path = Path::new(child);
+    child_path.parent().is_some_and(|p| p == parent)
+}
+
+fn path_has_component(path: &Path, name: &str) -> bool {
+    path.components().any(|c| c.as_os_str() == name)
+}
+
+fn looks_like_ios_app_support(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == "Application Support")
+        && path_has_component(path, "Containers")
+        && path_has_component(path, "Application")
+        && path_has_component(path, "Library")
+}
+
+fn wipe_data_dir_allowed(data_dir: &str, db_path: &str, bootstrap_path: &str) -> bool {
+    if data_dir.is_empty() {
+        return false;
+    }
+    let data_dir_path = Path::new(data_dir);
+    let db_in_data_dir = path_parent_is(data_dir_path, db_path);
+    let bootstrap_in_data_dir = path_parent_is(data_dir_path, bootstrap_path);
+    if !(db_in_data_dir && bootstrap_in_data_dir) {
+        return false;
+    }
+
+    path_has_component(data_dir_path, "mango")
+        || path_has_component(data_dir_path, "dev.disobey.mango")
+        || looks_like_ios_app_support(data_dir_path)
+}
+
+fn remove_plaintext_image_file(path: &str) {
+    if path.trim().is_empty() {
+        return;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => log::debug!("[image] removed plaintext attachment source {path}"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("[image] failed to remove plaintext attachment source {path}: {e}"),
+    }
+}
+
 fn wipe_local_install(
     actor_state: &mut ActorState,
     core_tx: flume::Sender<CoreMsg>,
@@ -1484,10 +1529,11 @@ fn wipe_local_install(
                 .map_err(|e| format!("failed to reset database: {e}"))?,
         );
     } else {
-        let data_dir_path = std::path::Path::new(&actor_state.data_dir);
-        let wipe_allowed = !actor_state.data_dir.is_empty()
-            && data_dir_path.components().any(|c| c.as_os_str() == "mango");
-        if !wipe_allowed {
+        if !wipe_data_dir_allowed(
+            &actor_state.data_dir,
+            &actor_state.db_path,
+            &actor_state.bootstrap_path,
+        ) {
             return Err(format!(
                 "refusing to wipe unexpected data directory: {}",
                 actor_state.data_dir
@@ -1735,10 +1781,11 @@ fn truncate_title(s: &str, max_chars: usize) -> String {
 
 /// Refresh the conversations list in AppState from SQLite.
 fn refresh_conversations(actor_state: &mut ActorState) {
-    let rows = persistence::queries::list_conversations(
-        actor_state.db.as_ref().expect("db unlocked").conn(),
-    )
-    .unwrap_or_default();
+    let Some(db) = actor_state.db.as_ref() else {
+        log::debug!("[state] refresh_conversations skipped while DB is locked");
+        return;
+    };
+    let rows = persistence::queries::list_conversations(db.conn()).unwrap_or_default();
     actor_state.app_state.conversations = rows
         .iter()
         .map(|row| ConversationSummary {
@@ -1755,11 +1802,11 @@ fn refresh_conversations(actor_state: &mut ActorState) {
 
 /// Refresh app_state.messages from the DB for the given conversation_id.
 fn refresh_messages(actor_state: &mut ActorState, conversation_id: &str) {
-    let rows = persistence::queries::list_messages(
-        actor_state.db.as_ref().expect("db unlocked").conn(),
-        conversation_id,
-    )
-    .unwrap_or_default();
+    let Some(db) = actor_state.db.as_ref() else {
+        log::debug!("[state] refresh_messages skipped while DB is locked");
+        return;
+    };
+    let rows = persistence::queries::list_messages(db.conn(), conversation_id).unwrap_or_default();
     actor_state.app_state.messages = rows
         .iter()
         .map(|row| UiMessage {
@@ -1795,7 +1842,11 @@ fn build_chat_messages_for_conversation(
     conversation_id: &str,
 ) -> Vec<llm::streaming::ChatMessage> {
     let mut msgs = Vec::new();
-    let conn = actor_state.db.as_ref().expect("db unlocked").conn();
+    let Some(db) = actor_state.db.as_ref() else {
+        log::debug!("[chat] build_chat_messages_for_conversation skipped while DB is locked");
+        return msgs;
+    };
+    let conn = db.conn();
 
     let conv_system_prompt = persistence::queries::list_conversations(conn)
         .unwrap_or_default()
@@ -1853,9 +1904,11 @@ fn refresh_backend_summaries(actor_state: &mut ActorState) {
 /// Called after any AddBackend/RemoveBackend/ReorderBackend operation so the in-memory
 /// list stays consistent with the database.
 fn reload_backends(actor_state: &mut ActorState) {
-    let rows =
-        persistence::queries::list_backends(actor_state.db.as_ref().expect("db unlocked").conn())
-            .unwrap_or_default();
+    let Some(db) = actor_state.db.as_ref() else {
+        log::debug!("[state] reload_backends skipped while DB is locked");
+        return;
+    };
+    let rows = persistence::queries::list_backends(db.conn()).unwrap_or_default();
     actor_state.backends = rows
         .iter()
         .map(|row| {
@@ -2001,6 +2054,12 @@ fn cancel_pending_attested_send(actor_state: &mut ActorState, message: String) -
     actor_state.app_state.busy_state = BusyState::Idle;
     actor_state.app_state.last_error = Some(message);
     true
+}
+
+fn clear_pending_image_attachment(actor_state: &mut ActorState) {
+    if let Some(image) = actor_state.pending_image_attachment.take() {
+        remove_plaintext_image_file(&image.file_path);
+    }
 }
 
 fn image_capability_model_id(actor_state: &ActorState) -> Option<String> {
@@ -4032,7 +4091,7 @@ fn do_send_message(
                 }
                 Err(e) => {
                     actor_state.app_state.last_error = Some(format!("Image prepare failed: {}", e));
-                    actor_state.pending_image_attachment = None;
+                    clear_pending_image_attachment(actor_state);
                     actor_state.app_state.busy_state = BusyState::Idle;
                     actor_state.app_state.streaming_text = None;
                     refresh_backend_summaries(actor_state);
@@ -4041,7 +4100,7 @@ fn do_send_message(
             }
         }
         // Consume the pending image now that we've built the request.
-        actor_state.pending_image_attachment = None;
+        clear_pending_image_attachment(actor_state);
 
         let token = llm::spawn_streaming_task_from_api_messages(
             &actor_state.runtime,
@@ -4124,18 +4183,17 @@ fn spawn_chat_tool_round(
 
 /// Refresh app_state.agent_sessions from SQLite (mirrors refresh_conversations).
 fn refresh_agent_sessions(actor_state: &mut ActorState) {
-    let rows = persistence::queries::list_agent_sessions(
-        actor_state.db.as_ref().expect("db unlocked").conn(),
-    )
-    .unwrap_or_default();
+    let Some(db) = actor_state.db.as_ref() else {
+        log::debug!("[agent] refresh_agent_sessions skipped while DB is locked");
+        return;
+    };
+    let conn = db.conn();
+    let rows = persistence::queries::list_agent_sessions(conn).unwrap_or_default();
     actor_state.app_state.agent_sessions = rows
         .iter()
         .map(|row| {
-            let step_count = persistence::queries::count_agent_steps(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
-                &row.id,
-            )
-            .unwrap_or(0) as u32;
+            let step_count =
+                persistence::queries::count_agent_steps(conn, &row.id).unwrap_or(0) as u32;
             AgentSessionSummary {
                 id: row.id.clone(),
                 title: row.title.clone(),
@@ -4159,6 +4217,12 @@ fn handle_launch_agent_session(
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
         ChatCompletionRequestUserMessageArgs,
     };
+
+    let Some(db) = actor_state.db.as_ref() else {
+        log::warn!("[agent] LaunchAgentSession dispatched while DB locked; ignoring");
+        return;
+    };
+    let conn = db.conn();
 
     // Find a tool-capable backend
     let backend = actor_state
@@ -4203,10 +4267,7 @@ fn handle_launch_agent_session(
         created_at: now,
         updated_at: now,
     };
-    if let Err(e) = persistence::queries::insert_agent_session(
-        actor_state.db.as_ref().expect("db unlocked").conn(),
-        &session_row,
-    ) {
+    if let Err(e) = persistence::queries::insert_agent_session(conn, &session_row) {
         actor_state.app_state.toast = Some(format!("Failed to create agent session: {}", e));
         return;
     }
@@ -4297,6 +4358,14 @@ fn handle_agent_step_complete(
     if !actor_state.active_agent_sessions.contains_key(&session_id) {
         return;
     }
+    let Some(db) = actor_state.db.as_ref() else {
+        log::warn!("[agent] AgentStepComplete received while DB locked; dropping active session");
+        actor_state.active_agent_sessions.remove(&session_id);
+        actor_state.app_state.rev += 1;
+        emit_state(&actor_state.app_state, shared, update_tx);
+        return;
+    };
+    let conn = db.conn();
 
     let now = now_secs();
 
@@ -4343,24 +4412,20 @@ fn handle_agent_step_complete(
                 created_at: now,
                 tool_origin,
             };
-            let _ = persistence::queries::insert_agent_step(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
-                &step_row,
-            );
+            let _ = persistence::queries::insert_agent_step(conn, &step_row);
 
             // Phase 36 (CTX36-USED-01): if this step recorded a contextvm
             // tool call, re-aggregate usage and re-project AppState.contextvm_tools
             // so the "Used N×" badge updates without waiting for the next
             // discovery refresh.
             if step_row.tool_origin.as_deref() == Some("contextvm") {
-                let conn_for_agg = actor_state.db.as_ref().expect("db unlocked").conn();
-                let usage_map = aggregate_contextvm_tool_usage(conn_for_agg);
+                let usage_map = aggregate_contextvm_tool_usage(conn);
                 let now_secs_proj = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
                 let refreshed: Vec<DiscoverableTool> =
-                    persistence::queries::list_all_contextvm_tools(conn_for_agg)
+                    persistence::queries::list_all_contextvm_tools(conn)
                         .unwrap_or_default()
                         .into_iter()
                         .map(|r| row_to_discoverable_tool(r, &usage_map, now_secs_proj))
@@ -4370,15 +4435,12 @@ fn handle_agent_step_complete(
             }
 
             // Check step limit (max 20 steps per D-02)
-            let current_count = persistence::queries::count_agent_steps(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
-                &session_id,
-            )
-            .unwrap_or(0);
+            let current_count =
+                persistence::queries::count_agent_steps(conn, &session_id).unwrap_or(0);
             if current_count >= 20 {
                 // Step limit reached
                 let _ = persistence::queries::update_agent_session_status(
-                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                    conn,
                     &session_id,
                     "failed",
                     now,
@@ -4393,18 +4455,15 @@ fn handle_agent_step_complete(
             }
 
             // Dispatch tools synchronously on the actor thread
-            let brave_api_key = persistence::queries::get_setting(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
-                "brave_api_key",
-            )
-            .unwrap_or(None)
-            .unwrap_or_default();
+            let brave_api_key = persistence::queries::get_setting(conn, "brave_api_key")
+                .unwrap_or(None)
+                .unwrap_or_default();
 
             // Phase 35: route remote (contextvm) tool calls through the
             // dispatch fallback in agent::dispatch_tools.
             let tool_results = agent::dispatch_tools(
                 &calls,
-                actor_state.db.as_ref().expect("db unlocked").conn(),
+                conn,
                 &actor_state.vector_index,
                 actor_state.embedding_provider.as_ref(),
                 &actor_state.runtime,
@@ -4466,7 +4525,7 @@ fn handle_agent_step_complete(
                 Some(b) => b,
                 None => {
                     let _ = persistence::queries::update_agent_session_status(
-                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                        conn,
                         &session_id,
                         "failed",
                         now,
@@ -4510,7 +4569,7 @@ fn handle_agent_step_complete(
 
             // Update session status timestamp
             let _ = persistence::queries::update_agent_session_status(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
+                conn,
                 &session_id,
                 "running",
                 now,
@@ -4536,12 +4595,9 @@ fn handle_agent_step_complete(
                 // Phase 35: final_answer is not a tool call; tool_origin = None.
                 tool_origin: None,
             };
-            let _ = persistence::queries::insert_agent_step(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
-                &step_row,
-            );
+            let _ = persistence::queries::insert_agent_step(conn, &step_row);
             let _ = persistence::queries::update_agent_session_status(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
+                conn,
                 &session_id,
                 "completed",
                 now,
@@ -4561,12 +4617,8 @@ fn handle_agent_step_complete(
 
         Err(error) => {
             // Mark session as failed
-            let _ = persistence::queries::update_agent_session_status(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
-                &session_id,
-                "failed",
-                now,
-            );
+            let _ =
+                persistence::queries::update_agent_session_status(conn, &session_id, "failed", now);
             actor_state.active_agent_sessions.remove(&session_id);
             actor_state.app_state.toast =
                 Some(format!("Agent step failed: {}", error.display_message()));
@@ -4929,13 +4981,13 @@ fn handle_resume_agent_session(
 
 /// Cancel an agent session.
 fn handle_cancel_agent_session(actor_state: &mut ActorState, session_id: String) {
+    let Some(db) = actor_state.db.as_ref() else {
+        log::warn!("[agent] CancelAgentSession dispatched while DB locked; ignoring");
+        return;
+    };
     let now = now_secs();
-    let _ = persistence::queries::update_agent_session_status(
-        actor_state.db.as_ref().expect("db unlocked").conn(),
-        &session_id,
-        "cancelled",
-        now,
-    );
+    let _ =
+        persistence::queries::update_agent_session_status(db.conn(), &session_id, "cancelled", now);
     actor_state.active_agent_sessions.remove(&session_id);
     // Clear detail view if this session is loaded
     if actor_state.app_state.current_agent_session_id.as_deref() == Some(&session_id) {
@@ -4946,11 +4998,11 @@ fn handle_cancel_agent_session(actor_state: &mut ActorState, session_id: String)
 
 /// Load agent steps for a session into AppState for UI display.
 fn handle_load_agent_session(actor_state: &mut ActorState, session_id: &str) {
-    let steps = persistence::queries::list_agent_steps(
-        actor_state.db.as_ref().expect("db unlocked").conn(),
-        session_id,
-    )
-    .unwrap_or_default();
+    let Some(db) = actor_state.db.as_ref() else {
+        log::warn!("[agent] LoadAgentSession dispatched while DB locked; ignoring");
+        return;
+    };
+    let steps = persistence::queries::list_agent_steps(db.conn(), session_id).unwrap_or_default();
 
     actor_state.app_state.current_agent_steps = steps
         .iter()
@@ -6012,8 +6064,7 @@ fn load_post_unlock(
     actor_state.app_state.contextvm_tools = contextvm_tools_for_state;
     actor_state.app_state.hybrid_profiles = hybrid_profiles;
     // Phase 38: load trusted providers.
-    actor_state.app_state.trusted_providers =
-        load_trusted_providers(actor_state.db.as_ref().expect("db unlocked").conn());
+    actor_state.app_state.trusted_providers = load_trusted_providers(db.conn());
     refresh_current_contextvm_dispatch(actor_state);
     actor_state.app_state.lock_timeout_seconds = lock_timeout_seconds;
     actor_state.app_state.biometric_login_enabled = biometric_login_enabled;
@@ -6926,7 +6977,7 @@ impl FfiApp {
                                     continue;
                                 }
                                 actor_state.pending_attachment = None;
-                                actor_state.pending_image_attachment = None;
+                                clear_pending_image_attachment(&mut actor_state);
                                 actor_state.app_state.pending_attachment = None;
                             }
 
@@ -6951,6 +7002,7 @@ impl FfiApp {
                                 if !current_model_id.is_empty()
                                     && !llm::is_vision_model(&current_model_id)
                                 {
+                                    remove_plaintext_image_file(&file_path);
                                     actor_state.app_state.last_error = Some(format!(
                                         "Model \"{}\" does not support image input",
                                         current_model_id
@@ -6959,6 +7011,7 @@ impl FfiApp {
                                 }
                                 // Validate MIME (V5 input validation — threat T-31-03).
                                 else if !(mime_type == "image/jpeg" || mime_type == "image/png") {
+                                    remove_plaintext_image_file(&file_path);
                                     actor_state.app_state.last_error =
                                         Some(format!("Unsupported image MIME: {}", mime_type));
                                 } else if !std::path::Path::new(&file_path).is_absolute() {
@@ -6970,6 +7023,7 @@ impl FfiApp {
                                     let size_bytes =
                                         std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
                                     if size_bytes > 50 * 1024 * 1024 {
+                                        remove_plaintext_image_file(&file_path);
                                         actor_state.app_state.last_error =
                                             Some("Image exceeds 50 MB limit".into());
                                     } else {
@@ -8850,10 +8904,10 @@ impl FfiApp {
                                     );
                                 }
 
-                                // Quick 260421-bys: Never mode reuses the biometric DEK-cache path.
-                                // - seconds == -1 and we have a live DEK -> cache it so cold launch can skip PIN.
-                                // - seconds >= 0 and biometric is disabled -> evict cache so cold launch prompts PIN again.
-                                // - seconds >= 0 and biometric is enabled -> leave cache alone (biometric owns it).
+                                // Never mode reuses the biometric DEK-cache path, but the
+                                // cold-launch bypass flag must only be set while the timeout is
+                                // Never. Returning to any finite timeout restores the lock screen
+                                // on next process start, even when biometric login remains enabled.
                                 if seconds == -1 {
                                     if let Some(dek) = actor_state.dek.as_ref() {
                                         let dek_hex: String =
@@ -8873,12 +8927,16 @@ impl FfiApp {
                                         "Auto-lock disabled. App will open without PIN — protected only by your device unlock.".to_string()
                                     );
                                     actor_state.app_state.rev += 1;
-                                } else if !actor_state.app_state.biometric_login_enabled {
-                                    actor_state
-                                        .keychain
-                                        .delete("mango".to_string(), "dek".to_string());
+                                } else {
                                     let _ = actor_state.bootstrap.write_cold_launch_bypass(false);
-                                    log::info!("[auth] SetLockTimeout(finite) + biometric off: DEK evicted from keychain");
+                                    if !actor_state.app_state.biometric_login_enabled {
+                                        actor_state
+                                            .keychain
+                                            .delete("mango".to_string(), "dek".to_string());
+                                        log::info!("[auth] SetLockTimeout(finite) + biometric off: DEK evicted from keychain");
+                                    } else {
+                                        log::info!("[auth] SetLockTimeout(finite): cold-launch bypass disabled; biometric cache retained");
+                                    }
                                 }
                             }
 

@@ -7,11 +7,15 @@ private let logger = Logger(subsystem: "dev.disobey.mango", category: "BGTask")
 
 @main
 struct MangoApp: App {
-    @StateObject private var appManager = AppManager()
+    @StateObject private var appManager: AppManager
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("theme_preference") private var themePreference: String = "system"
 
     init() {
+        let manager = AppManager()
+        _appManager = StateObject(wrappedValue: manager)
+        AppManager.shared = manager
+
         // Register BGProcessingTask for agent background execution (D-13)
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: "dev.disobey.mango.agent-processing",
@@ -21,8 +25,6 @@ struct MangoApp: App {
                 task.setTaskCompleted(success: false)
                 return
             }
-            // Access AppManager via a shared reference captured at registration time
-            // AppManager.shared is set in init() below
             MangoApp.handleAgentProcessingTask(processingTask)
         }
 
@@ -142,8 +144,20 @@ struct MangoApp: App {
 
 extension AppManager {
     /// Shared instance for access from background task callbacks that cannot hold
-    /// a reference to the @StateObject. Set during app init.
-    static var shared: AppManager = AppManager()
+    /// a direct reference to the @StateObject. Set during app init.
+    private static var sharedInstance: AppManager?
+
+    static var shared: AppManager {
+        get {
+            guard let manager = sharedInstance else {
+                preconditionFailure("AppManager.shared accessed before MangoApp.init")
+            }
+            return manager
+        }
+        set {
+            sharedInstance = newValue
+        }
+    }
 }
 
 // MARK: - UNUserNotificationCenterDelegate (D-15)

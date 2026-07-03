@@ -475,7 +475,7 @@ private fun AttestationResultArea(
                             text = "Attestation is a cryptographic certificate from the hardware itself. It proves: " +
                                    "(1) the TEE is genuine hardware, not a simulation, " +
                                    "(2) the software running inside hasn't been tampered with, " +
-                                   "(3) your data is being processed in the secure enclave right now.",
+                                   "(3) this app recently verified evidence for the backend. It does not prove every turn is processed remotely.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

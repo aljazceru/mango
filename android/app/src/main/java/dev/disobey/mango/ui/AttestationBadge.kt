@@ -163,7 +163,7 @@ private fun badgeStroke(status: AttestationStatus): Color {
 
 private fun detailText(status: AttestationStatus): String = when (status) {
     is AttestationStatus.Verified ->
-        "This conversation is routed to a Trusted Execution Environment. The TEE attestation report has been independently verified by this app."
+        "This conversation is routed to a Trusted Execution Environment. This client verified recent cryptographic attestation evidence for the backend."
     is AttestationStatus.Unverified ->
         "Attestation has not been checked for this backend yet."
     is AttestationStatus.Expired ->

@@ -463,7 +463,7 @@ fn attestation_demo_step<'a>(
                          Attestation is a cryptographic certificate from the hardware itself. It proves: \
                          (1) the TEE is genuine hardware, not a simulation, \
                          (2) the software running inside hasn't been tampered with, \
-                         (3) your data is being processed in the secure enclave right now.\n\n\
+                         (3) this app recently verified evidence for the backend. It does not prove every turn is processed remotely.\n\n\
                          Self-verified vs Provider-verified:\n\
                          Self-verified means this app checked the cryptographic proof directly. \
                          Provider-verified means the backend's own attestation service confirmed the TEE. \

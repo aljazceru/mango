@@ -67,6 +67,34 @@ jobs:
           cp "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
             android/app/src/main/jniLibs/arm64-v8a/
 
+      - name: Build and bundle llama.cpp Android libraries
+        run: |
+          source android/llama.cpp.version
+          LLAMA_CPP_DIR="$GITHUB_WORKSPACE/../llama.cpp"
+          if [[ -d "$LLAMA_CPP_DIR/.git" ]]; then
+            git -C "$LLAMA_CPP_DIR" fetch --tags "$LLAMA_CPP_REPO" "$LLAMA_CPP_TAG"
+            git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
+          else
+            git clone --branch "$LLAMA_CPP_TAG" "$LLAMA_CPP_REPO" "$LLAMA_CPP_DIR"
+            git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
+          fi
+          NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build-android-arm64" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_BUILD_TESTS=OFF
+          cmake --build "$LLAMA_CPP_DIR/build-android-arm64" --config Release --parallel \
+            --target ggml-base ggml-cpu ggml llama llama-common
+          for lib in libggml-base.so libggml-cpu.so libggml.so libllama.so libllama-common.so; do
+            cp "$LLAMA_CPP_DIR/build-android-arm64/bin/$lib" android/app/src/main/jniLibs/arm64-v8a/
+          done
+          scripts/check_llama_versions.sh
+
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
