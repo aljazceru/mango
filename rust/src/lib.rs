@@ -635,7 +635,7 @@ pub enum AppAction {
     /// Clear the pending file attachment without sending
     ClearAttachment,
     /// Store a pending image attachment to be sent with the next message (Phase 31).
-    /// file_path is an absolute path to a JPEG/PNG file in the app sandbox.
+    /// file_path is an absolute path to an app-owned plaintext JPEG/PNG copy.
     /// The actor reads bytes at request time and builds a multipart user message.
     AttachImage {
         filename: String,
@@ -1472,8 +1472,93 @@ fn wipe_data_dir_allowed(data_dir: &str, db_path: &str, bootstrap_path: &str) ->
         || looks_like_ios_app_support(data_dir_path)
 }
 
-fn remove_plaintext_image_file(path: &str) {
+fn path_within_dir(path: &Path, dir: &Path) -> bool {
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    let Ok(dir) = dir.canonicalize() else {
+        return false;
+    };
+    path.starts_with(dir)
+}
+
+fn generated_mobile_image_name(path: &Path) -> bool {
+    let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
+        return false;
+    };
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    let ext = ext.to_ascii_lowercase();
+    matches!(ext.as_str(), "jpg" | "jpeg" | "png")
+        && (filename.starts_with("img_")
+            || filename.starts_with("camera_")
+            || filename.starts_with("gallery_"))
+}
+
+fn android_cache_dir_from_data_dir(data_dir: &Path) -> Option<std::path::PathBuf> {
+    if data_dir.file_name().is_some_and(|name| name == "files")
+        && path_has_component(data_dir, "dev.disobey.mango")
+    {
+        return data_dir.parent().map(|root| root.join("cache"));
+    }
+    None
+}
+
+fn ios_temp_dir_from_data_dir(data_dir: &Path) -> Option<std::path::PathBuf> {
+    if !looks_like_ios_app_support(data_dir) {
+        return None;
+    }
+    data_dir
+        .parent()?
+        .parent()
+        .map(|container| container.join("tmp"))
+}
+
+fn plaintext_image_cleanup_allowed(path: &str, data_dir: &str) -> bool {
+    if path.trim().is_empty() || data_dir.trim().is_empty() {
+        return false;
+    }
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return false;
+    }
+
+    let data_dir = Path::new(data_dir);
+    for dir in [
+        data_dir.join("images/retry"),
+        data_dir.join("image-attachments"),
+    ] {
+        if path_within_dir(path, &dir) {
+            return true;
+        }
+    }
+
+    if generated_mobile_image_name(path) {
+        if let Some(cache_dir) = android_cache_dir_from_data_dir(data_dir) {
+            if path_within_dir(path, &cache_dir) {
+                return true;
+            }
+        }
+        if let Some(temp_dir) = ios_temp_dir_from_data_dir(data_dir) {
+            if path_within_dir(path, &temp_dir) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn remove_plaintext_image_file(path: &str, data_dir: &str) {
     if path.trim().is_empty() {
+        return;
+    }
+    if !Path::new(path).exists() {
+        return;
+    }
+    if !plaintext_image_cleanup_allowed(path, data_dir) {
+        log::warn!("[image] skipped cleanup for non-app-owned plaintext attachment source {path}");
         return;
     }
     match std::fs::remove_file(path) {
@@ -2058,7 +2143,7 @@ fn cancel_pending_attested_send(actor_state: &mut ActorState, message: String) -
 
 fn clear_pending_image_attachment(actor_state: &mut ActorState) {
     if let Some(image) = actor_state.pending_image_attachment.take() {
-        remove_plaintext_image_file(&image.file_path);
+        remove_plaintext_image_file(&image.file_path, &actor_state.data_dir);
     }
 }
 
@@ -7002,7 +7087,7 @@ impl FfiApp {
                                 if !current_model_id.is_empty()
                                     && !llm::is_vision_model(&current_model_id)
                                 {
-                                    remove_plaintext_image_file(&file_path);
+                                    remove_plaintext_image_file(&file_path, &actor_state.data_dir);
                                     actor_state.app_state.last_error = Some(format!(
                                         "Model \"{}\" does not support image input",
                                         current_model_id
@@ -7011,7 +7096,7 @@ impl FfiApp {
                                 }
                                 // Validate MIME (V5 input validation — threat T-31-03).
                                 else if !(mime_type == "image/jpeg" || mime_type == "image/png") {
-                                    remove_plaintext_image_file(&file_path);
+                                    remove_plaintext_image_file(&file_path, &actor_state.data_dir);
                                     actor_state.app_state.last_error =
                                         Some(format!("Unsupported image MIME: {}", mime_type));
                                 } else if !std::path::Path::new(&file_path).is_absolute() {
@@ -7023,7 +7108,10 @@ impl FfiApp {
                                     let size_bytes =
                                         std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
                                     if size_bytes > 50 * 1024 * 1024 {
-                                        remove_plaintext_image_file(&file_path);
+                                        remove_plaintext_image_file(
+                                            &file_path,
+                                            &actor_state.data_dir,
+                                        );
                                         actor_state.app_state.last_error =
                                             Some("Image exceeds 50 MB limit".into());
                                     } else {

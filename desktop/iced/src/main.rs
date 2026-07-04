@@ -225,6 +225,23 @@ fn app_data_dir() -> std::path::PathBuf {
     }
 }
 
+fn stage_desktop_image_attachment(
+    source: &std::path::Path,
+    ext: &str,
+) -> Result<std::path::PathBuf, String> {
+    let staging_dir = app_data_dir().join("image-attachments");
+    std::fs::create_dir_all(&staging_dir)
+        .map_err(|e| format!("Failed to prepare image attachment: {e}"))?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let staged_path = staging_dir.join(format!("desktop_{}_{}.{}", std::process::id(), nanos, ext));
+    std::fs::copy(source, &staged_path)
+        .map_err(|e| format!("Failed to read selected image: {e}"))?;
+    Ok(staged_path.canonicalize().unwrap_or(staged_path))
+}
+
 impl AppManager {
     fn new() -> Result<Self, String> {
         let data_dir = app_data_dir().to_string_lossy().to_string();
@@ -1041,21 +1058,26 @@ impl App {
                                 let is_image = matches!(ext.as_str(), "jpg" | "jpeg" | "png");
 
                                 if is_image {
-                                    // Use absolute path for T-31-01 mitigation. Fall back
-                                    // to the original path if canonicalize fails; rfd
-                                    // returns absolute paths on all supported platforms.
-                                    let abs_path =
-                                        path.canonicalize().unwrap_or_else(|_| path.clone());
                                     let mime = if ext == "png" {
                                         "image/png".to_string()
                                     } else {
                                         "image/jpeg".to_string()
                                     };
-                                    manager_clone.dispatch(AppAction::AttachImage {
-                                        filename,
-                                        file_path: abs_path.to_string_lossy().into_owned(),
-                                        mime_type: mime,
-                                    });
+                                    match stage_desktop_image_attachment(&path, &ext) {
+                                        Ok(staged_path) => {
+                                            manager_clone.dispatch(AppAction::AttachImage {
+                                                filename,
+                                                file_path: staged_path
+                                                    .to_string_lossy()
+                                                    .into_owned(),
+                                                mime_type: mime,
+                                            });
+                                        }
+                                        Err(message) => {
+                                            manager_clone
+                                                .dispatch(AppAction::ShowToast { message });
+                                        }
+                                    }
                                 } else {
                                     match std::fs::read_to_string(&path) {
                                         Ok(content) => {

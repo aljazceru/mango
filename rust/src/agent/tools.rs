@@ -693,6 +693,10 @@ fn is_blocked_fetch_ipv4(ip: Ipv4Addr) -> bool {
 }
 
 fn is_blocked_fetch_ipv6(ip: Ipv6Addr) -> bool {
+    if let Some(ipv4) = ip.to_ipv4_mapped() {
+        return is_blocked_fetch_ipv4(ipv4);
+    }
+
     ip.is_loopback()
         || ip.is_unspecified()
         || ip.is_multicast()
