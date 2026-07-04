@@ -98,18 +98,11 @@ android_logger = "0.15"
 keyring = { version = "3.6", features = ["apple-native", "linux-native", "windows-native"] }
 # Phase 8: Desktop-only embedding stack.
 fastembed = { version = "5.13.0", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
-# ort 2.0.0-rc.11: no stable 2.x exists (1.x yanked); fastembed 5.13.0 pins =rc.11 exactly.
-# CLAUDE.md recommends rc.12 but fastembed 5.13.0 pins =rc.11; rc.12 requires api-24 feature
-# and no compatible fastembed version exists yet (DFNS-03).
-ort = { version = "2.0.0-rc.11", default-features = false }
 
 # Phase 32: Directory-based RAG ingestion (desktop only).
-# `ignore` powers walk_with_exclusions; notify + notify-debouncer-mini power
-# the filesystem watcher added in a later plan. globset is exposed on all
-# platforms (below) for UI-side glob validation over UniFFI.
+# `ignore` powers walk_with_exclusions. globset is exposed on all platforms
+# (below) for UI-side glob validation over UniFFI.
 ignore = "0.4"
-notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
-notify-debouncer-mini = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
