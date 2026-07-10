@@ -30,12 +30,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -57,16 +55,6 @@ fun SettingsSecurityScreen(
     var lockExpanded by remember { mutableStateOf(false) }
     var showDeleteChatsConfirm by remember { mutableStateOf(false) }
     var showDeleteDataConfirm by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        snapshotFlow { appState.toast }
-            .collect { toast ->
-                if (toast != null) {
-                    message = toast
-                    onDispatch(AppAction.ClearToast)
-                }
-            }
-    }
 
     Scaffold(
         topBar = {

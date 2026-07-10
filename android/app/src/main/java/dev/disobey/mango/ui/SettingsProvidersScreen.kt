@@ -102,15 +102,8 @@ fun SettingsProvidersScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            // ── Providers header ──────────────────────────────────────────────
             item {
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "PROVIDERS",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
-                )
             }
 
             items(presets) { preset ->

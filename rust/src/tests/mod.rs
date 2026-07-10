@@ -1,3 +1,4 @@
+#[cfg(feature = "agents")]
 mod agent;
 mod attestation_cache;
 mod attestation_integration;

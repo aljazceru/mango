@@ -72,6 +72,13 @@ fn image_path_roundtrips_through_sqlite() {
         created_at: 1000,
         token_count: None,
         image_path: image_path.clone(),
+        route_backend_id: None,
+        route_model_id: None,
+        route_decision: None,
+        route_reason: None,
+        route_provider_name: None,
+        route_tee_label: None,
+        route_tee_verified: None,
     };
     insert_message(conn, &row).expect("insert_message");
 
@@ -109,6 +116,13 @@ fn text_only_message_has_null_image_path() {
         created_at: 1000,
         token_count: None,
         image_path: None,
+        route_backend_id: None,
+        route_model_id: None,
+        route_decision: None,
+        route_reason: None,
+        route_provider_name: None,
+        route_tee_label: None,
+        route_tee_verified: None,
     };
     insert_message(conn, &row).expect("insert_message");
 

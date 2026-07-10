@@ -49,11 +49,20 @@ fun LockScreen(
     onDispatchAction: (AppAction) -> Unit,
 ) {
     var pin by remember { mutableStateOf("") }
+    var inlineError by remember { mutableStateOf<String?>(null) }
 
     // Auto-dispatch biometric unlock on screen entry if biometric login is enabled.
     LaunchedEffect(Unit) {
         if (appState.biometricLoginEnabled) {
             onDispatchAction(AppAction.AttemptBiometricUnlock)
+        }
+    }
+
+    LaunchedEffect(appState.toast) {
+        val toast = appState.toast
+        if (toast != null) {
+            inlineError = toast
+            onDispatchAction(AppAction.ClearToast)
         }
     }
 
@@ -100,8 +109,8 @@ fun LockScreen(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        // Show toast error from AppState if present.
-        appState.toast?.let { message ->
+        // PIN/auth errors stay inline on the lock screen instead of using a global snackbar.
+        inlineError?.let { message ->
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = message,

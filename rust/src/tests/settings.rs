@@ -122,6 +122,38 @@ fn test_set_default_model_writes_setting() {
 }
 
 #[test]
+fn test_default_model_and_instructions_actions_update_app_state() {
+    let app = make_app();
+
+    app.dispatch(AppAction::SetDefaultModel {
+        model_id: "qwen3-vl-30b".to_string(),
+    });
+    wait();
+    assert_eq!(
+        app.state().default_model_id.as_deref(),
+        Some("qwen3-vl-30b"),
+        "SetDefaultModel should update AppState immediately",
+    );
+
+    app.dispatch(AppAction::SetGlobalSystemPrompt {
+        prompt: Some("Use terse answers.".to_string()),
+    });
+    wait();
+    assert_eq!(
+        app.state().global_system_prompt.as_deref(),
+        Some("Use terse answers."),
+        "SetGlobalSystemPrompt should update AppState immediately",
+    );
+
+    app.dispatch(AppAction::SetGlobalSystemPrompt { prompt: None });
+    wait();
+    assert!(
+        app.state().global_system_prompt.is_none(),
+        "clearing default instructions should update AppState immediately",
+    );
+}
+
+#[test]
 fn test_override_conversation_backend_persists() {
     let db = Database::open(":memory:").unwrap();
     // Insert a conversation on tinfoil backend

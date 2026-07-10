@@ -92,7 +92,7 @@ class MainActivity : AppCompatActivity() {
         DirectorySyncWorker.enqueue(applicationContext)
 
         lifecycle.addObserver(LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) {
+            if (FeatureFlags.AGENTS_ENABLED && event == Lifecycle.Event.ON_STOP) {
                 manager.state.agentSessions
                     .filter { it.status == "running" }
                     .forEach { session -> scheduleAgentWorker(applicationContext, session.id) }
@@ -135,6 +135,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleAgentNotificationIntent(intent: Intent?) {
+        if (!FeatureFlags.AGENTS_ENABLED) return
         val sessionId = intent?.getStringExtra("agent_session_id") ?: return
         manager.dispatch(AppAction.LoadAgentSession(sessionId = sessionId))
         manager.dispatch(AppAction.PushScreen(screen = Screen.Agents))

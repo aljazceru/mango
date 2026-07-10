@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import dev.disobey.mango.rust.DeviceCapability
+import dev.disobey.mango.rust.LocalLlmCapabilityStatus
 import dev.disobey.mango.rust.LocalGenerationContext
 import dev.disobey.mango.rust.LocalLlmException
 import dev.disobey.mango.rust.LocalLlmProvider
@@ -25,15 +26,12 @@ private const val LOCAL_MAX_TOKENS = 192
 private const val LOCAL_CONTEXT_TOKENS = 2048
 private const val MAX_MODEL_REDIRECTS = 10
 private const val MODEL_RESPONSE_SNIFF_BYTES = 8192
+private const val MIN_API_LEVEL_FOR_LOCAL_LLM = 31
+private const val MIN_RAM_BYTES_FOR_LOCAL_LLM = 8L * 1024L * 1024L * 1024L
+private const val MAX_RAM_BYTES_FOR_LOCAL_CAP = 4_000_000_000L
+private const val LOCAL_STORAGE_RESERVE_BYTES = 512L * 1024L * 1024L
+private const val LOCAL_STORAGE_MARGIN_PERCENT = 25L
 private val GGUF_MAGIC = byteArrayOf(0x47, 0x47, 0x55, 0x46)
-private val LOCAL_RUNTIME_LIBS = listOf(
-    "libggml-base.so",
-    "libggml-cpu.so",
-    "libggml.so",
-    "libllama.so",
-    "libllama-common.so",
-    "libmango_local_llama.so",
-)
 
 class AndroidLocalLlmProvider(context: Context) : LocalLlmProvider {
     private val appContext = context.applicationContext
@@ -210,12 +208,22 @@ class AndroidLocalLlmProvider(context: Context) : LocalLlmProvider {
         if (!file.isFile) {
             throw LocalLlmException.ModelMissing(modelPath)
         }
-        if (capability.maxModelBytes == 0UL) {
+        if (capability.status != LocalLlmCapabilityStatus.SUPPORTED) {
             throw LocalLlmException.Unsupported(capability.reason ?: "local inference is unavailable")
         }
         if (file.length().toULong() > capability.maxModelBytes) {
             throw LocalLlmException.Unsupported(
                 "Model is too large for this device: ${file.length()} bytes"
+            )
+        }
+
+        val storageBytes = availableStorageBytes(appContext)
+        val modelBytes = file.length().toULong()
+        val requiredStorage = (modelBytes * (100UL + LOCAL_STORAGE_MARGIN_PERCENT.toULong())) / 100UL
+        val requiredTotal = requiredStorage + LOCAL_STORAGE_RESERVE_BYTES.toULong()
+        if (storageBytes < requiredTotal) {
+            throw LocalLlmException.Unsupported(
+                "Not enough free storage: required ${formatBytes(requiredTotal)} (including ${LOCAL_STORAGE_MARGIN_PERCENT}% margin), available ${formatBytes(storageBytes)}"
             )
         }
 
@@ -397,52 +405,76 @@ private fun probeCapability(context: Context): DeviceCapability {
     val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
     val totalRam = totalRamBytes(context)
     val supportsArm64 = Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }
-    val missingRuntimeLibs = missingLocalRuntimeLibraries(context)
-    val runtimeAvailable = missingRuntimeLibs.isEmpty()
-    val supportedRuntime = supportsArm64 && runtimeAvailable
+    val supportsApiLevel = Build.VERSION.SDK_INT >= MIN_API_LEVEL_FOR_LOCAL_LLM
+    val is64BitProcess = android.os.Process.is64Bit()
+    val hasRam = totalRam >= MIN_RAM_BYTES_FOR_LOCAL_LLM
+    val availableStorage = availableStorageBytes(context)
+    val hasStorage = availableStorage > LOCAL_STORAGE_RESERVE_BYTES.toULong()
+    val supportedRuntime = supportsApiLevel && supportsArm64 && is64BitProcess && hasRam && hasStorage
     val supportsMmap = supportedRuntime
     // ponytail: allow up to half of RAM for a local model (was /3 capped at 1.5GB,
     // which blocked legitimate 4B-class Q4 models ~2.5GB on phones with 8-12GB).
     // Cap at 4GB as a sane mobile ceiling; revisit if larger models prove viable.
-    val maxModelBytes =
+    val maxModelBytesLong =
         if (supportedRuntime && totalRam > 0L) {
-            (totalRam / 2L).coerceAtMost(4_000_000_000L).toULong()
+            (totalRam / 2L).coerceAtMost(MAX_RAM_BYTES_FOR_LOCAL_CAP)
         } else {
-            0UL
+            0L
         }
-    val reason =
-        when {
-            !supportsArm64 -> "Unsupported ABI: $abi"
-            !runtimeAvailable -> "Local llama.cpp runtime is not packaged for ABI: $abi"
-            totalRam <= 0L -> "Unable to determine device RAM"
-            else -> null
-        }
+    val status = when {
+        !FeatureFlags.LOCAL_LLM_ENABLED -> LocalLlmCapabilityStatus.DISABLED_BY_FEATURE_FLAG
+        !supportsApiLevel -> LocalLlmCapabilityStatus.UNSUPPORTED_API_LEVEL
+        !supportsArm64 -> LocalLlmCapabilityStatus.UNSUPPORTED_ARCHITECTURE
+        !is64BitProcess -> LocalLlmCapabilityStatus.UNSUPPORTED_PROCESS_BITNESS
+        totalRam < MIN_RAM_BYTES_FOR_LOCAL_LLM -> LocalLlmCapabilityStatus.INSUFFICIENT_MEMORY
+        !hasStorage -> LocalLlmCapabilityStatus.INSUFFICIENT_STORAGE
+        totalRam <= 0L -> LocalLlmCapabilityStatus.UNKNOWN
+        else -> LocalLlmCapabilityStatus.SUPPORTED
+    }
+    val reason = when (status) {
+        LocalLlmCapabilityStatus.DISABLED_BY_FEATURE_FLAG -> "Local LLM disabled by feature flag"
+        LocalLlmCapabilityStatus.UNSUPPORTED_API_LEVEL ->
+            "Unsupported API level: ${Build.VERSION.SDK_INT}"
+        LocalLlmCapabilityStatus.UNSUPPORTED_ARCHITECTURE -> "Unsupported ABI: $abi"
+        LocalLlmCapabilityStatus.UNSUPPORTED_PROCESS_BITNESS -> "Local LLM requires a 64-bit process"
+        LocalLlmCapabilityStatus.INSUFFICIENT_MEMORY -> "Insufficient RAM for LocalLLM"
+        LocalLlmCapabilityStatus.INSUFFICIENT_STORAGE -> "Insufficient free storage for LocalLLM"
+        LocalLlmCapabilityStatus.UNKNOWN -> "Unable to determine device RAM"
+        LocalLlmCapabilityStatus.RUNTIME_NOT_PACKAGED,
+        LocalLlmCapabilityStatus.RUNTIME_LOAD_FAILED,
+        LocalLlmCapabilityStatus.UNSUPPORTED_CPU_FEATURES,
+        LocalLlmCapabilityStatus.SUPPORTED -> null
+        LocalLlmCapabilityStatus.PROBE_UNAVAILABLE -> "Local LLM probe is not available"
+    }
+
+    val reasonCode = when (status) {
+        LocalLlmCapabilityStatus.DISABLED_BY_FEATURE_FLAG -> "disabled_by_feature_flag"
+        LocalLlmCapabilityStatus.UNSUPPORTED_API_LEVEL -> "unsupported_api_level"
+        LocalLlmCapabilityStatus.UNSUPPORTED_ARCHITECTURE -> "unsupported_architecture"
+        LocalLlmCapabilityStatus.UNSUPPORTED_PROCESS_BITNESS -> "unsupported_process_bitness"
+        LocalLlmCapabilityStatus.INSUFFICIENT_MEMORY -> "insufficient_memory"
+        LocalLlmCapabilityStatus.INSUFFICIENT_STORAGE -> "insufficient_storage"
+        LocalLlmCapabilityStatus.UNSUPPORTED_CPU_FEATURES -> "unsupported_cpu_features"
+        LocalLlmCapabilityStatus.PROBE_UNAVAILABLE -> "probe_unavailable"
+        LocalLlmCapabilityStatus.RUNTIME_NOT_PACKAGED -> "runtime_not_packaged"
+        LocalLlmCapabilityStatus.RUNTIME_LOAD_FAILED -> "runtime_load_failed"
+        LocalLlmCapabilityStatus.SUPPORTED -> "supported"
+        LocalLlmCapabilityStatus.UNKNOWN -> "unknown"
+    }
+
+    val stableSupported =
+        status == LocalLlmCapabilityStatus.SUPPORTED && FeatureFlags.LOCAL_LLM_ENABLED && supportedRuntime
 
     return DeviceCapability(
         abi = abi,
         totalRamBytes = totalRam.coerceAtLeast(0L).toULong(),
-        maxModelBytes = maxModelBytes,
+        maxModelBytes = if (stableSupported) maxModelBytesLong.toULong() else 0UL,
         supportsMmap = supportsMmap,
+        status = if (stableSupported) LocalLlmCapabilityStatus.SUPPORTED else status,
+        reasonCode = reasonCode,
         reason = reason,
+        availableStorageBytes = availableStorage
     )
-}
-
-private fun missingLocalRuntimeLibraries(@Suppress("UNUSED_PARAMETER") context: Context): List<String> {
-    // ponytail: probe via System.loadLibrary (dlopen), not filesystem stat.
-    // AGP's default useLegacyPackaging=false keeps .so files inside the APK and
-    // serves them via mmap -- File(nativeLibraryDir, lib).isFile is false even
-    // though the libs load fine. Testing actual loadability is the only robust
-    // check; the libs are needed for inference anyway, so preloading is free.
-    // Order matters: deps first (base -> mango_local_llama), matching LOCAL_RUNTIME_LIBS.
-    return LOCAL_RUNTIME_LIBS.filterNot { libName ->
-        val baseName = libName.removePrefix("lib").removeSuffix(".so")
-        try {
-            System.loadLibrary(baseName)
-            true
-        } catch (e: UnsatisfiedLinkError) {
-            false
-        }
-    }
 }
 
 private fun totalRamBytes(context: Context): Long {
@@ -453,6 +485,23 @@ private fun totalRamBytes(context: Context): Long {
     return info.totalMem
 }
 
+private fun availableStorageBytes(context: Context): ULong {
+    return try {
+        val statFs = android.os.StatFs(context.filesDir.absolutePath)
+        statFs.availableBytes.toULong()
+    } catch (_: Throwable) {
+        0UL
+    }
+}
+
+private fun formatBytes(bytes: ULong): String = when {
+    bytes >= 1024UL * 1024UL * 1024UL ->
+        String.format("%.1f GiB", bytes.toDouble() / (1024.0 * 1024.0 * 1024.0))
+    bytes >= 1024UL * 1024UL ->
+        String.format("%.1f MiB", bytes.toDouble() / (1024.0 * 1024.0))
+    else -> "$bytes B"
+}
+
 private fun localThreadCount(): Int {
     val cores = Runtime.getRuntime().availableProcessors()
     return max(1, min(4, cores - 2))
@@ -461,17 +510,30 @@ private fun localThreadCount(): Int {
 private object AndroidLlamaEngine {
     @Volatile
     private var initialized = false
+    @Volatile
+    private var terminalFailure: String? = null
 
     @Synchronized
     fun ensureInitialized(context: Context) {
+        terminalFailure?.let { failure ->
+            throw LocalLlmException.Unsupported(failure)
+        }
         if (initialized) return
-        System.loadLibrary("ggml-base")
-        System.loadLibrary("ggml-cpu")
-        System.loadLibrary("ggml")
-        System.loadLibrary("llama")
-        System.loadLibrary("mango_local_llama")
-        nativeInit(context.applicationInfo.nativeLibraryDir)
-        initialized = true
+        try {
+            System.loadLibrary("ggml-base")
+            System.loadLibrary("ggml-cpu")
+            System.loadLibrary("ggml")
+            System.loadLibrary("llama")
+            System.loadLibrary("mango_local_llama")
+            nativeInit(context.applicationInfo.nativeLibraryDir)
+            initialized = true
+        } catch (error: UnsatisfiedLinkError) {
+            terminalFailure = error.message
+            throw LocalLlmException.Unsupported(error.message ?: "Local LLM runtime is unavailable")
+        } catch (error: Throwable) {
+            terminalFailure = error.message
+            throw LocalLlmException.LoadFailed(error.message ?: error.javaClass.simpleName)
+        }
     }
 
     external fun nativeInit(nativeLibDir: String)
@@ -484,6 +546,10 @@ private object AndroidLlamaEngine {
     @Synchronized
     fun unloadIfInitialized() {
         if (!initialized) return
-        nativeUnload()
+        try {
+            nativeUnload()
+        } finally {
+            initialized = false
+        }
     }
 }

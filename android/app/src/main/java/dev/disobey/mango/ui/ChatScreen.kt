@@ -15,9 +15,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -31,7 +31,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -44,9 +46,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +60,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -105,6 +109,7 @@ fun ChatScreen(
     // Phase 8: per-conversation document attachment (D-08)
     onAttachDocument: (String) -> Unit = {},
     onDetachDocument: (String) -> Unit = {},
+    onShareConversation: (String) -> Unit = {},
     // Phase 27: tools toggle (CHAT-TOOL-07)
     onDispatchAction: (AppAction) -> Unit = {},
     // IMG-07: decrypt-on-read for encrypted image thumbnails
@@ -112,15 +117,33 @@ fun ChatScreen(
     fontScale: Float = 1f,
 ) {
     val listState = rememberLazyListState()
+    var wasAtBottomBeforeUpdate by remember { mutableStateOf(true) }
+    var userRequestedBottom by remember { mutableStateOf(false) }
+    var lastConversationId by remember { mutableStateOf(state.currentConversationId) }
+    val isAtBottom by remember {
+        derivedStateOf {
+            isChatListAtBottom(
+                firstVisibleItemIndex = listState.firstVisibleItemIndex,
+                firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+            )
+        }
+    }
+    val showScrollToBottom by remember { derivedStateOf { !isAtBottom } }
     val isStreaming = state.busyState is BusyState.Streaming
     val isChatBusy = isStreaming || state.busyState is BusyState.Loading
+    val isEmptyIdleChat = state.messages.isEmpty() &&
+        state.streamingText.isNullOrEmpty() &&
+        state.busyState is BusyState.Idle
     val loadingMessage = (state.busyState as? BusyState.Loading)?.message
     val isAttestationLoading =
         loadingMessage?.contains("attestation", ignoreCase = true) == true
     var showSystemPromptSheet by remember { mutableStateOf(false) }
     var showDocAttachSheet by remember { mutableStateOf(false) }
+    var composerPrefill by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+    var wasResponseActive by remember { mutableStateOf(false) }
     val currentConversation = state.currentConversationId?.let { id ->
         state.conversations.firstOrNull { it.id == id }
     }
@@ -133,18 +156,48 @@ fun ChatScreen(
     }
     val routeChip = hybridRouteChip(state, activeHybridProfile, forceRemoteNext)
 
+    LaunchedEffect(isChatBusy) {
+        if (wasResponseActive && !isChatBusy) {
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
+        wasResponseActive = isChatBusy
+    }
+
     // The LazyColumn uses reverseLayout = true, so item 0 is at the bottom.
     // "Scroll to bottom" = scrollToItem(0). All effects use this.
 
-    // New content (messages, streaming, thinking, errors): stay pinned to bottom.
+    LaunchedEffect(isAtBottom) {
+        if (isAtBottom) {
+            wasAtBottomBeforeUpdate = true
+            userRequestedBottom = false
+        } else {
+            wasAtBottomBeforeUpdate = false
+        }
+    }
+
+    // New content: stay pinned only when the user was already at bottom, when a
+    // different conversation loads, or after the user taps the bottom affordance.
     LaunchedEffect(state.messages.size, state.streamingText, state.busyState, state.lastError) {
-        listState.scrollToItem(0)
+        val isNewConversation = lastConversationId != state.currentConversationId
+        val shouldPin = shouldAutoPinChat(
+            wasAtBottomBeforeUpdate = wasAtBottomBeforeUpdate,
+            isNewConversation = isNewConversation,
+            userRequestedBottom = userRequestedBottom,
+        )
+        lastConversationId = state.currentConversationId
+        if (shouldPin) {
+            listState.scrollToItem(0)
+            wasAtBottomBeforeUpdate = true
+            userRequestedBottom = false
+        } else {
+            wasAtBottomBeforeUpdate = false
+        }
     }
 
     // Keyboard opens: keep bottom visible.
     val imeVisible = WindowInsets.isImeVisible
     LaunchedEffect(imeVisible) {
-        if (imeVisible) listState.scrollToItem(0)
+        if (imeVisible && isAtBottom) listState.scrollToItem(0)
     }
 
     // File picker launcher
@@ -162,7 +215,9 @@ fun ChatScreen(
                         onAttach(filename, content, sizeBytes.toULong())
                     }
                 } catch (_: Exception) {
-                    // Non-readable file -- ignore
+                    withContext(Dispatchers.Main) {
+                        onDispatchAction(AppAction.ShowToast(message = "Could not read attachment"))
+                    }
                 }
             }
         }
@@ -191,7 +246,9 @@ fun ChatScreen(
                         onAttachImage(name, tmp.absolutePath, normalizedMime)
                     }
                 } catch (_: Exception) {
-                    // Non-readable image -- ignore
+                    withContext(Dispatchers.Main) {
+                        onDispatchAction(AppAction.ShowToast(message = "Could not read image"))
+                    }
                 }
             }
         }
@@ -206,6 +263,7 @@ fun ChatScreen(
             }
         } else {
             pendingCameraFile?.delete()
+            onDispatchAction(AppAction.ShowToast(message = "Photo was not attached"))
         }
         pendingCameraFile = null
     }
@@ -223,7 +281,7 @@ fun ChatScreen(
         if (granted) {
             launchCameraInternal()
         } else {
-            Toast.makeText(context, "Camera permission denied", Toast.LENGTH_SHORT).show()
+            onDispatchAction(AppAction.ShowToast(message = "Camera permission denied"))
         }
     }
 
@@ -245,6 +303,7 @@ fun ChatScreen(
                 onSelectModel = onSelectModel,
                 onShowSystemPrompt = { showSystemPromptSheet = true },
                 onShowDocAttach = { showDocAttachSheet = true },
+                onShareConversation = onShareConversation,
                 onDispatchAction = onDispatchAction,
                 forceRemoteNext = forceRemoteNext,
                 onToggleForceRemoteNext = { forceRemoteNext = !forceRemoteNext },
@@ -265,17 +324,19 @@ fun ChatScreen(
                 onClearAttachment = onClearAttachment,
                 routingLabel = routeChip?.label,
                 routingDetail = routeChip?.detail,
+                prefillText = composerPrefill,
+                onPrefillConsumed = { composerPrefill = null },
             )
         },
-        modifier = Modifier.imePadding(),
     ) { innerPadding ->
-        // D-17: welcome placeholder when showFirstChatPlaceholder is true and messages empty
-        if (state.showFirstChatPlaceholder && state.messages.isEmpty()) {
-            androidx.compose.foundation.layout.Box(
+        // D-17: welcome placeholder when the current chat is empty and idle.
+        if (isEmptyIdleChat) {
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
-                contentAlignment = Alignment.Center
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
                     text = "You're all set! Send your first message to start a confidential conversation.",
@@ -284,61 +345,82 @@ fun ChatScreen(
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     modifier = Modifier.padding(horizontal = 32.dp)
                 )
+                Spacer(Modifier.height(16.dp))
+                StarterPromptList(onPrompt = { prompt -> composerPrefill = prompt })
             }
         } else {
-        // reverseLayout = true: item 0 renders at the bottom, older messages scroll up.
-        // This eliminates all "scroll to bottom on load" timing problems — the list
-        // naturally starts at the bottom with no scrolling required.
-        LazyColumn(
-            state = listState,
-            reverseLayout = true,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            // Dynamic items at index 0 (bottom). Order here = bottom-to-top visually.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+            ) {
+                // reverseLayout = true: item 0 renders at the bottom, older messages scroll up.
+                LazyColumn(
+                    state = listState,
+                    reverseLayout = true,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // Dynamic items at index 0 (bottom). Order here = bottom-to-top visually.
 
-            // Error bubble (bottommost)
-            state.lastError?.let { error ->
-                item(key = "error") {
-                    ErrorBubble(error = error, onRetry = onRetry)
+                    // Error bubble (bottommost)
+                    state.lastError?.takeUnless { isEmptyIdleChat }?.let { error ->
+                        item(key = "error") {
+                            ErrorBubble(error = error, onRetry = onRetry)
+                        }
+                    }
+
+                    // Streaming message
+                    state.streamingText?.let { text ->
+                        if (text.isNotEmpty()) {
+                            item(key = "streaming") {
+                                StreamingMessageBubble(text = text, fontScale = fontScale)
+                            }
+                        }
+                    }
+
+                    // Thinking indicator
+                    val isThinking = (state.busyState is BusyState.Streaming || state.busyState is BusyState.Loading)
+                        && state.streamingText.isNullOrEmpty()
+                    if (isThinking) {
+                        item(key = "thinking") {
+                            ThinkingIndicatorBubble()
+                        }
+                    }
+
+                    // Messages newest-first (reversed) so the most recent sits just above the dynamic items.
+                    items(state.messages.reversed(), key = { it.id }) { message ->
+                        MessageBubble(
+                            message = message,
+                            isLastAssistant = isLastAssistantMessage(state.messages, message),
+                            isStreaming = false,
+                            onCopy = { onCopy(message.content) },
+                            onRetry = onRetry,
+                            onEdit = { onEdit(message.id, message.content) },
+                            onReadEncryptedImage = onReadEncryptedImage,
+                            fontScale = fontScale,
+                        )
+                    }
                 }
-            }
-
-            // Streaming message
-            state.streamingText?.let { text ->
-                if (text.isNotEmpty()) {
-                    item(key = "streaming") {
-                        StreamingMessageBubble(text = text, fontScale = fontScale)
+                if (showScrollToBottom) {
+                    IconButton(
+                        onClick = {
+                            userRequestedBottom = true
+                            scope.launch { listState.animateScrollToItem(0) }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 12.dp)
+                            .wrapContentSize(),
+                    ) {
+                        Icon(
+                            Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Scroll to latest message",
+                        )
                     }
                 }
             }
-
-            // Thinking indicator
-            val isThinking = (state.busyState is BusyState.Streaming || state.busyState is BusyState.Loading)
-                && state.streamingText.isNullOrEmpty()
-            if (isThinking) {
-                item(key = "thinking") {
-                    ThinkingIndicatorBubble()
-                }
-            }
-
-            // Messages newest-first (reversed) so the most recent sits just above the dynamic items.
-            items(state.messages.reversed(), key = { it.id }) { message ->
-                MessageBubble(
-                    message = message,
-                    isLastAssistant = isLastAssistantMessage(state.messages, message),
-                    isStreaming = false,
-                    onCopy = { onCopy(message.content) },
-                    onRetry = onRetry,
-                    onEdit = { onEdit(message.id, message.content) },
-                    onReadEncryptedImage = onReadEncryptedImage,
-                    fontScale = fontScale,
-                )
-            }
-        }
         } // end else (not showFirstChatPlaceholder)
     }
 
@@ -433,6 +515,7 @@ private fun ChatTopBar(
     onSelectModel: (String) -> Unit,
     onShowSystemPrompt: () -> Unit,
     onShowDocAttach: () -> Unit = {},
+    onShareConversation: (String) -> Unit = {},
     onDispatchAction: (AppAction) -> Unit = {},
     forceRemoteNext: Boolean = false,
     onToggleForceRemoteNext: () -> Unit = {},
@@ -488,29 +571,15 @@ private fun ChatTopBar(
             }
         },
         actions = {
-            // Model picker with inline attestation dot
+            activeAttestation?.let { status ->
+                AttestationBadge(
+                    status = status,
+                    modifier = Modifier.padding(end = 4.dp),
+                )
+            }
+            // Model picker
             Box {
                 TextButton(onClick = { showModelMenu = true }) {
-                    // Attestation dot: shown to the left of the model name
-                    val dotColor: Color? = when (activeAttestation) {
-                        is dev.disobey.mango.rust.AttestationStatus.Verified ->
-                            Color(0xFF34C759)  // green
-                        is dev.disobey.mango.rust.AttestationStatus.Expired ->
-                            Color(0xFFFFCC00)  // amber
-                        is dev.disobey.mango.rust.AttestationStatus.Failed ->
-                            Color(0xFFFF3B30)  // red
-                        else -> null
-                    }
-                    if (dotColor != null) {
-                        Surface(
-                            shape = CircleShape,
-                            color = dotColor,
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape),
-                        ) {}
-                        Spacer(Modifier.size(4.dp))
-                    }
                     Text(
                         text = activeHybridProfile?.name
                             ?: selectedModelId?.let { shortModelName(it) }
@@ -590,7 +659,7 @@ private fun ChatTopBar(
                     }
                 }
             }
-            // Collapsed "..." menu: RAG, Instructions, Tools
+            // Collapsed "..." menu: Documents, Instructions, Tools
             Box {
                 IconButton(onClick = { showConvMenu = true }) {
                     Icon(
@@ -605,7 +674,7 @@ private fun ChatTopBar(
                     DropdownMenuItem(
                         text = {
                             Text(
-                                if (attachedCount > 0) "RAG ($attachedCount)" else "RAG",
+                                if (attachedCount > 0) "Documents ($attachedCount)" else "Documents",
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         },
@@ -640,6 +709,22 @@ private fun ChatTopBar(
                         onClick = {
                             showConvMenu = false
                             showToolsSheet = true
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Share conversation",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Default.Share, contentDescription = null)
+                        },
+                        enabled = state.currentConversationId != null,
+                        onClick = {
+                            showConvMenu = false
+                            state.currentConversationId?.let(onShareConversation)
                         },
                     )
                     if (activeHybridProfile != null) {
@@ -825,7 +910,7 @@ private fun DocAttachSheet(
         sheetState = sheetState,
     ) {
         Text(
-            text = "Attach RAG Documents",
+            text = "Attach Documents",
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
         )

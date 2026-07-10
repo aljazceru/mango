@@ -2931,6 +2931,12 @@ data class AppState (
      */
     var `globalSystemPrompt`: kotlin.String?, 
     /**
+     * Global default model used for new conversations.
+     * Stored in the settings table as "default_model_id".
+     * None means new conversations fall back to the selected backend's first model.
+     */
+    var `defaultModelId`: kotlin.String?, 
+    /**
      * Embedding provider operational status (SAFE-03).
      * Active: real provider running. Degraded: init failed, NullEmbeddingProvider in use.
      * Unavailable: no provider supplied by design.
@@ -3080,6 +3086,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeAgentStepSummary.read(buf),
             FfiConverterUInt.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterTypeEmbeddingStatus.read(buf),
             FfiConverterTypeDeviceCapability.read(buf),
             FfiConverterSequenceTypeLocalModelSummary.read(buf),
@@ -3131,6 +3138,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeAgentStepSummary.allocationSize(value.`currentAgentSteps`) +
             FfiConverterUInt.allocationSize(value.`attestationIntervalMinutes`) +
             FfiConverterOptionalString.allocationSize(value.`globalSystemPrompt`) +
+            FfiConverterOptionalString.allocationSize(value.`defaultModelId`) +
             FfiConverterTypeEmbeddingStatus.allocationSize(value.`embeddingStatus`) +
             FfiConverterTypeDeviceCapability.allocationSize(value.`localDeviceCapability`) +
             FfiConverterSequenceTypeLocalModelSummary.allocationSize(value.`localModels`) +
@@ -3181,6 +3189,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeAgentStepSummary.write(value.`currentAgentSteps`, buf)
             FfiConverterUInt.write(value.`attestationIntervalMinutes`, buf)
             FfiConverterOptionalString.write(value.`globalSystemPrompt`, buf)
+            FfiConverterOptionalString.write(value.`defaultModelId`, buf)
             FfiConverterTypeEmbeddingStatus.write(value.`embeddingStatus`, buf)
             FfiConverterTypeDeviceCapability.write(value.`localDeviceCapability`, buf)
             FfiConverterSequenceTypeLocalModelSummary.write(value.`localModels`, buf)
@@ -3442,15 +3451,15 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
 
 
 
-/**
- * Device-side capability summary for local LLM inference.
- */
 data class DeviceCapability (
     var `abi`: kotlin.String, 
     var `totalRamBytes`: kotlin.ULong, 
     var `maxModelBytes`: kotlin.ULong, 
     var `supportsMmap`: kotlin.Boolean, 
-    var `reason`: kotlin.String?
+    var `status`: LocalLlmCapabilityStatus, 
+    var `reasonCode`: kotlin.String, 
+    var `reason`: kotlin.String?, 
+    var `availableStorageBytes`: kotlin.ULong
 ) {
     
     companion object
@@ -3466,7 +3475,10 @@ public object FfiConverterTypeDeviceCapability: FfiConverterRustBuffer<DeviceCap
             FfiConverterULong.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterTypeLocalLlmCapabilityStatus.read(buf),
+            FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterULong.read(buf),
         )
     }
 
@@ -3475,7 +3487,10 @@ public object FfiConverterTypeDeviceCapability: FfiConverterRustBuffer<DeviceCap
             FfiConverterULong.allocationSize(value.`totalRamBytes`) +
             FfiConverterULong.allocationSize(value.`maxModelBytes`) +
             FfiConverterBoolean.allocationSize(value.`supportsMmap`) +
-            FfiConverterOptionalString.allocationSize(value.`reason`)
+            FfiConverterTypeLocalLlmCapabilityStatus.allocationSize(value.`status`) +
+            FfiConverterString.allocationSize(value.`reasonCode`) +
+            FfiConverterOptionalString.allocationSize(value.`reason`) +
+            FfiConverterULong.allocationSize(value.`availableStorageBytes`)
     )
 
     override fun write(value: DeviceCapability, buf: ByteBuffer) {
@@ -3483,7 +3498,10 @@ public object FfiConverterTypeDeviceCapability: FfiConverterRustBuffer<DeviceCap
             FfiConverterULong.write(value.`totalRamBytes`, buf)
             FfiConverterULong.write(value.`maxModelBytes`, buf)
             FfiConverterBoolean.write(value.`supportsMmap`, buf)
+            FfiConverterTypeLocalLlmCapabilityStatus.write(value.`status`, buf)
+            FfiConverterString.write(value.`reasonCode`, buf)
             FfiConverterOptionalString.write(value.`reason`, buf)
+            FfiConverterULong.write(value.`availableStorageBytes`, buf)
     }
 }
 
@@ -4783,7 +4801,35 @@ data class UiMessage (
      * Non-null when the user sent an image. Decrypt via read_encrypted_image(message_id).
      * Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
      */
-    var `imagePath`: kotlin.String?
+    var `imagePath`: kotlin.String?, 
+    /**
+     * Backend that produced this assistant message, if known.
+     */
+    var `routeBackendId`: kotlin.String?, 
+    /**
+     * Model that produced this assistant message, if known.
+     */
+    var `routeModelId`: kotlin.String?, 
+    /**
+     * Route role for this assistant message: "local" or "remote", if known.
+     */
+    var `routeDecision`: kotlin.String?, 
+    /**
+     * Human-readable route reason, if known.
+     */
+    var `routeReason`: kotlin.String?, 
+    /**
+     * Display provider name for the serving backend, if known.
+     */
+    var `routeProviderName`: kotlin.String?, 
+    /**
+     * TEE label for the serving backend, if known.
+     */
+    var `routeTeeLabel`: kotlin.String?, 
+    /**
+     * Whether attestation was verified for the serving backend when known.
+     */
+    var `routeTeeVerified`: kotlin.Boolean?
 ) {
     
     companion object
@@ -4803,6 +4849,13 @@ public object FfiConverterTypeUiMessage: FfiConverterRustBuffer<UiMessage> {
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalUInt.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalBoolean.read(buf),
         )
     }
 
@@ -4814,7 +4867,14 @@ public object FfiConverterTypeUiMessage: FfiConverterRustBuffer<UiMessage> {
             FfiConverterBoolean.allocationSize(value.`hasAttachment`) +
             FfiConverterOptionalString.allocationSize(value.`attachmentName`) +
             FfiConverterOptionalUInt.allocationSize(value.`ragContextCount`) +
-            FfiConverterOptionalString.allocationSize(value.`imagePath`)
+            FfiConverterOptionalString.allocationSize(value.`imagePath`) +
+            FfiConverterOptionalString.allocationSize(value.`routeBackendId`) +
+            FfiConverterOptionalString.allocationSize(value.`routeModelId`) +
+            FfiConverterOptionalString.allocationSize(value.`routeDecision`) +
+            FfiConverterOptionalString.allocationSize(value.`routeReason`) +
+            FfiConverterOptionalString.allocationSize(value.`routeProviderName`) +
+            FfiConverterOptionalString.allocationSize(value.`routeTeeLabel`) +
+            FfiConverterOptionalBoolean.allocationSize(value.`routeTeeVerified`)
     )
 
     override fun write(value: UiMessage, buf: ByteBuffer) {
@@ -4826,6 +4886,13 @@ public object FfiConverterTypeUiMessage: FfiConverterRustBuffer<UiMessage> {
             FfiConverterOptionalString.write(value.`attachmentName`, buf)
             FfiConverterOptionalUInt.write(value.`ragContextCount`, buf)
             FfiConverterOptionalString.write(value.`imagePath`, buf)
+            FfiConverterOptionalString.write(value.`routeBackendId`, buf)
+            FfiConverterOptionalString.write(value.`routeModelId`, buf)
+            FfiConverterOptionalString.write(value.`routeDecision`, buf)
+            FfiConverterOptionalString.write(value.`routeReason`, buf)
+            FfiConverterOptionalString.write(value.`routeProviderName`, buf)
+            FfiConverterOptionalString.write(value.`routeTeeLabel`, buf)
+            FfiConverterOptionalBoolean.write(value.`routeTeeVerified`, buf)
     }
 }
 
@@ -4983,7 +5050,7 @@ sealed class AppAction {
     
     /**
      * Store a pending image attachment to be sent with the next message (Phase 31).
-     * file_path is an absolute path to a JPEG/PNG file in the app sandbox.
+     * file_path is an absolute path to an app-owned plaintext JPEG/PNG copy.
      * The actor reads bytes at request time and builds a multipart user message.
      */
     data class AttachImage(
@@ -7869,6 +7936,49 @@ public object FfiConverterTypeLlmError : FfiConverterRustBuffer<LlmException> {
 
 
 
+/**
+ * Device-side capability summary for local LLM inference.
+ */
+
+enum class LocalLlmCapabilityStatus {
+    
+    UNKNOWN,
+    SUPPORTED,
+    DISABLED_BY_FEATURE_FLAG,
+    UNSUPPORTED_API_LEVEL,
+    UNSUPPORTED_ARCHITECTURE,
+    UNSUPPORTED_PROCESS_BITNESS,
+    UNSUPPORTED_CPU_FEATURES,
+    INSUFFICIENT_MEMORY,
+    INSUFFICIENT_STORAGE,
+    PROBE_UNAVAILABLE,
+    RUNTIME_NOT_PACKAGED,
+    RUNTIME_LOAD_FAILED;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLocalLlmCapabilityStatus: FfiConverterRustBuffer<LocalLlmCapabilityStatus> {
+    override fun read(buf: ByteBuffer) = try {
+        LocalLlmCapabilityStatus.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: LocalLlmCapabilityStatus) = 4UL
+
+    override fun write(value: LocalLlmCapabilityStatus, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
 
 
 sealed class LocalLlmException: kotlin.Exception() {
@@ -9144,6 +9254,38 @@ public object FfiConverterOptionalLong: FfiConverterRustBuffer<kotlin.Long?> {
 /**
  * @suppress
  */
+public object FfiConverterOptionalBoolean: FfiConverterRustBuffer<kotlin.Boolean?> {
+    override fun read(buf: ByteBuffer): kotlin.Boolean? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterBoolean.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Boolean?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterBoolean.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Boolean?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterBoolean.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
     override fun read(buf: ByteBuffer): kotlin.String? {
         if (buf.get().toInt() == 0) {
@@ -10121,3 +10263,6 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
 }
     )
     }
+    
+
+

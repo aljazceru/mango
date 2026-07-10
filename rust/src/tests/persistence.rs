@@ -74,8 +74,8 @@ fn test_migration_v1_to_v2() {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(
-            version, 23,
-            "user_version should be 23 after all migrations"
+            version, 24,
+            "user_version should be 24 after all migrations"
         );
 
         // Verify pre-existing data survived
@@ -170,8 +170,8 @@ fn test_migration_version_increments() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 23,
-        "user_version should be 23 after all migrations"
+        version, 24,
+        "user_version should be 24 after all migrations"
     );
 }
 
@@ -191,8 +191,8 @@ fn test_migration_idempotent() {
             .unwrap();
         // Second open should not re-run migrations, so version stays put.
         assert_eq!(
-            version, 23,
-            "user_version must still be 23 on second open (idempotent)"
+            version, 24,
+            "user_version must still be 24 on second open (idempotent)"
         );
     }
     let _ = std::fs::remove_file(&tmp);
@@ -263,6 +263,13 @@ fn test_conversation_survives_reopen() {
                 created_at: 100,
                 token_count: None,
                 image_path: None,
+                route_backend_id: None,
+                route_model_id: None,
+                route_decision: None,
+                route_reason: None,
+                route_provider_name: None,
+                route_tee_label: None,
+                route_tee_verified: None,
             },
         )
         .unwrap();
@@ -349,6 +356,13 @@ fn test_messages_ordered_by_created_at() {
                 created_at: ts,
                 token_count: None,
                 image_path: None,
+                route_backend_id: None,
+                route_model_id: None,
+                route_decision: None,
+                route_reason: None,
+                route_provider_name: None,
+                route_tee_label: None,
+                route_tee_verified: None,
             },
         )
         .unwrap();
@@ -358,6 +372,129 @@ fn test_messages_ordered_by_created_at() {
     assert_eq!(msgs[0].id, "msg1", "oldest message should be first");
     assert_eq!(msgs[1].id, "msg2");
     assert_eq!(msgs[2].id, "msg3");
+}
+
+#[test]
+fn test_message_route_metadata_round_trips() {
+    let db = Database::open(":memory:").unwrap();
+    insert_conversation(
+        db.conn(),
+        &ConversationRow {
+            id: "conv-route".into(),
+            title: "Route".into(),
+            model_id: "qwen3-vl-30b".into(),
+            backend_id: "tinfoil".into(),
+            system_prompt: None,
+            created_at: 1,
+            updated_at: 1,
+            tools_enabled: false,
+        },
+    )
+    .unwrap();
+
+    insert_message(
+        db.conn(),
+        &MessageRow {
+            id: "msg-route".into(),
+            conversation_id: "conv-route".into(),
+            role: "assistant".into(),
+            content: "answer".into(),
+            created_at: 2,
+            token_count: None,
+            image_path: None,
+            route_backend_id: Some("tinfoil".into()),
+            route_model_id: Some("qwen3-vl-30b".into()),
+            route_decision: Some("remote".into()),
+            route_reason: Some("attachment present".into()),
+            route_provider_name: Some("Tinfoil".into()),
+            route_tee_label: Some("Intel TDX".into()),
+            route_tee_verified: Some(true),
+        },
+    )
+    .unwrap();
+
+    let msg = list_messages(db.conn(), "conv-route")
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("message");
+    assert_eq!(msg.route_backend_id.as_deref(), Some("tinfoil"));
+    assert_eq!(msg.route_model_id.as_deref(), Some("qwen3-vl-30b"));
+    assert_eq!(msg.route_decision.as_deref(), Some("remote"));
+    assert_eq!(msg.route_reason.as_deref(), Some("attachment present"));
+    assert_eq!(msg.route_provider_name.as_deref(), Some("Tinfoil"));
+    assert_eq!(msg.route_tee_label.as_deref(), Some("Intel TDX"));
+    assert_eq!(msg.route_tee_verified, Some(true));
+}
+
+#[test]
+fn test_migration_v24_adds_nullable_message_route_columns() {
+    let tmp = std::env::temp_dir().join(format!("test_v23v24_{}.db", uuid::Uuid::new_v4()));
+    let path = tmp.to_str().unwrap();
+
+    {
+        let mut conn = rusqlite::Connection::open(path).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let tx = conn.transaction().unwrap();
+        for sql in crate::persistence::schema::MIGRATIONS.iter().take(23) {
+            tx.execute_batch(sql).unwrap();
+        }
+        tx.execute(
+            "INSERT INTO conversations (id, title, model_id, backend_id, created_at, updated_at)
+             VALUES ('conv-old', 'Old', 'model', 'tinfoil', 1, 1)",
+            [],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at)
+             VALUES ('msg-old', 'conv-old', 'assistant', 'old answer', 2)",
+            [],
+        )
+        .unwrap();
+        tx.pragma_update(None, "user_version", 23i32).unwrap();
+        tx.commit().unwrap();
+    }
+
+    {
+        let db = Database::open(path).unwrap();
+        let conn = db.conn();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 24);
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(messages)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        for col in [
+            "route_backend_id",
+            "route_model_id",
+            "route_decision",
+            "route_reason",
+            "route_provider_name",
+            "route_tee_label",
+            "route_tee_verified",
+        ] {
+            assert!(cols.iter().any(|existing| existing == col), "{col} missing");
+        }
+
+        let msg = list_messages(conn, "conv-old")
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("old message");
+        assert_eq!(msg.content, "old answer");
+        assert!(msg.route_backend_id.is_none());
+        assert!(msg.route_model_id.is_none());
+        assert!(msg.route_tee_verified.is_none());
+    }
+
+    let _ = std::fs::remove_file(&tmp);
 }
 
 // ── Keychain tests ────────────────────────────────────────────────────────────
@@ -759,8 +896,8 @@ fn test_migration_v11_seeds_ppq_ai_private_transport() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 23,
-        "user_version should be 23 after all migrations including v23"
+        version, 24,
+        "user_version should be 24 after all migrations including v24"
     );
 
     // Query the ppq-ai row directly

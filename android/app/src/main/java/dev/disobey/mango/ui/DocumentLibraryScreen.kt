@@ -58,7 +58,7 @@ import dev.disobey.mango.rust.DocumentSummary
 import dev.disobey.mango.rust.Screen
 import kotlinx.coroutines.launch
 
-/// Unified RAG screen: lists documents + directory sources under one entry
+/// Unified Library screen: lists documents + directory sources under one entry
 /// (LRAG-06, DIR-05). The Home toolbar routes here via Screen.Documents; the
 /// legacy DirectorySources screen remains reachable by tapping a folder row.
 @OptIn(ExperimentalMaterial3Api::class)
@@ -99,7 +99,7 @@ fun DocumentLibraryScreen(
                     )
                 )
             } catch (e: Exception) {
-                // File read error -- future plan adds toast
+                onDispatch(AppAction.ShowToast(message = "Could not read document"))
             }
         }
     }
@@ -135,7 +135,7 @@ fun DocumentLibraryScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("RAG") },
+                title = { Text("Library") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -146,7 +146,7 @@ fun DocumentLibraryScreen(
         floatingActionButton = {
             Box {
                 FloatingActionButton(onClick = { showAddMenu = true }) {
-                    Icon(Icons.Filled.Add, contentDescription = "Add RAG source")
+                    Icon(Icons.Filled.Add, contentDescription = "Add document or folder")
                 }
                 DropdownMenu(
                     expanded = showAddMenu,
@@ -216,7 +216,7 @@ fun DocumentLibraryScreen(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            "No RAG sources yet",
+                            "No documents or folders yet",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -278,7 +278,7 @@ fun DocumentLibraryScreen(
     }
 }
 
-/// Compact directory-source row shown inside the unified RAG screen. Tapping
+/// Compact directory-source row shown inside the unified Library screen. Tapping
 /// pushes Screen.DirectorySources so the full management UI (exclusions, sync,
 /// remove) stays reachable without being a top-level Home entry.
 @Composable

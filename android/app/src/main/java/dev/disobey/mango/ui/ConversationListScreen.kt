@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -42,11 +43,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.ConversationSummary
+import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,6 +67,14 @@ fun ConversationListScreen(
     var renameTarget by remember { mutableStateOf<ConversationSummary?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<String?>(null) }
+    val haptics = LocalHapticFeedback.current
+    var query by remember { mutableStateOf("") }
+    val visibleConversations = remember(state.conversations, query) {
+        filterConversations(state.conversations, query)
+    }
+    val groupedConversations = remember(visibleConversations) {
+        groupConversationsByDate(visibleConversations)
+    }
 
     Scaffold(
         topBar = {
@@ -96,6 +108,8 @@ fun ConversationListScreen(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(onClick = onNew) { Text("New Conversation") }
+                Spacer(modifier = Modifier.height(12.dp))
+                StarterPromptList(onPrompt = { onNew() })
             }
         } else {
             LazyColumn(
@@ -103,45 +117,82 @@ fun ConversationListScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
-                items(state.conversations, key = { it.id }) { conversation ->
-                    val dismissState = rememberSwipeToDismissBoxState(
-                        confirmValueChange = { value ->
-                            if (value == SwipeToDismissBoxValue.EndToStart) {
-                                deleteTarget = conversation.id
-                                false // let confirmation dialog handle the actual delete
-                            } else false
-                        }
-                    )
-
-                    SwipeToDismissBox(
-                        state = dismissState,
-                        enableDismissFromStartToEnd = false,
-                        backgroundContent = {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(MaterialTheme.colorScheme.errorContainer)
-                                    .padding(horizontal = 16.dp),
-                                contentAlignment = Alignment.CenterEnd,
-                            ) {
-                                Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = "Delete",
-                                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                                )
-                            }
+                item(key = "search") {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null)
                         },
-                    ) {
-                        ConversationRow(
-                            conversation = conversation,
-                            onClick = { onSelect(conversation.id) },
-                            onRename = {
-                                renameTarget = conversation
-                                renameText = conversation.title
-                            },
-                            onFork = { onFork(conversation.id) },
-                            onDelete = { deleteTarget = conversation.id },
+                        placeholder = { Text("Search conversations") },
+                        singleLine = true,
+                    )
+                }
+                if (visibleConversations.isEmpty()) {
+                    item(key = "empty_search") {
+                        Text(
+                            "No matching conversations",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(32.dp),
                         )
+                    }
+                }
+                groupedConversations.forEach { group ->
+                    item(key = "header_${group.label}") {
+                        Text(
+                            group.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                    }
+                    items(group.conversations, key = { it.id }) { conversation ->
+                        val dismissState = rememberSwipeToDismissBoxState(
+                            confirmValueChange = { value ->
+                                if (value == SwipeToDismissBoxValue.EndToStart) {
+                                    deleteTarget = conversation.id
+                                    false // let confirmation dialog handle the actual delete
+                                } else false
+                            }
+                        )
+
+                        SwipeToDismissBox(
+                            state = dismissState,
+                            enableDismissFromStartToEnd = false,
+                            backgroundContent = {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(MaterialTheme.colorScheme.errorContainer)
+                                        .padding(horizontal = 16.dp),
+                                    contentAlignment = Alignment.CenterEnd,
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Delete",
+                                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                                    )
+                                }
+                            },
+                        ) {
+                            ConversationRow(
+                                conversation = conversation,
+                                onClick = { onSelect(conversation.id) },
+                                onRename = {
+                                    renameTarget = conversation
+                                    renameText = conversation.title
+                                },
+                                onFork = { onFork(conversation.id) },
+                                onDelete = { deleteTarget = conversation.id },
+                            )
+                        }
                     }
                 }
             }
@@ -185,6 +236,7 @@ fun ConversationListScreen(
             confirmButton = {
                 Button(
                     onClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         onDelete(targetId)
                         deleteTarget = null
                     },
@@ -260,19 +312,13 @@ private fun ConversationRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            val metadata = conversationMetadata(
+                relativeTime(conversation.updatedAt),
+                shortModelName(conversation.modelId),
+            )
+            if (metadata.isNotEmpty()) {
                 Text(
-                    relativeTime(conversation.updatedAt),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "·",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    shortModelName(conversation.modelId),
+                    metadata,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -281,7 +327,88 @@ private fun ConversationRow(
     }
 }
 
+@Composable
+internal fun StarterPromptList(onPrompt: (String) -> Unit) {
+    val prompts = starterPrompts()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        prompts.forEach { prompt ->
+            TextButton(onClick = { onPrompt(prompt) }) {
+                Text(prompt)
+            }
+        }
+    }
+}
+
 // MARK: - Helpers
+
+internal data class ConversationDateGroup(
+    val label: String,
+    val conversations: List<ConversationSummary>,
+)
+
+internal fun filterConversations(
+    conversations: List<ConversationSummary>,
+    query: String,
+): List<ConversationSummary> {
+    val normalized = query.trim()
+    if (normalized.isEmpty()) return conversations
+    return conversations.filter { conversation ->
+        conversation.title.contains(normalized, ignoreCase = true) ||
+            conversation.modelId.contains(normalized, ignoreCase = true) ||
+            conversation.backendId.contains(normalized, ignoreCase = true)
+    }
+}
+
+internal fun groupConversationsByDate(
+    conversations: List<ConversationSummary>,
+    nowMillis: Long = System.currentTimeMillis(),
+): List<ConversationDateGroup> {
+    return conversations
+        .groupBy { conversationDateBucket(it.updatedAt, nowMillis) }
+        .map { (label, items) -> ConversationDateGroup(label, items) }
+        .sortedBy { group ->
+            when (group.label) {
+                "Today" -> 0
+                "Yesterday" -> 1
+                "Previous 7 days" -> 2
+                else -> 3
+            }
+        }
+}
+
+internal fun conversationDateBucket(epochMillis: Long, nowMillis: Long): String {
+    val todayStart = startOfDayMillis(nowMillis)
+    val itemStart = startOfDayMillis(epochMillis)
+    val dayDiff = TimeUnit.MILLISECONDS.toDays(todayStart - itemStart)
+    return when {
+        dayDiff <= 0 -> "Today"
+        dayDiff == 1L -> "Yesterday"
+        dayDiff <= 7L -> "Previous 7 days"
+        else -> "Earlier"
+    }
+}
+
+private fun startOfDayMillis(epochMillis: Long): Long {
+    val calendar = Calendar.getInstance()
+    calendar.timeInMillis = epochMillis
+    calendar.set(Calendar.HOUR_OF_DAY, 0)
+    calendar.set(Calendar.MINUTE, 0)
+    calendar.set(Calendar.SECOND, 0)
+    calendar.set(Calendar.MILLISECOND, 0)
+    return calendar.timeInMillis
+}
+
+internal fun conversationMetadata(vararg segments: String?): String {
+    return segments
+        .mapNotNull { it?.takeIf { segment -> segment.isNotBlank() } }
+        .joinToString(" · ")
+}
+
+internal fun starterPrompts(): List<String> = listOf(
+    "Summarize a sensitive document",
+    "Draft a private decision memo",
+    "Help me compare confidential options",
+)
 
 internal fun relativeTime(epochMillis: Long): String {
     val now = System.currentTimeMillis()

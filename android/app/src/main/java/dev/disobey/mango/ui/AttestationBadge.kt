@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +31,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AttestationStatus
 import dev.disobey.mango.ui.theme.AttestExpiredBgDark
@@ -65,6 +68,16 @@ fun AttestationBadge(
     modifier: Modifier = Modifier,
 ) {
     var showDetail by remember { mutableStateOf(false) }
+    var mounted by remember { mutableStateOf(false) }
+    val haptics = LocalHapticFeedback.current
+
+    LaunchedEffect(status) {
+        if (mounted) {
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        } else {
+            mounted = true
+        }
+    }
 
     Surface(
         onClick = { showDetail = true },

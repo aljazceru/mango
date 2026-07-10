@@ -5,6 +5,10 @@ import os
 private let localLlmLogger = Logger(subsystem: "dev.disobey.mango", category: "IOSLocalLlm")
 private let iosLocalMaxTokens: Int32 = 192
 private let iosLocalContextTokens: Int32 = 2048
+private let MIN_RAM_BYTES_FOR_LOCAL_LLM: UInt64 = 8 * 1024 * 1024 * 1024
+private let MAX_RAM_BYTES_FOR_LOCAL_CAP: UInt64 = 4_000_000_000
+private let LOCAL_STORAGE_RESERVE_BYTES: UInt64 = 512 * 1024 * 1024
+private let LOCAL_STORAGE_MARGIN_PERCENT: UInt64 = 25
 
 private func isAllowedModelDownloadUrl(_ url: URL) -> Bool {
     guard url.scheme?.lowercased() == "https",
@@ -303,11 +307,22 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: modelPath) else {
             throw LocalLlmError.ModelMissing(path: modelPath)
         }
-        if capability.maxModelBytes == 0 {
+        guard capability.status == .supported else {
             throw LocalLlmError.Unsupported(reason: capability.reason ?? "local inference is unavailable")
         }
         if let size = fileSize(modelPath), UInt64(size) > capability.maxModelBytes {
             throw LocalLlmError.Unsupported(reason: "Model is too large for this device: \(size) bytes")
+        }
+        if let storageBytes = Self.availableStorageBytes(),
+            let fileSize = fileSize(modelPath) {
+            let modelBytes = UInt64(fileSize)
+            let marginBytes = (modelBytes * LOCAL_STORAGE_MARGIN_PERCENT) / 100
+            let requiredBytes = modelBytes + marginBytes + LOCAL_STORAGE_RESERVE_BYTES
+            if storageBytes < requiredBytes {
+                throw LocalLlmError.Unsupported(
+                    reason: "Not enough free storage: required \(requiredBytes) bytes, available \(storageBytes) bytes"
+                )
+            }
         }
 
         session = try IOSLlamaSession(modelPath: modelPath)
@@ -534,19 +549,101 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
             totalRamBytes: totalRam,
             maxModelBytes: 0,
             supportsMmap: false,
-            reason: "iOS simulator local LLM runtime is disabled"
+            status: .unsupportedArchitecture,
+            reasonCode: "unsupported_architecture",
+            reason: "iOS simulator local LLM runtime is disabled",
+            availableStorageBytes: 0
         )
 #else
-        let supported = abi == "arm64" || abi == "arm64e"
-        let maxModelBytes = supported ? min(totalRam / 3, 1_500_000_000) : 0
+        let supportedArchitecture = abi == "arm64" || abi == "arm64e"
+        let hasRam = totalRam >= MIN_RAM_BYTES_FOR_LOCAL_LLM
+        let availableStorage = availableStorageBytes() ?? 0
+        let hasStorage = availableStorage > LOCAL_STORAGE_RESERVE_BYTES
+        let status: LocalLlmCapabilityStatus = if !FeatureFlags.localLlmEnabled {
+            .disabledByFeatureFlag
+        } else if !supportedArchitecture {
+            .unsupportedArchitecture
+        } else if !hasRam {
+            .insufficientMemory
+        } else if !hasStorage {
+            .insufficientStorage
+        } else {
+            .supported
+        }
+        let reason = reasonForStatus(status, abi: abi, totalRam: totalRam)
+        let reasonCode = reasonCode(for: status)
+        let stableSupported = status == .supported && FeatureFlags.localLlmEnabled
+        let maxModelBytes = if stableSupported {
+            min(totalRam / 2, MAX_RAM_BYTES_FOR_LOCAL_CAP)
+        } else {
+            0
+        }
+
         return DeviceCapability(
             abi: abi,
             totalRamBytes: totalRam,
             maxModelBytes: maxModelBytes,
-            supportsMmap: supported,
-            reason: supported ? nil : "Unsupported ABI: \(abi)"
+            supportsMmap: stableSupported,
+            status: stableSupported ? .supported : status,
+            reasonCode: reasonCode,
+            reason: reason,
+            availableStorageBytes: availableStorage
         )
 #endif
+    }
+
+    private static func reasonForStatus(
+        _ status: LocalLlmCapabilityStatus,
+        abi: String,
+        totalRam: UInt64,
+    ) -> String? {
+        switch status {
+        case .supported, .runtimeNotPackaged, .runtimeLoadFailed, .probeUnavailable:
+            return nil
+        case .disabledByFeatureFlag:
+            return "Local LLM is disabled by feature flag"
+        case .unsupportedApiLevel:
+            return "Unsupported iOS version: \(ProcessInfo.processInfo.operatingSystemVersionString)"
+        case .unsupportedArchitecture:
+            return "Unsupported ABI: \(abi)"
+        case .unsupportedProcessBitness:
+            return "iOS requires 64-bit process"
+        case .unsupportedCpuFeatures:
+            return "Unsupported CPU features for local inference"
+        case .insufficientMemory:
+            return "Insufficient RAM for Local LLM (\(totalRam) bytes)"
+        case .insufficientStorage:
+            return "Insufficient free storage for Local LLM"
+        }
+    }
+
+    private static func reasonCode(for status: LocalLlmCapabilityStatus) -> String {
+        switch status {
+        case .unknown:
+            return "unknown"
+        case .supported:
+            return "supported"
+        case .disabledByFeatureFlag:
+            return "disabled_by_feature_flag"
+        case .unsupportedApiLevel:
+            return "unsupported_api_level"
+        case .unsupportedArchitecture:
+            return "unsupported_architecture"
+        case .unsupportedProcessBitness:
+            return "unsupported_process_bitness"
+        case .unsupportedCpuFeatures:
+            return "unsupported_cpu_features"
+        case .insufficientMemory:
+            return "insufficient_memory"
+        case .insufficientStorage:
+            return "insufficient_storage"
+        case .probeUnavailable:
+            return "probe_unavailable"
+        case .runtimeNotPackaged:
+            return "runtime_not_packaged"
+        case .runtimeLoadFailed:
+            return "runtime_load_failed"
+        }
     }
 
     private static func machineIdentifier() -> String {
@@ -564,5 +661,13 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
             return nil
         }
         return size.uint64Value
+    }
+
+    private static func availableStorageBytes() -> UInt64? {
+        guard let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: supportDir.path)
+        return (attributes?[.systemFreeSize] as? NSNumber)?.uint64Value
     }
 }

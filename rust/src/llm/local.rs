@@ -12,13 +12,76 @@ use super::local_models::{
 use super::streaming::InternalEvent;
 
 /// Device-side capability summary for local LLM inference.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum LocalLlmCapabilityStatus {
+    Unknown,
+    Supported,
+    DisabledByFeatureFlag,
+    UnsupportedApiLevel,
+    UnsupportedArchitecture,
+    UnsupportedProcessBitness,
+    UnsupportedCpuFeatures,
+    InsufficientMemory,
+    InsufficientStorage,
+    ProbeUnavailable,
+    RuntimeNotPackaged,
+    RuntimeLoadFailed,
+}
+
+impl LocalLlmCapabilityStatus {
+    pub fn is_supported(&self) -> bool {
+        matches!(self, Self::Supported)
+    }
+
+    pub fn stable_code(&self) -> String {
+        match self {
+            Self::Unknown => "unknown".to_string(),
+            Self::Supported => "supported".to_string(),
+            Self::DisabledByFeatureFlag => "disabled_by_feature_flag".to_string(),
+            Self::UnsupportedApiLevel => "unsupported_api_level".to_string(),
+            Self::UnsupportedArchitecture => "unsupported_architecture".to_string(),
+            Self::UnsupportedProcessBitness => "unsupported_process_bitness".to_string(),
+            Self::UnsupportedCpuFeatures => "unsupported_cpu_features".to_string(),
+            Self::InsufficientMemory => "insufficient_memory".to_string(),
+            Self::InsufficientStorage => "insufficient_storage".to_string(),
+            Self::ProbeUnavailable => "probe_unavailable".to_string(),
+            Self::RuntimeNotPackaged => "runtime_not_packaged".to_string(),
+            Self::RuntimeLoadFailed => "runtime_load_failed".to_string(),
+        }
+    }
+}
+
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct DeviceCapability {
     pub abi: String,
     pub total_ram_bytes: u64,
     pub max_model_bytes: u64,
     pub supports_mmap: bool,
+    pub status: LocalLlmCapabilityStatus,
+    pub reason_code: String,
     pub reason: Option<String>,
+    pub available_storage_bytes: u64,
+}
+
+impl DeviceCapability {
+    pub fn supported(status: LocalLlmCapabilityStatus) -> bool {
+        status.is_supported()
+    }
+
+    pub fn is_supported(&self) -> bool {
+        self.status.is_supported()
+    }
+
+    pub fn blocked_reason(&self) -> Option<&str> {
+        if self.is_supported() {
+            return None;
+        }
+        self.reason.as_deref()
+    }
+
+    pub fn blocked_reason_or_default(&self, fallback: &str) -> String {
+        self.reason.clone().unwrap_or_else(|| fallback.to_string())
+    }
 }
 
 impl Default for DeviceCapability {
@@ -28,7 +91,10 @@ impl Default for DeviceCapability {
             total_ram_bytes: 0,
             max_model_bytes: 0,
             supports_mmap: false,
+            status: LocalLlmCapabilityStatus::Unknown,
+            reason_code: "unknown".to_string(),
             reason: Some("local inference provider unavailable".to_string()),
+            available_storage_bytes: 0,
         }
     }
 }
@@ -535,7 +601,10 @@ mod tests {
     fn null_provider_reports_unavailable_and_emits_error() {
         let provider = NullLocalLlmProvider;
         let capability = provider.device_capability();
-        assert_eq!(capability.max_model_bytes, 0);
+        assert!(matches!(
+            capability.status,
+            LocalLlmCapabilityStatus::Unknown | LocalLlmCapabilityStatus::RuntimeNotPackaged
+        ));
         assert!(provider.load_model("/tmp/model.gguf".to_string()).is_err());
     }
 }

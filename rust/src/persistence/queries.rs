@@ -48,6 +48,13 @@ pub struct MessageRow {
     /// Absolute path to the encrypted image file (`{data_dir}/images/{id}.jpg.mgo1`).
     /// None for text-only messages. File is AES-256-GCM encrypted (MGO1 format, T-ECE-02).
     pub image_path: Option<String>,
+    pub route_backend_id: Option<String>,
+    pub route_model_id: Option<String>,
+    pub route_decision: Option<String>,
+    pub route_reason: Option<String>,
+    pub route_provider_name: Option<String>,
+    pub route_tee_label: Option<String>,
+    pub route_tee_verified: Option<bool>,
 }
 
 // ── Backend queries ───────────────────────────────────────────────────────────
@@ -315,8 +322,12 @@ pub fn list_agent_steps(
 /// Insert a new message row.
 pub fn insert_message(conn: &Connection, row: &MessageRow) -> Result<(), PersistenceError> {
     conn.prepare_cached(
-        "INSERT INTO messages (id, conversation_id, role, content, created_at, token_count, image_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO messages (
+             id, conversation_id, role, content, created_at, token_count, image_path,
+             route_backend_id, route_model_id, route_decision, route_reason,
+             route_provider_name, route_tee_label, route_tee_verified
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
     )?
     .execute(rusqlite::params![
         row.id,
@@ -326,6 +337,14 @@ pub fn insert_message(conn: &Connection, row: &MessageRow) -> Result<(), Persist
         row.created_at,
         row.token_count,
         row.image_path,
+        row.route_backend_id,
+        row.route_model_id,
+        row.route_decision,
+        row.route_reason,
+        row.route_provider_name,
+        row.route_tee_label,
+        row.route_tee_verified
+            .map(|verified| if verified { 1 } else { 0 }),
     ])?;
     Ok(())
 }
@@ -336,7 +355,9 @@ pub fn list_messages(
     conversation_id: &str,
 ) -> Result<Vec<MessageRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, conversation_id, role, content, created_at, token_count, image_path
+        "SELECT id, conversation_id, role, content, created_at, token_count, image_path,
+                route_backend_id, route_model_id, route_decision, route_reason,
+                route_provider_name, route_tee_label, route_tee_verified
          FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC",
     )?;
     let rows = stmt
@@ -349,6 +370,13 @@ pub fn list_messages(
                 created_at: row.get(4)?,
                 token_count: row.get(5)?,
                 image_path: row.get(6)?,
+                route_backend_id: row.get(7)?,
+                route_model_id: row.get(8)?,
+                route_decision: row.get(9)?,
+                route_reason: row.get(10)?,
+                route_provider_name: row.get(11)?,
+                route_tee_label: row.get(12)?,
+                route_tee_verified: row.get::<_, Option<i64>>(13)?.map(|value| value != 0),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -364,7 +392,9 @@ pub fn get_message_by_id(
     message_id: &str,
 ) -> Result<Option<MessageRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, conversation_id, role, content, created_at, token_count, image_path
+        "SELECT id, conversation_id, role, content, created_at, token_count, image_path,
+                route_backend_id, route_model_id, route_decision, route_reason,
+                route_provider_name, route_tee_label, route_tee_verified
          FROM messages WHERE id = ?1",
     )?;
     match stmt.query_row(rusqlite::params![message_id], |row| {
@@ -376,6 +406,13 @@ pub fn get_message_by_id(
             created_at: row.get(4)?,
             token_count: row.get(5)?,
             image_path: row.get(6)?,
+            route_backend_id: row.get(7)?,
+            route_model_id: row.get(8)?,
+            route_decision: row.get(9)?,
+            route_reason: row.get(10)?,
+            route_provider_name: row.get(11)?,
+            route_tee_label: row.get(12)?,
+            route_tee_verified: row.get::<_, Option<i64>>(13)?.map(|value| value != 0),
         })
     }) {
         Ok(row) => Ok(Some(row)),
@@ -474,7 +511,9 @@ pub fn fork_conversation(
     //    so repeated-timestamp messages preserve a deterministic order).
     let source_messages: Vec<MessageRow> = {
         let mut stmt = tx.prepare_cached(
-            "SELECT id, conversation_id, role, content, created_at, token_count, image_path
+            "SELECT id, conversation_id, role, content, created_at, token_count, image_path,
+                    route_backend_id, route_model_id, route_decision, route_reason,
+                    route_provider_name, route_tee_label, route_tee_verified
              FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt
@@ -487,6 +526,13 @@ pub fn fork_conversation(
                     created_at: row.get(4)?,
                     token_count: row.get(5)?,
                     image_path: row.get(6)?,
+                    route_backend_id: row.get(7)?,
+                    route_model_id: row.get(8)?,
+                    route_decision: row.get(9)?,
+                    route_reason: row.get(10)?,
+                    route_provider_name: row.get(11)?,
+                    route_tee_label: row.get(12)?,
+                    route_tee_verified: row.get::<_, Option<i64>>(13)?.map(|value| value != 0),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -496,8 +542,12 @@ pub fn fork_conversation(
     // 4. INSERT each copy with a fresh uuid and conversation_id = new_id.
     {
         let mut insert_stmt = tx.prepare_cached(
-            "INSERT INTO messages (id, conversation_id, role, content, created_at, token_count, image_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages (
+                 id, conversation_id, role, content, created_at, token_count, image_path,
+                 route_backend_id, route_model_id, route_decision, route_reason,
+                 route_provider_name, route_tee_label, route_tee_verified
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
         for src_msg in &source_messages {
             let new_msg_id = uuid::Uuid::new_v4().to_string();
@@ -509,6 +559,15 @@ pub fn fork_conversation(
                 src_msg.created_at,
                 src_msg.token_count,
                 src_msg.image_path,
+                src_msg.route_backend_id,
+                src_msg.route_model_id,
+                src_msg.route_decision,
+                src_msg.route_reason,
+                src_msg.route_provider_name,
+                src_msg.route_tee_label,
+                src_msg
+                    .route_tee_verified
+                    .map(|verified| if verified { 1 } else { 0 }),
             ])?;
         }
     }

@@ -417,7 +417,7 @@ private fun AttestationResultArea(
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
-                        text = "VERIFIED -- ${teeLabel ?: "TEE Verified"}",
+                        text = "This app verified recent ${teeLabel ?: "TEE"} evidence for your backend.",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         color = if (isDark) DarkOnboardingSuccess else LightOnboardingSuccess
@@ -513,6 +513,11 @@ private fun AttestationResultArea(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                     fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "The backend could not prove it is running inside the expected trusted environment. This can be a temporary network or provider issue, but you should retry before sending sensitive data.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Button(
                     onClick = { onDispatch(AppAction.ValidateApiKey(backendId = selectedPresetId)) },

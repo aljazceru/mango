@@ -16,16 +16,18 @@ struct MangoApp: App {
         _appManager = StateObject(wrappedValue: manager)
         AppManager.shared = manager
 
-        // Register BGProcessingTask for agent background execution (D-13)
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: "dev.disobey.mango.agent-processing",
-            using: nil
-        ) { task in
-            guard let processingTask = task as? BGProcessingTask else {
-                task.setTaskCompleted(success: false)
-                return
+        if FeatureFlags.agentsEnabled {
+            // Register BGProcessingTask for agent background execution (D-13)
+            BGTaskScheduler.shared.register(
+                forTaskWithIdentifier: "dev.disobey.mango.agent-processing",
+                using: nil
+            ) { task in
+                guard let processingTask = task as? BGProcessingTask else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                MangoApp.handleAgentProcessingTask(processingTask)
             }
-            MangoApp.handleAgentProcessingTask(processingTask)
         }
 
         // Set up UNUserNotificationCenter delegate for notification tap routing (D-15)
@@ -51,7 +53,8 @@ struct MangoApp: App {
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .background {
                         // Schedule BGProcessingTask if any agent sessions are running (D-13)
-                        let hasRunning = appManager.appState.agentSessions.contains { $0.status == "running" }
+                        let hasRunning = FeatureFlags.agentsEnabled
+                            && appManager.appState.agentSessions.contains { $0.status == "running" }
                         if hasRunning {
                             MangoApp.scheduleAgentProcessingTask()
                         }
@@ -65,6 +68,11 @@ struct MangoApp: App {
     /// Handles agent background execution: resumes running sessions, monitors for completion,
     /// posts local notifications, and checkpoints on expiration (D-12, D-13, D-15).
     static func handleAgentProcessingTask(_ task: BGProcessingTask) {
+        guard FeatureFlags.agentsEnabled else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+
         let manager = AppManager.shared
 
         // D-12: checkpoint all running sessions when system reclaims the task
@@ -104,6 +112,8 @@ struct MangoApp: App {
 
     /// Submits a BGProcessingTaskRequest so iOS will wake the app in the background.
     static func scheduleAgentProcessingTask() {
+        guard FeatureFlags.agentsEnabled else { return }
+
         let request = BGProcessingTaskRequest(
             identifier: "dev.disobey.mango.agent-processing"
         )
@@ -120,6 +130,8 @@ struct MangoApp: App {
     /// Posts a local notification for a completed agent session.
     /// Embeds session_id in userInfo so the UNNotificationCenterDelegate can route to detail (D-15).
     static func postAgentCompletionNotification(sessionId: String, title: String) {
+        guard FeatureFlags.agentsEnabled else { return }
+
         let content = UNMutableNotificationContent()
         content.title = "Agent Task Complete"
         content.body = "\(title) has finished processing."
@@ -175,7 +187,8 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         // D-15: extract session_id and navigate to agent session detail
-        if let sessionId = response.notification.request.content.userInfo["session_id"] as? String {
+        if FeatureFlags.agentsEnabled,
+           let sessionId = response.notification.request.content.userInfo["session_id"] as? String {
             Task { @MainActor in
                 let manager = AppManager.shared
                 manager.dispatch(.loadAgentSession(sessionId: sessionId))
