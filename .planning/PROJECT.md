@@ -12,23 +12,13 @@
 
 8 phases, 10 plans. ORT pin, panic elimination, HPKE key hygiene, embedding graceful degradation, rate limiting with 429 backoff, backend capability config, TEE runtime configuration, test coverage gaps.
 
-## Current Milestone: v2.0 Memory & Agents
+## Shipped: v2.0 Memory & Agents (2026-07-10)
 
-**Goal:** Add persistent cross-conversation memory with automatic fact extraction, and expand the agent system with real-world tools (web search, URL fetching, file operations, calculator).
-
-**Target features:**
-- Automatic memory extraction from conversations (facts, preferences, entities)
-- Local on-device knowledge graph (SQLite + usearch, privacy-preserving)
-- Memory injection into new conversations via existing RAG context pipeline
-- Brave Search tool for agents (web research)
-- URL fetching tool (read/summarize web pages)
-- File operations tool (create/edit/read files on device)
-- Calculator/math tool (precise computation)
-- Memory management UI (view, delete, edit extracted memories)
+21 phases, 82 plans, 79 requirements complete. Persistent cross-conversation memory with automatic fact extraction and injection. Agent tools expansion (web search, URL fetch, file ops, calculator) with per-conversation tool toggle in chat. Local data encryption at rest (SQLCipher + AES-256-GCM) with biometric/PIN authentication and duress PIN wipe. Multimodal image attachments on all platforms. Directory-based RAG ingestion with periodic sync and file format extractors. Venice.ai and Redpill as TEE-attested LLM providers with E2EE. Nostr-based tool discovery via contextvm-sdk with cache-first UI. [Archive](.planning/milestones/v2.0-ROADMAP.md)
 
 ## What This Is
 
-A multi-platform personal AI platform built with the RMP architecture (Rust core + native UIs via UniFFI). Users chat with LLMs, run autonomous agents, and ground conversations in their own documents via local RAG -- all routed through confidential computing backends with verified TEE attestation. The app targets iOS (SwiftUI), Android (Jetpack Compose), and Desktop (iced), with maximum shared logic in Rust and thin native UI layers.
+A multi-platform personal AI platform built with the RMP architecture (Rust core + native UIs via UniFFI). Users chat with LLMs, run autonomous agents, and ground conversations in their own documents via local RAG -- all routed through confidential computing backends with verified TEE attestation. The app targets iOS (SwiftUI), Android (Jetpack Compose), and Desktop (iced), with maximum shared logic in Rust and thin native UI layers. In v2.0, the app gained persistent memory, expanded agent tools, local data encryption, multimodal image support, directory-based RAG, two new TEE providers, and Nostr-based tool discovery.
 
 ## Core Value
 
@@ -38,36 +28,43 @@ Every inference request is provably confidential -- the user can verify via remo
 
 ### Validated
 
-- [x] OpenAI-compatible API client in Rust core for all backends -- Validated in Phase 2: streaming-llm-client (async-openai with SSE streaming, error taxonomy, cancellation support)
-- [x] Remote attestation verification (self-verify in Rust when possible, provider API fallback) -- Validated in Phase 3: attestation-verification-core (Intel TDX/DCAP via dcap-qvl, NVIDIA CC JWT, SQLite cache with TTL, nonce replay prevention, provider fallback)
-- [x] Full persistence of chat history, agent sessions, and application state -- Validated in Phase 4: persistence-layer (rusqlite with bundled SQLite, WAL mode, migration runner with v1+v2, CRUD for backends/conversations/messages/agent sessions, KeychainProvider trait for API key storage, 62 tests)
-- [x] Chat interface as primary interaction surface -- Validated in Phase 5: chat-ui-conversation-management (full chat UI on all 3 platforms, streaming markdown, conversation CRUD, system prompt, file attachment, attestation badges, 81 tests)
-- [x] Visual attestation status shown to user per backend/conversation -- Validated in Phase 5: chat-ui-conversation-management (attestation badge widget on desktop/iOS/Android with 5 status states and detail overlay)
-- [x] Backend routing: failover chains, health tracking, and user manual override -- Validated in Phase 6: backend-routing-settings (FailoverRouter with exponential backoff, per-conversation override, 101 tests)
-- [x] Per-conversation backend selection and configuration -- Validated in Phase 6: backend-routing-settings (OverrideConversationBackend action, persisted via conversations.backend_id)
-- [x] No telemetry guarantee enforced via cargo-deny ban list -- Validated in Phase 6: backend-routing-settings (deny.toml bans 11 analytics crates)
-- [x] Guided onboarding wizard (pick backends, verify attestation, first chat) -- Validated in Phase 7: onboarding-wizard (4-step wizard with first-launch detection, live attestation demo, TEE education on iced/SwiftUI/Compose)
-- [x] Local on-device embeddings for RAG -- Validated in Phase 8: local-on-device-rag (fastembed AllMiniLML6V2Q via ONNX Runtime, EmbeddingProvider trait for platform injection, DesktopEmbeddingProvider on desktop)
-- [x] Local document ingestion and vector index storage (on-device only, maximum privacy) -- Validated in Phase 8: local-on-device-rag (PDF/txt/md ingestion, fixed-size chunker, usearch HNSW index serialized to disk, MIGRATION_V6 schema, document/chunk CRUD, per-conversation attachment, context injection on SendMessage)
-- [x] Agent system with tool use, multi-turn autonomy, background execution, and document context -- Validated in Phase 9: agent-system-background-execution (ReAct loop with non-streaming function calling, 3 tools wired to RAG, per-step SQLite checkpointing, pause/resume/cancel, iOS BGProcessingTask, Android WorkManager, iced desktop exit checkpoint, notification tap routing, session list + detail UI on all 3 platforms)
-- [x] Long-running agent sessions that persist across app restarts -- Validated in Phase 9: agent-system-background-execution (SQLite checkpoint per step, actor state restored from DB on LoadAgentSession, resume from last completed step)
-- [x] AMD SEV-SNP attestation support for PPQ.AI backend -- Validated in Phase 10: ppq-ai-backend-integration (TeeType::AmdSevSnp enum variant, parse_tee_type, attestation_tinfoil_tdx dispatch, PPQ.AI preset, MIGRATION_V10 with 5 private/ model IDs, UniFFI bindings regenerated, all 3 platform UI labels/pickers updated, 170 tests green)
+- [x] OpenAI-compatible API client in Rust core for all backends -- v1.0 (Phase 2)
+- [x] Remote attestation verification (self-verify in Rust when possible, provider API fallback) -- v1.0 (Phase 3)
+- [x] Full persistence of chat history, agent sessions, and application state -- v1.0 (Phase 4)
+- [x] Chat interface as primary interaction surface -- v1.0 (Phase 5)
+- [x] Visual attestation status shown to user per backend/conversation -- v1.0 (Phase 5)
+- [x] Backend routing: failover chains, health tracking, and user manual override -- v1.0 (Phase 6)
+- [x] Per-conversation backend selection and configuration -- v1.0 (Phase 6)
+- [x] No telemetry guarantee enforced via cargo-deny ban list -- v1.0 (Phase 6)
+- [x] Guided onboarding wizard (pick backends, verify attestation, first chat) -- v1.0 (Phase 7)
+- [x] Local on-device embeddings for RAG -- v1.0 (Phase 8)
+- [x] Local document ingestion and vector index storage (on-device only, maximum privacy) -- v1.0 (Phase 8)
+- [x] Agent system with tool use, multi-turn autonomy, background execution, and document context -- v1.0 (Phase 9)
+- [x] Long-running agent sessions that persist across app restarts -- v1.0 (Phase 9)
+- [x] AMD SEV-SNP attestation support for PPQ.AI backend -- v1.0 (Phase 10)
+- [x] Automatic memory extraction from conversations (facts, preferences, entities) -- v2.0 (Phase 20)
+- [x] Memory injection into new conversations via semantic search -- v2.0 (Phase 21)
+- [x] Memory management UI (view, delete, edit) -- v2.0 (Phase 23)
+- [x] Agent tools: web search, URL fetch, file ops, calculator -- v2.0 (Phase 22)
+- [x] Per-conversation tool use toggle in chat -- v2.0 (Phase 27)
+- [x] Local data encryption at rest (SQLCipher + AES-256-GCM) with biometric/PIN auth -- v2.0 (Phases 28-29)
+- [x] Duress PIN triggers full data wipe -- v2.0 (Phase 28)
+- [x] Multimodal image attachments on all platforms -- v2.0 (Phase 31)
+- [x] Directory-based RAG ingestion with periodic sync -- v2.0 (Phase 32)
+- [x] Venice.ai as TEE-attested provider with E2EE -- v2.0 (Phase 33)
+- [x] Redpill as TEE-attested aggregator with three response shapes -- v2.0 (Phases 34-34.1)
+- [x] Nostr-based tool discovery via contextvm-sdk -- v2.0 (Phases 35-36)
 
 ### Active
 
-- [ ] Multi-platform RMP architecture (iOS, Android, Desktop) with shared Rust core
 - [ ] Support all 9 confidential inference backends (Tinfoil, Redpill, Chutes, NEAR AI, Maple, Privatemode, NanoGPT, PPQ.AI, Venice.ai)
-- [ ] OpenAI-compatible API client in Rust core for all backends
-- [x] Agent system with tool use, multi-turn autonomy, background execution, and document context (see Validated)
-- [x] Long-running agent sessions that persist across app restarts (see Validated)
-- [x] Full persistence of chat history, agent sessions, and application state (see Validated)
-- [x] Guided onboarding wizard (pick backends, verify attestation, first chat) (see Validated)
+- [ ] iOS UI for contextvm tool discovery (bindings ship, UI deferred)
 
 ### Out of Scope
 
-- Cloud sync of documents or embeddings -- local-only for v1 (privacy-first)
-- Full local LLM inference -- v1 uses local embeddings only, generation via confidential backends
-- CLI target -- v1 focuses on iOS, Android, Desktop
+- Cloud sync of documents or embeddings -- local-only for privacy (core value)
+- Full local LLM inference -- v1/v2 uses local embeddings only, generation via confidential backends
+- CLI target -- focus on iOS, Android, Desktop
 - Custom model fine-tuning or training
 - Multi-user / shared workspaces
 - Payment or subscription management for backend providers
@@ -76,30 +73,33 @@ Every inference request is provably confidential -- the user can verify via remo
 
 **Architecture foundation:** The app follows the RMP Architecture Bible -- TEA/Elm unidirectional data flow, actor model (AppCore on a dedicated thread with flume channels), UniFFI for FFI bindings, and the capability bridge pattern for platform-specific features (camera, file picker, NPU access for embeddings).
 
-**Confidential inference ecosystem (as of March 2026):** Nine providers offer OpenAI-compatible APIs with TEE-backed inference:
+**Current codebase state (v2.0):**
+- 445+ Rust unit tests passing (20 ignored for live integration)
+- 5 TEE-attested providers integrated: Tinfoil, PPQ.AI, Venice.ai, Redpill + contextvm tool discovery
+- SQLite migrations through V20 (including SQLCipher encryption, memory, directory sources, contextvm tools)
+- Cross-platform: iOS 17+ (SwiftUI), Android API 28+ (Jetpack Compose), Desktop (iced)
+- 105K+ LOC added in v2.0 across 346 commits
 
-| Provider | TEE Approach | Notable |
-|----------|-------------|---------|
-| Tinfoil | Intel TDX + NVIDIA H100 CC | Intel DCAP attestation |
-| Redpill | Phala GPU TEE | Intel DCAP + on-chain attestation |
-| Chutes | AMD SEV-SNP + TDX | AMD SEV-SNP attestation |
-| NEAR AI | Intel TDX + NVIDIA H200 TEE | On-chain attestation |
-| Maple | AMD SEV-SNP | Attestation reporting |
-| Privatemode | SEV-SNP + TDX | Cosmian VM attestation |
-| NanoGPT | H100 CC | Intel/NVIDIA attestation + ECDSA per-request signatures |
-| PPQ.AI | SEV-SNP | Hardware TEE attestation |
-| Venice.ai | H100 CC | NVIDIA Confidential Computing attestation |
+**Confidential inference ecosystem (as of July 2026):** Nine providers offer OpenAI-compatible APIs with TEE-backed inference:
 
-All providers expose OpenAI-compatible endpoints (chat completions, streaming). Attestation verification involves different chains depending on TEE type: AMD SEV-SNP report verification, Intel TDX/DCAP quote verification, and NVIDIA CC attestation.
+| Provider | TEE Approach | Status |
+|----------|-------------|--------|
+| Tinfoil | Intel TDX + NVIDIA H100 CC | Integrated (v1.0) |
+| PPQ.AI | AMD SEV-SNP | Integrated (v1.0/v2.0) |
+| Venice.ai | H100 CC (TDX + NRAS) | Integrated (v2.0) |
+| Redpill | Phala GPU TEE (TDX + NRAS) | Integrated (v2.0) |
+| Chutes | AMD SEV-SNP + TDX | Not directly integrated |
+| NEAR AI | Intel TDX + NVIDIA H200 TEE | Not integrated |
+| Maple | AMD SEV-SNP | Not integrated |
+| Privatemode | SEV-SNP + TDX | Not integrated |
+| NanoGPT | H100 CC | Not integrated |
 
-**Local inference:** On-device embedding models (e.g., all-MiniLM, nomic-embed-text) run via ONNX Runtime or platform-native ML frameworks (Core ML on iOS, NNAPI on Android) for RAG vector computation. Full generative model support deferred to future versions.
-
-**RMP reference:** The `rmp/` subdirectory contains the architecture bible, the `rmp` CLI scaffolding tool, and a working hello-chat example app. The CLI can scaffold the initial project structure with `rmp init`.
+**Local inference:** On-device embedding models (all-MiniLM-L6-v2 INT8 quantized) run via ONNX Runtime with CoreML EP (iOS), XNNPACK EP (Android), and CPU (Desktop) for RAG vector computation. Full generative model support deferred to future versions.
 
 ## Constraints
 
 - **Architecture**: Must follow RMP Architecture Bible -- Rust core owns all business logic, native layers are thin UI + capability bridges only
-- **Privacy**: All document storage and vector indices must remain on-device. No telemetry, no cloud sync in v1
+- **Privacy**: All document storage and vector indices must remain on-device. No telemetry, no cloud sync. All local data encrypted at rest (v2.0+)
 - **API compatibility**: All backend integrations must use OpenAI-compatible chat completions API to minimize per-provider code
 - **Attestation**: Must support at least AMD SEV-SNP and Intel TDX attestation report verification in Rust
 - **Platforms**: iOS 17+, Android API 28+, macOS 13+ / Linux (iced)
@@ -114,6 +114,13 @@ All providers expose OpenAI-compatible endpoints (chat completions, streaming). 
 | Local-only document storage for v1 | Privacy-first aligns with confidential computing mission | Validated Phase 8 |
 | On-device embeddings, remote generation | Balances privacy (embeddings never leave device) with capability (large models need TEE backends) | Validated Phase 8 |
 | Self-verify attestation in Rust | Sovereign verification -- don't trust provider claims without checking the cryptographic proof | Validated Phase 3 |
+| Memory reuses EmbeddingProvider trait + usearch HNSW index | No parallel infrastructure; memories share the same vector index as RAG chunks | Validated Phase 20 |
+| SQLCipher for database encryption | Bundled-sqlcipher compiles into binary, zero system deps on mobile; same rusqlite API | Validated Phase 28 |
+| ECDH(secp256k1) + HKDF + AES-256-GCM for Venice E2EE | Matches Venice protocol; per-request encryption rooted in attested signing key | Validated Phase 33 |
+| Reuse Venice REPORTDATA decoder for Redpill model component | Single source of truth; Redpill Shape A is Venice-identical | Validated Phase 34 |
+| contextvm-sdk for Nostr-based tool discovery | Extends existing tool dispatch without parallel subsystem; pure-Rust, no OpenSSL | Validated Phase 35 |
+| Wave 0 TDD pattern (RED test stubs before implementation) | Contracts locked before code; prevents scope drift during multi-plan phases | Validated Phases 27, 31, 34, 35, 36 |
+| Golden fixture testing for attestation providers | Captures from real provider APIs as test fixtures; tests run without network | Validated Phases 33, 34 |
 
 ## Evolution
 
@@ -133,4 +140,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-20 — Phase 30 complete: v2.0 milestone documentation gap closed — Phase 21 VERIFICATION.md written (MEM-03 SATISFIED), REQUIREMENTS.md synced to 36/36 complete (ENC-02/ENC-09 traceability corrected). All v2.0 milestone requirements verified.*
+*Last updated: 2026-07-10 after v2.0 milestone*
