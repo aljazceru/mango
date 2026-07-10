@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
+import dev.disobey.mango.rust.LocalLlmCapabilityStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -80,10 +81,14 @@ fun SettingsLocalModelsScreen(
 
             appState.localModels.forEach { model ->
                 item {
+                    val capabilitySupported = capability.status == LocalLlmCapabilityStatus.SUPPORTED
                     LocalModelRow(
                         model = model,
                         capabilityMaxBytes = capability.maxModelBytes,
                         capabilityTotalBytes = capability.totalRamBytes,
+                        capabilitySupported = capabilitySupported,
+                        capabilityReason = capability.reason,
+                        capabilityReasonCode = capability.reasonCode,
                         activeProgressModelId = progress?.modelId,
                         onDispatch = onDispatch,
                     )

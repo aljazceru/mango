@@ -25,6 +25,7 @@ import dev.disobey.mango.rust.FfiApp
 import dev.disobey.mango.rust.KeychainProvider
 import dev.disobey.mango.rust.OnboardingState
 import dev.disobey.mango.rust.AttestationStatus
+import dev.disobey.mango.rust.LocalLlmCapabilityStatus
 import dev.disobey.mango.rust.Router
 import dev.disobey.mango.rust.Screen
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,12 +86,16 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
                 totalRamBytes = 0UL,
                 maxModelBytes = 0UL,
                 supportsMmap = false,
+                status = LocalLlmCapabilityStatus.UNKNOWN,
+                reasonCode = "unknown",
                 reason = "initializing",
+                availableStorageBytes = 0UL,
             ),
             localModels = emptyList(),
             localDownloadProgress = null,
             localInferenceEnabled = true,
             globalSystemPrompt = null,
+            defaultModelId = null,
             memories = emptyList(),
             memoryCount = 0UL,
             braveApiKeySet = false,
@@ -184,6 +189,10 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
     // IMG-07: decrypt-on-read for encrypted image thumbnails
     fun readEncryptedImage(messageId: String): ByteArray {
         return ffiApp.readEncryptedImage(messageId)
+    }
+
+    fun exportConversationMarkdown(conversationId: String): String {
+        return ffiApp.exportConversationMarkdown(conversationId)
     }
 
     // Phase 32 Plan 06: native-side diff needs stored fingerprints so the

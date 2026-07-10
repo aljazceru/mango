@@ -50,6 +50,13 @@ fn seed_message(
         created_at,
         token_count: None,
         image_path: image_path.map(|s| s.to_string()),
+        route_backend_id: None,
+        route_model_id: None,
+        route_decision: None,
+        route_reason: None,
+        route_provider_name: None,
+        route_tee_label: None,
+        route_tee_verified: None,
     };
     insert_message(db.conn(), &row).expect("insert message");
     row

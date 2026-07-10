@@ -16,7 +16,7 @@ struct SettingsView: View {
             List {
                 providersSection
                 defaultsSection
-                if appState.localDeviceCapability.maxModelBytes > 0 {
+                if localCapabilitySupported {
                     localModelsSection
                 }
                 hybridRoutingSection
@@ -99,7 +99,9 @@ struct SettingsView: View {
         let capability = appState.localDeviceCapability
         let anyDownloadActive = appState.localDownloadProgress != nil
         let busy = appState.localDownloadProgress?.modelId == model.id
-        let supported = capability.maxModelBytes >= model.sizeBytes
+        let capabilitySupported = capability.status == .supported
+        let supported = capabilitySupported
+            && capability.maxModelBytes >= model.sizeBytes
             && capability.maxModelBytes > 0
             && capability.totalRamBytes >= model.minRamBytes
         let installed = model.downloaded && model.verified
@@ -435,10 +437,44 @@ struct SettingsView: View {
         let cap = appState.localDeviceCapability
         let installed = appState.localModels.filter { $0.downloaded && $0.verified }.count
         let installedLabel = installed == 1 ? "1 installed" : "\(installed) installed"
-        if cap.maxModelBytes == 0 {
-            return cap.reason ?? "Local inference is unavailable on this device"
+        if cap.status == .supported {
+            return "\(cap.abi) • \(localBytes(cap.totalRamBytes)) RAM • \(installedLabel)"
         }
-        return "\(cap.abi) • \(localBytes(cap.totalRamBytes)) RAM • \(installedLabel)"
+        if let reason = cap.reason, !reason.isEmpty {
+            return reason
+        }
+        return unsupportedLocalLlmReason(fallbackByCode: cap.reasonCode)
+    }
+
+    private var localCapabilitySupported: Bool {
+        appState.localDeviceCapability.status == .supported
+    }
+
+    private func unsupportedLocalLlmReason(fallbackByCode reasonCode: String) -> String {
+        switch reasonCode {
+        case "disabled_by_feature_flag":
+            return "Local LLM is disabled by feature flag"
+        case "unsupported_api_level":
+            return "Device iOS version is not supported"
+        case "unsupported_architecture":
+            return "Device architecture is not supported"
+        case "unsupported_process_bitness":
+            return "Device process is not 64-bit"
+        case "unsupported_cpu_features":
+            return "Device CPU features are not supported"
+        case "insufficient_memory":
+            return "Not enough memory for Local LLM"
+        case "insufficient_storage":
+            return "Not enough storage for Local LLM"
+        case "probe_unavailable":
+            return "Local LLM probe is not available"
+        case "runtime_not_packaged":
+            return "Local LLM runtime is not packaged"
+        case "runtime_load_failed":
+            return "Local LLM runtime failed to load"
+        default:
+            return "Local inference is unavailable on this device"
+        }
     }
 
     private func localProgressLabel(_ stage: String) -> String {

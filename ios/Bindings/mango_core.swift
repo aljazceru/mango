@@ -1533,6 +1533,12 @@ public struct AppState {
      */
     public var globalSystemPrompt: String?
     /**
+     * Global default model used for new conversations.
+     * Stored in the settings table as "default_model_id".
+     * None means new conversations fall back to the selected backend's first model.
+     */
+    public var defaultModelId: String?
+    /**
      * Embedding provider operational status (SAFE-03).
      * Active: real provider running. Degraded: init failed, NullEmbeddingProvider in use.
      * Unavailable: no provider supplied by design.
@@ -1727,6 +1733,11 @@ public struct AppState {
          * None means no default instructions are set.
          */globalSystemPrompt: String?, 
         /**
+         * Global default model used for new conversations.
+         * Stored in the settings table as "default_model_id".
+         * None means new conversations fall back to the selected backend's first model.
+         */defaultModelId: String?, 
+        /**
          * Embedding provider operational status (SAFE-03).
          * Active: real provider running. Degraded: init failed, NullEmbeddingProvider in use.
          * Unavailable: no provider supplied by design.
@@ -1841,6 +1852,7 @@ public struct AppState {
         self.currentAgentSteps = currentAgentSteps
         self.attestationIntervalMinutes = attestationIntervalMinutes
         self.globalSystemPrompt = globalSystemPrompt
+        self.defaultModelId = defaultModelId
         self.embeddingStatus = embeddingStatus
         self.localDeviceCapability = localDeviceCapability
         self.localModels = localModels
@@ -1944,6 +1956,9 @@ extension AppState: Equatable, Hashable {
         if lhs.globalSystemPrompt != rhs.globalSystemPrompt {
             return false
         }
+        if lhs.defaultModelId != rhs.defaultModelId {
+            return false
+        }
         if lhs.embeddingStatus != rhs.embeddingStatus {
             return false
         }
@@ -2043,6 +2058,7 @@ extension AppState: Equatable, Hashable {
         hasher.combine(currentAgentSteps)
         hasher.combine(attestationIntervalMinutes)
         hasher.combine(globalSystemPrompt)
+        hasher.combine(defaultModelId)
         hasher.combine(embeddingStatus)
         hasher.combine(localDeviceCapability)
         hasher.combine(localModels)
@@ -2102,6 +2118,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 currentAgentSteps: FfiConverterSequenceTypeAgentStepSummary.read(from: &buf), 
                 attestationIntervalMinutes: FfiConverterUInt32.read(from: &buf), 
                 globalSystemPrompt: FfiConverterOptionString.read(from: &buf), 
+                defaultModelId: FfiConverterOptionString.read(from: &buf), 
                 embeddingStatus: FfiConverterTypeEmbeddingStatus.read(from: &buf), 
                 localDeviceCapability: FfiConverterTypeDeviceCapability.read(from: &buf), 
                 localModels: FfiConverterSequenceTypeLocalModelSummary.read(from: &buf), 
@@ -2153,6 +2170,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterSequenceTypeAgentStepSummary.write(value.currentAgentSteps, into: &buf)
         FfiConverterUInt32.write(value.attestationIntervalMinutes, into: &buf)
         FfiConverterOptionString.write(value.globalSystemPrompt, into: &buf)
+        FfiConverterOptionString.write(value.defaultModelId, into: &buf)
         FfiConverterTypeEmbeddingStatus.write(value.embeddingStatus, into: &buf)
         FfiConverterTypeDeviceCapability.write(value.localDeviceCapability, into: &buf)
         FfiConverterSequenceTypeLocalModelSummary.write(value.localModels, into: &buf)
@@ -2660,24 +2678,27 @@ public func FfiConverterTypeConversationSummary_lower(_ value: ConversationSumma
 }
 
 
-/**
- * Device-side capability summary for local LLM inference.
- */
 public struct DeviceCapability {
     public var abi: String
     public var totalRamBytes: UInt64
     public var maxModelBytes: UInt64
     public var supportsMmap: Bool
+    public var status: LocalLlmCapabilityStatus
+    public var reasonCode: String
     public var reason: String?
+    public var availableStorageBytes: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(abi: String, totalRamBytes: UInt64, maxModelBytes: UInt64, supportsMmap: Bool, reason: String?) {
+    public init(abi: String, totalRamBytes: UInt64, maxModelBytes: UInt64, supportsMmap: Bool, status: LocalLlmCapabilityStatus, reasonCode: String, reason: String?, availableStorageBytes: UInt64) {
         self.abi = abi
         self.totalRamBytes = totalRamBytes
         self.maxModelBytes = maxModelBytes
         self.supportsMmap = supportsMmap
+        self.status = status
+        self.reasonCode = reasonCode
         self.reason = reason
+        self.availableStorageBytes = availableStorageBytes
     }
 }
 
@@ -2700,7 +2721,16 @@ extension DeviceCapability: Equatable, Hashable {
         if lhs.supportsMmap != rhs.supportsMmap {
             return false
         }
+        if lhs.status != rhs.status {
+            return false
+        }
+        if lhs.reasonCode != rhs.reasonCode {
+            return false
+        }
         if lhs.reason != rhs.reason {
+            return false
+        }
+        if lhs.availableStorageBytes != rhs.availableStorageBytes {
             return false
         }
         return true
@@ -2711,7 +2741,10 @@ extension DeviceCapability: Equatable, Hashable {
         hasher.combine(totalRamBytes)
         hasher.combine(maxModelBytes)
         hasher.combine(supportsMmap)
+        hasher.combine(status)
+        hasher.combine(reasonCode)
         hasher.combine(reason)
+        hasher.combine(availableStorageBytes)
     }
 }
 
@@ -2728,7 +2761,10 @@ public struct FfiConverterTypeDeviceCapability: FfiConverterRustBuffer {
                 totalRamBytes: FfiConverterUInt64.read(from: &buf), 
                 maxModelBytes: FfiConverterUInt64.read(from: &buf), 
                 supportsMmap: FfiConverterBool.read(from: &buf), 
-                reason: FfiConverterOptionString.read(from: &buf)
+                status: FfiConverterTypeLocalLlmCapabilityStatus.read(from: &buf), 
+                reasonCode: FfiConverterString.read(from: &buf), 
+                reason: FfiConverterOptionString.read(from: &buf), 
+                availableStorageBytes: FfiConverterUInt64.read(from: &buf)
         )
     }
 
@@ -2737,7 +2773,10 @@ public struct FfiConverterTypeDeviceCapability: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.totalRamBytes, into: &buf)
         FfiConverterUInt64.write(value.maxModelBytes, into: &buf)
         FfiConverterBool.write(value.supportsMmap, into: &buf)
+        FfiConverterTypeLocalLlmCapabilityStatus.write(value.status, into: &buf)
+        FfiConverterString.write(value.reasonCode, into: &buf)
         FfiConverterOptionString.write(value.reason, into: &buf)
+        FfiConverterUInt64.write(value.availableStorageBytes, into: &buf)
     }
 }
 
@@ -5368,6 +5407,34 @@ public struct UiMessage {
      * Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
      */
     public var imagePath: String?
+    /**
+     * Backend that produced this assistant message, if known.
+     */
+    public var routeBackendId: String?
+    /**
+     * Model that produced this assistant message, if known.
+     */
+    public var routeModelId: String?
+    /**
+     * Route role for this assistant message: "local" or "remote", if known.
+     */
+    public var routeDecision: String?
+    /**
+     * Human-readable route reason, if known.
+     */
+    public var routeReason: String?
+    /**
+     * Display provider name for the serving backend, if known.
+     */
+    public var routeProviderName: String?
+    /**
+     * TEE label for the serving backend, if known.
+     */
+    public var routeTeeLabel: String?
+    /**
+     * Whether attestation was verified for the serving backend when known.
+     */
+    public var routeTeeVerified: Bool?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -5389,7 +5456,28 @@ public struct UiMessage {
          * Absolute path to the encrypted image file for this message, if any (QT-ECE).
          * Non-null when the user sent an image. Decrypt via read_encrypted_image(message_id).
          * Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
-         */imagePath: String?) {
+         */imagePath: String?, 
+        /**
+         * Backend that produced this assistant message, if known.
+         */routeBackendId: String?, 
+        /**
+         * Model that produced this assistant message, if known.
+         */routeModelId: String?, 
+        /**
+         * Route role for this assistant message: "local" or "remote", if known.
+         */routeDecision: String?, 
+        /**
+         * Human-readable route reason, if known.
+         */routeReason: String?, 
+        /**
+         * Display provider name for the serving backend, if known.
+         */routeProviderName: String?, 
+        /**
+         * TEE label for the serving backend, if known.
+         */routeTeeLabel: String?, 
+        /**
+         * Whether attestation was verified for the serving backend when known.
+         */routeTeeVerified: Bool?) {
         self.id = id
         self.role = role
         self.content = content
@@ -5398,6 +5486,13 @@ public struct UiMessage {
         self.attachmentName = attachmentName
         self.ragContextCount = ragContextCount
         self.imagePath = imagePath
+        self.routeBackendId = routeBackendId
+        self.routeModelId = routeModelId
+        self.routeDecision = routeDecision
+        self.routeReason = routeReason
+        self.routeProviderName = routeProviderName
+        self.routeTeeLabel = routeTeeLabel
+        self.routeTeeVerified = routeTeeVerified
     }
 }
 
@@ -5432,6 +5527,27 @@ extension UiMessage: Equatable, Hashable {
         if lhs.imagePath != rhs.imagePath {
             return false
         }
+        if lhs.routeBackendId != rhs.routeBackendId {
+            return false
+        }
+        if lhs.routeModelId != rhs.routeModelId {
+            return false
+        }
+        if lhs.routeDecision != rhs.routeDecision {
+            return false
+        }
+        if lhs.routeReason != rhs.routeReason {
+            return false
+        }
+        if lhs.routeProviderName != rhs.routeProviderName {
+            return false
+        }
+        if lhs.routeTeeLabel != rhs.routeTeeLabel {
+            return false
+        }
+        if lhs.routeTeeVerified != rhs.routeTeeVerified {
+            return false
+        }
         return true
     }
 
@@ -5444,6 +5560,13 @@ extension UiMessage: Equatable, Hashable {
         hasher.combine(attachmentName)
         hasher.combine(ragContextCount)
         hasher.combine(imagePath)
+        hasher.combine(routeBackendId)
+        hasher.combine(routeModelId)
+        hasher.combine(routeDecision)
+        hasher.combine(routeReason)
+        hasher.combine(routeProviderName)
+        hasher.combine(routeTeeLabel)
+        hasher.combine(routeTeeVerified)
     }
 }
 
@@ -5463,7 +5586,14 @@ public struct FfiConverterTypeUiMessage: FfiConverterRustBuffer {
                 hasAttachment: FfiConverterBool.read(from: &buf), 
                 attachmentName: FfiConverterOptionString.read(from: &buf), 
                 ragContextCount: FfiConverterOptionUInt32.read(from: &buf), 
-                imagePath: FfiConverterOptionString.read(from: &buf)
+                imagePath: FfiConverterOptionString.read(from: &buf), 
+                routeBackendId: FfiConverterOptionString.read(from: &buf), 
+                routeModelId: FfiConverterOptionString.read(from: &buf), 
+                routeDecision: FfiConverterOptionString.read(from: &buf), 
+                routeReason: FfiConverterOptionString.read(from: &buf), 
+                routeProviderName: FfiConverterOptionString.read(from: &buf), 
+                routeTeeLabel: FfiConverterOptionString.read(from: &buf), 
+                routeTeeVerified: FfiConverterOptionBool.read(from: &buf)
         )
     }
 
@@ -5476,6 +5606,13 @@ public struct FfiConverterTypeUiMessage: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.attachmentName, into: &buf)
         FfiConverterOptionUInt32.write(value.ragContextCount, into: &buf)
         FfiConverterOptionString.write(value.imagePath, into: &buf)
+        FfiConverterOptionString.write(value.routeBackendId, into: &buf)
+        FfiConverterOptionString.write(value.routeModelId, into: &buf)
+        FfiConverterOptionString.write(value.routeDecision, into: &buf)
+        FfiConverterOptionString.write(value.routeReason, into: &buf)
+        FfiConverterOptionString.write(value.routeProviderName, into: &buf)
+        FfiConverterOptionString.write(value.routeTeeLabel, into: &buf)
+        FfiConverterOptionBool.write(value.routeTeeVerified, into: &buf)
     }
 }
 
@@ -5593,7 +5730,7 @@ public enum AppAction {
     case clearAttachment
     /**
      * Store a pending image attachment to be sent with the next message (Phase 31).
-     * file_path is an absolute path to a JPEG/PNG file in the app sandbox.
+     * file_path is an absolute path to an app-owned plaintext JPEG/PNG copy.
      * The actor reads bytes at request time and builds a multipart user message.
      */
     case attachImage(filename: String, filePath: String, mimeType: String
@@ -7749,6 +7886,149 @@ extension LlmError: Foundation.LocalizedError {
 
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Device-side capability summary for local LLM inference.
+ */
+
+public enum LocalLlmCapabilityStatus {
+    
+    case unknown
+    case supported
+    case disabledByFeatureFlag
+    case unsupportedApiLevel
+    case unsupportedArchitecture
+    case unsupportedProcessBitness
+    case unsupportedCpuFeatures
+    case insufficientMemory
+    case insufficientStorage
+    case probeUnavailable
+    case runtimeNotPackaged
+    case runtimeLoadFailed
+}
+
+
+#if compiler(>=6)
+extension LocalLlmCapabilityStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLocalLlmCapabilityStatus: FfiConverterRustBuffer {
+    typealias SwiftType = LocalLlmCapabilityStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalLlmCapabilityStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .unknown
+        
+        case 2: return .supported
+        
+        case 3: return .disabledByFeatureFlag
+        
+        case 4: return .unsupportedApiLevel
+        
+        case 5: return .unsupportedArchitecture
+        
+        case 6: return .unsupportedProcessBitness
+        
+        case 7: return .unsupportedCpuFeatures
+        
+        case 8: return .insufficientMemory
+        
+        case 9: return .insufficientStorage
+        
+        case 10: return .probeUnavailable
+        
+        case 11: return .runtimeNotPackaged
+        
+        case 12: return .runtimeLoadFailed
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LocalLlmCapabilityStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .unknown:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .supported:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .disabledByFeatureFlag:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .unsupportedApiLevel:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .unsupportedArchitecture:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .unsupportedProcessBitness:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .unsupportedCpuFeatures:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .insufficientMemory:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .insufficientStorage:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .probeUnavailable:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .runtimeNotPackaged:
+            writeInt(&buf, Int32(11))
+        
+        
+        case .runtimeLoadFailed:
+            writeInt(&buf, Int32(12))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalLlmCapabilityStatus_lift(_ buf: RustBuffer) throws -> LocalLlmCapabilityStatus {
+    return try FfiConverterTypeLocalLlmCapabilityStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLocalLlmCapabilityStatus_lower(_ value: LocalLlmCapabilityStatus) -> RustBuffer {
+    return FfiConverterTypeLocalLlmCapabilityStatus.lower(value)
+}
+
+
+extension LocalLlmCapabilityStatus: Equatable, Hashable {}
+
+
+
+
+
+
 
 public enum LocalLlmError: Swift.Error {
 
@@ -8110,11 +8390,11 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         case 13: return .settingsSecurity
         
         case 14: return .settingsTools
-
+        
         case 15: return .settingsLocalModels
-
+        
         case 16: return .settingsHybridRouting
-
+        
         case 17: return .toolDiscovery
         
         case 18: return .contextvmToolDetail(toolId: try FfiConverterString.read(from: &buf)
@@ -8194,12 +8474,12 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         
         case .settingsLocalModels:
             writeInt(&buf, Int32(15))
-
-
+        
+        
         case .settingsHybridRouting:
             writeInt(&buf, Int32(16))
-
-
+        
+        
         case .toolDiscovery:
             writeInt(&buf, Int32(17))
         
@@ -9394,6 +9674,30 @@ fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
+    typealias SwiftType = Bool?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterBool.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterBool.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

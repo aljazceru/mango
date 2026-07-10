@@ -14,6 +14,7 @@ mod attestation;
 mod contextvm;
 pub mod crypto;
 pub mod embedding;
+pub mod features;
 mod llm;
 pub mod memory;
 mod net;
@@ -165,6 +166,20 @@ pub struct UiMessage {
     /// Non-null when the user sent an image. Decrypt via read_encrypted_image(message_id).
     /// Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
     pub image_path: Option<String>,
+    /// Backend that produced this assistant message, if known.
+    pub route_backend_id: Option<String>,
+    /// Model that produced this assistant message, if known.
+    pub route_model_id: Option<String>,
+    /// Route role for this assistant message: "local" or "remote", if known.
+    pub route_decision: Option<String>,
+    /// Human-readable route reason, if known.
+    pub route_reason: Option<String>,
+    /// Display provider name for the serving backend, if known.
+    pub route_provider_name: Option<String>,
+    /// TEE label for the serving backend, if known.
+    pub route_tee_label: Option<String>,
+    /// Whether attestation was verified for the serving backend when known.
+    pub route_tee_verified: Option<bool>,
 }
 
 /// Phase 35 — one tool surfaced by Nostr discovery, bound to AppState
@@ -339,6 +354,10 @@ pub struct AppState {
     /// Stored in the settings table as "global_system_prompt".
     /// None means no default instructions are set.
     pub global_system_prompt: Option<String>,
+    /// Global default model used for new conversations.
+    /// Stored in the settings table as "default_model_id".
+    /// None means new conversations fall back to the selected backend's first model.
+    pub default_model_id: Option<String>,
     // Phase 15 additions:
     /// Embedding provider operational status (SAFE-03).
     /// Active: real provider running. Degraded: init failed, NullEmbeddingProvider in use.
@@ -445,6 +464,7 @@ impl Default for AppState {
             current_agent_steps: vec![],
             attestation_interval_minutes: 15,
             global_system_prompt: None,
+            default_model_id: None,
             embedding_status: EmbeddingStatus::Active,
             local_device_capability: DeviceCapability::default(),
             local_models: vec![],
@@ -1903,6 +1923,13 @@ fn refresh_messages(actor_state: &mut ActorState, conversation_id: &str) {
             attachment_name: None,
             rag_context_count: None,
             image_path: row.image_path.clone(),
+            route_backend_id: row.route_backend_id.clone(),
+            route_model_id: row.route_model_id.clone(),
+            route_decision: row.route_decision.clone(),
+            route_reason: row.route_reason.clone(),
+            route_provider_name: row.route_provider_name.clone(),
+            route_tee_label: row.route_tee_label.clone(),
+            route_tee_verified: row.route_tee_verified,
         })
         .collect();
 }
@@ -2253,6 +2280,73 @@ fn turn_routing_summary(
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct MessageRouteMetadata {
+    backend_id: Option<String>,
+    model_id: Option<String>,
+    decision: Option<String>,
+    reason: Option<String>,
+    provider_name: Option<String>,
+    tee_label: Option<String>,
+    tee_verified: Option<bool>,
+}
+
+fn backend_role_label(role: &BackendRole) -> String {
+    match role {
+        BackendRole::Local => "local",
+        BackendRole::Remote => "remote",
+    }
+    .to_string()
+}
+
+fn route_metadata_for_completed_message(
+    actor_state: &ActorState,
+    conversation_id: &str,
+) -> MessageRouteMetadata {
+    if let Some(summary) = actor_state
+        .app_state
+        .last_turn_routing
+        .as_ref()
+        .filter(|summary| summary.conversation_id.as_deref() == Some(conversation_id))
+    {
+        return MessageRouteMetadata {
+            backend_id: Some(summary.backend_id.clone()),
+            model_id: Some(summary.model_id.clone()),
+            decision: Some(backend_role_label(&summary.decision)),
+            reason: Some(summary.reason.clone()),
+            provider_name: Some(summary.provider_name.clone()),
+            tee_label: Some(summary.tee_label.clone()),
+            tee_verified: Some(summary.tee_verified),
+        };
+    }
+
+    let backend_id = actor_state.current_streaming_backend_id.clone();
+    let model_id = actor_state.current_streaming_model_id.clone();
+    let backend = backend_id
+        .as_deref()
+        .and_then(|id| actor_state.backends.iter().find(|backend| backend.id == id));
+
+    MessageRouteMetadata {
+        backend_id,
+        model_id,
+        decision: backend.map(|backend| {
+            if is_local_on_device_backend(backend) {
+                "local"
+            } else {
+                "remote"
+            }
+            .to_string()
+        }),
+        reason: Some("selected model".to_string()),
+        provider_name: backend.map(|backend| backend.name.clone()),
+        tee_label: backend.map(|backend| tee_label(&backend.tee_type)),
+        tee_verified: backend.map(|backend| {
+            !backend_requires_attestation(backend)
+                || backend_attestation_verified(actor_state, &backend.id)
+        }),
+    }
+}
+
 fn inline_secure_remote_route_requires_stream_proof(
     route: &routing::TurnRouting,
     backend: &llm::BackendConfig,
@@ -2507,6 +2601,40 @@ fn refresh_local_model_state(actor_state: &mut ActorState) {
         llm::local_models::local_model_summaries(&actor_state.data_dir);
 }
 
+fn ensure_local_device_capability_supported(capability: &DeviceCapability) -> Result<(), String> {
+    if capability.is_supported() {
+        Ok(())
+    } else {
+        Err(capability.blocked_reason_or_default(
+            "This device is not capable of local inference.",
+        ))
+    }
+}
+
+fn ensure_local_model_is_downloadable(
+    capability: &DeviceCapability,
+    preset: &llm::LocalModelPreset,
+) -> Result<(), String> {
+    ensure_local_device_capability_supported(capability)?;
+    if capability.max_model_bytes < preset.size_bytes {
+        return Err(format!(
+            "Model {} is too large for this device (max {} bytes).",
+            preset.id, capability.max_model_bytes
+        ));
+    }
+    if capability.total_ram_bytes < preset.min_ram_bytes {
+        return Err(format!(
+            "Model {} requires {} bytes of RAM.",
+            preset.id, preset.min_ram_bytes
+        ));
+    }
+    Ok(())
+}
+
+fn local_inference_disabled_message() -> String {
+    "Local inference is turned off. Enable it in settings to use this model.".to_string()
+}
+
 fn reconcile_local_model_backends(actor_state: &mut ActorState) {
     if actor_state.db.is_none() {
         refresh_local_model_state(actor_state);
@@ -2520,22 +2648,18 @@ fn reconcile_local_model_backends(actor_state: &mut ActorState) {
         .local_models
         .iter()
         .filter(|summary| {
-            summary.verified
-                && actor_state
-                    .app_state
-                    .local_device_capability
-                    .total_ram_bytes
-                    >= summary.min_ram_bytes
-                && actor_state
-                    .app_state
-                    .local_device_capability
-                    .max_model_bytes
-                    >= summary.size_bytes
-                && actor_state
-                    .app_state
-                    .local_device_capability
-                    .max_model_bytes
-                    > 0
+            if !summary.verified {
+                return false;
+            }
+            if let Some(preset) = llm::local_models::find_local_model(&summary.id) {
+                ensure_local_model_is_downloadable(
+                    &actor_state.app_state.local_device_capability,
+                    &preset,
+                )
+                .is_ok()
+            } else {
+                false
+            }
         })
         .map(|summary| summary.id.clone())
         .collect();
@@ -3074,6 +3198,14 @@ fn retry_backend_satisfies_preflight(
     core_tx: flume::Sender<CoreMsg>,
 ) -> bool {
     if is_local_on_device_backend(backend) && !actor_state.app_state.local_inference_enabled {
+        return false;
+    }
+    if is_local_on_device_backend(backend)
+        && !actor_state
+            .app_state
+            .local_device_capability
+            .is_supported()
+    {
         return false;
     }
 
@@ -3669,6 +3801,13 @@ fn do_send_message(
         created_at: now,
         token_count: None,
         image_path: image_path.clone(),
+        route_backend_id: None,
+        route_model_id: None,
+        route_decision: None,
+        route_reason: None,
+        route_provider_name: None,
+        route_tee_label: None,
+        route_tee_verified: None,
     };
     let _ = persistence::queries::insert_message(
         actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -3685,6 +3824,13 @@ fn do_send_message(
         attachment_name,
         rag_context_count: None,
         image_path,
+        route_backend_id: None,
+        route_model_id: None,
+        route_decision: None,
+        route_reason: None,
+        route_provider_name: None,
+        route_tee_label: None,
+        route_tee_verified: None,
     };
     actor_state.app_state.messages.push(user_ui_msg);
 
@@ -4268,6 +4414,13 @@ fn spawn_chat_tool_round(
 
 /// Refresh app_state.agent_sessions from SQLite (mirrors refresh_conversations).
 fn refresh_agent_sessions(actor_state: &mut ActorState) {
+    if !features::AGENTS_ENABLED {
+        actor_state.app_state.agent_sessions = vec![];
+        actor_state.app_state.current_agent_session_id = None;
+        actor_state.app_state.current_agent_steps = vec![];
+        return;
+    }
+
     let Some(db) = actor_state.db.as_ref() else {
         log::debug!("[agent] refresh_agent_sessions skipped while DB is locked");
         return;
@@ -4811,14 +4964,37 @@ fn resolve_turn_backend_and_model(
             )));
         }
 
-        if route.decision == BackendRole::Local
-            && is_local_on_device_backend(backend)
-            && !actor_state.app_state.local_inference_enabled
-        {
-            return Err(TurnResolutionError::UserFacing(
-                "Local inference is turned off. Enable it in settings to use this model."
-                    .to_string(),
-            ));
+        if route.decision == BackendRole::Local && is_local_on_device_backend(backend) {
+            if !actor_state.app_state.local_inference_enabled {
+                return Err(TurnResolutionError::UserFacing(
+                    local_inference_disabled_message(),
+                ));
+            }
+            if let Err(message) = ensure_local_device_capability_supported(
+                &actor_state.app_state.local_device_capability,
+            ) {
+                return Err(TurnResolutionError::UserFacing(message));
+            }
+        }
+
+        if route.decision == BackendRole::Local && is_local_on_device_backend(backend) {
+            if actor_state
+                .app_state
+                .local_device_capability
+                .is_supported()
+            {
+                let preset = llm::local_models::find_local_model(&route.model_id)
+                    .ok_or_else(|| {
+                        TurnResolutionError::UserFacing(
+                            "This local model is not in the supported catalog.".to_string(),
+                        )
+                    })?;
+                if let Err(reason) =
+                    ensure_local_model_is_downloadable(&actor_state.app_state.local_device_capability, &preset)
+                {
+                    return Err(TurnResolutionError::UserFacing(reason));
+                }
+            }
         }
 
         if route.decision == BackendRole::Remote {
@@ -4873,8 +5049,21 @@ fn resolve_turn_backend_and_model(
 
     if is_local_on_device_backend(backend) && !actor_state.app_state.local_inference_enabled {
         return Err(TurnResolutionError::UserFacing(
-            "Local inference is turned off. Enable it in settings to use this model.".to_string(),
+            local_inference_disabled_message(),
         ));
+    }
+
+    if is_local_on_device_backend(backend) {
+        if let Err(message) = ensure_local_device_capability_supported(
+            &actor_state.app_state.local_device_capability,
+        ) {
+            return Err(TurnResolutionError::UserFacing(message));
+        }
+        let preset = llm::local_models::find_local_model(model).ok_or_else(|| {
+            TurnResolutionError::UserFacing("This local model is not in the supported catalog.".to_string())
+        })?;
+        ensure_local_model_is_downloadable(&actor_state.app_state.local_device_capability, &preset)
+            .map_err(TurnResolutionError::UserFacing)?;
     }
 
     Ok((
@@ -5802,6 +5991,13 @@ fn seed_duress_decoy_data(conn: &rusqlite::Connection) {
                     created_at: message_time,
                     token_count: None,
                     image_path: None,
+                    route_backend_id: None,
+                    route_model_id: None,
+                    route_decision: None,
+                    route_reason: None,
+                    route_provider_name: None,
+                    route_tee_label: None,
+                    route_tee_verified: None,
                 },
             );
             message_time += 9 * minute_ms;
@@ -5815,6 +6011,17 @@ fn seed_duress_decoy_data(conn: &rusqlite::Connection) {
                     created_at: message_time,
                     token_count: None,
                     image_path: None,
+                    route_backend_id: Some(default_backend.id.clone()),
+                    route_model_id: serde_json::from_str::<Vec<String>>(
+                        &default_backend.model_list,
+                    )
+                    .ok()
+                    .and_then(|models| models.into_iter().next()),
+                    route_decision: Some("remote".to_string()),
+                    route_reason: Some("decoy seed".to_string()),
+                    route_provider_name: Some(default_backend.name.clone()),
+                    route_tee_label: Some(tee_label(&parse_tee_type(&default_backend.tee_type))),
+                    route_tee_verified: Some(false),
                 },
             );
             message_time += 9 * minute_ms;
@@ -5885,25 +6092,30 @@ fn load_post_unlock(
         })
         .collect();
 
-    // Load agent sessions.
-    let agent_session_rows =
-        persistence::queries::list_agent_sessions(db.conn()).unwrap_or_default();
-    let agent_sessions: Vec<AgentSessionSummary> = agent_session_rows
-        .iter()
-        .map(|row| {
-            let step_count =
-                persistence::queries::count_agent_steps(db.conn(), &row.id).unwrap_or(0) as u32;
-            AgentSessionSummary {
-                id: row.id.clone(),
-                title: row.title.clone(),
-                status: row.status.clone(),
-                backend_id: row.backend_id.clone(),
-                updated_at: row.updated_at,
-                step_count,
-                elapsed_secs: row.updated_at - row.created_at,
-            }
-        })
-        .collect();
+    // Load agent sessions only when the product surface is enabled. Existing
+    // rows remain in SQLite, but release builds do not surface them to users.
+    let agent_sessions: Vec<AgentSessionSummary> = if features::AGENTS_ENABLED {
+        let agent_session_rows =
+            persistence::queries::list_agent_sessions(db.conn()).unwrap_or_default();
+        agent_session_rows
+            .iter()
+            .map(|row| {
+                let step_count =
+                    persistence::queries::count_agent_steps(db.conn(), &row.id).unwrap_or(0) as u32;
+                AgentSessionSummary {
+                    id: row.id.clone(),
+                    title: row.title.clone(),
+                    status: row.status.clone(),
+                    backend_id: row.backend_id.clone(),
+                    updated_at: row.updated_at,
+                    step_count,
+                    elapsed_secs: row.updated_at - row.created_at,
+                }
+            })
+            .collect()
+    } else {
+        vec![]
+    };
 
     // Initialize FailoverRouter with health state from SQLite.
     let mut router = llm::FailoverRouter::new();
@@ -6023,6 +6235,10 @@ fn load_post_unlock(
         .ok()
         .flatten()
         .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
+    let default_model_id = persistence::queries::get_setting(db.conn(), "default_model_id")
+        .ok()
+        .flatten()
+        .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
     let memory_count: u64 = db
         .conn()
         .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0))
@@ -6043,6 +6259,19 @@ fn load_post_unlock(
             .flatten()
             .map(|v| v != "0")
             .unwrap_or(true);
+    let local_inference_enabled = if local_inference_enabled
+        && !actor_state
+            .local_llm_provider
+            .device_capability()
+            .is_supported()
+    {
+        if let Some(db) = actor_state.db.as_ref() {
+            let _ = persistence::queries::set_setting(db.conn(), "local_inference_enabled", "0");
+        }
+        false
+    } else {
+        local_inference_enabled
+    };
     // Phase 35: load auto-discover toggle and known contextvm tools.
     let auto_discover_tools_enabled =
         persistence::queries::get_setting(db.conn(), "auto_discover_tools")
@@ -6140,6 +6369,7 @@ fn load_post_unlock(
     actor_state.app_state.directory_sources = load_directory_sources_summary(actor_state);
     actor_state.app_state.attestation_interval_minutes = attestation_interval_minutes;
     actor_state.app_state.global_system_prompt = global_system_prompt;
+    actor_state.app_state.default_model_id = default_model_id;
     actor_state.app_state.memory_count = memory_count;
     actor_state.app_state.brave_api_key_set = brave_api_key_set;
     actor_state.app_state.memories_enabled = memories_enabled;
@@ -6504,6 +6734,17 @@ impl FfiApp {
                     CoreMsg::Action(action) => {
                         match action {
                             AppAction::PushScreen { screen } => {
+                                if matches!(screen, Screen::Agents) && !features::AGENTS_ENABLED {
+                                    actor_state.app_state.toast =
+                                        Some("Agents are not available in this release.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit_state(
+                                        &actor_state.app_state,
+                                        &shared_for_core,
+                                        &update_tx,
+                                    );
+                                    continue;
+                                }
                                 // Save current screen so PopScreen can return to it.
                                 push_nav_history(&mut actor_state.app_state.router);
                                 // Auto-load memories when navigating to the Memories screen (per Pitfall 4)
@@ -7348,6 +7589,11 @@ impl FfiApp {
                                     "default_model_id",
                                     &model_id,
                                 );
+                                actor_state.app_state.default_model_id = Some(model_id);
+                                actor_state.app_state.toast =
+                                    Some("Default model saved".to_string());
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
                             AppAction::SaveHybridProfile { profile } => {
@@ -7408,6 +7654,24 @@ impl FfiApp {
                                 log::info!(
                                     "[local-model] SetLocalInferenceEnabled enabled={enabled}"
                                 );
+                                if enabled
+                                    && !actor_state
+                                        .app_state
+                                        .local_device_capability
+                                        .is_supported()
+                                {
+                                    actor_state.app_state.last_error = Some(
+                                        actor_state
+                                            .app_state
+                                            .local_device_capability
+                                            .blocked_reason_or_default(
+                                                "This device is not capable of local inference.",
+                                            ),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 if !enabled {
                                     if let Some(active_id) =
                                         actor_state.current_streaming_backend_id.as_deref()
@@ -7471,10 +7735,7 @@ impl FfiApp {
 
                                 refresh_local_model_state(&mut actor_state);
                                 let cap = &actor_state.app_state.local_device_capability;
-                                if cap.max_model_bytes == 0
-                                    || cap.max_model_bytes < preset.size_bytes
-                                    || cap.total_ram_bytes < preset.min_ram_bytes
-                                {
+                                if let Err(reason) = ensure_local_model_is_downloadable(cap, &preset) {
                                     log::warn!(
                                         "[local-model] download rejected: capability max={} total_ram={} required_size={} required_ram={} reason={:?}",
                                         cap.max_model_bytes,
@@ -7484,10 +7745,7 @@ impl FfiApp {
                                         cap.reason
                                     );
                                     actor_state.app_state.last_error = Some(
-                                        cap.reason.clone().unwrap_or_else(|| {
-                                            "This device is not marked capable of running the selected local model."
-                                                .to_string()
-                                        }),
+                                        cap.blocked_reason().unwrap_or(reason.as_str()).to_string(),
                                     );
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
@@ -8111,6 +8369,17 @@ impl FfiApp {
 
                             // ── Phase 9 action handlers (Task 1: stubs for compile; Task 2: full impl) ──
                             AppAction::LaunchAgentSession { task_description } => {
+                                if !features::AGENTS_ENABLED {
+                                    actor_state.app_state.toast =
+                                        Some("Agents are not available in this release.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit_state(
+                                        &actor_state.app_state,
+                                        &shared_for_core,
+                                        &update_tx,
+                                    );
+                                    continue;
+                                }
                                 handle_launch_agent_session(
                                     &mut actor_state,
                                     task_description,
@@ -8119,10 +8388,16 @@ impl FfiApp {
                             }
 
                             AppAction::PauseAgentSession { session_id } => {
+                                if !features::AGENTS_ENABLED {
+                                    continue;
+                                }
                                 handle_pause_agent_session(&mut actor_state, session_id);
                             }
 
                             AppAction::ResumeAgentSession { session_id } => {
+                                if !features::AGENTS_ENABLED {
+                                    continue;
+                                }
                                 handle_resume_agent_session(
                                     &mut actor_state,
                                     session_id,
@@ -8131,10 +8406,16 @@ impl FfiApp {
                             }
 
                             AppAction::CancelAgentSession { session_id } => {
+                                if !features::AGENTS_ENABLED {
+                                    continue;
+                                }
                                 handle_cancel_agent_session(&mut actor_state, session_id);
                             }
 
                             AppAction::LoadAgentSession { session_id } => {
+                                if !features::AGENTS_ENABLED {
+                                    continue;
+                                }
                                 handle_load_agent_session(&mut actor_state, &session_id);
                             }
 
@@ -8183,6 +8464,10 @@ impl FfiApp {
                                         actor_state.app_state.global_system_prompt = None;
                                     }
                                 }
+                                actor_state.app_state.toast =
+                                    Some("Default instructions saved".to_string());
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
                             // Phase 23 additions: memory management handlers
@@ -9554,6 +9839,10 @@ impl FfiApp {
                                 if let Some(conv_id) = target_conv_id {
                                     let now = now_secs();
                                     let msg_id = new_uuid();
+                                    let route_metadata = route_metadata_for_completed_message(
+                                        &actor_state,
+                                        &conv_id,
+                                    );
                                     let row = persistence::MessageRow {
                                         id: msg_id.clone(),
                                         conversation_id: conv_id.clone(),
@@ -9562,6 +9851,13 @@ impl FfiApp {
                                         created_at: now,
                                         token_count: None,
                                         image_path: None,
+                                        route_backend_id: route_metadata.backend_id.clone(),
+                                        route_model_id: route_metadata.model_id.clone(),
+                                        route_decision: route_metadata.decision.clone(),
+                                        route_reason: route_metadata.reason.clone(),
+                                        route_provider_name: route_metadata.provider_name.clone(),
+                                        route_tee_label: route_metadata.tee_label.clone(),
+                                        route_tee_verified: route_metadata.tee_verified,
                                     };
                                     let _ = persistence::queries::insert_message(
                                         actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -9581,6 +9877,13 @@ impl FfiApp {
                                             attachment_name: None,
                                             rag_context_count: rag_count,
                                             image_path: None,
+                                            route_backend_id: route_metadata.backend_id,
+                                            route_model_id: route_metadata.model_id,
+                                            route_decision: route_metadata.decision,
+                                            route_reason: route_metadata.reason,
+                                            route_provider_name: route_metadata.provider_name,
+                                            route_tee_label: route_metadata.tee_label,
+                                            route_tee_verified: route_metadata.tee_verified,
                                         });
                                     }
 
@@ -11770,6 +12073,13 @@ mod image_red_tests {
             attachment_name: None,
             rag_context_count: None,
             image_path: None,
+            route_backend_id: None,
+            route_model_id: None,
+            route_decision: None,
+            route_reason: None,
+            route_provider_name: None,
+            route_tee_label: None,
+            route_tee_verified: None,
         });
         actor_state.app_state.last_turn_routing = Some(TurnRoutingSummary {
             conversation_id: Some("conv-hybrid".to_string()),
@@ -11801,6 +12111,13 @@ mod image_red_tests {
             attachment_name: None,
             rag_context_count: None,
             image_path: None,
+            route_backend_id: None,
+            route_model_id: None,
+            route_decision: None,
+            route_reason: None,
+            route_provider_name: None,
+            route_tee_label: None,
+            route_tee_verified: None,
         });
         actor_state.app_state.messages.push(UiMessage {
             id: "user-2".to_string(),
@@ -11811,6 +12128,13 @@ mod image_red_tests {
             attachment_name: None,
             rag_context_count: None,
             image_path: None,
+            route_backend_id: None,
+            route_model_id: None,
+            route_decision: None,
+            route_reason: None,
+            route_provider_name: None,
+            route_tee_label: None,
+            route_tee_verified: None,
         });
         actor_state.app_state.last_turn_routing = Some(TurnRoutingSummary {
             conversation_id: Some("conv-hybrid".to_string()),
@@ -12871,6 +13195,13 @@ mod image_red_tests {
             attachment_name: Some("photo.jpg".to_string()),
             rag_context_count: None,
             image_path: Some(encrypted_path.to_string_lossy().to_string()),
+            route_backend_id: None,
+            route_model_id: None,
+            route_decision: None,
+            route_reason: None,
+            route_provider_name: None,
+            route_tee_label: None,
+            route_tee_verified: None,
         };
 
         let attachment = rehydrate_retry_image_attachment(&actor_state, &message)

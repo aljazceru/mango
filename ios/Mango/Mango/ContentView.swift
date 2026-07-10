@@ -68,8 +68,16 @@ struct ContentView: View {
                 SettingsProvidersView()
                     .environmentObject(appManager)
             case .agents:
-                AgentSessionListView()
-                    .environmentObject(appManager)
+                if FeatureFlags.agentsEnabled {
+                    AgentSessionListView()
+                        .environmentObject(appManager)
+                } else {
+                    Color(.systemBackground)
+                        .ignoresSafeArea()
+                        .onAppear {
+                            appManager.dispatch(.popScreen)
+                        }
+                }
             case .chat:
                 ChatView(
                     state: appManager.appState,

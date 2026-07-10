@@ -9,6 +9,8 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +31,8 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -48,7 +52,9 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -59,6 +65,9 @@ import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /// Renders a single chat message bubble.
 /// User messages: right-aligned, blue tint, plain Text.
@@ -106,6 +115,7 @@ fun MessageBubble(
 
 // MARK: - User Bubble
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun UserBubble(
     message: UiMessage,
@@ -118,6 +128,7 @@ private fun UserBubble(
 
     // IMG-07: load decrypted thumbnail on demand
     var thumbnail by remember(message.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var actionsOpen by remember { mutableStateOf(false) }
     if (message.imagePath != null && onReadEncryptedImage != null) {
         LaunchedEffect(message.id) {
             runCatching {
@@ -148,39 +159,51 @@ private fun UserBubble(
             )
         }
         if (thumbnail == null || message.content.isNotEmpty()) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = bubbleColor,
-            ) {
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            Box {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = bubbleColor,
+                    modifier = Modifier
+                        .combinedClickable(
+                            onClick = {},
+                            onLongClick = { actionsOpen = true },
+                        )
+                        .semantics {
+                            customActions = listOf(
+                                CustomAccessibilityAction("Edit message") {
+                                    onEdit()
+                                    true
+                                },
+                                CustomAccessibilityAction("Copy message") {
+                                    onCopy()
+                                    true
+                                },
+                            )
+                        },
+                ) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+                MessageActionsMenu(
+                    expanded = actionsOpen,
+                    onDismiss = { actionsOpen = false },
+                    actions = listOf(
+                        MessageAction("Edit", onEdit),
+                        MessageAction("Copy", onCopy),
+                    ),
                 )
             }
         }
-        // Action row
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = onEdit) {
-                Text(
-                    "Edit",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            TextButton(onClick = onCopy) {
-                Text(
-                    "Copy",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        MessageTimestamp(message.createdAt)
     }
 }
 
 // MARK: - Assistant Bubble
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AssistantBubble(
     message: UiMessage,
@@ -190,6 +213,11 @@ private fun AssistantBubble(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var actionsOpen by remember { mutableStateOf(false) }
+    val actions = buildList {
+        add(MessageAction("Copy", onCopy))
+        if (isLastAssistant) add(MessageAction("Retry", onRetry))
+    }
     Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
         // Attachment indicator
         if (message.hasAttachment) {
@@ -197,52 +225,72 @@ private fun AssistantBubble(
                 AttachmentIndicator(name = name)
             }
         }
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Markdown(
-                content = message.content,
-                colors = markdownColor(),
-                typography = markdownTypography(
-                    h1 = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    ),
-                    h2 = MaterialTheme.typography.titleSmall.copy(
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    ),
-                    h3 = MaterialTheme.typography.bodyLarge.copy(
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    ),
-                    h4 = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    ),
-                    h5 = MaterialTheme.typography.bodySmall.copy(
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    ),
-                    h6 = MaterialTheme.typography.bodySmall.copy(
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    ),
-                    text = MaterialTheme.typography.bodyMedium,
-                    paragraph = MaterialTheme.typography.bodyMedium,
-                    bullet = MaterialTheme.typography.bodyMedium,
-                    ordered = MaterialTheme.typography.bodyMedium,
-                    list = MaterialTheme.typography.bodyMedium,
-                    table = MaterialTheme.typography.bodySmall,
-                    code = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                    ),
-                    inlineCode = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                    ),
-                ),
+        Box {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = { actionsOpen = true },
+                    )
+                    .semantics {
+                        customActions = actions.map { action ->
+                            CustomAccessibilityAction("${action.label} message") {
+                                action.onClick()
+                                true
+                            }
+                        }
+                    },
+            ) {
+                Markdown(
+                    content = message.content,
+                    colors = markdownColor(),
+                    typography = markdownTypography(
+                        h1 = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        ),
+                        h2 = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        ),
+                        h3 = MaterialTheme.typography.bodyLarge.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        ),
+                        h4 = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        ),
+                        h5 = MaterialTheme.typography.bodySmall.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        ),
+                        h6 = MaterialTheme.typography.bodySmall.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        ),
+                        text = MaterialTheme.typography.bodyMedium,
+                        paragraph = MaterialTheme.typography.bodyMedium,
+                        bullet = MaterialTheme.typography.bodyMedium,
+                        ordered = MaterialTheme.typography.bodyMedium,
+                        list = MaterialTheme.typography.bodyMedium,
+                        table = MaterialTheme.typography.bodySmall,
+                        code = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        ),
+                        inlineCode = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        ),
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+            MessageActionsMenu(
+                expanded = actionsOpen,
+                onDismiss = { actionsOpen = false },
+                actions = actions,
             )
         }
-        // RAG context indicator (D-07): shown when documents contributed context
+        // Document context indicator (D-07): shown when documents contributed context
         val ragCount = message.ragContextCount
         if (ragCount != null && ragCount > 0u) {
             Text(
@@ -252,27 +300,94 @@ private fun AssistantBubble(
                 modifier = Modifier.padding(start = 4.dp, top = 2.dp),
             )
         }
-        // Action row
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = onCopy) {
-                Text(
-                    "Copy",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (isLastAssistant) {
-                TextButton(onClick = onRetry) {
-                    Text(
-                        "Retry",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+        routeMetadataLabel(
+            providerName = message.routeProviderName,
+            modelId = message.routeModelId,
+            decision = message.routeDecision,
+            teeLabel = message.routeTeeLabel,
+            teeVerified = message.routeTeeVerified,
+        )?.let { metadata ->
+            Text(
+                text = metadata,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+            )
+        }
+        MessageTimestamp(message.createdAt)
+    }
+}
+
+@Composable
+private fun MessageTimestamp(createdAt: Long) {
+    Text(
+        text = formatMessageTimestamp(createdAt),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+    )
+}
+
+private data class MessageAction(
+    val label: String,
+    val onClick: () -> Unit,
+)
+
+@Composable
+private fun MessageActionsMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    actions: List<MessageAction>,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        actions.forEach { action ->
+            DropdownMenuItem(
+                text = { Text(action.label) },
+                onClick = {
+                    onDismiss()
+                    action.onClick()
+                },
+            )
         }
     }
 }
+
+internal fun formatMessageTimestamp(epochMillis: Long): String {
+    return SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(epochMillis))
+}
+
+internal fun routeMetadataLabel(
+    providerName: String?,
+    modelId: String?,
+    decision: String?,
+    teeLabel: String?,
+    teeVerified: Boolean?,
+): String? {
+    val route = decision.cleanRouteSegment()?.replaceFirstChar { char ->
+        if (char.isLowerCase()) char.titlecase(Locale.getDefault()) else char.toString()
+    }
+    val providerModel = listOfNotNull(
+        providerName.cleanRouteSegment(),
+        modelId.cleanRouteSegment(),
+    ).joinToString(" / ").ifBlank { null }
+    val tee = when {
+        teeLabel.cleanRouteSegment() != null && teeVerified == true -> "${teeLabel.cleanRouteSegment()} verified"
+        teeLabel.cleanRouteSegment() != null && teeVerified == false -> "${teeLabel.cleanRouteSegment()} unverified"
+        teeLabel.cleanRouteSegment() != null -> teeLabel.cleanRouteSegment()
+        teeVerified == true -> "TEE verified"
+        teeVerified == false -> "TEE unverified"
+        else -> null
+    }
+
+    return listOfNotNull(route, providerModel, tee)
+        .distinct()
+        .joinToString(" · ")
+        .ifBlank { null }
+}
+
+private fun String?.cleanRouteSegment(): String? = this?.trim()?.takeIf { it.isNotEmpty() }
 
 // MARK: - System Bubble
 

@@ -19,7 +19,7 @@ struct SettingsToolsView: View {
 
                         statusRow
 
-                        Text("Required for agent web search. Keys stay on-device until used for Brave requests.")
+                        Text("Required for web search. Keys stay on-device until used for Brave requests.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 

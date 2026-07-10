@@ -431,6 +431,20 @@ SET model_list = '[\"qwen3-vl-30b\",\"gemma4-31b\",\"kimi-k2-6\",\"llama3-3-70b\
 WHERE id = 'tinfoil';
 ";
 
+/// Migration v24: persist per-assistant-message route attribution for Android
+/// and other clients that need historical model/provider provenance.
+///
+/// Columns are nullable so existing messages degrade to timestamp-only metadata.
+pub const MIGRATION_V24: &str = "
+ALTER TABLE messages ADD COLUMN route_backend_id TEXT;
+ALTER TABLE messages ADD COLUMN route_model_id TEXT;
+ALTER TABLE messages ADD COLUMN route_decision TEXT;
+ALTER TABLE messages ADD COLUMN route_reason TEXT;
+ALTER TABLE messages ADD COLUMN route_provider_name TEXT;
+ALTER TABLE messages ADD COLUMN route_tee_label TEXT;
+ALTER TABLE messages ADD COLUMN route_tee_verified INTEGER;
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -456,6 +470,7 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V21,
     MIGRATION_V22,
     MIGRATION_V23,
+    MIGRATION_V24,
 ];
 
 #[cfg(test)]

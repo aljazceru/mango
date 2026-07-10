@@ -23,12 +23,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -47,17 +45,6 @@ fun SettingsToolsScreen(
     onBack: () -> Unit = { onDispatch(AppAction.PopScreen) },
 ) {
     var braveApiKeyInput by remember { mutableStateOf("") }
-    var braveApiKeyMessage by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(Unit) {
-        snapshotFlow { appState.toast }
-            .collect { toast ->
-                if (toast != null) {
-                    braveApiKeyMessage = toast
-                    onDispatch(AppAction.ClearToast)
-                }
-            }
-    }
 
     Scaffold(
         topBar = {
@@ -85,7 +72,7 @@ fun SettingsToolsScreen(
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Web search", fontWeight = FontWeight.Medium)
                         Text(
-                            "Required for agent web search. Keys stay on-device until used for Brave requests.",
+                            "Required for web search. Keys stay on-device until used for Brave requests.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -107,19 +94,10 @@ fun SettingsToolsScreen(
                             enabled = !appState.braveApiKeyValidating,
                             visualTransformation = PasswordVisualTransformation(),
                         )
-                        braveApiKeyMessage?.let { msg ->
-                            Text(
-                                msg,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (msg.contains("saved", ignoreCase = true)) Color(0xFF2E7D32)
-                                else MaterialTheme.colorScheme.error,
-                            )
-                        }
                         Button(
                             onClick = {
                                 val trimmed = braveApiKeyInput.trim()
                                 if (trimmed.isNotEmpty()) {
-                                    braveApiKeyMessage = null
                                     onDispatch(AppAction.ValidateBraveApiKey(apiKey = trimmed))
                                     braveApiKeyInput = ""
                                 }

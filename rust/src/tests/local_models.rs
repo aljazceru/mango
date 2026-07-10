@@ -134,7 +134,10 @@ impl LocalLlmProvider for FakeLocalProvider {
             total_ram_bytes: 8 * 1024 * 1024 * 1024,
             max_model_bytes: 2 * 1024 * 1024 * 1024,
             supports_mmap: true,
+            status: crate::llm::local::LocalLlmCapabilityStatus::Supported,
+            reason_code: "supported".to_string(),
             reason: None,
+            available_storage_bytes: 20 * 1024 * 1024 * 1024,
         }
     }
 }

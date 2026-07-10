@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -24,19 +25,22 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AttachmentInfo
 
 /// Compose bar pinned to the bottom of the chat screen.
 /// Includes attachment indicator, text input, attach button, send/stop.
-/// Uses imePadding on the parent Scaffold to lift above keyboard.
+/// Handles IME padding locally so the chat header and message list do not shift under the status bar.
 @Composable
 fun ComposeBar(
     pendingAttachment: AttachmentInfo?,
@@ -50,13 +54,26 @@ fun ComposeBar(
     modifier: Modifier = Modifier,
     routingLabel: String? = null,
     routingDetail: String? = null,
+    prefillText: String? = null,
+    onPrefillConsumed: () -> Unit = {},
 ) {
     var inputText by remember { mutableStateOf("") }
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+    val isResponseActive = isInputBlocked
+
+    LaunchedEffect(prefillText) {
+        val prompt = prefillText
+        if (!prompt.isNullOrBlank()) {
+            inputText = prompt
+            onPrefillConsumed()
+        }
+    }
 
     Surface(
         modifier = modifier
             .fillMaxWidth()
+            .imePadding()
             .navigationBarsPadding(),
         tonalElevation = 2.dp,
     ) {
@@ -110,7 +127,7 @@ fun ComposeBar(
                     )
                     IconButton(
                         onClick = onClearAttachment,
-                        enabled = !isInputBlocked,
+                        enabled = canMutateComposerAttachment(isResponseActive),
                         modifier = Modifier.size(24.dp),
                     ) {
                         Icon(
@@ -131,7 +148,7 @@ fun ComposeBar(
                 // Attach button
                 IconButton(
                     onClick = onAttach,
-                    enabled = !isInputBlocked,
+                    enabled = canMutateComposerAttachment(isResponseActive),
                     modifier = Modifier.size(44.dp),
                 ) {
                     Icon(
@@ -149,13 +166,16 @@ fun ComposeBar(
                     modifier = Modifier.weight(1f),
                     minLines = 1,
                     maxLines = 6,
-                    enabled = !isInputBlocked,
+                    enabled = canEditComposerText(),
                 )
 
                 // Send / Stop button
                 if (showStopButton) {
                     IconButton(
-                        onClick = onStop,
+                        onClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onStop()
+                        },
                         modifier = Modifier.size(44.dp),
                     ) {
                         Icon(
@@ -165,13 +185,14 @@ fun ComposeBar(
                         )
                     }
                 } else {
-                    val canSend = !isInputBlocked && inputText.isNotBlank()
+                    val canSend = canSendComposerText(inputText, isResponseActive)
                     Surface(
                         modifier = Modifier
                             .size(44.dp)
                             .clickable(enabled = canSend) {
                                 val trimmed = inputText.trim()
                                 if (trimmed.isNotEmpty()) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                     onSend(trimmed)
                                     inputText = ""
                                 }

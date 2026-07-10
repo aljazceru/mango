@@ -43,6 +43,7 @@ import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.DiscoverableTool
 import dev.disobey.mango.rust.HealthStatus
+import dev.disobey.mango.rust.LocalLlmCapabilityStatus
 import dev.disobey.mango.rust.LocalModelSummary
 import dev.disobey.mango.rust.Screen
 import dev.disobey.mango.rust.TeeType
@@ -216,7 +217,7 @@ private fun LocalInferenceToggleRow(
     onDispatch: (AppAction) -> Unit,
 ) {
     val capability = appState.localDeviceCapability
-    val localRuntimeAvailable = capability.maxModelBytes > 0UL
+    val localRuntimeAvailable = capability.status == LocalLlmCapabilityStatus.SUPPORTED
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -263,12 +264,16 @@ internal fun LocalModelRow(
     model: LocalModelSummary,
     capabilityMaxBytes: ULong,
     capabilityTotalBytes: ULong,
+    capabilitySupported: Boolean,
+    capabilityReason: String?,
+    capabilityReasonCode: String,
     activeProgressModelId: String?,
     onDispatch: (AppAction) -> Unit,
 ) {
     val busy = activeProgressModelId == model.id
     val anyDownloadActive = activeProgressModelId != null
     val supported = capabilityMaxBytes >= model.sizeBytes &&
+        capabilitySupported &&
         capabilityMaxBytes > 0UL &&
         capabilityTotalBytes >= model.minRamBytes
     val installed = model.downloaded && model.verified
@@ -280,8 +285,13 @@ internal fun LocalModelRow(
         else -> "Available"
     }
     val supportDetail = when {
+        !capabilitySupported ->
+            unsupportedLocalLlmReason(
+                capabilityReason = capabilityReason,
+                reasonCode = capabilityReasonCode,
+                fallback = "This device cannot run packaged local models",
+            )
         supported -> "Requires ${formatLocalBytes(model.minRamBytes)} RAM"
-        capabilityMaxBytes == 0UL -> "This device cannot run packaged local models"
         capabilityTotalBytes < model.minRamBytes -> "Requires ${formatLocalBytes(model.minRamBytes)} RAM"
         else -> "Too large for this device"
     }
@@ -378,9 +388,42 @@ private fun providerEnabledCount(appState: AppState): Int {
 private fun localModelsSubtitle(appState: AppState): String {
     val installed = appState.localModels.count { it.downloaded && it.verified }
     val total = appState.localModels.size
-    val runtime = appState.localDeviceCapability.reason
-        ?: "Up to ${formatLocalBytes(appState.localDeviceCapability.maxModelBytes)} per model"
+    val runtime = appStateLocalLlmReason(
+        appState = appState,
+        fallback = "Up to ${formatLocalBytes(appState.localDeviceCapability.maxModelBytes)} per model",
+    )
     return "$total available • $installed installed • $runtime"
+}
+
+private fun appStateLocalLlmReason(
+    appState: AppState,
+    fallback: String,
+): String {
+    val capability = appState.localDeviceCapability
+    if (capability.status == LocalLlmCapabilityStatus.SUPPORTED) {
+        return fallback
+    }
+    return capability.reason?.takeIf { it.isNotBlank() } ?: fallbackByReasonCode(capability.reasonCode)
+}
+
+private fun unsupportedLocalLlmReason(
+    capabilityReason: String?,
+    reasonCode: String,
+    fallback: String,
+): String = capabilityReason?.takeIf { it.isNotBlank() } ?: fallbackByReasonCode(reasonCode)
+
+private fun fallbackByReasonCode(reasonCode: String): String = when (reasonCode) {
+    "disabled_by_feature_flag" -> "Local LLM is disabled by feature flag"
+    "unsupported_api_level" -> "Device API level is not supported"
+    "unsupported_architecture" -> "Device architecture is not supported"
+    "unsupported_process_bitness" -> "Device process is not 64-bit"
+    "unsupported_cpu_features" -> "Device CPU features are not supported"
+    "insufficient_memory" -> "Not enough memory for Local LLM"
+    "insufficient_storage" -> "Not enough storage for Local LLM"
+    "probe_unavailable" -> "Device capability probe unavailable"
+    "runtime_not_packaged" -> "Local LLM runtime is not packaged"
+    "runtime_load_failed" -> "Local LLM runtime failed to load"
+    else -> "This device cannot run packaged local models"
 }
 
 internal fun compactModelName(modelId: String): String {

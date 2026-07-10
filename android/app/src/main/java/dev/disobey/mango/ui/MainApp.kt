@@ -3,19 +3,28 @@ package dev.disobey.mango.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import dev.disobey.mango.AppManager
+import dev.disobey.mango.FeatureFlags
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.Screen
+import kotlinx.coroutines.channels.Channel
 
 /// Root composable: routes to Settings, Chat, or Home based on router state.
 @Composable
@@ -37,6 +46,22 @@ fun MainApp(
 
     val state by manager.stateFlow.collectAsState(initial = manager.state)
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarQueue = remember { Channel<String>(Channel.UNLIMITED) }
+
+    LaunchedEffect(state.toast) {
+        val toast = state.toast
+        if (toast != null && state.router.currentScreen !is Screen.Locked) {
+            snackbarQueue.trySend(toast)
+            manager.dispatch(AppAction.ClearToast)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        for (message in snackbarQueue) {
+            snackbarHostState.showSnackbar(message)
+        }
+    }
 
     // Intercept the Android system back gesture / button at the Compose root so it
     // dispatches PopScreen to the Rust router instead of falling through to the
@@ -53,13 +78,14 @@ fun MainApp(
         manager.dispatch(AppAction.PopScreen)
     }
 
-    when (val screen = state.router.currentScreen) {
-        is Screen.Onboarding -> {
-            OnboardingScreen(
-                state = state,
-                onDispatch = { action -> manager.dispatch(action) }
-            )
-        }
+    Box(modifier = Modifier.fillMaxSize()) {
+        when (val screen = state.router.currentScreen) {
+            is Screen.Onboarding -> {
+                OnboardingScreen(
+                    state = state,
+                    onDispatch = { action -> manager.dispatch(action) }
+                )
+            }
         is Screen.Settings -> {
             SettingsScreen(
                 appState = state,
@@ -101,6 +127,26 @@ fun MainApp(
                 onBack = { manager.dispatch(AppAction.PopScreen) },
                 onAttachDocument = { docId -> manager.dispatch(AppAction.AttachDocumentToConversation(documentId = docId)) },
                 onDetachDocument = { docId -> manager.dispatch(AppAction.DetachDocumentFromConversation(documentId = docId)) },
+                onShareConversation = { conversationId ->
+                    try {
+                        val markdown = manager.exportConversationMarkdown(conversationId)
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "Mango conversation")
+                            putExtra(Intent.EXTRA_TEXT, markdown)
+                        }
+                        context.startActivity(
+                            Intent.createChooser(shareIntent, "Share conversation")
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    } catch (e: Exception) {
+                        manager.dispatch(
+                            AppAction.ShowToast(
+                                message = e.message ?: "Could not export conversation",
+                            )
+                        )
+                    }
+                },
                 onDispatchAction = { action -> manager.dispatch(action) },
                 onReadEncryptedImage = { messageId -> manager.readEncryptedImage(messageId) },
                 fontScale = fontSizeToScale(fontSize),
@@ -115,8 +161,13 @@ fun MainApp(
                 onRename = { id, title -> manager.dispatch(AppAction.RenameConversation(id = id, title = title)) },
                 onFork = { id -> manager.dispatch(AppAction.ForkConversation(id = id)) },
                 topBarActions = {
+                    if (FeatureFlags.AGENTS_ENABLED) {
+                        TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Agents)) }) {
+                            Text("Agents")
+                        }
+                    }
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Documents)) }) {
-                        Text("RAG")
+                        Text("Library")
                     }
                     TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Settings)) }) {
                         Text("Settings")
@@ -146,11 +197,18 @@ fun MainApp(
             )
         }
         is Screen.Agents -> {
-            AgentScreen(
-                appState = state,
-                onDispatch = { action -> manager.dispatch(action) },
-                onBack = { manager.dispatch(AppAction.PopScreen) }
-            )
+            if (FeatureFlags.AGENTS_ENABLED) {
+                AgentScreen(
+                    appState = state,
+                    onDispatch = { action -> manager.dispatch(action) },
+                    onBack = { manager.dispatch(AppAction.PopScreen) }
+                )
+            } else {
+                LaunchedEffect(Unit) {
+                    manager.dispatch(AppAction.PopScreen)
+                }
+                Box(modifier = Modifier.fillMaxSize())
+            }
         }
         is Screen.SettingsProviders -> {
             SettingsProvidersScreen(
@@ -241,12 +299,19 @@ fun MainApp(
                 onDispatchAction = { action -> manager.dispatch(action) }
             )
         }
-        is Screen.PinSetup -> {
-            PinSetupScreen(
-                appState = state,
-                onDispatchAction = { action -> manager.dispatch(action) }
-            )
+            is Screen.PinSetup -> {
+                PinSetupScreen(
+                    appState = state,
+                    onDispatchAction = { action -> manager.dispatch(action) }
+                )
+            }
         }
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 24.dp),
+        )
     }
 }
 

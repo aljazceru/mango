@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,8 +45,16 @@ fun SettingsDefaultsScreen(
 ) {
     val isDark = isSystemInDarkTheme()
     var defaultModelExp by remember { mutableStateOf(false) }
-    var defaultModel by remember { mutableStateOf("") }
+    var defaultModel by remember { mutableStateOf(appState.defaultModelId ?: "") }
     var defaultInstructions by remember { mutableStateOf(appState.globalSystemPrompt ?: "") }
+
+    LaunchedEffect(appState.defaultModelId) {
+        defaultModel = appState.defaultModelId ?: ""
+    }
+
+    LaunchedEffect(appState.globalSystemPrompt) {
+        defaultInstructions = appState.globalSystemPrompt ?: ""
+    }
 
     // Aggregate (modelId, backendName) pairs from all non-failed backends
     val allModelEntries: List<Pair<String, String>> = appState.backends

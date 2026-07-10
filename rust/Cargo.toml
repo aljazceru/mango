@@ -9,6 +9,12 @@ repository.workspace = true
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[features]
+default = []
+# Product gate for autonomous agent UI/session orchestration. Keep disabled for
+# releases until agents are ready to ship.
+agents = []
+
 [dependencies]
 flume = "0.11"
 uniffi = "0.29"
