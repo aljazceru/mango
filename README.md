@@ -24,6 +24,7 @@ It also integrates:
 
 ## Design Plans
 - [Inference routing improvement plan](INFERENCE_ROUTING_PLAN.md)
+- [Android remediation implementation plan](ANDROID_REMEDIATION_IMPLEMENTATION_PLAN.md)
 
 ## Security & Privacy
 - App lock with PIN and biometric unlock

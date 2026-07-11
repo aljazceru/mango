@@ -466,6 +466,13 @@ class Runner:
                 raise SmokeError("assert_text requires current UI state")
             self.assert_ui(current, text=self.resolve_value(step["assert_text"]))
             return current
+        if "assert_no_text" in step:
+            if current is None:
+                raise SmokeError("assert_no_text requires current UI state")
+            text = self.resolve_value(step["assert_no_text"])
+            if current.has_text(text):
+                raise SmokeError(f"unexpected text '{text}'")
+            return current
         if "assert_desc" in step:
             if current is None:
                 raise SmokeError("assert_desc requires current UI state")
@@ -474,10 +481,11 @@ class Runner:
         if "assert_any_text" in step:
             if current is None:
                 raise SmokeError("assert_any_text requires current UI state")
-            for text in step["assert_any_text"]:
+            expected = [self.resolve_value(text) for text in step["assert_any_text"]]
+            for text in expected:
                 if current.has_text(text):
                     return current
-            raise SmokeError(f"expected one of texts {step['assert_any_text']}")
+            raise SmokeError(f"expected one of texts {expected}")
         if "assert_package_any" in step:
             if current is None:
                 raise SmokeError("assert_package_any requires current UI state")

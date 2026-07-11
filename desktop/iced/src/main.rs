@@ -1534,15 +1534,17 @@ impl App {
                     }
 
                     Message::OpenAgents => {
-                        manager.dispatch(AppAction::PushScreen {
-                            screen: Screen::Agents,
-                        });
+                        if mango_core::features::AGENTS_ENABLED {
+                            manager.dispatch(AppAction::PushScreen {
+                                screen: Screen::Agents,
+                            });
+                        }
                     }
                     Message::AgentTaskInputChanged(text) => {
                         *agent_task_input = text;
                     }
                     Message::LaunchAgent => {
-                        if !agent_task_input.is_empty() {
+                        if mango_core::features::AGENTS_ENABLED && !agent_task_input.is_empty() {
                             manager.dispatch(AppAction::LaunchAgentSession {
                                 task_description: agent_task_input.clone(),
                             });
@@ -1903,11 +1905,13 @@ impl App {
 
                     // D-12: On window close, checkpoint all running agent sessions to SQLite
                     Message::WindowCloseRequested => {
-                        for session in &state.agent_sessions {
-                            if session.status == "running" {
-                                manager.dispatch(AppAction::PauseAgentSession {
-                                    session_id: session.id.clone(),
-                                });
+                        if mango_core::features::AGENTS_ENABLED {
+                            for session in &state.agent_sessions {
+                                if session.status == "running" {
+                                    manager.dispatch(AppAction::PauseAgentSession {
+                                        session_id: session.id.clone(),
+                                    });
+                                }
                             }
                         }
                         return iced::exit();
@@ -2084,7 +2088,9 @@ impl App {
                 }
 
                 // Agents screen: full-screen overlay (no sidebar)
-                if matches!(&state.router.current_screen, Screen::Agents) {
+                if mango_core::features::AGENTS_ENABLED
+                    && matches!(&state.router.current_screen, Screen::Agents)
+                {
                     return views::agents::agent_list_view(state, agent_task_input, *is_dark);
                 }
 
