@@ -1007,9 +1007,11 @@ pub fn view<'a>(
             ]
             .align_y(Alignment::Center)
             .spacing(8),
-            text("Required for agent web search. Keys are stored locally and never sent to third parties.")
-                .size(11)
-                .color(vc.muted),
+            text(
+                "Required for web search. Keys are stored locally and never sent to third parties."
+            )
+            .size(11)
+            .color(vc.muted),
             brave_key_field,
             feedback_el,
             brave_save_btn,

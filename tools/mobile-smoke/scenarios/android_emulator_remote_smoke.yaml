@@ -36,7 +36,8 @@ steps:
       text: Conversations
       tries: 45
       label: home
-  - assert_text: RAG
+  - assert_text: Agents
+  - assert_text: Library
   - assert_text: Settings
   - assert_desc: New Conversation
 

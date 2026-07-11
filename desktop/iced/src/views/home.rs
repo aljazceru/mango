@@ -116,16 +116,6 @@ pub fn sidebar_view<'a>(
         .padding(Padding::from([4u16, 8]));
     let list_scroll = scrollable(conv_list).height(Length::Fill);
 
-    let agents_btn = button(container(text("Agents").size(13)).padding(Padding::from([4u16, 12])))
-        .on_press(Message::OpenAgents)
-        .padding(0)
-        .width(Length::Fill)
-        .style(move |_theme, _status| button::Style {
-            background: None,
-            text_color: vc.text_dim,
-            ..Default::default()
-        });
-
     let docs_btn = button(container(text("RAG").size(13)).padding(Padding::from([4u16, 12])))
         .on_press(Message::OpenDocuments)
         .padding(0)
@@ -149,33 +139,53 @@ pub fn sidebar_view<'a>(
                 ..Default::default()
             });
 
-    let bottom_nav = column![
-        container(agents_btn)
-            .padding(Padding {
-                top: 0.0,
-                right: 8.0,
-                bottom: 4.0,
-                left: 8.0
-            })
-            .width(Length::Fill),
+    let mut bottom_items: Vec<Element<'_, Message>> = Vec::new();
+    if mango_core::features::AGENTS_ENABLED {
+        let agents_btn =
+            button(container(text("Agents").size(13)).padding(Padding::from([4u16, 12])))
+                .on_press(Message::OpenAgents)
+                .padding(0)
+                .width(Length::Fill)
+                .style(move |_theme, _status| button::Style {
+                    background: None,
+                    text_color: vc.text_dim,
+                    ..Default::default()
+                });
+        bottom_items.push(
+            container(agents_btn)
+                .padding(Padding {
+                    top: 0.0,
+                    right: 8.0,
+                    bottom: 4.0,
+                    left: 8.0,
+                })
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+    bottom_items.push(
         container(docs_btn)
             .padding(Padding {
                 top: 0.0,
                 right: 8.0,
                 bottom: 4.0,
-                left: 8.0
+                left: 8.0,
             })
-            .width(Length::Fill),
+            .width(Length::Fill)
+            .into(),
+    );
+    bottom_items.push(
         container(settings_btn)
             .padding(Padding {
                 top: 0.0,
                 right: 8.0,
                 bottom: 8.0,
-                left: 8.0
+                left: 8.0,
             })
-            .width(Length::Fill),
-    ]
-    .spacing(0);
+            .width(Length::Fill)
+            .into(),
+    );
+    let bottom_nav = column(bottom_items).spacing(0);
 
     let sidebar_content = column![
         container(new_conv_btn)

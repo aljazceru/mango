@@ -60,6 +60,7 @@ Supported step types:
 - `wait_for_desc`
 - `wait_for_any_package`
 - `assert_text`
+- `assert_no_text`
 - `assert_desc`
 - `assert_any_text`
 - `assert_package_any`

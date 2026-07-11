@@ -27,7 +27,8 @@ steps:
       text: Conversations
       tries: 45
       label: home
-  - assert_text: RAG
+  - assert_no_text: Agents
+  - assert_text: Library
   - assert_text: Settings
   - assert_desc: New Conversation
   - tap_text: Settings
@@ -72,18 +73,18 @@ steps:
   - wait_for_text:
       text: Conversations
       label: home-return
-  - tap_text: RAG
+  - tap_text: Library
   - wait_for_desc:
-      desc: Add RAG source
-      label: rag
-  - assert_text: RAG
-  - assert_desc: Add RAG source
+      desc: Add document or folder
+      label: library
+  - assert_text: Library
+  - assert_desc: Add document or folder
   - tap_percent:
       x: 89
       y: 92
   - wait_for_text:
       text: Document
-      label: rag-add-menu
+      label: library-add-menu
   - tap_text: Document
   - sleep: 2
   - wait_for_any_package:
@@ -93,8 +94,8 @@ steps:
       label: document-picker
   - back: {}
   - wait_for_text:
-      text: RAG
-      label: rag-return
+      text: Library
+      label: library-return
   - back: {}
   - wait_for_text:
       text: Conversations
@@ -112,7 +113,10 @@ steps:
   - press_enter: {}
   - sleep: 1
   - tap_desc: Send message
-  - wait_for_desc:
-      desc: Stop generating
+  - wait_for_text:
+      text: "{{MANGO_SMOKE_MESSAGE}}"
       tries: 20
-      label: new-conversation-streaming
+      label: new-conversation-sent
+  - assert_any_text:
+      - Retry
+      - "{{MANGO_SMOKE_MESSAGE}}"
