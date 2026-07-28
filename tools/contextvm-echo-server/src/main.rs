@@ -117,23 +117,19 @@ impl EchoServer {
 #[tool_handler]
 impl ServerHandler for EchoServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
-        rmcp::model::ServerInfo {
-            protocol_version: rmcp::model::ProtocolVersion::LATEST,
-            capabilities: rmcp::model::ServerCapabilities::builder()
+        let server_info = rmcp::model::Implementation::new(
+            "mango-echo-server",
+            env!("CARGO_PKG_VERSION"),
+        )
+        .with_title("Mango Local Echo Server")
+        .with_description("Local test echo server for mango_core integration tests");
+        rmcp::model::ServerInfo::new(
+            rmcp::model::ServerCapabilities::builder()
                 .enable_tools()
                 .build(),
-            server_info: rmcp::model::Implementation {
-                name: "mango-echo-server".to_string(),
-                title: Some("Mango Local Echo Server".to_string()),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                description: Some(
-                    "Local test echo server for mango_core integration tests".to_string(),
-                ),
-                icons: None,
-                website_url: None,
-            },
-            instructions: Some("Call echo with {\"message\": \"...\"}".to_string()),
-        }
+        )
+        .with_server_info(server_info)
+        .with_instructions("Call echo with {\"message\": \"...\"}")
     }
 }
 
