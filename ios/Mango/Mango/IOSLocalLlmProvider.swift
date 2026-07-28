@@ -5,8 +5,6 @@ import os
 private let localLlmLogger = Logger(subsystem: "dev.disobey.mango", category: "IOSLocalLlm")
 private let iosLocalMaxTokens: Int32 = 192
 private let iosLocalContextTokens: Int32 = 2048
-private let MIN_RAM_BYTES_FOR_LOCAL_LLM: UInt64 = 8 * 1024 * 1024 * 1024
-private let MAX_RAM_BYTES_FOR_LOCAL_CAP: UInt64 = 4_000_000_000
 private let LOCAL_STORAGE_RESERVE_BYTES: UInt64 = 512 * 1024 * 1024
 private let LOCAL_STORAGE_MARGIN_PERCENT: UInt64 = 25
 
@@ -85,6 +83,7 @@ private final class IOSLlamaSession {
     private let context: OpaquePointer
     private let vocab: OpaquePointer
     private let sampler: UnsafeMutablePointer<llama_sampler>
+    private let chatTemplate: String
     private var batch: llama_batch
     private var pendingUtf8: [CChar] = []
 
@@ -99,6 +98,19 @@ private final class IOSLlamaSession {
         guard let loadedModel = llama_model_load_from_file(modelPath, modelParams) else {
             llama_backend_free()
             throw LocalLlmError.LoadFailed(reason: "llama.cpp could not load \(modelPath)")
+        }
+        guard let embeddedTemplate = llama_model_chat_template(loadedModel, nil) else {
+            llama_model_free(loadedModel)
+            llama_backend_free()
+            throw LocalLlmError.LoadFailed(
+                reason: "GGUF does not contain tokenizer.chat_template metadata"
+            )
+        }
+        let loadedChatTemplate = String(cString: embeddedTemplate)
+        guard !loadedChatTemplate.isEmpty else {
+            llama_model_free(loadedModel)
+            llama_backend_free()
+            throw LocalLlmError.LoadFailed(reason: "GGUF contains an empty chat template")
         }
 
         var contextParams = llama_context_default_params()
@@ -129,9 +141,10 @@ private final class IOSLlamaSession {
         self.context = loadedContext
         self.vocab = llama_model_get_vocab(loadedModel)
         self.sampler = samplerChain
+        self.chatTemplate = loadedChatTemplate
         self.batch = llama_batch_init(iosLocalContextTokens, 0, 1)
 
-        localLlmLogger.info("Loaded llama.cpp model \(URL(fileURLWithPath: modelPath).lastPathComponent, privacy: .public) threads=\(threadCount, privacy: .public)")
+        localLlmLogger.info("Loaded llama.cpp model \(URL(fileURLWithPath: modelPath).lastPathComponent, privacy: .public) threads=\(threadCount, privacy: .public) embeddedTemplate=true")
     }
 
     deinit {
@@ -142,10 +155,14 @@ private final class IOSLlamaSession {
         llama_backend_free()
     }
 
-    func generate(prompt: String, context generationContext: LocalGenerationContext) throws {
+    func generate(
+        messages: [IOSLocalPromptRequest.Message],
+        context generationContext: LocalGenerationContext
+    ) throws {
         pendingUtf8.removeAll()
         llama_memory_clear(llama_get_memory(context), true)
 
+        let prompt = try formatPrompt(messages)
         var promptTokens = tokenize(prompt, addBos: true)
         let maxPromptTokens = max(1, Int(iosLocalContextTokens - iosLocalMaxTokens))
         if promptTokens.count > maxPromptTokens {
@@ -194,6 +211,85 @@ private final class IOSLlamaSession {
         }
 
         emitPendingUtf8(to: generationContext)
+    }
+
+    private func formatPrompt(_ messages: [IOSLocalPromptRequest.Message]) throws -> String {
+        var normalized: [(role: String, content: String)] = []
+        for message in messages {
+            let role: String
+            switch message.role.lowercased() {
+            case "system":
+                role = "system"
+            case "assistant":
+                role = "assistant"
+            default:
+                role = "user"
+            }
+
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !content.isEmpty {
+                normalized.append((role: role, content: content))
+            }
+        }
+        if normalized.isEmpty {
+            normalized.append((role: "user", content: "Reply to the user."))
+        }
+
+        // NSString owns stable, null-terminated UTF-8 storage for the duration of
+        // llama_chat_apply_template. The template itself comes from this GGUF, so
+        // Gemma/Phi/Llama/Qwen receive their own control tokens automatically.
+        let roleStorage = normalized.map { $0.role as NSString }
+        let contentStorage = normalized.map { $0.content as NSString }
+        let chat = normalized.indices.map { index in
+            llama_chat_message(
+                role: roleStorage[index].utf8String,
+                content: contentStorage[index].utf8String
+            )
+        }
+
+        return try chatTemplate.withCString { template in
+            let requiredLength = chat.withUnsafeBufferPointer { chatBuffer in
+                llama_chat_apply_template(
+                    template,
+                    chatBuffer.baseAddress,
+                    chatBuffer.count,
+                    true,
+                    nil,
+                    0
+                )
+            }
+            guard requiredLength >= 0 else {
+                throw LocalLlmError.GenerationFailed(
+                    reason: "this GGUF's embedded chat template is not supported by the iOS llama.cpp runtime"
+                )
+            }
+            guard requiredLength < Int32.max else {
+                throw LocalLlmError.GenerationFailed(reason: "formatted local prompt is too large")
+            }
+
+            var buffer = [CChar](repeating: 0, count: Int(requiredLength) + 1)
+            let written = chat.withUnsafeBufferPointer { chatBuffer in
+                buffer.withUnsafeMutableBufferPointer { promptBuffer in
+                    llama_chat_apply_template(
+                        template,
+                        chatBuffer.baseAddress,
+                        chatBuffer.count,
+                        true,
+                        promptBuffer.baseAddress,
+                        Int32(promptBuffer.count)
+                    )
+                }
+            }
+            guard written >= 0, written <= requiredLength else {
+                throw LocalLlmError.GenerationFailed(reason: "failed to apply the GGUF chat template")
+            }
+
+            let utf8 = buffer.prefix(Int(written)).map { UInt8(bitPattern: $0) }
+            guard let prompt = String(bytes: utf8, encoding: .utf8) else {
+                throw LocalLlmError.GenerationFailed(reason: "GGUF chat template produced invalid UTF-8")
+            }
+            return prompt
+        }
     }
 
     private func tokenize(_ text: String, addBos: Bool) -> [llama_token] {
@@ -309,9 +405,6 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
         }
         guard capability.status == .supported else {
             throw LocalLlmError.Unsupported(reason: capability.reason ?? "local inference is unavailable")
-        }
-        if let size = fileSize(modelPath), UInt64(size) > capability.maxModelBytes {
-            throw LocalLlmError.Unsupported(reason: "Model is too large for this device: \(size) bytes")
         }
         if let storageBytes = Self.availableStorageBytes(),
             let fileSize = fileSize(modelPath) {
@@ -474,15 +567,16 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
             throw LocalLlmError.Cancelled
         }
 
-        let prompt: String
+        let request: IOSLocalPromptRequest
         do {
-            prompt = try Self.prompt(from: promptJson)
+            let data = Data(promptJson.utf8)
+            request = try JSONDecoder().decode(IOSLocalPromptRequest.self, from: data)
         } catch {
             throw LocalLlmError.GenerationFailed(reason: "invalid local prompt JSON: \(error.localizedDescription)")
         }
 
         do {
-            try session.generate(prompt: prompt, context: context)
+            try session.generate(messages: request.messages, context: context)
         } catch let error as LocalLlmError {
             throw error
         } catch {
@@ -510,35 +604,6 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
         session = nil
     }
 
-    private static func prompt(from promptJson: String) throws -> String {
-        let data = Data(promptJson.utf8)
-        let request = try JSONDecoder().decode(IOSLocalPromptRequest.self, from: data)
-        var prompt = ""
-        var includedMessage = false
-
-        for message in request.messages {
-            let role: String
-            switch message.role.lowercased() {
-            case "system":
-                role = "system"
-            case "assistant":
-                role = "assistant"
-            default:
-                role = "user"
-            }
-            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { continue }
-            prompt += "<|im_start|>\(role)\n\(content)<|im_end|>\n"
-            includedMessage = true
-        }
-
-        if !includedMessage {
-            prompt += "<|im_start|>user\nReply to the user.<|im_end|>\n"
-        }
-        prompt += "<|im_start|>assistant\n"
-        return prompt
-    }
-
     private static func probeCapability() -> DeviceCapability {
         let totalRam = ProcessInfo.processInfo.physicalMemory
         let abi = machineIdentifier()
@@ -547,7 +612,7 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
         return DeviceCapability(
             abi: abi,
             totalRamBytes: totalRam,
-            maxModelBytes: 0,
+            availableRamBytes: 0,
             supportsMmap: false,
             status: .unsupportedArchitecture,
             reasonCode: "unsupported_architecture",
@@ -556,15 +621,13 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
         )
 #else
         let supportedArchitecture = abi == "arm64" || abi == "arm64e"
-        let hasRam = totalRam >= MIN_RAM_BYTES_FOR_LOCAL_LLM
         let availableStorage = availableStorageBytes() ?? 0
         let hasStorage = availableStorage > LOCAL_STORAGE_RESERVE_BYTES
+        let availableRam = availableRamBytes()
         let status: LocalLlmCapabilityStatus = if !FeatureFlags.localLlmEnabled {
             .disabledByFeatureFlag
         } else if !supportedArchitecture {
             .unsupportedArchitecture
-        } else if !hasRam {
-            .insufficientMemory
         } else if !hasStorage {
             .insufficientStorage
         } else {
@@ -573,16 +636,11 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
         let reason = reasonForStatus(status, abi: abi, totalRam: totalRam)
         let reasonCode = reasonCode(for: status)
         let stableSupported = status == .supported && FeatureFlags.localLlmEnabled
-        let maxModelBytes = if stableSupported {
-            min(totalRam / 2, MAX_RAM_BYTES_FOR_LOCAL_CAP)
-        } else {
-            0
-        }
 
         return DeviceCapability(
             abi: abi,
             totalRamBytes: totalRam,
-            maxModelBytes: maxModelBytes,
+            availableRamBytes: stableSupported ? availableRam : 0,
             supportsMmap: stableSupported,
             status: stableSupported ? .supported : status,
             reasonCode: reasonCode,
@@ -669,5 +727,9 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
         }
         let attributes = try? FileManager.default.attributesOfFileSystem(forPath: supportDir.path)
         return (attributes?[.systemFreeSize] as? NSNumber)?.uint64Value
+    }
+
+    private static func availableRamBytes() -> UInt64 {
+        return UInt64(os_proc_available_memory())
     }
 }

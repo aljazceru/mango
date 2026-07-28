@@ -2616,16 +2616,10 @@ fn ensure_local_model_is_downloadable(
     preset: &llm::LocalModelPreset,
 ) -> Result<(), String> {
     ensure_local_device_capability_supported(capability)?;
-    if capability.max_model_bytes < preset.size_bytes {
-        return Err(format!(
-            "Model {} is too large for this device (max {} bytes).",
-            preset.id, capability.max_model_bytes
-        ));
-    }
     if capability.total_ram_bytes < preset.min_ram_bytes {
         return Err(format!(
-            "Model {} requires {} bytes of RAM.",
-            preset.id, preset.min_ram_bytes
+            "Model {} requires {} bytes of RAM, device has {}.",
+            preset.id, preset.min_ram_bytes, capability.total_ram_bytes
         ));
     }
     Ok(())
@@ -7737,10 +7731,9 @@ impl FfiApp {
                                 let cap = &actor_state.app_state.local_device_capability;
                                 if let Err(reason) = ensure_local_model_is_downloadable(cap, &preset) {
                                     log::warn!(
-                                        "[local-model] download rejected: capability max={} total_ram={} required_size={} required_ram={} reason={:?}",
-                                        cap.max_model_bytes,
+                                        "[local-model] download rejected: total_ram={} available_ram={} required_ram={} reason={:?}",
                                         cap.total_ram_bytes,
-                                        preset.size_bytes,
+                                        cap.available_ram_bytes,
                                         preset.min_ram_bytes,
                                         cap.reason
                                     );

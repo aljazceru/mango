@@ -46,6 +46,10 @@ pub struct LocalModelDownloadProgress {
 
 const LOCAL_MODEL_DIR: &str = "local-models";
 const VERIFIED_MARKER_SUFFIX: &str = ".verified.json";
+// Android reserves part of physically installed RAM before ActivityManager reports
+// totalMem. The tested 8 GB Pixel reports 7,678,017,536 bytes, so an 8,000,000,000
+// byte catalog gate incorrectly rejects models that fit and run successfully.
+const EIGHT_GB_CLASS_REPORTED_RAM_FLOOR: u64 = 7_000_000_000;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct VerifiedModelMarker {
@@ -70,9 +74,10 @@ struct ModelFileSignature {
 /// Sources: Hugging Face LFS metadata (X-Linked-ETag = content sha256,
 /// X-Linked-Size = byte length), verified 2026-06-26. Qwen presets verified
 /// 2026-06-23. Android uses the platform HTTPS stack for model downloads; the
-/// file is installed only after the pinned SHA-256 matches. Prompt formatting
-/// uses each model's embedded `tokenizer.chat_template` via libllama-common, so
-/// the `chat_template` field below is informational only (native ignores it).
+/// file is installed only after the pinned SHA-256 matches. Native inference
+/// reads each model's embedded `tokenizer.chat_template`; Android renders it
+/// with libllama-common and iOS uses llama.cpp's recognized template renderer.
+/// The `chat_template` field below is informational only.
 #[uniffi::export]
 pub fn local_model_catalog() -> Vec<LocalModelPreset> {
     vec![
@@ -122,7 +127,7 @@ pub fn local_model_catalog() -> Vec<LocalModelPreset> {
             sha256: "04a43a22e8d2003deda5acc262f68ec1005fa76c735a9962a8c77042a74a7d19".to_string(),
             size_bytes: 2_489_894_016,
             quantization: "Q4_K_M".to_string(),
-            min_ram_bytes: 8_000_000_000,
+            min_ram_bytes: EIGHT_GB_CLASS_REPORTED_RAM_FLOOR,
             chat_template: "gemma".to_string(),
         },
         LocalModelPreset {
@@ -134,7 +139,7 @@ pub fn local_model_catalog() -> Vec<LocalModelPreset> {
             sha256: "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5".to_string(),
             size_bytes: 2_393_232_672,
             quantization: "Q4_K_M".to_string(),
-            min_ram_bytes: 8_000_000_000,
+            min_ram_bytes: EIGHT_GB_CLASS_REPORTED_RAM_FLOOR,
             chat_template: "phi3".to_string(),
         },
     ]

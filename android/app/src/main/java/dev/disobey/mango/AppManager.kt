@@ -84,7 +84,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             localDeviceCapability = DeviceCapability(
                 abi = "initializing",
                 totalRamBytes = 0UL,
-                maxModelBytes = 0UL,
+                availableRamBytes = 0UL,
                 supportsMmap = false,
                 status = LocalLlmCapabilityStatus.UNKNOWN,
                 reasonCode = "unknown",

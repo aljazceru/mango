@@ -132,7 +132,7 @@ impl LocalLlmProvider for FakeLocalProvider {
         DeviceCapability {
             abi: "test".to_string(),
             total_ram_bytes: 8 * 1024 * 1024 * 1024,
-            max_model_bytes: 2 * 1024 * 1024 * 1024,
+            available_ram_bytes: 4 * 1024 * 1024 * 1024,
             supports_mmap: true,
             status: crate::llm::local::LocalLlmCapabilityStatus::Supported,
             reason_code: "supported".to_string(),
@@ -182,6 +182,22 @@ fn catalog_contains_qwen_2_5_1_5b_dod_model() {
         preset.size_bytes <= 1_500_000_000,
         "AndroidLocalLlmProvider caps model files at 1.5 GB"
     );
+}
+
+#[test]
+fn eight_gb_class_models_allow_os_reserved_ram() {
+    let catalog = local_model_catalog();
+    for model_id in ["gemma3-4b-it-q4_k_m", "phi3_5-mini-instruct-q4_k_m"] {
+        let preset = catalog
+            .iter()
+            .find(|preset| preset.id == model_id)
+            .unwrap_or_else(|| panic!("missing local model preset {model_id}"));
+
+        assert_eq!(
+            preset.min_ram_bytes, 7_000_000_000,
+            "8 GB-class phones report less RAM after hardware/OS reservations"
+        );
+    }
 }
 
 #[test]

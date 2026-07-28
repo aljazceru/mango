@@ -262,8 +262,8 @@ private fun LocalInferenceToggleRow(
 @Composable
 internal fun LocalModelRow(
     model: LocalModelSummary,
-    capabilityMaxBytes: ULong,
-    capabilityTotalBytes: ULong,
+    capabilityTotalRamBytes: ULong,
+    capabilityAvailableRamBytes: ULong,
     capabilitySupported: Boolean,
     capabilityReason: String?,
     capabilityReasonCode: String,
@@ -272,10 +272,8 @@ internal fun LocalModelRow(
 ) {
     val busy = activeProgressModelId == model.id
     val anyDownloadActive = activeProgressModelId != null
-    val supported = capabilityMaxBytes >= model.sizeBytes &&
-        capabilitySupported &&
-        capabilityMaxBytes > 0UL &&
-        capabilityTotalBytes >= model.minRamBytes
+    val supported = capabilitySupported &&
+        capabilityTotalRamBytes >= model.minRamBytes
     val installed = model.downloaded && model.verified
     val downloadEnabled = !installed && supported && !anyDownloadActive
     val status = when {
@@ -291,9 +289,9 @@ internal fun LocalModelRow(
                 reasonCode = capabilityReasonCode,
                 fallback = "This device cannot run packaged local models",
             )
-        supported -> "Requires ${formatLocalBytes(model.minRamBytes)} RAM"
-        capabilityTotalBytes < model.minRamBytes -> "Requires ${formatLocalBytes(model.minRamBytes)} RAM"
-        else -> "Too large for this device"
+        capabilityTotalRamBytes < model.minRamBytes ->
+            "Requires ${formatLocalBytes(model.minRamBytes)} RAM"
+        else -> "Requires ${formatLocalBytes(model.minRamBytes)} RAM"
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -390,7 +388,7 @@ private fun localModelsSubtitle(appState: AppState): String {
     val total = appState.localModels.size
     val runtime = appStateLocalLlmReason(
         appState = appState,
-        fallback = "Up to ${formatLocalBytes(appState.localDeviceCapability.maxModelBytes)} per model",
+        fallback = "${formatLocalBytes(appState.localDeviceCapability.availableRamBytes)} RAM available",
     )
     return "$total available • $installed installed • $runtime"
 }

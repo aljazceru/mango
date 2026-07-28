@@ -84,8 +84,8 @@ fun SettingsLocalModelsScreen(
                     val capabilitySupported = capability.status == LocalLlmCapabilityStatus.SUPPORTED
                     LocalModelRow(
                         model = model,
-                        capabilityMaxBytes = capability.maxModelBytes,
-                        capabilityTotalBytes = capability.totalRamBytes,
+                        capabilityTotalRamBytes = capability.totalRamBytes,
+                        capabilityAvailableRamBytes = capability.availableRamBytes,
                         capabilitySupported = capabilitySupported,
                         capabilityReason = capability.reason,
                         capabilityReasonCode = capability.reasonCode,
