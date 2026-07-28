@@ -402,10 +402,18 @@ Java_dev_disobey_mango_AndroidLlamaEngine_nativeProcessPrompt(
     inputs.messages = std::move(messages);
     inputs.add_generation_prompt = true;
     inputs.use_jinja = true;
+    // Mango streams a short final answer and does not expose a separate reasoning
+    // channel. Pass the policy into the model's own Jinja template: templates that
+    // support thinking (for example Qwen 3/3.5) emit their non-thinking prefill,
+    // while templates without that capability simply ignore the value.
+    inputs.enable_thinking = false;
 
     std::string prompt_text;
     try {
-        prompt_text = common_chat_templates_apply(g_chat_templates, inputs).prompt;
+        auto formatted = common_chat_templates_apply(g_chat_templates, inputs);
+        prompt_text = std::move(formatted.prompt);
+        LOGI("Applied embedded chat template thinking=%s",
+             formatted.supports_thinking ? "disabled" : "not-supported");
     } catch (const std::exception &e) {
         set_error(std::string("chat template application failed: ") + e.what());
         return 2;

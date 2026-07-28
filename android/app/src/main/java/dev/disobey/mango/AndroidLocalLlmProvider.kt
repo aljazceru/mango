@@ -27,8 +27,6 @@ private const val LOCAL_CONTEXT_TOKENS = 2048
 private const val MAX_MODEL_REDIRECTS = 10
 private const val MODEL_RESPONSE_SNIFF_BYTES = 8192
 private const val MIN_API_LEVEL_FOR_LOCAL_LLM = 31
-private const val MIN_RAM_BYTES_FOR_LOCAL_LLM = 8L * 1024L * 1024L * 1024L
-private const val MAX_RAM_BYTES_FOR_LOCAL_CAP = 4_000_000_000L
 private const val LOCAL_STORAGE_RESERVE_BYTES = 512L * 1024L * 1024L
 private const val LOCAL_STORAGE_MARGIN_PERCENT = 25L
 private val GGUF_MAGIC = byteArrayOf(0x47, 0x47, 0x55, 0x46)
@@ -210,11 +208,6 @@ class AndroidLocalLlmProvider(context: Context) : LocalLlmProvider {
         }
         if (capability.status != LocalLlmCapabilityStatus.SUPPORTED) {
             throw LocalLlmException.Unsupported(capability.reason ?: "local inference is unavailable")
-        }
-        if (file.length().toULong() > capability.maxModelBytes) {
-            throw LocalLlmException.Unsupported(
-                "Model is too large for this device: ${file.length()} bytes"
-            )
         }
 
         val storageBytes = availableStorageBytes(appContext)
@@ -404,29 +397,19 @@ private fun isAllowedModelDownloadUrl(url: URL): Boolean {
 private fun probeCapability(context: Context): DeviceCapability {
     val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
     val totalRam = totalRamBytes(context)
+    val availRam = availableRamBytes(context)
     val supportsArm64 = Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }
     val supportsApiLevel = Build.VERSION.SDK_INT >= MIN_API_LEVEL_FOR_LOCAL_LLM
     val is64BitProcess = android.os.Process.is64Bit()
-    val hasRam = totalRam >= MIN_RAM_BYTES_FOR_LOCAL_LLM
     val availableStorage = availableStorageBytes(context)
     val hasStorage = availableStorage > LOCAL_STORAGE_RESERVE_BYTES.toULong()
-    val supportedRuntime = supportsApiLevel && supportsArm64 && is64BitProcess && hasRam && hasStorage
+    val supportedRuntime = supportsApiLevel && supportsArm64 && is64BitProcess && hasStorage
     val supportsMmap = supportedRuntime
-    // ponytail: allow up to half of RAM for a local model (was /3 capped at 1.5GB,
-    // which blocked legitimate 4B-class Q4 models ~2.5GB on phones with 8-12GB).
-    // Cap at 4GB as a sane mobile ceiling; revisit if larger models prove viable.
-    val maxModelBytesLong =
-        if (supportedRuntime && totalRam > 0L) {
-            (totalRam / 2L).coerceAtMost(MAX_RAM_BYTES_FOR_LOCAL_CAP)
-        } else {
-            0L
-        }
     val status = when {
         !FeatureFlags.LOCAL_LLM_ENABLED -> LocalLlmCapabilityStatus.DISABLED_BY_FEATURE_FLAG
         !supportsApiLevel -> LocalLlmCapabilityStatus.UNSUPPORTED_API_LEVEL
         !supportsArm64 -> LocalLlmCapabilityStatus.UNSUPPORTED_ARCHITECTURE
         !is64BitProcess -> LocalLlmCapabilityStatus.UNSUPPORTED_PROCESS_BITNESS
-        totalRam < MIN_RAM_BYTES_FOR_LOCAL_LLM -> LocalLlmCapabilityStatus.INSUFFICIENT_MEMORY
         !hasStorage -> LocalLlmCapabilityStatus.INSUFFICIENT_STORAGE
         totalRam <= 0L -> LocalLlmCapabilityStatus.UNKNOWN
         else -> LocalLlmCapabilityStatus.SUPPORTED
@@ -437,7 +420,6 @@ private fun probeCapability(context: Context): DeviceCapability {
             "Unsupported API level: ${Build.VERSION.SDK_INT}"
         LocalLlmCapabilityStatus.UNSUPPORTED_ARCHITECTURE -> "Unsupported ABI: $abi"
         LocalLlmCapabilityStatus.UNSUPPORTED_PROCESS_BITNESS -> "Local LLM requires a 64-bit process"
-        LocalLlmCapabilityStatus.INSUFFICIENT_MEMORY -> "Insufficient RAM for LocalLLM"
         LocalLlmCapabilityStatus.INSUFFICIENT_STORAGE -> "Insufficient free storage for LocalLLM"
         LocalLlmCapabilityStatus.UNKNOWN -> "Unable to determine device RAM"
         LocalLlmCapabilityStatus.RUNTIME_NOT_PACKAGED,
@@ -445,6 +427,7 @@ private fun probeCapability(context: Context): DeviceCapability {
         LocalLlmCapabilityStatus.UNSUPPORTED_CPU_FEATURES,
         LocalLlmCapabilityStatus.SUPPORTED -> null
         LocalLlmCapabilityStatus.PROBE_UNAVAILABLE -> "Local LLM probe is not available"
+        LocalLlmCapabilityStatus.INSUFFICIENT_MEMORY -> null
     }
 
     val reasonCode = when (status) {
@@ -468,7 +451,7 @@ private fun probeCapability(context: Context): DeviceCapability {
     return DeviceCapability(
         abi = abi,
         totalRamBytes = totalRam.coerceAtLeast(0L).toULong(),
-        maxModelBytes = if (stableSupported) maxModelBytesLong.toULong() else 0UL,
+        availableRamBytes = if (stableSupported) availRam.toULong() else 0UL,
         supportsMmap = supportsMmap,
         status = if (stableSupported) LocalLlmCapabilityStatus.SUPPORTED else status,
         reasonCode = reasonCode,
@@ -483,6 +466,14 @@ private fun totalRamBytes(context: Context): Long {
     val info = ActivityManager.MemoryInfo()
     activityManager.getMemoryInfo(info)
     return info.totalMem
+}
+
+private fun availableRamBytes(context: Context): Long {
+    val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        ?: return 0L
+    val info = ActivityManager.MemoryInfo()
+    activityManager.getMemoryInfo(info)
+    return info.availMem
 }
 
 private fun availableStorageBytes(context: Context): ULong {

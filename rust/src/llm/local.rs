@@ -55,7 +55,7 @@ impl LocalLlmCapabilityStatus {
 pub struct DeviceCapability {
     pub abi: String,
     pub total_ram_bytes: u64,
-    pub max_model_bytes: u64,
+    pub available_ram_bytes: u64,
     pub supports_mmap: bool,
     pub status: LocalLlmCapabilityStatus,
     pub reason_code: String,
@@ -89,7 +89,7 @@ impl Default for DeviceCapability {
         Self {
             abi: std::env::consts::ARCH.to_string(),
             total_ram_bytes: 0,
-            max_model_bytes: 0,
+            available_ram_bytes: 0,
             supports_mmap: false,
             status: LocalLlmCapabilityStatus::Unknown,
             reason_code: "unknown".to_string(),

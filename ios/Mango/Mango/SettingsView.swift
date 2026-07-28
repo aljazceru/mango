@@ -101,8 +101,6 @@ struct SettingsView: View {
         let busy = appState.localDownloadProgress?.modelId == model.id
         let capabilitySupported = capability.status == .supported
         let supported = capabilitySupported
-            && capability.maxModelBytes >= model.sizeBytes
-            && capability.maxModelBytes > 0
             && capability.totalRamBytes >= model.minRamBytes
         let installed = model.downloaded && model.verified
         let canDownload = !installed && supported && !anyDownloadActive

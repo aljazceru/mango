@@ -1256,7 +1256,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_mango_core_checksum_func_known_provider_presets() != 26978.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_func_local_model_catalog() != 33405.toShort()) {
+    if (lib.uniffi_mango_core_checksum_func_local_model_catalog() != 63566.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_func_model_supports_vision() != 37098.toShort()) {
@@ -3454,7 +3454,7 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
 data class DeviceCapability (
     var `abi`: kotlin.String, 
     var `totalRamBytes`: kotlin.ULong, 
-    var `maxModelBytes`: kotlin.ULong, 
+    var `availableRamBytes`: kotlin.ULong, 
     var `supportsMmap`: kotlin.Boolean, 
     var `status`: LocalLlmCapabilityStatus, 
     var `reasonCode`: kotlin.String, 
@@ -3485,7 +3485,7 @@ public object FfiConverterTypeDeviceCapability: FfiConverterRustBuffer<DeviceCap
     override fun allocationSize(value: DeviceCapability) = (
             FfiConverterString.allocationSize(value.`abi`) +
             FfiConverterULong.allocationSize(value.`totalRamBytes`) +
-            FfiConverterULong.allocationSize(value.`maxModelBytes`) +
+            FfiConverterULong.allocationSize(value.`availableRamBytes`) +
             FfiConverterBoolean.allocationSize(value.`supportsMmap`) +
             FfiConverterTypeLocalLlmCapabilityStatus.allocationSize(value.`status`) +
             FfiConverterString.allocationSize(value.`reasonCode`) +
@@ -3496,7 +3496,7 @@ public object FfiConverterTypeDeviceCapability: FfiConverterRustBuffer<DeviceCap
     override fun write(value: DeviceCapability, buf: ByteBuffer) {
             FfiConverterString.write(value.`abi`, buf)
             FfiConverterULong.write(value.`totalRamBytes`, buf)
-            FfiConverterULong.write(value.`maxModelBytes`, buf)
+            FfiConverterULong.write(value.`availableRamBytes`, buf)
             FfiConverterBoolean.write(value.`supportsMmap`, buf)
             FfiConverterTypeLocalLlmCapabilityStatus.write(value.`status`, buf)
             FfiConverterString.write(value.`reasonCode`, buf)
@@ -10234,9 +10234,10 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
          * Sources: Hugging Face LFS metadata (X-Linked-ETag = content sha256,
          * X-Linked-Size = byte length), verified 2026-06-26. Qwen presets verified
          * 2026-06-23. Android uses the platform HTTPS stack for model downloads; the
-         * file is installed only after the pinned SHA-256 matches. Prompt formatting
-         * uses each model's embedded `tokenizer.chat_template` via libllama-common, so
-         * the `chat_template` field below is informational only (native ignores it).
+         * file is installed only after the pinned SHA-256 matches. Native inference
+         * reads each model's embedded `tokenizer.chat_template`; Android renders it
+         * with libllama-common and iOS uses llama.cpp's recognized template renderer.
+         * The `chat_template` field below is informational only.
          */ fun `localModelCatalog`(): List<LocalModelPreset> {
             return FfiConverterSequenceTypeLocalModelPreset.lift(
     uniffiRustCall() { _status ->
