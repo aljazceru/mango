@@ -18,7 +18,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullBiometricProvider),
     );
     // Phase 8: VectorIndex init + document list load adds overhead; 150ms is stable in parallel test load.
-    std::thread::sleep(Duration::from_millis(150));
+    app.sync();
     app
 }
 
@@ -48,7 +48,7 @@ fn test_set_active_backend() {
 fn test_stop_generation_when_idle_is_noop() {
     let app = make_app();
     app.dispatch(AppAction::StopGeneration);
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     let state = app.state();
     assert_eq!(state.busy_state, BusyState::Idle);
 }
@@ -60,7 +60,7 @@ fn test_send_message_starts_streaming() {
         text: "Hello".into(),
         force_role: None,
     });
-    std::thread::sleep(Duration::from_millis(100));
+    app.sync();
     let state = app.state();
     // Should be streaming (or error if no API key, which is expected in tests)
     // The important thing: busy_state transitioned from Idle or an error was recorded
@@ -206,11 +206,11 @@ fn test_stream_chunk_accumulates() {
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Hello".into(),
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     app.test_send_internal(InternalEvent::StreamChunk {
         token: " world".into(),
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     let state = app.state();
     assert_eq!(state.streaming_text, Some("Hello world".to_string()));
 }
@@ -221,9 +221,9 @@ fn test_stream_done_sets_idle() {
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Done test".into(),
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     app.test_send_internal(InternalEvent::StreamDone);
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     let state = app.state();
     // StreamDone must set BusyState::Idle
     assert_eq!(state.busy_state, BusyState::Idle);
@@ -241,13 +241,13 @@ fn test_stream_error_preserves_partial() {
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Partial".into(),
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     app.test_send_internal(InternalEvent::StreamError {
         error: LlmError::NetworkError {
             reason: "connection lost".into(),
         },
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     let state = app.state();
     // Partial text should be preserved, not cleared
     assert!(
@@ -273,7 +273,7 @@ fn test_stop_generation_cancels_active_stream() {
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "partial response".into(),
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     {
         let state = app.state();
         assert_eq!(
@@ -289,7 +289,7 @@ fn test_stop_generation_cancels_active_stream() {
 
     // Simulate what the Tinfoil transport sends after cancel_token fires
     app.test_send_internal(InternalEvent::StreamCancelled);
-    std::thread::sleep(Duration::from_millis(100));
+    app.sync();
 
     let state = app.state();
     assert_eq!(
@@ -314,12 +314,12 @@ fn test_stop_generation_cancels_ppq_stream() {
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "ppq partial".into(),
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
 
     // Dispatch StopGeneration, then inject StreamCancelled as the PPQ transport would
     app.dispatch(AppAction::StopGeneration);
     app.test_send_internal(InternalEvent::StreamCancelled);
-    std::thread::sleep(Duration::from_millis(100));
+    app.sync();
 
     let state = app.state();
     assert_eq!(

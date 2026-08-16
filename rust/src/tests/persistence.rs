@@ -724,7 +724,7 @@ fn test_ffiapp_loads_conversations_from_db() {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    app.sync();
 
     let state = app.state();
     assert_eq!(
@@ -800,6 +800,11 @@ fn test_agent_session_survives_reopen() {
 }
 
 /// Verify that FfiApp loads agent sessions from SQLite into AppState on startup.
+///
+/// Startup only hydrates agent sessions when the `agents` cargo feature is
+/// enabled (releases ship without the agent surface), so this test must run
+/// under the same gate or it fails deterministically in default builds.
+#[cfg(feature = "agents")]
 #[test]
 fn test_ffiapp_loads_agent_sessions_from_db() {
     let dir = std::env::temp_dir().join(format!("test_ffiapp_agent_{}", uuid::Uuid::new_v4()));
@@ -834,7 +839,7 @@ fn test_ffiapp_loads_agent_sessions_from_db() {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    app.sync();
 
     let state = app.state();
     assert_eq!(

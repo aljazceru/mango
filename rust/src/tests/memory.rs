@@ -1,4 +1,3 @@
-use std::time::Duration;
 
 use crate::memory::extract::should_extract;
 use crate::memory::retrieve::{build_system_with_memories, MemoryResult, DEFAULT_MEMORY_TOP_K};
@@ -23,12 +22,12 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullBiometricProvider),
     );
     // Allow actor thread to initialize
-    std::thread::sleep(Duration::from_millis(150));
+    app.sync();
     app
 }
 
-fn wait() {
-    std::thread::sleep(Duration::from_millis(200));
+fn wait(app: &FfiApp) {
+    app.sync();
 }
 
 fn setup_db() -> Database {
@@ -317,7 +316,7 @@ fn test_list_memories_action() {
         "memories should start empty"
     );
     app.dispatch(AppAction::ListMemories);
-    wait();
+    wait(&app);
     let state = app.state();
     // Handler ran without panic; memories field is accessible
     // (empty is fine -- no data inserted; SQL query correctness covered by test_insert_and_list_memories)
@@ -331,7 +330,7 @@ fn test_delete_memory_action() {
     app.dispatch(AppAction::DeleteMemory {
         memory_id: "nonexistent".to_string(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     assert!(
         state.memories.is_empty(),
@@ -347,7 +346,7 @@ fn test_update_memory_action() {
         memory_id: "nonexistent".to_string(),
         content: "Updated content".to_string(),
     });
-    wait();
+    wait(&app);
     // No panic = handler is wired correctly
     let state = app.state();
     assert!(
@@ -363,7 +362,7 @@ fn test_memories_screen_navigation() {
     app.dispatch(AppAction::PushScreen {
         screen: Screen::Memories,
     });
-    wait();
+    wait(&app);
     // The screen navigation and auto-load of memories should complete without panic
     let state = app.state();
     assert_eq!(

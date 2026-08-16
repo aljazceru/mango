@@ -23,12 +23,12 @@ fn make_app() -> Arc<FfiApp> {
         Box::new(NullBiometricProvider),
     );
     // Allow the actor to finish startup (VectorIndex init + load queries).
-    std::thread::sleep(Duration::from_millis(100));
+    app.sync();
     app
 }
 
-fn wait() {
-    std::thread::sleep(Duration::from_millis(200));
+fn wait(app: &FfiApp) {
+    app.sync();
 }
 
 // ── Task 1 tests ──────────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ fn test_add_directory_source_inserts_row() {
         tree_uri: None,
         exclusion_globs: vec![".obsidian/".into()],
     });
-    wait();
+    wait(&app);
     let state = app.state();
     assert_eq!(
         state.directory_sources.len(),
@@ -119,7 +119,7 @@ fn test_sync_directory_files_indexes_changed_files() {
         tree_uri: None,
         exclusion_globs: vec![],
     });
-    wait();
+    wait(&app);
     let sid = app.state().directory_sources[0].id.clone();
 
     // Three files added.
@@ -187,7 +187,7 @@ fn test_sync_directory_files_batching_flushes_vector_index() {
         tree_uri: None,
         exclusion_globs: vec![],
     });
-    wait();
+    wait(&app);
     let sid = app.state().directory_sources[0].id.clone();
 
     // Batch 1: 50 files, not final.
@@ -246,7 +246,7 @@ fn test_remove_directory_source_cascades() {
         tree_uri: None,
         exclusion_globs: vec![],
     });
-    wait();
+    wait(&app);
     let sid = app.state().directory_sources[0].id.clone();
 
     // Seed 5 files.
@@ -294,7 +294,7 @@ fn test_set_directory_exclusions_validates() {
         tree_uri: None,
         exclusion_globs: vec![],
     });
-    wait();
+    wait(&app);
     let sid = app.state().directory_sources[0].id.clone();
 
     // Invalid glob — unbalanced bracket.
@@ -302,7 +302,7 @@ fn test_set_directory_exclusions_validates() {
         source_id: sid.clone(),
         globs: vec!["[abc".into()],
     });
-    wait();
+    wait(&app);
     let state = app.state();
     // Existing globs should be unchanged (still empty).
     assert!(
@@ -326,14 +326,14 @@ fn test_set_directory_exclusions_ok() {
         tree_uri: None,
         exclusion_globs: vec![],
     });
-    wait();
+    wait(&app);
     let sid = app.state().directory_sources[0].id.clone();
 
     app.dispatch(AppAction::SetDirectoryExclusions {
         source_id: sid.clone(),
         globs: vec!["*.tmp".into(), ".obsidian/".into()],
     });
-    wait();
+    wait(&app);
     let state = app.state();
     assert_eq!(
         state.directory_sources[0].exclusion_globs,
@@ -351,14 +351,14 @@ fn test_update_bookmark_writes_blob() {
         tree_uri: None,
         exclusion_globs: vec![],
     });
-    wait();
+    wait(&app);
     let sid = app.state().directory_sources[0].id.clone();
 
     app.dispatch(AppAction::UpdateDirectorySourceBookmark {
         source_id: sid,
         bookmark_data: vec![0xAA, 0xBB, 0xCC],
     });
-    wait();
+    wait(&app);
     // No direct way to inspect bookmark_data in AppState (opaque, per threat model
     // T-32-I2 — never exposed), but the dispatch must not error out. Confirm by
     // verifying that AppState.directory_sources still reports the source.
@@ -380,7 +380,7 @@ fn test_get_directory_bookmark_returns_stored_blob() {
         tree_uri: None,
         exclusion_globs: vec![],
     });
-    wait();
+    wait(&app);
     let sid = app.state().directory_sources[0].id.clone();
 
     let result = app.get_directory_bookmark(sid).expect("should not error");
@@ -415,7 +415,7 @@ fn test_get_directory_bookmark_null_blob_returns_none() {
         tree_uri: None,
         exclusion_globs: vec![],
     });
-    wait();
+    wait(&app);
     let sid = app.state().directory_sources[0].id.clone();
 
     let result = app

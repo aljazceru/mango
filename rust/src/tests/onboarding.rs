@@ -19,6 +19,9 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
+    // Deterministic: sync() returns only after the actor finished startup
+    // hydration and emitted its first state, so the screen is settled.
+    app.sync();
     for _ in 0..100 {
         if !matches!(app.state().router.current_screen, Screen::Home { .. }) {
             return app;
@@ -29,8 +32,8 @@ fn make_app() -> std::sync::Arc<FfiApp> {
 }
 
 /// Helper: sleep to let the actor process a dispatched action.
-fn wait() {
-    std::thread::sleep(Duration::from_millis(100));
+fn wait(app: &FfiApp) {
+    app.sync();
 }
 
 // ── First launch detection ────────────────────────────────────────────────────
@@ -91,7 +94,7 @@ fn test_next_step_advances_from_welcome() {
     );
 
     app.dispatch(AppAction::NextOnboardingStep);
-    wait();
+    wait(&app);
     let state = app.state();
     assert!(
         matches!(
@@ -110,10 +113,10 @@ fn test_previous_step_from_backend_setup() {
     let app = make_app();
     // Go to BackendSetup
     app.dispatch(AppAction::NextOnboardingStep);
-    wait();
+    wait(&app);
 
     app.dispatch(AppAction::PreviousOnboardingStep);
-    wait();
+    wait(&app);
     let state = app.state();
     assert!(
         matches!(
@@ -143,7 +146,7 @@ fn test_previous_step_noop_on_welcome() {
     );
 
     app.dispatch(AppAction::PreviousOnboardingStep);
-    wait();
+    wait(&app);
     let state = app.state();
     assert!(
         matches!(
@@ -163,7 +166,7 @@ fn test_previous_step_noop_on_welcome() {
 fn test_complete_onboarding_creates_conversation() {
     let app = make_app();
     app.dispatch(AppAction::CompleteOnboarding);
-    wait();
+    wait(&app);
     let state = app.state();
 
     // Should navigate to Screen::Chat
@@ -189,7 +192,7 @@ fn test_complete_onboarding_creates_conversation() {
 fn test_complete_onboarding_sets_placeholder_flag() {
     let app = make_app();
     app.dispatch(AppAction::CompleteOnboarding);
-    wait();
+    wait(&app);
     let state = app.state();
     assert!(
         state.show_first_chat_placeholder,
@@ -218,7 +221,7 @@ fn test_send_message_clears_placeholder_flag() {
     let app = make_app();
     // Complete onboarding to set show_first_chat_placeholder=true
     app.dispatch(AppAction::CompleteOnboarding);
-    wait();
+    wait(&app);
     let state = app.state();
     assert!(
         state.show_first_chat_placeholder,
@@ -230,7 +233,7 @@ fn test_send_message_clears_placeholder_flag() {
         text: "Hello".into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
     let state = app.state();
     assert!(
         !state.show_first_chat_placeholder,
@@ -249,7 +252,7 @@ fn test_settings_retrigger_wizard() {
             step: OnboardingStep::Welcome,
         },
     });
-    wait();
+    wait(&app);
     let state = app.state();
     assert!(
         matches!(

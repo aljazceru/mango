@@ -15,7 +15,6 @@ use crate::{
     crypto, AppAction, EmbeddingStatus, FfiApp, NullBiometricProvider, NullEmbeddingProvider,
     NullKeychainProvider, Screen,
 };
-use std::time::Duration;
 
 /// Create a filesystem-backed data dir with bootstrap auth_params already
 /// populated so FfiApp::new goes down the Case D (locked) path.
@@ -69,7 +68,7 @@ fn make_locked_app(data_dir: String) -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(NullBiometricProvider),
     );
-    std::thread::sleep(Duration::from_millis(200));
+    app.sync();
     app
 }
 
@@ -116,7 +115,7 @@ fn new_conversation_while_locked_does_not_panic() {
     // of the match arm, so if the actor is alive, rev will increase.
     let rev_before_new_conv = app.state().rev;
     app.dispatch(AppAction::NewConversation);
-    std::thread::sleep(Duration::from_millis(150));
+    app.sync();
 
     let state_after_new_conv = app.state();
     assert!(
@@ -134,7 +133,7 @@ fn new_conversation_while_locked_does_not_panic() {
     // actor thread panicked on NewConversation, rev stays frozen and this
     // assertion fails — which is exactly the pre-fix behaviour.
     app.dispatch(AppAction::Noop);
-    std::thread::sleep(Duration::from_millis(150));
+    app.sync();
     let state_probe = app.state();
     assert!(
         state_probe.rev > rev_before_new_conv,

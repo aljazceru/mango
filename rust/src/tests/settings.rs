@@ -2,7 +2,6 @@
 ///
 /// These tests exercise the persistence layer directly using an in-memory SQLite
 /// database to verify ROUT-03, SETT-02, and SETT-03 behaviors.
-use std::time::Duration;
 
 use crate::persistence::{self, queries, Database};
 use crate::{AppAction, EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider};
@@ -16,12 +15,12 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
-    std::thread::sleep(Duration::from_millis(150));
+    app.sync();
     app
 }
 
-fn wait() {
-    std::thread::sleep(Duration::from_millis(200));
+fn wait(app: &FfiApp) {
+    app.sync();
 }
 
 #[test]
@@ -128,7 +127,7 @@ fn test_default_model_and_instructions_actions_update_app_state() {
     app.dispatch(AppAction::SetDefaultModel {
         model_id: "qwen3-vl-30b".to_string(),
     });
-    wait();
+    wait(&app);
     assert_eq!(
         app.state().default_model_id.as_deref(),
         Some("qwen3-vl-30b"),
@@ -138,7 +137,7 @@ fn test_default_model_and_instructions_actions_update_app_state() {
     app.dispatch(AppAction::SetGlobalSystemPrompt {
         prompt: Some("Use terse answers.".to_string()),
     });
-    wait();
+    wait(&app);
     assert_eq!(
         app.state().global_system_prompt.as_deref(),
         Some("Use terse answers."),
@@ -146,7 +145,7 @@ fn test_default_model_and_instructions_actions_update_app_state() {
     );
 
     app.dispatch(AppAction::SetGlobalSystemPrompt { prompt: None });
-    wait();
+    wait(&app);
     assert!(
         app.state().global_system_prompt.is_none(),
         "clearing default instructions should update AppState immediately",
@@ -194,7 +193,7 @@ fn test_brave_api_key_persists() {
     app.dispatch(AppAction::SetBraveApiKey {
         api_key: "test-brave-key-abc123".to_string(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert!(
@@ -206,7 +205,7 @@ fn test_brave_api_key_persists() {
     app.dispatch(AppAction::SetBraveApiKey {
         api_key: "".to_string(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert!(
@@ -229,7 +228,7 @@ fn test_memories_enabled_toggle() {
 
     // Disable
     app.dispatch(AppAction::SetMemoriesEnabled { enabled: false });
-    wait();
+    wait(&app);
     assert!(
         !app.state().memories_enabled,
         "should be false after disable"
@@ -237,7 +236,7 @@ fn test_memories_enabled_toggle() {
 
     // Re-enable
     app.dispatch(AppAction::SetMemoriesEnabled { enabled: true });
-    wait();
+    wait(&app);
     assert!(
         app.state().memories_enabled,
         "should be true after re-enable"
@@ -260,7 +259,7 @@ fn test_memory_count() {
     app.dispatch(AppAction::DeleteMemory {
         memory_id: "nonexistent".to_string(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert_eq!(

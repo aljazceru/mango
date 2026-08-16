@@ -15,13 +15,13 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(NullBiometricProvider),
     );
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     app
 }
 
 /// Helper: sleep to let the actor process a dispatched action.
-fn wait() {
-    std::thread::sleep(Duration::from_millis(100));
+fn wait(app: &FfiApp) {
+    app.sync();
 }
 
 // ── Conversation creation and navigation ─────────────────────────────────────
@@ -30,7 +30,7 @@ fn wait() {
 fn test_new_conversation_creates_and_navigates() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let state = app.state();
     assert_eq!(
         state.conversations.len(),
@@ -57,7 +57,7 @@ fn test_new_conversation_creates_and_navigates() {
 fn test_new_conversation_title_is_placeholder() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let state = app.state();
     assert_eq!(
         state.conversations[0].title, "New Conversation",
@@ -80,7 +80,7 @@ fn test_send_message_creates_conversation_when_none_active() {
         text: "Hello without a conversation".into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
     let state = app.state();
     assert_eq!(
         state.conversations.len(),
@@ -106,7 +106,7 @@ fn test_send_message_auto_title_from_text() {
         text: long_text.into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
     let state = app.state();
     // Title should be truncated to 50 chars + "..."
     let title = &state.conversations[0].title;
@@ -128,7 +128,7 @@ fn test_load_conversation_populates_messages() {
 
     // Create a conversation first
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let state = app.state();
     let conv_id = state
         .current_conversation_id
@@ -140,13 +140,13 @@ fn test_load_conversation_populates_messages() {
         text: "Test message for load".into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
 
     // Navigate away to Home, then reload
     app.dispatch(AppAction::PushScreen {
         screen: Screen::Home,
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     {
         let state = app.state();
         assert!(
@@ -159,7 +159,7 @@ fn test_load_conversation_populates_messages() {
     app.dispatch(AppAction::LoadConversation {
         conversation_id: conv_id.clone(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     assert_eq!(
         state.current_conversation_id,
@@ -183,7 +183,7 @@ fn test_load_conversation_populates_messages() {
 fn test_rename_conversation() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let state = app.state();
     let conv_id = state.current_conversation_id.clone().unwrap();
 
@@ -191,7 +191,7 @@ fn test_rename_conversation() {
         id: conv_id.clone(),
         title: "My Renamed Chat".into(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     let renamed = state
         .conversations
@@ -205,7 +205,7 @@ fn test_rename_conversation() {
 fn test_rename_conversation_empty_title_is_noop() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let conv_id = app.state().current_conversation_id.clone().unwrap();
     let original_title = app
         .state()
@@ -220,7 +220,7 @@ fn test_rename_conversation_empty_title_is_noop() {
         id: conv_id.clone(),
         title: "".into(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     let row = state
         .conversations
@@ -237,7 +237,7 @@ fn test_rename_conversation_empty_title_is_noop() {
 fn test_rename_conversation_whitespace_only_title_is_noop() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let conv_id = app.state().current_conversation_id.clone().unwrap();
     let original_title = app
         .state()
@@ -252,7 +252,7 @@ fn test_rename_conversation_whitespace_only_title_is_noop() {
         id: conv_id.clone(),
         title: "   \t  ".into(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     let row = state
         .conversations
@@ -269,14 +269,14 @@ fn test_rename_conversation_whitespace_only_title_is_noop() {
 fn test_rename_conversation_trims_title() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let conv_id = app.state().current_conversation_id.clone().unwrap();
 
     app.dispatch(AppAction::RenameConversation {
         id: conv_id.clone(),
         title: "  Real Name  ".into(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     let renamed = state
         .conversations
@@ -295,7 +295,7 @@ fn test_rename_conversation_trims_title() {
 fn test_delete_conversation() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let state = app.state();
     assert_eq!(state.conversations.len(), 1);
     let conv_id = state.current_conversation_id.clone().unwrap();
@@ -303,7 +303,7 @@ fn test_delete_conversation() {
     app.dispatch(AppAction::DeleteConversation {
         id: conv_id.clone(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     assert_eq!(
         state.conversations.len(),
@@ -326,24 +326,24 @@ fn test_delete_nonactive_conversation_does_not_navigate() {
     let app = make_app();
     // Create 2 conversations
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let first_id = app.state().current_conversation_id.clone().unwrap();
 
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let second_id = app.state().current_conversation_id.clone().unwrap();
 
     // Load the first one (so second is not active)
     app.dispatch(AppAction::LoadConversation {
         conversation_id: first_id.clone(),
     });
-    wait();
+    wait(&app);
 
     // Delete the second (not active)
     app.dispatch(AppAction::DeleteConversation {
         id: second_id.clone(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     assert_eq!(
         state.conversations.len(),
@@ -360,7 +360,7 @@ fn test_delete_nonactive_conversation_does_not_navigate() {
 fn test_retry_deletes_assistant_and_resends() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let conv_id = app.state().current_conversation_id.clone().unwrap();
 
     // Send a message -- the actor will try to stream, fail (no API key), and
@@ -369,15 +369,15 @@ fn test_retry_deletes_assistant_and_resends() {
         text: "What is 2+2?".into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
 
     // Inject a completed stream
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "The answer is 4.".into(),
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     app.test_send_internal(InternalEvent::StreamDone);
-    wait();
+    wait(&app);
 
     let state = app.state();
     // Should have user + assistant messages
@@ -388,7 +388,7 @@ fn test_retry_deletes_assistant_and_resends() {
 
     // Now retry
     app.dispatch(AppAction::RetryLastMessage);
-    wait();
+    wait(&app);
     // The assistant message should be gone, a new streaming attempt started
     let state = app.state();
     // At minimum the messages list should have fewer or equal assistant messages
@@ -415,7 +415,7 @@ fn test_retry_deletes_assistant_and_resends() {
 fn test_edit_truncates_and_resends() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
 
     // Build up a multi-message conversation:
     // msg1 (user) -> assistant1 -> msg2 (user) -> assistant2
@@ -425,28 +425,28 @@ fn test_edit_truncates_and_resends() {
         text: "First message".into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
     std::thread::sleep(Duration::from_millis(5)); // ensure distinct timestamp
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Reply 1".into(),
     });
-    std::thread::sleep(Duration::from_millis(30));
+    app.sync();
     app.test_send_internal(InternalEvent::StreamDone);
-    wait();
+    wait(&app);
 
     std::thread::sleep(Duration::from_millis(5)); // ensure distinct timestamp
     app.dispatch(AppAction::SendMessage {
         text: "Second message".into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
     std::thread::sleep(Duration::from_millis(5)); // ensure distinct timestamp
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Reply 2".into(),
     });
-    std::thread::sleep(Duration::from_millis(30));
+    app.sync();
     app.test_send_internal(InternalEvent::StreamDone);
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert!(state.messages.len() >= 4, "Should have 4+ messages");
@@ -464,7 +464,7 @@ fn test_edit_truncates_and_resends() {
         message_id: first_user_id.clone(),
         new_text: "Edited first message".into(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     // Messages after the edited one should be gone; new user message should be present
     // The new text should appear in messages
@@ -493,7 +493,7 @@ fn test_attach_file_sets_pending() {
         content: "This is the file content".into(),
         size_bytes: 1024,
     });
-    wait();
+    wait(&app);
     let state = app.state();
     let att = state
         .pending_attachment
@@ -510,11 +510,11 @@ fn test_clear_attachment() {
         content: "pdf content".into(),
         size_bytes: 2048,
     });
-    wait();
+    wait(&app);
     assert!(app.state().pending_attachment.is_some());
 
     app.dispatch(AppAction::ClearAttachment);
-    wait();
+    wait(&app);
     assert!(
         app.state().pending_attachment.is_none(),
         "Attachment should be cleared"
@@ -525,21 +525,21 @@ fn test_clear_attachment() {
 fn test_send_with_attachment_prepends_content() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
 
     app.dispatch(AppAction::AttachFile {
         filename: "data.txt".into(),
         content: "FILE_CONTENT_HERE".into(),
         size_bytes: 17,
     });
-    wait();
+    wait(&app);
     assert!(app.state().pending_attachment.is_some());
 
     app.dispatch(AppAction::SendMessage {
         text: "Summarize this".into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
     let state = app.state();
 
     // The pending attachment should be cleared after send
@@ -574,13 +574,13 @@ fn test_send_with_attachment_prepends_content() {
 fn test_select_model_persists() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let conv_id = app.state().current_conversation_id.clone().unwrap();
 
     app.dispatch(AppAction::SelectModel {
         model_id: "gpt-4o-mini".into(),
     });
-    wait();
+    wait(&app);
     let state = app.state();
     let conv = state
         .conversations
@@ -609,15 +609,15 @@ fn test_system_prompt_resolution_global() {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(NullBiometricProvider),
     );
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
 
     // Use SetSystemPrompt on a conversation (per-conversation system prompt)
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     app.dispatch(AppAction::SetSystemPrompt {
         prompt: Some("You are a helpful assistant.".into()),
     });
-    wait();
+    wait(&app);
     // Verify no errors occurred
     let state = app.state();
     assert!(
@@ -632,19 +632,19 @@ fn test_system_prompt_resolution_global() {
 fn test_stream_done_persists_assistant_message() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     // Simulate a streaming exchange
     app.dispatch(AppAction::SendMessage {
         text: "What is Rust?".into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Rust is a systems programming language.".into(),
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     app.test_send_internal(InternalEvent::StreamDone);
-    wait();
+    wait(&app);
 
     let state = app.state();
     let assistant_msgs: Vec<_> = state
@@ -678,7 +678,7 @@ fn test_stream_done_persists_assistant_message() {
 fn test_auto_title_on_first_response() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     let conv_id = app.state().current_conversation_id.clone().unwrap();
 
     // Verify placeholder title
@@ -693,13 +693,13 @@ fn test_auto_title_on_first_response() {
         text: "Tell me about Rust programming".into(),
         force_role: None,
     });
-    wait();
+    wait(&app);
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Rust is great!".into(),
     });
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     app.test_send_internal(InternalEvent::StreamDone);
-    wait();
+    wait(&app);
 
     let state = app.state();
     let conv = state
@@ -728,7 +728,7 @@ fn test_attach_file_size_display_bytes() {
         content: "hi".into(),
         size_bytes: 512,
     });
-    wait();
+    wait(&app);
     let att = app.state().pending_attachment.unwrap();
     assert_eq!(att.size_display, "512 B");
 }
@@ -741,7 +741,7 @@ fn test_attach_file_size_display_mb() {
         content: "data".into(),
         size_bytes: 2_097_152, // 2 MB
     });
-    wait();
+    wait(&app);
     let att = app.state().pending_attachment.unwrap();
     assert_eq!(att.size_display, "2 MB");
 }

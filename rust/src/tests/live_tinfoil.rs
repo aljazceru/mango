@@ -57,7 +57,7 @@ fn make_app_with_real_keychain() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullBiometricProvider),
     );
     // Allow actor init + attestation task to start.
-    std::thread::sleep(Duration::from_millis(300));
+    app.sync();
     app
 }
 
