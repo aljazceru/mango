@@ -468,6 +468,11 @@ RustBuffer uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(void*_Nonnull
 RustBuffer uniffi_mango_core_fn_method_ffiapp_state(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_SYNC
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_SYNC
+void uniffi_mango_core_fn_method_ffiapp_sync(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALGENERATIONCONTEXT
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALGENERATIONCONTEXT
 void*_Nonnull uniffi_mango_core_fn_clone_localgenerationcontext(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -898,6 +903,12 @@ uint16_t uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_STATE
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_STATE
 uint16_t uniffi_mango_core_checksum_method_ffiapp_state(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_SYNC
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FFIAPP_SYNC
+uint16_t uniffi_mango_core_checksum_method_ffiapp_sync(void
     
 );
 #endif

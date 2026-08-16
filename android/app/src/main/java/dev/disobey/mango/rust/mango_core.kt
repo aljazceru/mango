@@ -939,6 +939,8 @@ internal open class UniffiVTableCallbackInterfaceLocalLlmProvider(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -975,6 +977,8 @@ fun uniffi_mango_core_checksum_method_ffiapp_listen_for_updates(
 fun uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(
 ): Short
 fun uniffi_mango_core_checksum_method_ffiapp_state(
+): Short
+fun uniffi_mango_core_checksum_method_ffiapp_sync(
 ): Short
 fun uniffi_mango_core_checksum_method_localgenerationcontext_emit_error(
 ): Short
@@ -1093,6 +1097,8 @@ fun uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(`ptr`: Pointer,`mess
 ): RustBuffer.ByValue
 fun uniffi_mango_core_fn_method_ffiapp_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_mango_core_fn_method_ffiapp_sync(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_mango_core_fn_clone_localgenerationcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun uniffi_mango_core_fn_free_localgenerationcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -1284,6 +1290,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_state() != 64379.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_sync() != 43338.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() != 4827.toShort()) {
@@ -1900,6 +1909,16 @@ public interface FfiAppInterface {
      */
     fun `state`(): AppState
     
+    /**
+     * Block until the actor has processed every message enqueued so far.
+     *
+     * FIFO round-trip barrier: sends a Sync sentinel through the same channel
+     * `dispatch` uses and waits for the reply. When `sync()` returns, all
+     * previously dispatched actions (and their state emits) are complete.
+     * Deterministic replacement for sleep-based waiting in tests.
+     */
+    fun `sync`()
+    
     companion object
 }
 
@@ -2149,6 +2168,25 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     }
     )
     }
+    
+
+    
+    /**
+     * Block until the actor has processed every message enqueued so far.
+     *
+     * FIFO round-trip barrier: sends a Sync sentinel through the same channel
+     * `dispatch` uses and waits for the reply. When `sync()` returns, all
+     * previously dispatched actions (and their state emits) are complete.
+     * Deterministic replacement for sleep-based waiting in tests.
+     */override fun `sync`()
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_sync(
+        it, _status)
+}
+    }
+    
     
 
     

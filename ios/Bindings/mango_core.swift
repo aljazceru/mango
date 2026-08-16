@@ -636,6 +636,16 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
      */
     func state()  -> AppState
     
+    /**
+     * Block until the actor has processed every message enqueued so far.
+     *
+     * FIFO round-trip barrier: sends a Sync sentinel through the same channel
+     * `dispatch` uses and waits for the reply. When `sync()` returns, all
+     * previously dispatched actions (and their state emits) are complete.
+     * Deterministic replacement for sleep-based waiting in tests.
+     */
+    func sync() 
+    
 }
 open class FfiApp: FfiAppProtocol, @unchecked Sendable {
     fileprivate let pointer: UnsafeMutableRawPointer!
@@ -822,6 +832,20 @@ open func state() -> AppState  {
     uniffi_mango_core_fn_method_ffiapp_state(self.uniffiClonePointer(),$0
     )
 })
+}
+    
+    /**
+     * Block until the actor has processed every message enqueued so far.
+     *
+     * FIFO round-trip barrier: sends a Sync sentinel through the same channel
+     * `dispatch` uses and waits for the reply. When `sync()` returns, all
+     * previously dispatched actions (and their state emits) are complete.
+     * Deterministic replacement for sleep-based waiting in tests.
+     */
+open func sync()  {try! rustCall() {
+    uniffi_mango_core_fn_method_ffiapp_sync(self.uniffiClonePointer(),$0
+    )
+}
 }
     
 
@@ -2681,7 +2705,7 @@ public func FfiConverterTypeConversationSummary_lower(_ value: ConversationSumma
 public struct DeviceCapability {
     public var abi: String
     public var totalRamBytes: UInt64
-    public var maxModelBytes: UInt64
+    public var availableRamBytes: UInt64
     public var supportsMmap: Bool
     public var status: LocalLlmCapabilityStatus
     public var reasonCode: String
@@ -2690,10 +2714,10 @@ public struct DeviceCapability {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(abi: String, totalRamBytes: UInt64, maxModelBytes: UInt64, supportsMmap: Bool, status: LocalLlmCapabilityStatus, reasonCode: String, reason: String?, availableStorageBytes: UInt64) {
+    public init(abi: String, totalRamBytes: UInt64, availableRamBytes: UInt64, supportsMmap: Bool, status: LocalLlmCapabilityStatus, reasonCode: String, reason: String?, availableStorageBytes: UInt64) {
         self.abi = abi
         self.totalRamBytes = totalRamBytes
-        self.maxModelBytes = maxModelBytes
+        self.availableRamBytes = availableRamBytes
         self.supportsMmap = supportsMmap
         self.status = status
         self.reasonCode = reasonCode
@@ -2715,7 +2739,7 @@ extension DeviceCapability: Equatable, Hashable {
         if lhs.totalRamBytes != rhs.totalRamBytes {
             return false
         }
-        if lhs.maxModelBytes != rhs.maxModelBytes {
+        if lhs.availableRamBytes != rhs.availableRamBytes {
             return false
         }
         if lhs.supportsMmap != rhs.supportsMmap {
@@ -2739,7 +2763,7 @@ extension DeviceCapability: Equatable, Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(abi)
         hasher.combine(totalRamBytes)
-        hasher.combine(maxModelBytes)
+        hasher.combine(availableRamBytes)
         hasher.combine(supportsMmap)
         hasher.combine(status)
         hasher.combine(reasonCode)
@@ -2759,7 +2783,7 @@ public struct FfiConverterTypeDeviceCapability: FfiConverterRustBuffer {
             try DeviceCapability(
                 abi: FfiConverterString.read(from: &buf), 
                 totalRamBytes: FfiConverterUInt64.read(from: &buf), 
-                maxModelBytes: FfiConverterUInt64.read(from: &buf), 
+                availableRamBytes: FfiConverterUInt64.read(from: &buf), 
                 supportsMmap: FfiConverterBool.read(from: &buf), 
                 status: FfiConverterTypeLocalLlmCapabilityStatus.read(from: &buf), 
                 reasonCode: FfiConverterString.read(from: &buf), 
@@ -2771,7 +2795,7 @@ public struct FfiConverterTypeDeviceCapability: FfiConverterRustBuffer {
     public static func write(_ value: DeviceCapability, into buf: inout [UInt8]) {
         FfiConverterString.write(value.abi, into: &buf)
         FfiConverterUInt64.write(value.totalRamBytes, into: &buf)
-        FfiConverterUInt64.write(value.maxModelBytes, into: &buf)
+        FfiConverterUInt64.write(value.availableRamBytes, into: &buf)
         FfiConverterBool.write(value.supportsMmap, into: &buf)
         FfiConverterTypeLocalLlmCapabilityStatus.write(value.status, into: &buf)
         FfiConverterString.write(value.reasonCode, into: &buf)
@@ -10508,9 +10532,10 @@ public func knownProviderPresets() -> [ProviderPreset]  {
  * Sources: Hugging Face LFS metadata (X-Linked-ETag = content sha256,
  * X-Linked-Size = byte length), verified 2026-06-26. Qwen presets verified
  * 2026-06-23. Android uses the platform HTTPS stack for model downloads; the
- * file is installed only after the pinned SHA-256 matches. Prompt formatting
- * uses each model's embedded `tokenizer.chat_template` via libllama-common, so
- * the `chat_template` field below is informational only (native ignores it).
+ * file is installed only after the pinned SHA-256 matches. Native inference
+ * reads each model's embedded `tokenizer.chat_template`; Android renders it
+ * with libllama-common and iOS uses llama.cpp's recognized template renderer.
+ * The `chat_template` field below is informational only.
  */
 public func localModelCatalog() -> [LocalModelPreset]  {
     return try!  FfiConverterSequenceTypeLocalModelPreset.lift(try! rustCall() {
@@ -10553,7 +10578,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_func_known_provider_presets() != 26978) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_func_local_model_catalog() != 33405) {
+    if (uniffi_mango_core_checksum_func_local_model_catalog() != 63566) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_func_model_supports_vision() != 37098) {
@@ -10581,6 +10606,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_state() != 64379) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_ffiapp_sync() != 43338) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() != 4827) {
