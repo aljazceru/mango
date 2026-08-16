@@ -9,6 +9,33 @@ fn wipe_guard_allows_android_files_dir() {
 }
 
 #[test]
+fn wipe_guard_allows_android_files_dir_with_applicationid_suffix() {
+    // Debug builds append `.dev` to the applicationId; beta builds may use
+    // other suffixes. The wipe guard must accept all of them.
+    for package in ["dev.disobey.mango.dev", "dev.disobey.mango.beta"] {
+        let data_dir = format!("/data/user/0/{package}/files");
+        assert!(
+            crate::wipe_data_dir_allowed(
+                &data_dir,
+                &format!("/data/user/0/{package}/files/mango.db"),
+                &format!("/data/user/0/{package}/files/mango_auth.db"),
+            ),
+            "wipe guard should accept suffixed package dir {package}"
+        );
+    }
+}
+
+#[test]
+fn android_cache_cleanup_accepts_suffixed_package_dir() {
+    use std::path::Path;
+    let data_dir = Path::new("/data/user/0/dev.disobey.mango.dev/files");
+    assert_eq!(
+        crate::android_cache_dir_from_data_dir(data_dir),
+        Some("/data/user/0/dev.disobey.mango.dev/cache".into())
+    );
+}
+
+#[test]
 fn wipe_guard_allows_ios_application_support_dir() {
     let data_dir = "/var/mobile/Containers/Data/Application/UUID/Library/Application Support";
     assert!(crate::wipe_data_dir_allowed(
