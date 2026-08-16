@@ -101,9 +101,15 @@
             fi
 
             mkdir -p android
-            cat > android/local.properties <<EOF
-            sdk.dir=$ANDROID_HOME
-EOF
+            # The SDK location is exported via ANDROID_HOME/ANDROID_SDK_ROOT,
+            # which Gradle honors directly. Never write local.properties from
+            # the nix shell: an ephemeral read-only store path left in the
+            # file breaks later non-nix builds (Gradle cannot install SDK
+            # components into the store). Only clean up any path a previous
+            # nix shell may have left behind.
+            if grep -q '^sdk.dir=/nix/store/' android/local.properties 2>/dev/null; then
+              rm -f android/local.properties
+            fi
 
             echo ""
             echo "Mango dev environment ready"
