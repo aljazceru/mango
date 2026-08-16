@@ -59,13 +59,13 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullBiometricProvider),
     );
     // Allow actor thread to initialize
-    std::thread::sleep(Duration::from_millis(150));
+    app.sync();
     app
 }
 
 /// Wait for the actor to process a dispatched action.
-fn wait() {
-    std::thread::sleep(Duration::from_millis(200));
+fn wait(app: &FfiApp) {
+    app.sync();
 }
 
 // ── Persistence tests ─────────────────────────────────────────────────────────
@@ -496,7 +496,7 @@ fn test_launch_agent_session() {
     app.dispatch(AppAction::LaunchAgentSession {
         task_description: "Test agent task".to_string(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     // Should have at least one agent session
@@ -529,7 +529,7 @@ fn test_cancel_agent_session() {
     app.dispatch(AppAction::LaunchAgentSession {
         task_description: "Task to cancel".to_string(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert!(
@@ -542,7 +542,7 @@ fn test_cancel_agent_session() {
     app.dispatch(AppAction::CancelAgentSession {
         session_id: session_id.clone(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     let session = state
@@ -566,7 +566,7 @@ fn test_load_agent_session() {
     app.dispatch(AppAction::LaunchAgentSession {
         task_description: "Task to load".to_string(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert!(
@@ -579,7 +579,7 @@ fn test_load_agent_session() {
     app.dispatch(AppAction::LoadAgentSession {
         session_id: session_id.clone(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert_eq!(
@@ -598,7 +598,7 @@ fn test_clear_agent_detail() {
     app.dispatch(AppAction::LaunchAgentSession {
         task_description: "Task to clear".to_string(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     if state.agent_sessions.is_empty() {
@@ -609,7 +609,7 @@ fn test_clear_agent_detail() {
     app.dispatch(AppAction::LoadAgentSession {
         session_id: session_id.clone(),
     });
-    wait();
+    wait(&app);
 
     // Verify loaded
     let state = app.state();
@@ -617,7 +617,7 @@ fn test_clear_agent_detail() {
 
     // Clear detail view
     app.dispatch(AppAction::ClearAgentDetail);
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert_eq!(
@@ -706,7 +706,7 @@ fn test_agent_network_timeout_marks_failed() {
     });
     // Give the actor a tick to process LaunchAgentSession and insert the session
     // into active_agent_sessions (synchronous, happens before the async spawn).
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
 
     // Capture the session ID from state
     let session_id = {
@@ -728,7 +728,7 @@ fn test_agent_network_timeout_marks_failed() {
             reason: "Connection timed out".to_string(),
         }),
     });
-    wait(); // 200ms for the actor to process the injected event
+    wait(&app); // deterministic barrier: injected event processed
 
     let state = app.state();
     let session = state
@@ -841,13 +841,13 @@ fn test_agent_step_tool_input() {
     app.dispatch(AppAction::LaunchAgentSession {
         task_description: "Tool input field test".to_string(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     if !state.agent_sessions.is_empty() {
         let session_id = state.agent_sessions[0].id.clone();
         app.dispatch(AppAction::LoadAgentSession { session_id });
-        wait();
+        wait(&app);
 
         let state = app.state();
         // Verify tool_input field is accessible on AgentStepSummary (compilation proves it exists)

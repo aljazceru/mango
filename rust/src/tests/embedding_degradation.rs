@@ -1,5 +1,4 @@
 use crate::{AppAction, EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider};
-use std::time::Duration;
 
 #[test]
 fn test_degraded_status_propagates_to_app_state() {
@@ -11,7 +10,7 @@ fn test_degraded_status_propagates_to_app_state() {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
-    std::thread::sleep(Duration::from_millis(100));
+    app.sync();
     let state = app.state();
     assert_eq!(state.embedding_status, EmbeddingStatus::Degraded);
 }
@@ -26,9 +25,9 @@ fn test_actor_handles_send_message_when_degraded() {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
-    std::thread::sleep(Duration::from_millis(100));
+    app.sync();
     app.dispatch(AppAction::NewConversation);
-    std::thread::sleep(Duration::from_millis(100));
+    app.sync();
     let state = app.state();
     assert_eq!(state.embedding_status, EmbeddingStatus::Degraded);
     assert_eq!(state.conversations.len(), 1);
@@ -44,7 +43,7 @@ fn test_active_status_on_normal_init() {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
-    std::thread::sleep(Duration::from_millis(100));
+    app.sync();
     let state = app.state();
     assert_eq!(state.embedding_status, EmbeddingStatus::Active);
 }

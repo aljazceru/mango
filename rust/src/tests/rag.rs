@@ -296,13 +296,13 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(crate::NullBiometricProvider),
     );
     // 100ms is stable under parallel test load; actor init includes VectorIndex + document list load.
-    std::thread::sleep(Duration::from_millis(100));
+    app.sync();
     app
 }
 
 /// Helper: sleep to let the actor process a dispatched action.
-fn wait() {
-    std::thread::sleep(Duration::from_millis(200));
+fn wait(app: &FfiApp) {
+    app.sync();
 }
 
 /// Helper: ingest a document and poll for completion with a generous timeout.
@@ -380,7 +380,7 @@ fn test_delete_document() {
     app.dispatch(AppAction::DeleteDocument {
         document_id: doc_id,
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert!(
@@ -397,7 +397,7 @@ fn test_attach_document_to_conversation() {
 
     // Create a conversation first (NewConversation sets current_conversation_id)
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
 
     // Ingest a document
     ingest_doc(&app, "attach_test.txt");
@@ -414,7 +414,7 @@ fn test_attach_document_to_conversation() {
     app.dispatch(AppAction::AttachDocumentToConversation {
         document_id: doc_id.clone(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert!(
@@ -431,14 +431,14 @@ fn test_detach_document() {
 
     // Setup: conversation + document + attach
     app.dispatch(AppAction::NewConversation);
-    wait();
+    wait(&app);
     ingest_doc(&app, "detach_test.txt");
     let state = app.state();
     let doc_id = state.documents[0].id.clone();
     app.dispatch(AppAction::AttachDocumentToConversation {
         document_id: doc_id.clone(),
     });
-    wait();
+    wait(&app);
 
     // Precondition: document is attached
     let state = app.state();
@@ -451,7 +451,7 @@ fn test_detach_document() {
     app.dispatch(AppAction::DetachDocumentFromConversation {
         document_id: doc_id.clone(),
     });
-    wait();
+    wait(&app);
 
     let state = app.state();
     assert!(

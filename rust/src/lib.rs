@@ -1263,6 +1263,12 @@ pub enum CoreMsg {
         conversation_id: String,
         reply: flume::Sender<Result<String, String>>,
     },
+    /// Round-trip barrier: the actor replies after every message enqueued
+    /// before this one has been fully processed. Gives tests (and native
+    /// layers) a deterministic alternative to sleep-based waiting.
+    Sync {
+        reply: flume::Sender<()>,
+    },
 }
 
 // ── Actor-internal state ─────────────────────────────────────────────────────
@@ -11200,6 +11206,12 @@ impl FfiApp {
                         let _ = reply.send(result);
                     }
 
+                    CoreMsg::Sync { reply } => {
+                        // FIFO barrier: everything enqueued before this Sync has
+                        // been processed by the time the reply arrives.
+                        let _ = reply.send(());
+                    }
+
                     CoreMsg::ReadEncryptedImage { message_id, reply } => {
                         // Decrypt image on the actor thread (single-user desktop: fine to block briefly).
                         // Plaintext bytes live only on the stack here — never stored in ActorState (T-ECE-04).
@@ -11251,6 +11263,22 @@ impl FfiApp {
     /// Dispatch an action to the actor loop.
     pub fn dispatch(&self, action: AppAction) {
         let _ = self.core_tx.send(CoreMsg::Action(action));
+    }
+
+    /// Block until the actor has processed every message enqueued so far.
+    ///
+    /// FIFO round-trip barrier: sends a Sync sentinel through the same channel
+    /// `dispatch` uses and waits for the reply. When `sync()` returns, all
+    /// previously dispatched actions (and their state emits) are complete.
+    /// Deterministic replacement for sleep-based waiting in tests.
+    pub fn sync(&self) {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        if self.core_tx.send(CoreMsg::Sync { reply: reply_tx }).is_err() {
+            panic!("actor channel closed during sync");
+        }
+        if let Err(e) = reply_rx.recv_timeout(std::time::Duration::from_secs(60)) {
+            panic!("actor did not answer sync within 60s: {e}");
+        }
     }
 
     /// Decrypt the encrypted image for `message_id` and return raw JPEG bytes.

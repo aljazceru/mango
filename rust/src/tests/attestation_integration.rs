@@ -14,8 +14,8 @@ use crate::attestation::AttestationEvent;
 use crate::llm::streaming::InternalEvent;
 use crate::{AttestationStatus, EmbeddingStatus, FfiApp};
 
-/// Create an FfiApp with empty data_dir (uses :memory: SQLite cache) and
-/// give the actor thread 50ms to initialize.
+/// Create an FfiApp with empty data_dir (uses :memory: SQLite cache).
+/// sync() guarantees startup hydration finished before returning.
 fn create_test_app() -> Arc<FfiApp> {
     let app = FfiApp::new(
         String::new(),
@@ -25,13 +25,13 @@ fn create_test_app() -> Arc<FfiApp> {
         Box::new(crate::NullLocalLlmProvider),
         Box::new(crate::NullBiometricProvider),
     );
-    std::thread::sleep(Duration::from_millis(50));
+    app.sync();
     app
 }
 
-/// Wait for the actor to process injected events.
-fn wait_for_update() {
-    std::thread::sleep(Duration::from_millis(100));
+/// Wait for the actor to process injected events (deterministic barrier).
+fn wait_for_update(app: &FfiApp) {
+    app.sync();
 }
 
 /// Current Unix timestamp in seconds.
@@ -72,7 +72,7 @@ fn test_attestation_verified_event_updates_state() {
             orchestrated_components: None,
         },
     ));
-    wait_for_update();
+    wait_for_update(&app);
 
     let state = app.state();
     let entry = state
@@ -100,7 +100,7 @@ fn test_attestation_failed_event_updates_state() {
         reason: "bad quote".to_string(),
         is_transient: false,
     }));
-    wait_for_update();
+    wait_for_update(&app);
 
     let state = app.state();
     let entry = state
@@ -136,7 +136,7 @@ fn test_attestation_nvidia_verified_event() {
             orchestrated_components: None,
         },
     ));
-    wait_for_update();
+    wait_for_update(&app);
 
     let state = app.state();
     let entry = state
@@ -175,7 +175,7 @@ fn test_raw_report_retrieval() {
             orchestrated_components: None,
         },
     ));
-    wait_for_update();
+    wait_for_update(&app);
 
     let retrieved = app.get_raw_attestation_report("report_be".to_string());
     assert_eq!(
@@ -217,7 +217,7 @@ fn test_attestation_verified_is_sticky_against_transient_failure() {
             orchestrated_components: None,
         },
     ));
-    wait_for_update();
+    wait_for_update(&app);
 
     // Then: simulate a transient 429 / network failure on re-attestation.
     // is_transient=true because this was a CollateralFetch/NetworkError (never reached the TEE).
@@ -226,7 +226,7 @@ fn test_attestation_verified_is_sticky_against_transient_failure() {
         reason: "AMD KDS returned HTTP 429 Too Many Requests".to_string(),
         is_transient: true,
     }));
-    wait_for_update();
+    wait_for_update(&app);
 
     let state = app.state();
     let entries: Vec<_> = state
@@ -275,7 +275,7 @@ fn test_attestation_genuine_failure_downgrades_verified() {
             orchestrated_components: None,
         },
     ));
-    wait_for_update();
+    wait_for_update(&app);
 
     // Then: simulate a genuine cryptographic verification failure (bad signature,
     // measurement mismatch, etc.) — is_transient=false.
@@ -284,7 +284,7 @@ fn test_attestation_genuine_failure_downgrades_verified() {
         reason: "TDX quote verification failed: signature mismatch".to_string(),
         is_transient: false,
     }));
-    wait_for_update();
+    wait_for_update(&app);
 
     let state = app.state();
     let entry = state
@@ -315,7 +315,7 @@ fn test_attestation_failed_replaced_by_verified() {
         reason: "initial error".to_string(),
         is_transient: false,
     }));
-    wait_for_update();
+    wait_for_update(&app);
 
     // Then: verify successfully.
     app.test_send_internal(InternalEvent::AttestationResult(
@@ -332,7 +332,7 @@ fn test_attestation_failed_replaced_by_verified() {
             orchestrated_components: None,
         },
     ));
-    wait_for_update();
+    wait_for_update(&app);
 
     let state = app.state();
     let entry = state
@@ -363,7 +363,7 @@ fn test_attestation_status_upsert_non_verified() {
         reason: "first error".to_string(),
         is_transient: false,
     }));
-    wait_for_update();
+    wait_for_update(&app);
 
     // Send a second Failed with a different reason — should replace.
     app.test_send_internal(InternalEvent::AttestationResult(AttestationEvent::Failed {
@@ -371,7 +371,7 @@ fn test_attestation_status_upsert_non_verified() {
         reason: "second error".to_string(),
         is_transient: false,
     }));
-    wait_for_update();
+    wait_for_update(&app);
 
     let state = app.state();
     let entries: Vec<_> = state
@@ -496,5 +496,6 @@ fn test_provider_fallback() {
         crate::CoreMsg::ExportConversationMarkdown { .. } => {
             panic!("Expected InternalEvent, got ExportConversationMarkdown")
         }
+        crate::CoreMsg::Sync { .. } => panic!("Expected InternalEvent, got Sync"),
     }
 }
