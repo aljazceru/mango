@@ -58,7 +58,13 @@
         ]);
 
         shell = pkgs.mkShell {
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
+          # Native libraries needed at link time by -sys crates (bzip2 via
+          # libzip/zopfli, lzma via xz2). Without these, `cargo test` fails
+          # with "unable to find library -lbz2" / "-llzma".
+          buildInputs = [
+            pkgs.bzip2
+            pkgs.xz
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.libiconv
           ];
 
