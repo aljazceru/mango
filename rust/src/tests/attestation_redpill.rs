@@ -341,3 +341,37 @@ fn nvidia_per_gpu_loop_shape_c() {
         .expect("gpu_evidence array");
     assert!(!gpus.is_empty(), "Shape C must have ≥ 1 gpu_evidence entry");
 }
+
+// Upstream drift 2026-08: Chutes responses can contain incomplete enclave
+// entries (e.g. `"e2e_pubkey": null` on an instance mid-boot). Parsing must
+// not fail on those entries; verify_chutes skips them and only errors when
+// no complete entry remains.
+#[test]
+fn chutes_parse_tolerates_incomplete_entries() {
+    use crate::attestation::redpill::RedpillChutesResponse;
+    let v = serde_json::json!({
+        "attestation_type": "chutes",
+        "nonce": null,
+        "all_attestations": [
+            {
+                "instance_id": "incomplete-1",
+                "nonce": null,
+                "e2e_pubkey": null,
+                "intel_quote": null,
+                "gpu_evidence": []
+            },
+            {
+                "instance_id": "complete-1",
+                "nonce": "ab".repeat(32),
+                "e2e_pubkey": "pk",
+                "intel_quote": "BAACAA",
+                "gpu_evidence": []
+            }
+        ]
+    });
+    let resp: RedpillChutesResponse =
+        serde_json::from_value(v).expect("must parse with null fields");
+    assert_eq!(resp.all_attestations.len(), 2);
+    assert!(resp.all_attestations[0].e2e_pubkey.is_none());
+    assert!(resp.all_attestations[1].e2e_pubkey.is_some());
+}
