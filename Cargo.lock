@@ -4440,7 +4440,7 @@ dependencies = [
 
 [[package]]
 name = "mango-desktop"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "flume",
  "iced",
@@ -4455,7 +4455,7 @@ dependencies = [
 
 [[package]]
 name = "mango_core"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
