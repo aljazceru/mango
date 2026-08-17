@@ -142,6 +142,43 @@ pub async fn fetch_and_verify_nvidia(
     // Step 1: build NRAS v3 request body from the inbound payload.
     let body = build_nras_v3_request(nvidia_payload, nonce_hex)?;
 
+    // Upstream drift (2026-08): Redpill's `aci/1` aggregator schema ships a
+    // top-level nvidia_payload with an EMPTY evidence_list on TDX-only (CPU)
+    // enclaves. NRAS rejects empty lists outright (4005 INVALID_EVIDENCE) and
+    // there is no GPU evidence to attest, so skip the roundtrip entirely.
+    // Trust is still gated by the TDX quote verification in the caller.
+    if serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v.get("evidence_list")
+                .and_then(|l| l.as_array())
+                .map(|a| a.is_empty())
+        })
+        .unwrap_or(false)
+    {
+        log::info!(
+            target: "attestation",
+            "[attestation] empty GPU evidence_list for backend={} — skipping NRAS",
+            backend_id
+        );
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        return Ok(AttestationEvent::Verified {
+            backend_id: backend_id.to_string(),
+            tee_type: "NvidiaH100Cc".to_string(),
+            report_blob: Vec::new(),
+            expires_at: now_secs + 3600,
+            tls_public_key_fp: None,
+            vcek_url: None,
+            vcek_der: None,
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        });
+    }
+
     // Step 2: POST to NRAS GPU attestation endpoint
     log::debug!(target: "attestation", "[attestation] posting to NRAS backend={}", backend_id);
     let nras_response = client
@@ -414,5 +451,20 @@ mod nras_request_tests {
     fn extract_nras_jwt_handles_legacy_object_shape() {
         let resp = serde_json::json!({"token": "tok123"});
         assert_eq!(extract_nras_jwt(&resp).unwrap(), "tok123");
+    }
+
+    // Upstream drift 2026-08: Redpill aci/1 aggregator ships an empty
+    // evidence_list on TDX-only enclaves. Must short-circuit to Ok (no NRAS
+    // roundtrip) instead of failing with 4005 INVALID_EVIDENCE.
+    #[tokio::test]
+    async fn empty_evidence_list_skips_nras_roundtrip() {
+        let payload = r#"{"nonce":"aa","arch":"HOPPER","evidence_list":[]}"#;
+        let evt = super::fetch_and_verify_nvidia(payload, "aa", "test-backend")
+            .await
+            .expect("empty evidence_list must skip NRAS and verify");
+        assert!(matches!(
+            evt,
+            super::super::AttestationEvent::Verified { .. }
+        ));
     }
 }

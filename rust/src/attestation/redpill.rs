@@ -331,9 +331,15 @@ pub struct RedpillOrchestratedResponse {
 pub struct RedpillChutesAttestation {
     #[serde(default)]
     pub instance_id: Option<String>,
-    pub nonce: String,
-    pub e2e_pubkey: String,
-    pub intel_quote: String,
+    /// Entries can be incomplete (e.g. `e2e_pubkey: null` on an instance that is
+    /// mid-boot or being decommissioned). Incomplete entries are skipped by
+    /// `verify_chutes`; at least one complete entry must remain.
+    #[serde(default)]
+    pub nonce: Option<String>,
+    #[serde(default)]
+    pub e2e_pubkey: Option<String>,
+    #[serde(default)]
+    pub intel_quote: Option<String>,
     #[serde(default)]
     pub gpu_evidence: Vec<serde_json::Value>,
 }
@@ -714,12 +720,21 @@ async fn verify_chutes(
     let resp: RedpillChutesResponse = serde_json::from_value(value.clone())
         .map_err(|e| RedpillError::Network(format!("chutes parse: {e}")))?;
 
+    // Skip incomplete enclave entries (missing nonce / e2e_pubkey / quote — e.g.
+    // an instance mid-boot). Verification targets the first COMPLETE entry;
+    // if none exists the response is unusable.
     let entry = resp
         .all_attestations
-        .first()
+        .iter()
+        .find(|a| a.nonce.is_some() && a.e2e_pubkey.is_some() && a.intel_quote.is_some())
         .ok_or(RedpillError::UnknownShape)?;
+    let (entry_nonce, entry_e2e_pubkey, entry_intel_quote) = (
+        entry.nonce.as_deref().unwrap(),
+        entry.e2e_pubkey.as_deref().unwrap(),
+        entry.intel_quote.as_deref().unwrap(),
+    );
 
-    let q = quote_bytes(&entry.intel_quote)?;
+    let q = quote_bytes(entry_intel_quote)?;
     if q.len() < REPORTDATA_OFFSET + REPORTDATA_LEN {
         return Err(RedpillError::QuoteDecode("chutes quote too short".into()));
     }
@@ -747,7 +762,7 @@ async fn verify_chutes(
         return Err(RedpillError::DebugMode);
     }
 
-    verify_redpill_chutes_anti_tamper(&rd, &entry.nonce, &entry.e2e_pubkey)?;
+    verify_redpill_chutes_anti_tamper(&rd, entry_nonce, entry_e2e_pubkey)?;
 
     // Shape C: GPU evidence is bound to the per-enclave `entry.nonce`, NOT the
     // outer client nonce. NRAS will reject the JWT if we send the client nonce
@@ -759,7 +774,7 @@ async fn verify_chutes(
                 .map_err(|e| RedpillError::Network(format!("gpu_evidence serialize: {e}")))?,
         };
         let _ =
-            super::nvidia::fetch_and_verify_nvidia(&payload_str, &entry.nonce, &backend.id).await?;
+            super::nvidia::fetch_and_verify_nvidia(&payload_str, entry_nonce, &backend.id).await?;
     }
 
     Ok(VerifiedRedpillAttestation {

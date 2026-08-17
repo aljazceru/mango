@@ -74,8 +74,9 @@ fn test_migration_v1_to_v2() {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(
-            version, 24,
-            "user_version should be 24 after all migrations"
+            version,
+            crate::persistence::schema::MIGRATIONS.len() as i32,
+            "user_version must equal the number of migrations"
         );
 
         // Verify pre-existing data survived
@@ -170,8 +171,9 @@ fn test_migration_version_increments() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 24,
-        "user_version should be 24 after all migrations"
+        version,
+        crate::persistence::schema::MIGRATIONS.len() as i32,
+        "user_version must equal the number of migrations"
     );
 }
 
@@ -191,8 +193,9 @@ fn test_migration_idempotent() {
             .unwrap();
         // Second open should not re-run migrations, so version stays put.
         assert_eq!(
-            version, 24,
-            "user_version must still be 24 on second open (idempotent)"
+            version,
+            crate::persistence::schema::MIGRATIONS.len() as i32,
+            "user_version must stay at the latest migration on second open (idempotent)"
         );
     }
     let _ = std::fs::remove_file(&tmp);
@@ -462,7 +465,7 @@ fn test_migration_v24_adds_nullable_message_route_columns() {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, crate::persistence::schema::MIGRATIONS.len() as i32);
 
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(messages)")
@@ -901,8 +904,9 @@ fn test_migration_v11_seeds_ppq_ai_private_transport() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 24,
-        "user_version should be 24 after all migrations including v24"
+        version,
+        crate::persistence::schema::MIGRATIONS.len() as i32,
+        "user_version must equal the number of migrations"
     );
 
     // Query the ppq-ai row directly

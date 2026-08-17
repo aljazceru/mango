@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS attestation_cache (
 
 INSERT OR IGNORE INTO backends (id, name, base_url, model_list, tee_type, display_order, is_active, created_at)
 VALUES
-    ('tinfoil', 'Tinfoil', 'https://inference.tinfoil.sh/v1/', '[\"qwen3-vl-30b\",\"gemma4-31b\",\"kimi-k2-6\",\"llama3-3-70b\",\"gpt-oss-120b\"]', 'IntelTdx', 0, 1, strftime('%s','now'));
+    ('tinfoil', 'Tinfoil', 'https://inference.tinfoil.sh/v1/', '[\"deepseek-v4-flash\",\"kimi-k3\",\"gemma4-31b\",\"llama3-3-70b\",\"gpt-oss-120b\",\"glm-5-2\"]', 'IntelTdx', 0, 1, strftime('%s','now'));
 ";
 
 /// Migration v2: add index on agent_steps for ordered step retrieval per session.
@@ -445,6 +445,15 @@ ALTER TABLE messages ADD COLUMN route_tee_label TEXT;
 ALTER TABLE messages ADD COLUMN route_tee_verified INTEGER;
 ";
 
+/// Migration v25: refresh Tinfoil model list — upstream removed `qwen3-vl-30b`
+/// and `kimi-k2-6` (verified against https://api.tinfoil.sh/v1/models on
+/// 2026-08-17). `kimi-k3` and `gemma4-31b` are the vision-capable entries.
+pub const MIGRATION_V25: &str = "
+UPDATE backends
+SET model_list = '[\"deepseek-v4-flash\",\"kimi-k3\",\"gemma4-31b\",\"llama3-3-70b\",\"gpt-oss-120b\",\"glm-5-2\"]'
+WHERE id = 'tinfoil';
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -471,6 +480,7 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V22,
     MIGRATION_V23,
     MIGRATION_V24,
+    MIGRATION_V25,
 ];
 
 #[cfg(test)]
@@ -580,7 +590,7 @@ mod tests {
             )
             .expect("seeded tinfoil backend");
         assert!(
-            model_list.contains("qwen3-vl-30b"),
+            model_list.contains("kimi-k3"),
             "tinfoil seed must include a vision-capable model for hybrid image routing: {model_list}"
         );
     }

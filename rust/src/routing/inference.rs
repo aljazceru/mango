@@ -923,7 +923,7 @@ mod tests {
     fn tinfoil_remote(vision: bool) -> RouteTarget {
         RouteTarget {
             backend_id: "tinfoil".into(),
-            model_id: "qwen3-vl-30b".into(),
+            model_id: "kimi-k3".into(),
             role: RouteTargetRole::Remote,
             capabilities: RouteCapabilities {
                 text: true,
@@ -1406,7 +1406,7 @@ mod tests {
     fn smart_accepts_valid_remote_decision() {
         let p = smart_profile();
         let r = CannedRouter(
-            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"qwen3-vl-30b","reason_code":"needs_reasoning","confidence":0.77}"#,
+            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"kimi-k3","reason_code":"needs_reasoning","confidence":0.77}"#,
         );
         let mut i = input(&p, "complex question");
         i.router = Some(&r);
@@ -1445,7 +1445,7 @@ mod tests {
         let mut p = smart_profile();
         p.fallback_policy = FallbackPolicy::Never;
         let r = CannedRouter(
-            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"qwen3-vl-30b","reason_code":"r","confidence":0.5}"#,
+            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"kimi-k3","reason_code":"r","confidence":0.5}"#,
         );
         let mut i = input(&p, "hi");
         i.router = Some(&r);
@@ -1545,7 +1545,7 @@ mod tests {
     fn smart_attestation_unavailable_falls_back_to_local() {
         let p = smart_profile();
         let r = CannedRouter(
-            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"qwen3-vl-30b","reason_code":"r","confidence":0.5}"#,
+            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"kimi-k3","reason_code":"r","confidence":0.5}"#,
         );
         let mut i = input(&p, "hi");
         i.router = Some(&r);
@@ -1630,7 +1630,7 @@ mod tests {
         // Router would pick remote, but the user forced Local this turn.
         let p = smart_profile();
         let r = CannedRouter(
-            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"qwen3-vl-30b","reason_code":"r","confidence":0.9}"#,
+            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"kimi-k3","reason_code":"r","confidence":0.9}"#,
         );
         let mut i = input(&p, "hi");
         i.router = Some(&r);
@@ -1664,7 +1664,7 @@ mod tests {
         let mut p = smart_profile();
         p.local_target = Some(tinfoil_remote(true));
         let r = CannedRouter(
-            r#"{"decision":"local","backend_id":"tinfoil","model_id":"qwen3-vl-30b","reason_code":"r","confidence":0.9}"#,
+            r#"{"decision":"local","backend_id":"tinfoil","model_id":"kimi-k3","reason_code":"r","confidence":0.9}"#,
         );
         let mut i = input(&p, "hi");
         i.router = Some(&r);
@@ -1736,7 +1736,7 @@ mod tests {
         // the fallback path resolves to local.
         let p = smart_profile();
         let r = CannedRouter(
-            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"qwen3-vl-30b","reason_code":"r","confidence":0.9}"#,
+            r#"{"decision":"remote","backend_id":"tinfoil","model_id":"kimi-k3","reason_code":"r","confidence":0.9}"#,
         );
         let mut i = input(&p, "hi");
         i.router = Some(&r);
@@ -1855,7 +1855,7 @@ mod tests {
             local_backend_id: "local-qwen".into(),
             local_model_id: "qwen2.5".into(),
             remote_backend_id: "tinfoil".into(),
-            remote_model_id: "qwen3-vl-30b".into(),
+            remote_model_id: "kimi-k3".into(),
             policy: RoutingPolicy {
                 escalate_if_attachment: true,
                 prefer_local_when_offline: true,

@@ -46,8 +46,9 @@ fn test_migration_v6_version() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(
-        version, 24,
-        "user_version should be 24 after all migrations including MIGRATION_V24"
+        version,
+        crate::persistence::schema::MIGRATIONS.len() as i32,
+        "user_version must equal the number of migrations"
     );
 }
 
