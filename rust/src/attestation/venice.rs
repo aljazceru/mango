@@ -148,7 +148,14 @@ pub async fn fetch_and_verify_venice_attestation(
     let nonce_hex = hex::encode(nonce_bytes);
 
     // 2. Build URL + GET
-    let base = backend.base_url.trim_end_matches('/');
+    // Strip a trailing `/api/v1` so backends configured with the canonical
+    // OpenAI-compatible root (e.g. `https://api.venice.ai/api/v1/`) don't
+    // double the segment — ATTESTATION_PATH already carries `/api/v1`.
+    // Mirrors the `/v1` normalization in attestation/redpill.rs.
+    let base = backend
+        .base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/api/v1");
     let url = format!(
         "{}{}?model={}&nonce={}",
         base,
