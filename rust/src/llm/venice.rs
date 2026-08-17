@@ -62,7 +62,10 @@ const AES_NONCE_LEN: usize = 12;
 const EPH_PUB_LEN: usize = 65; // uncompressed secp256k1 with 04 prefix
 const AES_GCM_TAG_LEN: usize = 16;
 
-const DEFAULT_VENICE_MODEL: &str = "e2ee-venice-uncensored-24b-p";
+/// Default E2EE model. `e2ee-venice-uncensored-24b-p` was removed upstream
+/// (2026-08); `e2ee-gpt-oss-20b-p` verified live against
+/// api.venice.ai/api/v1/tee/attestation.
+const DEFAULT_VENICE_MODEL: &str = "e2ee-gpt-oss-20b-p";
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 90;
 
 // ── Public helpers ───────────────────────────────────────────────────────────

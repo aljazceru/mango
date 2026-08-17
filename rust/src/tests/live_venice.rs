@@ -10,7 +10,7 @@
 
 use crate::llm::{BackendConfig, TeeType};
 
-const VENICE_MODEL: &str = "e2ee-venice-uncensored-24b-p";
+const VENICE_MODEL: &str = "e2ee-gpt-oss-20b-p";
 const VENICE_BASE_URL: &str = "https://api.venice.ai/api/v1/";
 
 fn skip_if_no_key() -> Option<String> {
