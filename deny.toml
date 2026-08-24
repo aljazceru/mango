@@ -4,12 +4,17 @@ ignore = [
     "RUSTSEC-2025-0012",
     "RUSTSEC-2025-0141",
     "RUSTSEC-2024-0384",
-    "RUSTSEC-2025-0119",
     "RUSTSEC-2024-0436",
     "RUSTSEC-2023-0071",
     "RUSTSEC-2024-0320",
-    # rand 0.8.5 unsoundness — transitive dep pinned by upstream, needs >=0.9.3
-    "RUSTSEC-2026-0097",
+    # Informational unmaintained notice. contextvm-sdk 0.2.2 pins nostr-sdk 0.44;
+    # the 0.44.3 relay-pool security fixes are applied. Remove when ContextVM
+    # supports nostr-sdk >=0.45, which incorporates the pool.
+    "RUSTSEC-2026-0243",
+    # Informational unmaintained notice with no safe upgrade. This is transitive
+    # through Iced's font stack and pdf-extract; migrate when either upstream
+    # adopts skrifa or another maintained font parser.
+    "RUSTSEC-2026-0192",
 ]
 
 [bans]

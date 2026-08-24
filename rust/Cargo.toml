@@ -69,7 +69,7 @@ once_cell = "1"
 # OpenSSL / native-tls introduced beyond the pre-existing rusqlite vendored
 # baseline.
 docx-rs = { version = "0.4.22", default-features = false }
-epub-parser = "0.3.4"
+rbook = { version = "0.7.10", default-features = false }
 html2text = "0.17"
 rtf-parser = "0.4.2"
 
