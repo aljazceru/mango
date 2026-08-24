@@ -90,11 +90,11 @@ urlencoding = "2.1"
 # model-ecdsa REPORTDATA decoder).
 
 # Phase 35: Nostr-based tool discovery + invocation (pure-Rust, rustls only)
-contextvm-sdk = "0.2.1"
+contextvm-sdk = "0.2.2"
 
 # Phase 36: npub bech32 encoding via nostr::nips::nip19::ToBech32 trait.
 # Bumped to 0.44 to pick up RUSTSEC-2026-0189 (NIP-44 DoS fix).
-nostr = { version = "0.44", default-features = false, features = ["std"] }
+nostr = { version = "0.44.7", default-features = false, features = ["std"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
@@ -113,7 +113,7 @@ ignore = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
 # contextvm mock-relay + rmcp server/client fixtures for in-process E2E tests.
-contextvm-sdk = { version = "0.2.1", features = ["test-utils", "rmcp"] }
+contextvm-sdk = { version = "0.2.2", features = ["test-utils", "rmcp"] }
 rmcp = { version = "1", features = ["server", "client", "macros", "schemars"] }
 schemars = "1"
 
