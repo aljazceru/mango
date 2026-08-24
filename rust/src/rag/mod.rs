@@ -26,7 +26,7 @@ pub const MAX_EXTRACT_INPUT_BYTES: usize = 20 * 1024 * 1024;
 /// Phase 32-09 dispatch (extends Phase 8 baseline):
 /// - `.pdf` → `pdf-extract`
 /// - `.docx` → `docx-rs`
-/// - `.epub` → `epub-parser` crate (spine pages as plain text)
+/// - `.epub` → `rbook` crate (spine pages rendered as plain text)
 /// - `.html` / `.htm` → `html2text` (script/style stripped, no JS execution)
 /// - `.rtf` → `rtf-parser`
 /// - anything else (including `.md`, `.txt`, `.org`, unknown) → UTF-8 lossy
@@ -118,16 +118,18 @@ fn walk_docx_text(v: &serde_json::Value, out: &mut String) {
     }
 }
 
-/// Extract plain text from an `.epub` byte buffer using the `epub-parser` crate.
+/// Extract plain text from an `.epub` byte buffer using the `rbook` crate.
 ///
-/// The parser walks the spine and returns cleaned page text. Concatenates with
-/// blank-line separators between pages.
+/// The parser walks the spine in reading order. Each XHTML page goes through
+/// the same non-executing HTML-to-text renderer used for standalone HTML files.
 fn extract_epub(bytes: &[u8]) -> anyhow::Result<String> {
-    let doc = epub_parser::Epub::parse_from_buffer(bytes)
-        .map_err(|e| anyhow::anyhow!("epub open: {}", e))?;
+    let doc = rbook::Epub::read(std::io::Cursor::new(bytes.to_vec()))
+        .map_err(|e| anyhow::anyhow!("epub open: {e}"))?;
     let mut out = String::new();
-    for page in doc.pages {
-        let text = page.content.trim();
+    for page in doc.reader() {
+        let page = page.map_err(|e| anyhow::anyhow!("epub page: {e}"))?;
+        let text = extract_html(page.content().as_bytes())?;
+        let text = text.trim();
         if text.is_empty() {
             continue;
         }
