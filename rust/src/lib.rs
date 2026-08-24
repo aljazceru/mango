@@ -1474,14 +1474,17 @@ fn path_has_component(path: &Path, name: &str) -> bool {
     path.components().any(|c| c.as_os_str() == name)
 }
 
-/// True if any path component starts with `prefix`.
-///
-/// The Android applicationId carries build-type suffixes (`dev.disobey.mango.dev`
-/// for debug, potential `.beta` etc.), so app-owned directory checks must match
-/// the package prefix, not the exact release package name.
-fn path_has_component_prefix(path: &Path, prefix: &str) -> bool {
-    path.components()
-        .any(|c| c.as_os_str().to_str().is_some_and(|s| s.starts_with(prefix)))
+/// True if a path contains the release Android package or a dot-delimited
+/// applicationId variant such as `dev.disobey.mango.dev`.
+fn path_has_android_package_component(path: &Path, package: &str) -> bool {
+    path.components().any(|component| {
+        component.as_os_str().to_str().is_some_and(|value| {
+            value == package
+                || value
+                    .strip_prefix(package)
+                    .is_some_and(|suffix| suffix.starts_with('.') && suffix.len() > 1)
+        })
+    })
 }
 
 fn looks_like_ios_app_support(path: &Path) -> bool {
@@ -1504,7 +1507,7 @@ fn wipe_data_dir_allowed(data_dir: &str, db_path: &str, bootstrap_path: &str) ->
     }
 
     path_has_component(data_dir_path, "mango")
-        || path_has_component_prefix(data_dir_path, "dev.disobey.mango")
+        || path_has_android_package_component(data_dir_path, "dev.disobey.mango")
         || looks_like_ios_app_support(data_dir_path)
 }
 
@@ -1534,7 +1537,7 @@ fn generated_mobile_image_name(path: &Path) -> bool {
 
 fn android_cache_dir_from_data_dir(data_dir: &Path) -> Option<std::path::PathBuf> {
     if data_dir.file_name().is_some_and(|name| name == "files")
-        && path_has_component_prefix(data_dir, "dev.disobey.mango")
+        && path_has_android_package_component(data_dir, "dev.disobey.mango")
     {
         return data_dir.parent().map(|root| root.join("cache"));
     }
