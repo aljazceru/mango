@@ -36,6 +36,32 @@ fn android_cache_cleanup_accepts_suffixed_package_dir() {
 }
 
 #[test]
+fn wipe_guard_rejects_android_package_lookalikes() {
+    use std::path::Path;
+
+    for package in [
+        "dev.disobey.mangoevil",
+        "dev.disobey.mango_evil",
+        "dev.disobey.mango-dev",
+    ] {
+        let data_dir = format!("/data/user/0/{package}/files");
+        assert!(
+            !crate::wipe_data_dir_allowed(
+                &data_dir,
+                &format!("{data_dir}/mango.db"),
+                &format!("{data_dir}/mango_auth.db"),
+            ),
+            "wipe guard must reject lookalike package dir {package}"
+        );
+        assert_eq!(
+            crate::android_cache_dir_from_data_dir(Path::new(&data_dir)),
+            None,
+            "cache cleanup must reject lookalike package dir {package}"
+        );
+    }
+}
+
+#[test]
 fn wipe_guard_allows_ios_application_support_dir() {
     let data_dir = "/var/mobile/Containers/Data/Application/UUID/Library/Application Support";
     assert!(crate::wipe_data_dir_allowed(
