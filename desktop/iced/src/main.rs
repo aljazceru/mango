@@ -136,8 +136,6 @@ fn sanitize_filename(title: &str) -> String {
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
                 c
-            } else if c.is_whitespace() {
-                '_'
             } else {
                 '_'
             }

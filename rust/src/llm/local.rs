@@ -324,6 +324,10 @@ pub fn platform_http_request(
 /// Loading and generation both run inside `spawn_blocking` so GGUF mmap/load work
 /// cannot stall the actor runtime. The caller still owns stream lifecycle through
 /// the returned cancellation token.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the spawn boundary explicitly transfers all generation inputs into an owned task"
+)]
 pub fn spawn_local_streaming_task(
     runtime: &tokio::runtime::Runtime,
     local_llm_provider: Arc<dyn LocalLlmProvider>,
@@ -391,6 +395,10 @@ pub fn spawn_local_streaming_task(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the test seam mirrors the production spawn boundary with an injected preset"
+)]
 pub(crate) fn spawn_local_streaming_task_for_preset(
     runtime: &tokio::runtime::Runtime,
     local_llm_provider: Arc<dyn LocalLlmProvider>,
@@ -462,6 +470,10 @@ fn run_local_generation_blocking(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the blocking boundary owns every value needed for isolated model generation"
+)]
 fn run_local_generation_with_preset_blocking(
     provider: Arc<dyn LocalLlmProvider>,
     data_dir: String,

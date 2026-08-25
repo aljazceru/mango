@@ -115,7 +115,7 @@ pub fn verify_venice_report_data(
             reason: "Venice REPORTDATA[20..32] padding non-zero".into(),
         });
     }
-    if &report_data[32..64] != &submitted_nonce[..] {
+    if report_data[32..64] != submitted_nonce[..] {
         return Err(AttestationError::NonceMismatch {
             expected: hex::encode(submitted_nonce),
             actual: hex::encode(&report_data[32..64]),

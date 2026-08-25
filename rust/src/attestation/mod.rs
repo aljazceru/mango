@@ -44,6 +44,7 @@ pub enum AttestationStatus {
     /// - `shape`: "Flat" | "Orchestrated" | "Chutes" (Phase 34 RED-11).
     /// - `freshness`: "PerRequest" | "PerEnclave" (RED-09).
     /// - `orchestrated_components`: per-component hex/actions hashes for Shape B.
+    ///
     /// All three are `None` for non-aggregator providers.
     Verified {
         shape: Option<String>,
@@ -146,21 +147,25 @@ pub enum AttestationEvent {
 /// - [`AttestationStatus`] — status (still unit `Verified` for now; struct-variant promotion is 34.1-02)
 /// - `Option<(AttestationRecord, report_blob, tls_public_key_fp, vcek_url, vcek_der)>` — `Some` on Verified, `None` on Failed
 /// - `bool` — `failed_is_transient`
+pub type VerifiedAttestationDetails = (
+    AttestationRecord,
+    Vec<u8>,
+    Option<String>,
+    Option<String>,
+    Option<Vec<u8>>,
+);
+
+pub type AttestationEventMapping = (
+    String,
+    AttestationStatus,
+    Option<VerifiedAttestationDetails>,
+    bool,
+);
+
 pub fn map_event_to_record_and_status(
     event: AttestationEvent,
     now_secs: u64,
-) -> (
-    String,
-    AttestationStatus,
-    Option<(
-        AttestationRecord,
-        Vec<u8>,
-        Option<String>,
-        Option<String>,
-        Option<Vec<u8>>,
-    )>,
-    bool,
-) {
+) -> AttestationEventMapping {
     match event {
         AttestationEvent::Verified {
             backend_id,
