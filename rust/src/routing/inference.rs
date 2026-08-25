@@ -601,12 +601,12 @@ fn pick_remote(
     // A Local override in RemoteOnly mode is only honored when the profile
     // explicitly allows cross-role fallback; otherwise it is rejected as a
     // privacy-boundary violation.
-    if matches!(force_role, Some(BackendRole::Local)) {
-        if profile.fallback_policy == FallbackPolicy::AllowCrossRole {
-            return Ok(profile_local_target(profile)?.clone());
-        }
-        // Fall through to remote; the override is incompatible with the mode.
+    if matches!(force_role, Some(BackendRole::Local))
+        && profile.fallback_policy == FallbackPolicy::AllowCrossRole
+    {
+        return Ok(profile_local_target(profile)?.clone());
     }
+    // Fall through to remote; the override is incompatible with the mode.
     let target = profile
         .remote_targets
         .first()

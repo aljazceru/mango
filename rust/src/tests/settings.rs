@@ -2,7 +2,6 @@
 ///
 /// These tests exercise the persistence layer directly using an in-memory SQLite
 /// database to verify ROUT-03, SETT-02, and SETT-03 behaviors.
-
 use crate::persistence::{self, queries, Database};
 use crate::{AppAction, EmbeddingStatus, FfiApp, NullEmbeddingProvider, NullKeychainProvider};
 

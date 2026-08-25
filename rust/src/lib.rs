@@ -1159,7 +1159,7 @@ fn role_heading(role: &str) -> String {
         "user" => "User".to_string(),
         "assistant" => "Assistant".to_string(),
         "system" => "System".to_string(),
-        other if other.is_empty() => "Unknown".to_string(),
+        "" => "Unknown".to_string(),
         other => {
             let mut chars = other.chars();
             match chars.next() {
@@ -1212,7 +1212,7 @@ pub fn format_conversation_as_markdown_with_now(
     }
 
     // Trim trailing whitespace runs, restore single trailing newline.
-    while out.ends_with(|c: char| c == '\n' || c == ' ' || c == '\t') {
+    while out.ends_with(['\n', ' ', '\t']) {
         out.pop();
     }
     out.push('\n');
@@ -1266,9 +1266,7 @@ pub enum CoreMsg {
     /// Round-trip barrier: the actor replies after every message enqueued
     /// before this one has been fully processed. Gives tests (and native
     /// layers) a deterministic alternative to sleep-based waiting.
-    Sync {
-        reply: flume::Sender<()>,
-    },
+    Sync { reply: flume::Sender<()> },
 }
 
 // ── Actor-internal state ─────────────────────────────────────────────────────
@@ -2548,10 +2546,10 @@ fn handle_pending_attested_send_after_attestation(
     failure_reason: Option<&str>,
     core_tx: &flume::Sender<CoreMsg>,
 ) {
-    if !actor_state
+    if actor_state
         .pending_attested_send
         .as_ref()
-        .is_some_and(|pending| pending.backend_id == backend_id)
+        .is_none_or(|pending| pending.backend_id != backend_id)
     {
         return;
     }
@@ -2624,9 +2622,7 @@ fn ensure_local_device_capability_supported(capability: &DeviceCapability) -> Re
     if capability.is_supported() {
         Ok(())
     } else {
-        Err(capability.blocked_reason_or_default(
-            "This device is not capable of local inference.",
-        ))
+        Err(capability.blocked_reason_or_default("This device is not capable of local inference."))
     }
 }
 
@@ -3038,9 +3034,7 @@ async fn download_local_model(
                 let lower = body_text.to_ascii_lowercase();
                 let index = lower.find("url=")?;
                 let raw = &body_text[index + "url=".len()..];
-                let end = raw
-                    .find(|ch| ch == '"' || ch == '\'' || ch == '>')
-                    .unwrap_or(raw.len());
+                let end = raw.find(['"', '\'', '>']).unwrap_or(raw.len());
                 Some(raw[..end].trim().to_string())
             })
             .ok_or_else(|| {
@@ -3214,10 +3208,7 @@ fn retry_backend_satisfies_preflight(
         return false;
     }
     if is_local_on_device_backend(backend)
-        && !actor_state
-            .app_state
-            .local_device_capability
-            .is_supported()
+        && !actor_state.app_state.local_device_capability.is_supported()
     {
         return false;
     }
@@ -4080,7 +4071,7 @@ fn do_send_message(
                             std::time::Duration::from_secs(CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS),
                             crate::contextvm::discovery::discover_all_for_providers(
                                 &relays,
-                                &trusted_pubkeys,
+                                trusted_pubkeys,
                             ),
                         )
                         .await
@@ -4990,23 +4981,20 @@ fn resolve_turn_backend_and_model(
             }
         }
 
-        if route.decision == BackendRole::Local && is_local_on_device_backend(backend) {
-            if actor_state
-                .app_state
-                .local_device_capability
-                .is_supported()
-            {
-                let preset = llm::local_models::find_local_model(&route.model_id)
-                    .ok_or_else(|| {
-                        TurnResolutionError::UserFacing(
-                            "This local model is not in the supported catalog.".to_string(),
-                        )
-                    })?;
-                if let Err(reason) =
-                    ensure_local_model_is_downloadable(&actor_state.app_state.local_device_capability, &preset)
-                {
-                    return Err(TurnResolutionError::UserFacing(reason));
-                }
+        if route.decision == BackendRole::Local
+            && is_local_on_device_backend(backend)
+            && actor_state.app_state.local_device_capability.is_supported()
+        {
+            let preset = llm::local_models::find_local_model(&route.model_id).ok_or_else(|| {
+                TurnResolutionError::UserFacing(
+                    "This local model is not in the supported catalog.".to_string(),
+                )
+            })?;
+            if let Err(reason) = ensure_local_model_is_downloadable(
+                &actor_state.app_state.local_device_capability,
+                &preset,
+            ) {
+                return Err(TurnResolutionError::UserFacing(reason));
             }
         }
 
@@ -5067,13 +5055,15 @@ fn resolve_turn_backend_and_model(
     }
 
     if is_local_on_device_backend(backend) {
-        if let Err(message) = ensure_local_device_capability_supported(
-            &actor_state.app_state.local_device_capability,
-        ) {
+        if let Err(message) =
+            ensure_local_device_capability_supported(&actor_state.app_state.local_device_capability)
+        {
             return Err(TurnResolutionError::UserFacing(message));
         }
         let preset = llm::local_models::find_local_model(model).ok_or_else(|| {
-            TurnResolutionError::UserFacing("This local model is not in the supported catalog.".to_string())
+            TurnResolutionError::UserFacing(
+                "This local model is not in the supported catalog.".to_string(),
+            )
         })?;
         ensure_local_model_is_downloadable(&actor_state.app_state.local_device_capability, &preset)
             .map_err(TurnResolutionError::UserFacing)?;
@@ -7668,10 +7658,7 @@ impl FfiApp {
                                     "[local-model] SetLocalInferenceEnabled enabled={enabled}"
                                 );
                                 if enabled
-                                    && !actor_state
-                                        .app_state
-                                        .local_device_capability
-                                        .is_supported()
+                                    && !actor_state.app_state.local_device_capability.is_supported()
                                 {
                                     actor_state.app_state.last_error = Some(
                                         actor_state
@@ -7748,7 +7735,9 @@ impl FfiApp {
 
                                 refresh_local_model_state(&mut actor_state);
                                 let cap = &actor_state.app_state.local_device_capability;
-                                if let Err(reason) = ensure_local_model_is_downloadable(cap, &preset) {
+                                if let Err(reason) =
+                                    ensure_local_model_is_downloadable(cap, &preset)
+                                {
                                     log::warn!(
                                         "[local-model] download rejected: total_ram={} available_ram={} required_ram={} reason={:?}",
                                         cap.total_ram_bytes,
@@ -11276,7 +11265,11 @@ impl FfiApp {
     /// Deterministic replacement for sleep-based waiting in tests.
     pub fn sync(&self) {
         let (reply_tx, reply_rx) = flume::bounded(1);
-        if self.core_tx.send(CoreMsg::Sync { reply: reply_tx }).is_err() {
+        if self
+            .core_tx
+            .send(CoreMsg::Sync { reply: reply_tx })
+            .is_err()
+        {
             panic!("actor channel closed during sync");
         }
         if let Err(e) = reply_rx.recv_timeout(std::time::Duration::from_secs(60)) {

@@ -89,6 +89,10 @@ struct EchoParams {
 
 #[derive(Clone)]
 struct EchoServer {
+    #[expect(
+        dead_code,
+        reason = "rmcp accesses the router through generated handler code"
+    )]
     tool_router: ToolRouter<Self>,
 }
 
@@ -117,12 +121,10 @@ impl EchoServer {
 #[tool_handler]
 impl ServerHandler for EchoServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
-        let server_info = rmcp::model::Implementation::new(
-            "mango-echo-server",
-            env!("CARGO_PKG_VERSION"),
-        )
-        .with_title("Mango Local Echo Server")
-        .with_description("Local test echo server for mango_core integration tests");
+        let server_info =
+            rmcp::model::Implementation::new("mango-echo-server", env!("CARGO_PKG_VERSION"))
+                .with_title("Mango Local Echo Server")
+                .with_description("Local test echo server for mango_core integration tests");
         rmcp::model::ServerInfo::new(
             rmcp::model::ServerCapabilities::builder()
                 .enable_tools()

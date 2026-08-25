@@ -23,7 +23,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
     // hydration and emitted its first state, so the screen is settled.
     app.sync();
     for _ in 0..100 {
-        if !matches!(app.state().router.current_screen, Screen::Home { .. }) {
+        if !matches!(app.state().router.current_screen, Screen::Home) {
             return app;
         }
         std::thread::sleep(Duration::from_millis(10));

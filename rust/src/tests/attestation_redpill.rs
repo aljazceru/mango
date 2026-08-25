@@ -167,8 +167,8 @@ fn shape_a_nonce_mismatch() {
     use sha3::{Digest, Keccak256};
     let mut fake_pk = vec![0u8; 65];
     fake_pk[0] = 0x04;
-    for i in 1..65 {
-        fake_pk[i] = i as u8;
+    for (i, byte) in fake_pk.iter_mut().enumerate().skip(1) {
+        *byte = i as u8;
     }
     let pk_hex = hex::encode(&fake_pk);
     let mut h = Keccak256::new();
@@ -191,8 +191,8 @@ fn shape_a_padding_nonzero() {
     use sha3::{Digest, Keccak256};
     let mut fake_pk = vec![0u8; 65];
     fake_pk[0] = 0x04;
-    for i in 1..65 {
-        fake_pk[i] = (i + 1) as u8;
+    for (i, byte) in fake_pk.iter_mut().enumerate().skip(1) {
+        *byte = (i + 1) as u8;
     }
     let pk_hex = hex::encode(&fake_pk);
     let mut h = Keccak256::new();

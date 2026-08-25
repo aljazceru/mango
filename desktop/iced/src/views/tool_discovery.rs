@@ -197,7 +197,7 @@ pub fn view<'a>(
     for tool in &filtered {
         grouped
             .entry(tool.provider_pubkey.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(tool);
     }
     // Sort groups by provider name

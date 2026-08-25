@@ -268,6 +268,10 @@ pub fn build_chat_tools_with_contextvm(
 /// - `fetch_url`: Fetches a URL and returns plain text from body element.
 /// - `file`: Reads/writes/appends files in the agent sandbox directory.
 /// - `calculate`: Evaluates mathematical expressions via evalexpr.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "tool dispatch needs the actor-owned services and per-turn ContextVM credentials"
+)]
 pub fn dispatch_tools(
     calls: &[ChatCompletionMessageToolCall],
     db_conn: &rusqlite::Connection,

@@ -1,4 +1,3 @@
-
 use crate::memory::extract::should_extract;
 use crate::memory::retrieve::{build_system_with_memories, MemoryResult, DEFAULT_MEMORY_TOP_K};
 use crate::persistence::queries::get_memory_content_by_usearch_keys;

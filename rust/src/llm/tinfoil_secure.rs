@@ -1524,117 +1524,6 @@ fn parse_ohttp_key_config(bytes: &[u8]) -> Result<[u8; 32], LlmError> {
     Ok(key)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn encrypted_frame(key_material: &ResponseKeyMaterial, seq: u64, plaintext: &[u8]) -> Vec<u8> {
-        let cipher = Aes256Gcm::new_from_slice(&key_material.key).unwrap();
-        let nonce = Nonce::from(compute_chunk_nonce(&key_material.nonce_base, seq));
-        let ciphertext = cipher.encrypt(&nonce, plaintext).unwrap();
-        let mut frame = Vec::with_capacity(4 + ciphertext.len());
-        frame.extend_from_slice(&(ciphertext.len() as u32).to_be_bytes());
-        frame.extend_from_slice(&ciphertext);
-        frame
-    }
-
-    #[test]
-    fn full_body_encrypted_sse_path_handles_done_frame() {
-        let key_material = ResponseKeyMaterial {
-            key: [7; KEY_LEN],
-            nonce_base: [9; NONCE_LEN],
-        };
-        let bytes = encrypted_frame(&key_material, 0, b"data: [DONE]\n\n");
-        let (tx, _rx) = flume::unbounded();
-        let mut framed = Vec::new();
-        let mut sse = String::new();
-        let mut seq = 0;
-
-        let keep_reading = process_encrypted_sse_bytes(
-            &bytes,
-            &key_material,
-            &mut framed,
-            &mut sse,
-            &mut seq,
-            &tx,
-        )
-        .unwrap();
-
-        assert!(!keep_reading);
-        assert!(framed.is_empty());
-        assert_eq!(seq, 1);
-    }
-
-    #[test]
-    fn streaming_secure_requests_do_not_use_platform_http() {
-        assert!(!use_platform_http_for_secure_request(
-            SecureResponseMode::Streaming
-        ));
-    }
-
-    #[test]
-    fn binary_error_body_is_not_rendered_lossy() {
-        let body_text = displayable_error_body(&[0xe7, 0x4c, 0x05, 0x71, 0x9b, 0x3e]);
-        assert!(body_text.is_empty());
-
-        let err = map_plain_error_body(503, &body_text, None);
-        match err {
-            LlmError::ApiError {
-                status_code,
-                reason,
-            } => {
-                assert_eq!(status_code, 503);
-                assert_eq!(reason, "HTTP 503");
-            }
-            other => panic!("expected ApiError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn json_error_body_message_is_preserved() {
-        let body = br#"{"error":{"message":"backend is warming up"}}"#;
-        let body_text = displayable_error_body(body);
-        let err = map_plain_error_body(503, &body_text, None);
-        match err {
-            LlmError::ApiError {
-                status_code,
-                reason,
-            } => {
-                assert_eq!(status_code, 503);
-                assert_eq!(reason, "backend is warming up");
-            }
-            other => panic!("expected ApiError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn encrypted_error_body_is_decrypted_before_mapping() {
-        let key_material = ResponseKeyMaterial {
-            key: [7; KEY_LEN],
-            nonce_base: [9; NONCE_LEN],
-        };
-        let framed = encrypted_frame(
-            &key_material,
-            0,
-            br#"{"title":"temporary secure backend outage"}"#,
-        );
-
-        let (status, body_text, problem) = parse_problem_body(503, framed, Some(&key_material));
-        let err = map_plain_error_body(status, &body_text, problem.as_ref());
-
-        match err {
-            LlmError::ApiError {
-                status_code,
-                reason,
-            } => {
-                assert_eq!(status_code, 503);
-                assert_eq!(reason, "temporary secure backend outage");
-            }
-            other => panic!("expected ApiError, got {other:?}"),
-        }
-    }
-}
-
 fn extract_dns_sans(cert: &X509Certificate<'_>) -> Result<Vec<String>, LlmError> {
     let san = cert
         .subject_alternative_name()
@@ -1755,4 +1644,115 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encrypted_frame(key_material: &ResponseKeyMaterial, seq: u64, plaintext: &[u8]) -> Vec<u8> {
+        let cipher = Aes256Gcm::new_from_slice(&key_material.key).unwrap();
+        let nonce = Nonce::from(compute_chunk_nonce(&key_material.nonce_base, seq));
+        let ciphertext = cipher.encrypt(&nonce, plaintext).unwrap();
+        let mut frame = Vec::with_capacity(4 + ciphertext.len());
+        frame.extend_from_slice(&(ciphertext.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&ciphertext);
+        frame
+    }
+
+    #[test]
+    fn full_body_encrypted_sse_path_handles_done_frame() {
+        let key_material = ResponseKeyMaterial {
+            key: [7; KEY_LEN],
+            nonce_base: [9; NONCE_LEN],
+        };
+        let bytes = encrypted_frame(&key_material, 0, b"data: [DONE]\n\n");
+        let (tx, _rx) = flume::unbounded();
+        let mut framed = Vec::new();
+        let mut sse = String::new();
+        let mut seq = 0;
+
+        let keep_reading = process_encrypted_sse_bytes(
+            &bytes,
+            &key_material,
+            &mut framed,
+            &mut sse,
+            &mut seq,
+            &tx,
+        )
+        .unwrap();
+
+        assert!(!keep_reading);
+        assert!(framed.is_empty());
+        assert_eq!(seq, 1);
+    }
+
+    #[test]
+    fn streaming_secure_requests_do_not_use_platform_http() {
+        assert!(!use_platform_http_for_secure_request(
+            SecureResponseMode::Streaming
+        ));
+    }
+
+    #[test]
+    fn binary_error_body_is_not_rendered_lossy() {
+        let body_text = displayable_error_body(&[0xe7, 0x4c, 0x05, 0x71, 0x9b, 0x3e]);
+        assert!(body_text.is_empty());
+
+        let err = map_plain_error_body(503, &body_text, None);
+        match err {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 503);
+                assert_eq!(reason, "HTTP 503");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_error_body_message_is_preserved() {
+        let body = br#"{"error":{"message":"backend is warming up"}}"#;
+        let body_text = displayable_error_body(body);
+        let err = map_plain_error_body(503, &body_text, None);
+        match err {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 503);
+                assert_eq!(reason, "backend is warming up");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encrypted_error_body_is_decrypted_before_mapping() {
+        let key_material = ResponseKeyMaterial {
+            key: [7; KEY_LEN],
+            nonce_base: [9; NONCE_LEN],
+        };
+        let framed = encrypted_frame(
+            &key_material,
+            0,
+            br#"{"title":"temporary secure backend outage"}"#,
+        );
+
+        let (status, body_text, problem) = parse_problem_body(503, framed, Some(&key_material));
+        let err = map_plain_error_body(status, &body_text, problem.as_ref());
+
+        match err {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 503);
+                assert_eq!(reason, "temporary secure backend outage");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
+    }
 }

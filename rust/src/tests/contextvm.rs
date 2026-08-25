@@ -292,6 +292,10 @@ struct EchoParams {
 
 #[derive(Clone)]
 struct EchoServer {
+    #[expect(
+        dead_code,
+        reason = "rmcp accesses the router through generated handler code"
+    )]
     tool_router: rmcp::handler::server::router::tool::ToolRouter<EchoServer>,
 }
 
@@ -428,8 +432,12 @@ async fn mock_relay_e2e_invoke_tool_echo() {
     );
 
     let result = client
-        .call_tool(rmcp::model::CallToolRequestParams::new("echo")
-            .with_arguments(serde_json::from_value(serde_json::json!({"message": "hello mango"})).expect("valid json")))
+        .call_tool(
+            rmcp::model::CallToolRequestParams::new("echo").with_arguments(
+                serde_json::from_value(serde_json::json!({"message": "hello mango"}))
+                    .expect("valid json"),
+            ),
+        )
         .await
         .expect("echo tool call failed");
 

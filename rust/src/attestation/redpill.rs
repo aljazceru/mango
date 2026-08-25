@@ -197,13 +197,13 @@ pub fn verify_redpill_gateway_reportdata(
             detail: format!("ed25519 pubkey must be 32B, got {}", expected_addr.len()),
         });
     }
-    if &report_data[0..32] != &expected_addr[..] {
+    if report_data[0..32] != expected_addr[..] {
         return Err(RedpillError::ReportDataMismatch {
             component: "gateway",
             detail: "ed25519 pubkey not bound to REPORTDATA[0..32]".into(),
         });
     }
-    if &report_data[32..64] != &submitted_nonce[..] {
+    if report_data[32..64] != submitted_nonce[..] {
         return Err(RedpillError::ReportDataMismatch {
             component: "gateway",
             detail: format!(
@@ -235,13 +235,13 @@ pub fn verify_redpill_compose_manager_reportdata(
             detail: format!("actions_hash must be 32B, got {}", expected.len()),
         });
     }
-    if &report_data[0..32] != &expected[..] {
+    if report_data[0..32] != expected[..] {
         return Err(RedpillError::ComposeManagerMismatch {
             expected: hex::encode(&expected),
             actual: hex::encode(&report_data[0..32]),
         });
     }
-    if &report_data[32..64] != &submitted_nonce[..] {
+    if report_data[32..64] != submitted_nonce[..] {
         return Err(RedpillError::ReportDataMismatch {
             component: "compose_manager",
             detail: "nonce mismatch in REPORTDATA[32..64]".into(),
@@ -262,12 +262,12 @@ pub fn verify_redpill_chutes_anti_tamper(
     h.update(enclave_baked_nonce_str.as_bytes());
     h.update(e2e_pubkey_str.as_bytes());
     let digest = h.finalize();
-    if &report_data[0..32] != &digest[..] {
+    if report_data[0..32] != digest[..] {
         return Err(RedpillError::ReportDataMismatch {
             component: "chutes_anti_tamper",
             detail: format!(
                 "SHA256(nonce_str ++ e2e_pubkey_str) mismatch: expected={} actual={}",
-                hex::encode(&digest),
+                hex::encode(digest),
                 hex::encode(&report_data[0..32])
             ),
         });
@@ -504,7 +504,7 @@ async fn verify_flat(
                 detail: format!("signing_address hex decode: {e}"),
             }
         })?;
-        if addr.len() != 20 || &rd[0..20] != &addr[..] {
+        if addr.len() != 20 || rd[0..20] != addr[..] {
             return Err(RedpillError::ReportDataMismatch {
                 component: "model",
                 detail: "signing_address not bound to REPORTDATA[0..20]".into(),
@@ -516,7 +516,7 @@ async fn verify_flat(
                 detail: "REPORTDATA[20..32] padding non-zero".into(),
             });
         }
-        if &rd[32..64] != &nonce[..] {
+        if rd[32..64] != nonce[..] {
             return Err(RedpillError::ReportDataMismatch {
                 component: "model",
                 detail: "nonce mismatch in REPORTDATA[32..64]".into(),
@@ -625,9 +625,9 @@ async fn verify_orchestrated(
                 }
             })?;
             if addr.len() != 20
-                || &rd[0..20] != &addr[..]
+                || rd[0..20] != addr[..]
                 || rd[20..32].iter().any(|&b| b != 0)
-                || &rd[32..64] != &nonce[..]
+                || rd[32..64] != nonce[..]
             {
                 return Err(RedpillError::OrchestratedComponentFailed { failed: "model" });
             }
