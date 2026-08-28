@@ -59,7 +59,7 @@ open class RustBuffer : Structure() {
     companion object {
         internal fun alloc(size: ULong = 0UL) = uniffiRustCall() { status ->
             // Note: need to convert the size to a `Long` value to make this work with JVM.
-            UniffiLib.INSTANCE.ffi_mango_core_rustbuffer_alloc(size.toLong(), status)
+            UniffiLib.ffi_mango_core_rustbuffer_alloc(size.toLong(), status)
         }.also {
             if(it.data == null) {
                throw RuntimeException("RustBuffer.alloc() returned null data pointer (size=${size})")
@@ -75,49 +75,15 @@ open class RustBuffer : Structure() {
         }
 
         internal fun free(buf: RustBuffer.ByValue) = uniffiRustCall() { status ->
-            UniffiLib.INSTANCE.ffi_mango_core_rustbuffer_free(buf, status)
+            UniffiLib.ffi_mango_core_rustbuffer_free(buf, status)
         }
     }
 
     @Suppress("TooGenericExceptionThrown")
     fun asByteBuffer() =
-        this.data?.getByteBuffer(0, this.len.toLong())?.also {
+        this.data?.getByteBuffer(0, this.len)?.also {
             it.order(ByteOrder.BIG_ENDIAN)
         }
-}
-
-/**
- * The equivalent of the `*mut RustBuffer` type.
- * Required for callbacks taking in an out pointer.
- *
- * Size is the sum of all values in the struct.
- *
- * @suppress
- */
-class RustBufferByReference : ByReference(16) {
-    /**
-     * Set the pointed-to `RustBuffer` to the given value.
-     */
-    fun setValue(value: RustBuffer.ByValue) {
-        // NOTE: The offsets are as they are in the C-like struct.
-        val pointer = getPointer()
-        pointer.setLong(0, value.capacity)
-        pointer.setLong(8, value.len)
-        pointer.setPointer(16, value.data)
-    }
-
-    /**
-     * Get a `RustBuffer.ByValue` from this reference.
-     */
-    fun getValue(): RustBuffer.ByValue {
-        val pointer = getPointer()
-        val value = RustBuffer.ByValue()
-        value.writeField("capacity", pointer.getLong(0))
-        value.writeField("len", pointer.getLong(8))
-        value.writeField("data", pointer.getLong(16))
-
-        return value
-    }
 }
 
 // This is a helper for safely passing byte references into the rust code.
@@ -132,6 +98,43 @@ internal open class ForeignBytes : Structure() {
     @JvmField var data: Pointer? = null
 
     class ByValue : ForeignBytes(), Structure.ByValue
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Only `lower` is valid — zero-copy byte buffers only flow foreign -> Rust,
+// and only in argument position. `lift`, `read`, `write`, and
+// `allocationSize` have no sound implementation here and all panic at
+// runtime. The `FfiConverter` interface is implemented so that the
+// compiler enforces the full method set (rather than relying on eyeball).
+//
+// The provided `ByteBuffer` MUST be direct — only direct buffers have a
+// stable native address that JNA can expose via `getDirectBufferPointer`.
+// The returned `ForeignBytes.ByValue` is only valid for the duration of
+// the FFI call; the Rust side treats it as a borrow.
+internal object FfiConverterByRefBytes : FfiConverter<java.nio.ByteBuffer, ForeignBytes.ByValue> {
+    override fun lower(value: java.nio.ByteBuffer): ForeignBytes.ByValue {
+        require(value.isDirect) { "UniFFI zero-copy &[u8] requires a direct ByteBuffer. Use ByteBuffer.allocateDirect()." }
+        val remaining = value.remaining()
+        val fb = ForeignBytes.ByValue()
+        fb.len = remaining
+        // Zero-length direct buffers: skip getDirectBufferPointer (platform-variable behavior)
+        // and pass null. The Rust side treats (null, 0) as &[].
+        fb.data = if (remaining == 0) null else com.sun.jna.Native.getDirectBufferPointer(value)
+        return fb
+    }
+
+    override fun lift(value: ForeignBytes.ByValue): java.nio.ByteBuffer =
+        error("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+
+    override fun read(buf: java.nio.ByteBuffer): java.nio.ByteBuffer =
+        error("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+
+    override fun write(value: java.nio.ByteBuffer, buf: java.nio.ByteBuffer): Unit =
+        error("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+
+    override fun allocationSize(value: java.nio.ByteBuffer): ULong =
+        error("ByRef bytes have no RustBuffer allocation size: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
 }
 /**
  * The FfiConverter interface handles converter types to and from the FFI
@@ -316,8 +319,9 @@ internal inline fun<T> uniffiTraitInterfaceCall(
     try {
         writeReturn(makeCall())
     } catch(e: kotlin.Exception) {
+        val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
         callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
-        callStatus.error_buf = FfiConverterString.lower(e.toString())
+        callStatus.error_buf = FfiConverterString.lower(err)
     }
 }
 
@@ -334,26 +338,39 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallWithError(
             callStatus.code = UNIFFI_CALL_ERROR
             callStatus.error_buf = lowerError(e)
         } else {
+            val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
             callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
-            callStatus.error_buf = FfiConverterString.lower(e.toString())
+            callStatus.error_buf = FfiConverterString.lower(err)
         }
     }
 }
+// Initial value and increment amount for handles. 
+// These ensure that Kotlin-generated handles always have the lowest bit set
+private const val UNIFFI_HANDLEMAP_INITIAL = 1.toLong()
+private const val UNIFFI_HANDLEMAP_DELTA = 2.toLong()
+
 // Map handles to objects
 //
 // This is used pass an opaque 64-bit handle representing a foreign object to the Rust code.
 internal class UniffiHandleMap<T: Any> {
     private val map = ConcurrentHashMap<Long, T>()
-    private val counter = java.util.concurrent.atomic.AtomicLong(0)
+    // Start 
+    private val counter = java.util.concurrent.atomic.AtomicLong(UNIFFI_HANDLEMAP_INITIAL)
 
     val size: Int
         get() = map.size
 
     // Insert a new object into the handle map and get a handle for it
     fun insert(obj: T): Long {
-        val handle = counter.getAndAdd(1)
+        val handle = counter.getAndAdd(UNIFFI_HANDLEMAP_DELTA)
         map.put(handle, obj)
         return handle
+    }
+
+    // Clone a handle, creating a new one
+    fun clone(handle: Long): Long {
+        val obj = map.get(handle) ?: throw InternalException("UniffiHandleMap.clone: Invalid handle")
+        return insert(obj)
     }
 
     // Get an object from the handle map
@@ -378,281 +395,260 @@ private fun findLibraryName(componentName: String): String {
     return "mango_core"
 }
 
-private inline fun <reified Lib : Library> loadIndirect(
-    componentName: String
-): Lib {
-    return Native.load<Lib>(findLibraryName(componentName), Lib::class.java)
-}
-
 // Define FFI callback types
 internal interface UniffiRustFutureContinuationCallback : com.sun.jna.Callback {
     fun callback(`data`: Long,`pollResult`: Byte,)
 }
-internal interface UniffiForeignFutureFree : com.sun.jna.Callback {
+internal interface UniffiForeignFutureDroppedCallback : com.sun.jna.Callback {
     fun callback(`handle`: Long,)
 }
 internal interface UniffiCallbackInterfaceFree : com.sun.jna.Callback {
     fun callback(`handle`: Long,)
 }
+internal interface UniffiCallbackInterfaceClone : com.sun.jna.Callback {
+    fun callback(`handle`: Long,)
+    : Long
+}
 @Structure.FieldOrder("handle", "free")
-internal open class UniffiForeignFuture(
+internal open class UniffiForeignFutureDroppedCallbackStruct(
     @JvmField internal var `handle`: Long = 0.toLong(),
-    @JvmField internal var `free`: UniffiForeignFutureFree? = null,
+    @JvmField internal var `free`: UniffiForeignFutureDroppedCallback? = null,
 ) : Structure() {
     class UniffiByValue(
         `handle`: Long = 0.toLong(),
-        `free`: UniffiForeignFutureFree? = null,
-    ): UniffiForeignFuture(`handle`,`free`,), Structure.ByValue
+        `free`: UniffiForeignFutureDroppedCallback? = null,
+    ): UniffiForeignFutureDroppedCallbackStruct(`handle`,`free`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFuture) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureDroppedCallbackStruct) {
         `handle` = other.`handle`
         `free` = other.`free`
     }
 
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructU8(
+internal open class UniffiForeignFutureResultU8(
     @JvmField internal var `returnValue`: Byte = 0.toByte(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Byte = 0.toByte(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructU8(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultU8(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructU8) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU8) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteU8 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU8.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU8.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructI8(
+internal open class UniffiForeignFutureResultI8(
     @JvmField internal var `returnValue`: Byte = 0.toByte(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Byte = 0.toByte(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructI8(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultI8(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructI8) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI8) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteI8 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI8.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI8.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructU16(
+internal open class UniffiForeignFutureResultU16(
     @JvmField internal var `returnValue`: Short = 0.toShort(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Short = 0.toShort(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructU16(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultU16(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructU16) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU16) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteU16 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU16.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU16.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructI16(
+internal open class UniffiForeignFutureResultI16(
     @JvmField internal var `returnValue`: Short = 0.toShort(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Short = 0.toShort(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructI16(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultI16(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructI16) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI16) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteI16 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI16.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI16.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructU32(
+internal open class UniffiForeignFutureResultU32(
     @JvmField internal var `returnValue`: Int = 0,
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Int = 0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructU32(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultU32(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructU32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteU32 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU32.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU32.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructI32(
+internal open class UniffiForeignFutureResultI32(
     @JvmField internal var `returnValue`: Int = 0,
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Int = 0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructI32(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultI32(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructI32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteI32 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI32.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI32.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructU64(
+internal open class UniffiForeignFutureResultU64(
     @JvmField internal var `returnValue`: Long = 0.toLong(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Long = 0.toLong(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructU64(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultU64(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructU64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteU64 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU64.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU64.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructI64(
+internal open class UniffiForeignFutureResultI64(
     @JvmField internal var `returnValue`: Long = 0.toLong(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Long = 0.toLong(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructI64(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultI64(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructI64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteI64 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI64.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI64.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructF32(
+internal open class UniffiForeignFutureResultF32(
     @JvmField internal var `returnValue`: Float = 0.0f,
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Float = 0.0f,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructF32(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultF32(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructF32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultF32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteF32 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructF32.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultF32.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructF64(
+internal open class UniffiForeignFutureResultF64(
     @JvmField internal var `returnValue`: Double = 0.0,
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Double = 0.0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructF64(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultF64(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructF64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultF64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteF64 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructF64.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultF64.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructPointer(
-    @JvmField internal var `returnValue`: Pointer = Pointer.NULL,
-    @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-) : Structure() {
-    class UniffiByValue(
-        `returnValue`: Pointer = Pointer.NULL,
-        `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructPointer(`returnValue`,`callStatus`,), Structure.ByValue
-
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructPointer) {
-        `returnValue` = other.`returnValue`
-        `callStatus` = other.`callStatus`
-    }
-
-}
-internal interface UniffiForeignFutureCompletePointer : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructPointer.UniffiByValue,)
-}
-@Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructRustBuffer(
+internal open class UniffiForeignFutureResultRustBuffer(
     @JvmField internal var `returnValue`: RustBuffer.ByValue = RustBuffer.ByValue(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: RustBuffer.ByValue = RustBuffer.ByValue(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructRustBuffer(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultRustBuffer(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructRustBuffer) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultRustBuffer) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteRustBuffer : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructRustBuffer.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultRustBuffer.UniffiByValue,)
 }
 @Structure.FieldOrder("callStatus")
-internal open class UniffiForeignFutureStructVoid(
+internal open class UniffiForeignFutureResultVoid(
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructVoid(`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultVoid(`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructVoid) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultVoid) {
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructVoid.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultVoid.UniffiByValue,)
 }
 internal interface UniffiCallbackInterfaceAppReconcilerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`update`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
@@ -662,9 +658,6 @@ internal interface UniffiCallbackInterfaceBiometricProviderMethod0 : com.sun.jna
 }
 internal interface UniffiCallbackInterfaceBiometricProviderMethod1 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`reason`: RustBuffer.ByValue,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,)
-}
-internal interface UniffiCallbackInterfaceEmbeddingProviderMethod0 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`texts`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceFilePickerProviderMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
@@ -678,17 +671,20 @@ internal interface UniffiCallbackInterfaceKeychainProviderMethod1 : com.sun.jna.
 internal interface UniffiCallbackInterfaceKeychainProviderMethod2 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
+internal interface UniffiCallbackInterfaceEmbeddingProviderMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`texts`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfaceLocalLlmProviderMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`modelPath`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceLocalLlmProviderMethod1 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`destinationPath`: RustBuffer.ByValue,`context`: Pointer,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+    fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`destinationPath`: RustBuffer.ByValue,`context`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceLocalLlmProviderMethod2 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`request`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceLocalLlmProviderMethod3 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`promptJson`: RustBuffer.ByValue,`context`: Pointer,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+    fun callback(`uniffiHandle`: Long,`promptJson`: RustBuffer.ByValue,`context`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceLocalLlmProviderMethod4 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
@@ -699,97 +695,114 @@ internal interface UniffiCallbackInterfaceLocalLlmProviderMethod5 : com.sun.jna.
 internal interface UniffiCallbackInterfaceLocalLlmProviderMethod6 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
-@Structure.FieldOrder("reconcile", "uniffiFree")
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "reconcile")
 internal open class UniffiVTableCallbackInterfaceAppReconciler(
-    @JvmField internal var `reconcile`: UniffiCallbackInterfaceAppReconcilerMethod0? = null,
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `reconcile`: UniffiCallbackInterfaceAppReconcilerMethod0? = null,
 ) : Structure() {
     class UniffiByValue(
-        `reconcile`: UniffiCallbackInterfaceAppReconcilerMethod0? = null,
         `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    ): UniffiVTableCallbackInterfaceAppReconciler(`reconcile`,`uniffiFree`,), Structure.ByValue
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `reconcile`: UniffiCallbackInterfaceAppReconcilerMethod0? = null,
+    ): UniffiVTableCallbackInterfaceAppReconciler(`uniffiFree`,`uniffiClone`,`reconcile`,), Structure.ByValue
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceAppReconciler) {
-        `reconcile` = other.`reconcile`
         `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `reconcile` = other.`reconcile`
     }
 
 }
-@Structure.FieldOrder("biometricStatus", "authenticate", "uniffiFree")
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "biometricStatus", "authenticate")
 internal open class UniffiVTableCallbackInterfaceBiometricProvider(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
     @JvmField internal var `biometricStatus`: UniffiCallbackInterfaceBiometricProviderMethod0? = null,
     @JvmField internal var `authenticate`: UniffiCallbackInterfaceBiometricProviderMethod1? = null,
-    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
 ) : Structure() {
     class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
         `biometricStatus`: UniffiCallbackInterfaceBiometricProviderMethod0? = null,
         `authenticate`: UniffiCallbackInterfaceBiometricProviderMethod1? = null,
-        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    ): UniffiVTableCallbackInterfaceBiometricProvider(`biometricStatus`,`authenticate`,`uniffiFree`,), Structure.ByValue
+    ): UniffiVTableCallbackInterfaceBiometricProvider(`uniffiFree`,`uniffiClone`,`biometricStatus`,`authenticate`,), Structure.ByValue
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceBiometricProvider) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
         `biometricStatus` = other.`biometricStatus`
         `authenticate` = other.`authenticate`
-        `uniffiFree` = other.`uniffiFree`
     }
 
 }
-@Structure.FieldOrder("embed", "uniffiFree")
-internal open class UniffiVTableCallbackInterfaceEmbeddingProvider(
-    @JvmField internal var `embed`: UniffiCallbackInterfaceEmbeddingProviderMethod0? = null,
-    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-) : Structure() {
-    class UniffiByValue(
-        `embed`: UniffiCallbackInterfaceEmbeddingProviderMethod0? = null,
-        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    ): UniffiVTableCallbackInterfaceEmbeddingProvider(`embed`,`uniffiFree`,), Structure.ByValue
-
-   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceEmbeddingProvider) {
-        `embed` = other.`embed`
-        `uniffiFree` = other.`uniffiFree`
-    }
-
-}
-@Structure.FieldOrder("pickFile", "uniffiFree")
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "pickFile")
 internal open class UniffiVTableCallbackInterfaceFilePickerProvider(
-    @JvmField internal var `pickFile`: UniffiCallbackInterfaceFilePickerProviderMethod0? = null,
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `pickFile`: UniffiCallbackInterfaceFilePickerProviderMethod0? = null,
 ) : Structure() {
     class UniffiByValue(
-        `pickFile`: UniffiCallbackInterfaceFilePickerProviderMethod0? = null,
         `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    ): UniffiVTableCallbackInterfaceFilePickerProvider(`pickFile`,`uniffiFree`,), Structure.ByValue
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `pickFile`: UniffiCallbackInterfaceFilePickerProviderMethod0? = null,
+    ): UniffiVTableCallbackInterfaceFilePickerProvider(`uniffiFree`,`uniffiClone`,`pickFile`,), Structure.ByValue
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceFilePickerProvider) {
-        `pickFile` = other.`pickFile`
         `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `pickFile` = other.`pickFile`
     }
 
 }
-@Structure.FieldOrder("store", "load", "delete", "uniffiFree")
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "store", "load", "delete")
 internal open class UniffiVTableCallbackInterfaceKeychainProvider(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
     @JvmField internal var `store`: UniffiCallbackInterfaceKeychainProviderMethod0? = null,
     @JvmField internal var `load`: UniffiCallbackInterfaceKeychainProviderMethod1? = null,
     @JvmField internal var `delete`: UniffiCallbackInterfaceKeychainProviderMethod2? = null,
-    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
 ) : Structure() {
     class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
         `store`: UniffiCallbackInterfaceKeychainProviderMethod0? = null,
         `load`: UniffiCallbackInterfaceKeychainProviderMethod1? = null,
         `delete`: UniffiCallbackInterfaceKeychainProviderMethod2? = null,
-        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    ): UniffiVTableCallbackInterfaceKeychainProvider(`store`,`load`,`delete`,`uniffiFree`,), Structure.ByValue
+    ): UniffiVTableCallbackInterfaceKeychainProvider(`uniffiFree`,`uniffiClone`,`store`,`load`,`delete`,), Structure.ByValue
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceKeychainProvider) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
         `store` = other.`store`
         `load` = other.`load`
         `delete` = other.`delete`
-        `uniffiFree` = other.`uniffiFree`
     }
 
 }
-@Structure.FieldOrder("loadModel", "downloadModelFile", "platformHttpRequest", "generate", "unload", "loadedModelPath", "deviceCapability", "uniffiFree")
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "embed")
+internal open class UniffiVTableCallbackInterfaceEmbeddingProvider(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `embed`: UniffiCallbackInterfaceEmbeddingProviderMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `embed`: UniffiCallbackInterfaceEmbeddingProviderMethod0? = null,
+    ): UniffiVTableCallbackInterfaceEmbeddingProvider(`uniffiFree`,`uniffiClone`,`embed`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceEmbeddingProvider) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `embed` = other.`embed`
+    }
+
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "loadModel", "downloadModelFile", "platformHttpRequest", "generate", "unload", "loadedModelPath", "deviceCapability")
 internal open class UniffiVTableCallbackInterfaceLocalLlmProvider(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
     @JvmField internal var `loadModel`: UniffiCallbackInterfaceLocalLlmProviderMethod0? = null,
     @JvmField internal var `downloadModelFile`: UniffiCallbackInterfaceLocalLlmProviderMethod1? = null,
     @JvmField internal var `platformHttpRequest`: UniffiCallbackInterfaceLocalLlmProviderMethod2? = null,
@@ -797,9 +810,10 @@ internal open class UniffiVTableCallbackInterfaceLocalLlmProvider(
     @JvmField internal var `unload`: UniffiCallbackInterfaceLocalLlmProviderMethod4? = null,
     @JvmField internal var `loadedModelPath`: UniffiCallbackInterfaceLocalLlmProviderMethod5? = null,
     @JvmField internal var `deviceCapability`: UniffiCallbackInterfaceLocalLlmProviderMethod6? = null,
-    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
 ) : Structure() {
     class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
         `loadModel`: UniffiCallbackInterfaceLocalLlmProviderMethod0? = null,
         `downloadModelFile`: UniffiCallbackInterfaceLocalLlmProviderMethod1? = null,
         `platformHttpRequest`: UniffiCallbackInterfaceLocalLlmProviderMethod2? = null,
@@ -807,10 +821,11 @@ internal open class UniffiVTableCallbackInterfaceLocalLlmProvider(
         `unload`: UniffiCallbackInterfaceLocalLlmProviderMethod4? = null,
         `loadedModelPath`: UniffiCallbackInterfaceLocalLlmProviderMethod5? = null,
         `deviceCapability`: UniffiCallbackInterfaceLocalLlmProviderMethod6? = null,
-        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    ): UniffiVTableCallbackInterfaceLocalLlmProvider(`loadModel`,`downloadModelFile`,`platformHttpRequest`,`generate`,`unload`,`loadedModelPath`,`deviceCapability`,`uniffiFree`,), Structure.ByValue
+    ): UniffiVTableCallbackInterfaceLocalLlmProvider(`uniffiFree`,`uniffiClone`,`loadModel`,`downloadModelFile`,`platformHttpRequest`,`generate`,`unload`,`loadedModelPath`,`deviceCapability`,), Structure.ByValue
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceLocalLlmProvider) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
         `loadModel` = other.`loadModel`
         `downloadModelFile` = other.`downloadModelFile`
         `platformHttpRequest` = other.`platformHttpRequest`
@@ -818,439 +833,289 @@ internal open class UniffiVTableCallbackInterfaceLocalLlmProvider(
         `unload` = other.`unload`
         `loadedModelPath` = other.`loadedModelPath`
         `deviceCapability` = other.`deviceCapability`
-        `uniffiFree` = other.`uniffiFree`
     }
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// For large crates we prevent `MethodTooLargeException` (see #2340)
-// N.B. the name of the extension is very misleading, since it is 
-// rather `InterfaceTooLargeException`, caused by too many methods 
-// in the interface for large crates.
-//
-// By splitting the otherwise huge interface into two parts
-// * UniffiLib 
-// * IntegrityCheckingUniffiLib (this)
-// we allow for ~2x as many methods in the UniffiLib interface.
-// 
-// The `ffi_uniffi_contract_version` method and all checksum methods are put 
-// into `IntegrityCheckingUniffiLib` and these methods are called only once,
-// when the library is loaded.
-internal interface IntegrityCheckingUniffiLib : Library {
-    // Integrity check functions only
-    fun uniffi_mango_core_checksum_func_known_provider_presets(
-): Short
-fun uniffi_mango_core_checksum_func_local_model_catalog(
-): Short
-fun uniffi_mango_core_checksum_func_model_supports_vision(
-): Short
-fun uniffi_mango_core_checksum_method_ffiapp_dispatch(
-): Short
-fun uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown(
-): Short
-fun uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark(
-): Short
-fun uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report(
-): Short
-fun uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints(
-): Short
-fun uniffi_mango_core_checksum_method_ffiapp_listen_for_updates(
-): Short
-fun uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(
-): Short
-fun uniffi_mango_core_checksum_method_ffiapp_state(
-): Short
-fun uniffi_mango_core_checksum_method_ffiapp_sync(
-): Short
-fun uniffi_mango_core_checksum_method_localgenerationcontext_emit_error(
-): Short
-fun uniffi_mango_core_checksum_method_localgenerationcontext_emit_token(
-): Short
-fun uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled(
-): Short
-fun uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress(
-): Short
-fun uniffi_mango_core_checksum_constructor_ffiapp_new(
-): Short
-fun uniffi_mango_core_checksum_method_appreconciler_reconcile(
-): Short
-fun uniffi_mango_core_checksum_method_biometricprovider_biometric_status(
-): Short
-fun uniffi_mango_core_checksum_method_biometricprovider_authenticate(
-): Short
-fun uniffi_mango_core_checksum_method_embeddingprovider_embed(
-): Short
-fun uniffi_mango_core_checksum_method_filepickerprovider_pick_file(
-): Short
-fun uniffi_mango_core_checksum_method_keychainprovider_store(
-): Short
-fun uniffi_mango_core_checksum_method_keychainprovider_load(
-): Short
-fun uniffi_mango_core_checksum_method_keychainprovider_delete(
-): Short
-fun uniffi_mango_core_checksum_method_localllmprovider_load_model(
-): Short
-fun uniffi_mango_core_checksum_method_localllmprovider_download_model_file(
-): Short
-fun uniffi_mango_core_checksum_method_localllmprovider_platform_http_request(
-): Short
-fun uniffi_mango_core_checksum_method_localllmprovider_generate(
-): Short
-fun uniffi_mango_core_checksum_method_localllmprovider_unload(
-): Short
-fun uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path(
-): Short
-fun uniffi_mango_core_checksum_method_localllmprovider_device_capability(
-): Short
-fun ffi_mango_core_uniffi_contract_version(
-): Int
 
 }
 
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
-internal interface UniffiLib : Library {
-    companion object {
-        internal val INSTANCE: UniffiLib by lazy {
-            val componentName = "mango_core"
-            // For large crates we prevent `MethodTooLargeException` (see #2340)
-            // N.B. the name of the extension is very misleading, since it is 
-            // rather `InterfaceTooLargeException`, caused by too many methods 
-            // in the interface for large crates.
-            //
-            // By splitting the otherwise huge interface into two parts
-            // * UniffiLib (this)
-            // * IntegrityCheckingUniffiLib
-            // And all checksum methods are put into `IntegrityCheckingUniffiLib`
-            // we allow for ~2x as many methods in the UniffiLib interface.
-            // 
-            // Thus we first load the library with `loadIndirect` as `IntegrityCheckingUniffiLib`
-            // so that we can (optionally!) call `uniffiCheckApiChecksums`...
-            loadIndirect<IntegrityCheckingUniffiLib>(componentName)
-                .also { lib: IntegrityCheckingUniffiLib ->
-                    uniffiCheckContractApiVersion(lib)
-                    uniffiCheckApiChecksums(lib)
-                }
-            // ... and then we load the library as `UniffiLib`
-            // N.B. we cannot use `loadIndirect` once and then try to cast it to `UniffiLib`
-            // => results in `java.lang.ClassCastException: com.sun.proxy.$Proxy cannot be cast to ...`
-            // error. So we must call `loadIndirect` twice. For crates large enough
-            // to trigger this issue, the performance impact is negligible, running on
-            // a macOS M1 machine the `loadIndirect` call takes ~50ms.
-            val lib = loadIndirect<UniffiLib>(componentName)
-            // No need to check the contract version and checksums, since 
-            // we already did that with `IntegrityCheckingUniffiLib` above.
-            uniffiCallbackInterfaceAppReconciler.register(lib)
-            uniffiCallbackInterfaceBiometricProvider.register(lib)
-            uniffiCallbackInterfaceEmbeddingProvider.register(lib)
-            uniffiCallbackInterfaceFilePickerProvider.register(lib)
-            uniffiCallbackInterfaceKeychainProvider.register(lib)
-            uniffiCallbackInterfaceLocalLlmProvider.register(lib)
-            // Loading of library with integrity check done.
-            lib
-        }
-        
-        // The Cleaner for the whole library
-        internal val CLEANER: UniffiCleaner by lazy {
-            UniffiCleaner.create()
-        }
+
+// For large crates we prevent `MethodTooLargeException` (see #2340)
+// N.B. the name of the extension is very misleading, since it is
+// rather `InterfaceTooLargeException`, caused by too many methods
+// in the interface for large crates.
+//
+// By splitting the otherwise huge interface into two parts
+// * UniffiLib (this)
+// * IntegrityCheckingUniffiLib
+// And all checksum methods are put into `IntegrityCheckingUniffiLib`
+// we allow for ~2x as many methods in the UniffiLib interface.
+//
+// Note: above all written when we used JNA's `loadIndirect` etc.
+// We now use JNA's "direct mapping" - unclear if same considerations apply exactly.
+internal object IntegrityCheckingUniffiLib {
+    init {
+        Native.register(IntegrityCheckingUniffiLib::class.java, findLibraryName(componentName = "mango_core"))
+        uniffiCheckContractApiVersion(this)
+        uniffiCheckApiChecksums(this)
     }
+    external fun uniffi_mango_core_checksum_func_known_provider_presets(
+    ): Int
+    external fun uniffi_mango_core_checksum_func_model_supports_vision(
+    ): Int
+    external fun uniffi_mango_core_checksum_func_local_model_catalog(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_dispatch(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_listen_for_updates(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_state(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_sync(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localgenerationcontext_emit_error(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localgenerationcontext_emit_token(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress(
+    ): Int
+    external fun uniffi_mango_core_checksum_constructor_ffiapp_new(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_appreconciler_reconcile(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_biometricprovider_biometric_status(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_biometricprovider_authenticate(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_filepickerprovider_pick_file(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_keychainprovider_store(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_keychainprovider_load(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_keychainprovider_delete(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_embeddingprovider_embed(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localllmprovider_load_model(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localllmprovider_download_model_file(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localllmprovider_platform_http_request(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localllmprovider_generate(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localllmprovider_unload(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_localllmprovider_device_capability(
+    ): Int
+    external fun ffi_mango_core_uniffi_contract_version(
+    ): Int
 
-    // FFI functions
-    fun uniffi_mango_core_fn_clone_ffiapp(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun uniffi_mango_core_fn_free_ffiapp(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`keychain`: Long,`embeddingProvider`: Long,`embeddingStatus`: RustBuffer.ByValue,`localLlmProvider`: Long,`biometricProvider`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun uniffi_mango_core_fn_method_ffiapp_dispatch(`ptr`: Pointer,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(`ptr`: Pointer,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(`ptr`: Pointer,`backendId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(`ptr`: Pointer,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_mango_core_fn_method_ffiapp_listen_for_updates(`ptr`: Pointer,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_mango_core_fn_method_ffiapp_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_mango_core_fn_method_ffiapp_sync(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_mango_core_fn_clone_localgenerationcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun uniffi_mango_core_fn_free_localgenerationcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_mango_core_fn_method_localgenerationcontext_emit_error(`ptr`: Pointer,`message`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_mango_core_fn_method_localgenerationcontext_emit_token(`ptr`: Pointer,`token`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Byte
-fun uniffi_mango_core_fn_clone_localmodeldownloadcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun uniffi_mango_core_fn_free_localmodeldownloadcontext(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(`ptr`: Pointer,`downloadedBytes`: Long,`totalBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_mango_core_fn_init_callback_vtable_appreconciler(`vtable`: UniffiVTableCallbackInterfaceAppReconciler,
-): Unit
-fun uniffi_mango_core_fn_init_callback_vtable_biometricprovider(`vtable`: UniffiVTableCallbackInterfaceBiometricProvider,
-): Unit
-fun uniffi_mango_core_fn_init_callback_vtable_embeddingprovider(`vtable`: UniffiVTableCallbackInterfaceEmbeddingProvider,
-): Unit
-fun uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(`vtable`: UniffiVTableCallbackInterfaceFilePickerProvider,
-): Unit
-fun uniffi_mango_core_fn_init_callback_vtable_keychainprovider(`vtable`: UniffiVTableCallbackInterfaceKeychainProvider,
-): Unit
-fun uniffi_mango_core_fn_init_callback_vtable_localllmprovider(`vtable`: UniffiVTableCallbackInterfaceLocalLlmProvider,
-): Unit
-fun uniffi_mango_core_fn_func_known_provider_presets(uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_mango_core_fn_func_local_model_catalog(uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_mango_core_fn_func_model_supports_vision(`modelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Byte
-fun ffi_mango_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun ffi_mango_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun ffi_mango_core_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun ffi_mango_core_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun ffi_mango_core_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_u8(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_u8(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Byte
-fun ffi_mango_core_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_i8(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_i8(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Byte
-fun ffi_mango_core_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_u16(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_u16(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Short
-fun ffi_mango_core_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_i16(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_i16(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Short
-fun ffi_mango_core_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_u32(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_u32(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Int
-fun ffi_mango_core_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_i32(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_i32(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Int
-fun ffi_mango_core_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_u64(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_u64(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-fun ffi_mango_core_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_i64(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_i64(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-fun ffi_mango_core_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_f32(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_f32(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Float
-fun ffi_mango_core_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_f64(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_f64(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Double
-fun ffi_mango_core_rust_future_poll_pointer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_pointer(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_pointer(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun ffi_mango_core_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_rust_buffer(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_rust_buffer(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun ffi_mango_core_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_mango_core_rust_future_cancel_void(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_free_void(`handle`: Long,
-): Unit
-fun ffi_mango_core_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
+        
+}
 
+internal object UniffiLib {
+    
+    // The Cleaner for the whole library
+    internal val CLEANER: UniffiCleaner by lazy {
+        UniffiCleaner.create()
+    }
+    
+
+    init {
+        Native.register(UniffiLib::class.java, findLibraryName(componentName = "mango_core"))
+        uniffiCallbackInterfaceAppReconciler.register(this)
+        uniffiCallbackInterfaceBiometricProvider.register(this)
+        uniffiCallbackInterfaceEmbeddingProvider.register(this)
+        uniffiCallbackInterfaceFilePickerProvider.register(this)
+        uniffiCallbackInterfaceKeychainProvider.register(this)
+        uniffiCallbackInterfaceLocalLlmProvider.register(this)
+        
+    }
+    external fun uniffi_mango_core_fn_clone_ffiapp(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_mango_core_fn_free_ffiapp(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`keychain`: Long,`embeddingProvider`: Long,`embeddingStatus`: RustBuffer.ByValue,`localLlmProvider`: Long,`biometricProvider`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_mango_core_fn_method_ffiapp_dispatch(`ptr`: Long,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(`ptr`: Long,`conversationId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(`ptr`: Long,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(`ptr`: Long,`backendId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(`ptr`: Long,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_listen_for_updates(`ptr`: Long,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(`ptr`: Long,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_sync(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_mango_core_fn_clone_localgenerationcontext(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_mango_core_fn_free_localgenerationcontext(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_mango_core_fn_method_localgenerationcontext_emit_error(`ptr`: Long,`message`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_mango_core_fn_method_localgenerationcontext_emit_token(`ptr`: Long,`token`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
+    external fun uniffi_mango_core_fn_clone_localmodeldownloadcontext(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_mango_core_fn_free_localmodeldownloadcontext(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(`ptr`: Long,`downloadedBytes`: Long,`totalBytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_mango_core_fn_init_callback_vtable_appreconciler(`vtable`: UniffiVTableCallbackInterfaceAppReconciler,
+    ): Unit
+    external fun uniffi_mango_core_fn_init_callback_vtable_biometricprovider(`vtable`: UniffiVTableCallbackInterfaceBiometricProvider,
+    ): Unit
+    external fun uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(`vtable`: UniffiVTableCallbackInterfaceFilePickerProvider,
+    ): Unit
+    external fun uniffi_mango_core_fn_init_callback_vtable_keychainprovider(`vtable`: UniffiVTableCallbackInterfaceKeychainProvider,
+    ): Unit
+    external fun uniffi_mango_core_fn_init_callback_vtable_embeddingprovider(`vtable`: UniffiVTableCallbackInterfaceEmbeddingProvider,
+    ): Unit
+    external fun uniffi_mango_core_fn_init_callback_vtable_localllmprovider(`vtable`: UniffiVTableCallbackInterfaceLocalLlmProvider,
+    ): Unit
+    external fun uniffi_mango_core_fn_func_known_provider_presets(uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_func_model_supports_vision(`modelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
+    external fun uniffi_mango_core_fn_func_local_model_catalog(uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun ffi_mango_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun ffi_mango_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun ffi_mango_core_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun ffi_mango_core_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun ffi_mango_core_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_u8(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_u8(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
+    external fun ffi_mango_core_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_i8(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_i8(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
+    external fun ffi_mango_core_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_u16(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_u16(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
+    external fun ffi_mango_core_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_i16(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_i16(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Short
+    external fun ffi_mango_core_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_u32(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_u32(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
+    external fun ffi_mango_core_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_i32(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_i32(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
+    external fun ffi_mango_core_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_u64(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_u64(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun ffi_mango_core_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_i64(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_i64(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun ffi_mango_core_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_f32(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_f32(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Float
+    external fun ffi_mango_core_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_f64(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_f64(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Double
+    external fun ffi_mango_core_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_rust_buffer(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_rust_buffer(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun ffi_mango_core_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_cancel_void(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_free_void(`handle`: Long,
+    ): Unit
+    external fun ffi_mango_core_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+
+        
 }
 
 private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
     // Get the bindings contract version from our ComponentInterface
-    val bindings_contract_version = 29
+    val bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
     val scaffolding_contract_version = lib.ffi_mango_core_uniffi_contract_version()
     if (bindings_contract_version != scaffolding_contract_version) {
@@ -1259,100 +1124,100 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_mango_core_checksum_func_known_provider_presets() != 26978.toShort()) {
+    if (lib.uniffi_mango_core_checksum_func_known_provider_presets() != 16128) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_func_local_model_catalog() != 63566.toShort()) {
+    if (lib.uniffi_mango_core_checksum_func_model_supports_vision() != 1192) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_func_model_supports_vision() != 37098.toShort()) {
+    if (lib.uniffi_mango_core_checksum_func_local_model_catalog() != 54432) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_dispatch() != 49208.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_dispatch() != 14382) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown() != 12956.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown() != 60488) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() != 42562.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() != 13014) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 18789.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 38325) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints() != 35481.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints() != 60041) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() != 42682.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() != 39763) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 38651.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 26433) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_state() != 64379.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_state() != 37810) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_sync() != 43338.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_sync() != 35082) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() != 4827.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() != 7388) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_token() != 722.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_token() != 18480) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled() != 30851.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled() != 45499) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress() != 7846.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress() != 13883) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_constructor_ffiapp_new() != 17337.toShort()) {
+    if (lib.uniffi_mango_core_checksum_constructor_ffiapp_new() != 21241) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_appreconciler_reconcile() != 36412.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_appreconciler_reconcile() != 30340) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_biometricprovider_biometric_status() != 51844.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_biometricprovider_biometric_status() != 45522) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_biometricprovider_authenticate() != 25231.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_biometricprovider_authenticate() != 26821) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_embeddingprovider_embed() != 3552.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_filepickerprovider_pick_file() != 55219) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_filepickerprovider_pick_file() != 8337.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_keychainprovider_store() != 31688) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_keychainprovider_store() != 38259.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_keychainprovider_load() != 2921) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_keychainprovider_load() != 62612.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_keychainprovider_delete() != 17608) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_keychainprovider_delete() != 11222.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_embeddingprovider_embed() != 39608) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_load_model() != 31244.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_load_model() != 65082) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_download_model_file() != 41722.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_download_model_file() != 62788) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_platform_http_request() != 10857.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_platform_http_request() != 15192) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_generate() != 30695.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_generate() != 55144) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_unload() != 59285.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_unload() != 45033) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path() != 33154.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path() != 61589) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_device_capability() != 48773.toShort()) {
+    if (lib.uniffi_mango_core_checksum_method_localllmprovider_device_capability() != 56121) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1361,7 +1226,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
  * @suppress
  */
 public fun uniffiEnsureInitialized() {
-    UniffiLib.INSTANCE
+    IntegrityCheckingUniffiLib
+    // UniffiLib() initialized as objects are used, but we still need to explicitly
+    // reference it so initialization across crates works as expected.
+    UniffiLib
 }
 
 // Async support
@@ -1428,11 +1296,22 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
     }
 
 /** 
+ * Placeholder object used to signal that we're constructing an interface with a FFI handle.
+ *
+ * This is the first argument for interface constructors that input a raw handle. It exists is that
+ * so we can avoid signature conflicts when an interface has a regular constructor than inputs a
+ * Long.
+ *
+ * @suppress
+ * */
+object UniffiWithHandle
+
+/** 
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
  * */
-object NoPointer// Magic number for the Rust proxy to call using the same mechanism as every other method,
+object NoHandle// Magic number for the Rust proxy to call using the same mechanism as every other method,
 // to free the callback once it's dropped by Rust.
 internal const val IDX_CALLBACK_FREE = 0
 // Callback return codes
@@ -1534,6 +1413,10 @@ private class JavaLangRefCleanable(
  */
 public object FfiConverterUShort: FfiConverter<UShort, Short> {
     override fun lift(value: Short): UShort {
+        return value.toUShort()
+    }
+
+    fun lift(value: Int): UShort {
         return value.toUShort()
     }
 
@@ -1744,21 +1627,18 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 }
 
 
-// This template implements a class for working with a Rust struct via a Pointer/Arc<T>
+// This template implements a class for working with a Rust struct via a handle
 // to the live Rust struct on the other side of the FFI.
-//
-// Each instance implements core operations for working with the Rust `Arc<T>` and the
-// Kotlin Pointer to work with the live Rust struct on the other side of the FFI.
 //
 // There's some subtlety here, because we have to be careful not to operate on a Rust
 // struct after it has been dropped, and because we must expose a public API for freeing
 // theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
 //
-//   * Each instance holds an opaque pointer to the underlying Rust struct.
-//     Method calls need to read this pointer from the object's state and pass it in to
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
 //     the Rust FFI.
 //
-//   * When an instance is no longer needed, its pointer should be passed to a
+//   * When an instance is no longer needed, its handle should be passed to a
 //     special destructor function provided by the Rust FFI, which will drop the
 //     underlying Rust struct.
 //
@@ -1783,13 +1663,13 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 //      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
 //         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
 //
-// If we try to implement this with mutual exclusion on access to the pointer, there is the
+// If we try to implement this with mutual exclusion on access to the handle, there is the
 // possibility of a race between a method call and a concurrent call to `destroy`:
 //
-//    * Thread A starts a method call, reads the value of the pointer, but is interrupted
-//      before it can pass the pointer over the FFI to Rust.
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
 //    * Thread B calls `destroy` and frees the underlying Rust struct.
-//    * Thread A resumes, passing the already-read pointer value to Rust and triggering
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
 //      a use-after-free.
 //
 // One possible solution would be to use a `ReadWriteLock`, with each method call taking
@@ -1925,20 +1805,26 @@ public interface FfiAppInterface {
 open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
 {
 
-    constructor(pointer: Pointer) {
-        this.pointer = pointer
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
 
     /**
+     * @suppress
+     *
      * This constructor can be used to instantiate a fake object. Only used for tests. Any
      * attempt to actually use an object constructed this way will fail as there is no
      * connected Rust object.
      */
     @Suppress("UNUSED_PARAMETER")
-    constructor(noPointer: NoPointer) {
-        this.pointer = null
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
     }
     /**
      * Create the app core, spawn the actor thread, and return the FFI handle.
@@ -1953,18 +1839,30 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      * on platforms without a native local runtime.
      */
     constructor(`dataDir`: kotlin.String, `keychain`: KeychainProvider, `embeddingProvider`: EmbeddingProvider, `embeddingStatus`: EmbeddingStatus, `localLlmProvider`: LocalLlmProvider, `biometricProvider`: BiometricProvider) :
-        this(
+        this(UniffiWithHandle, 
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_constructor_ffiapp_new(
-        FfiConverterString.lower(`dataDir`),FfiConverterTypeKeychainProvider.lower(`keychain`),FfiConverterTypeEmbeddingProvider.lower(`embeddingProvider`),FfiConverterTypeEmbeddingStatus.lower(`embeddingStatus`),FfiConverterTypeLocalLlmProvider.lower(`localLlmProvider`),FfiConverterTypeBiometricProvider.lower(`biometricProvider`),_status)
+    UniffiLib.uniffi_mango_core_fn_constructor_ffiapp_new(
+    
+        
+        FfiConverterString.lower(`dataDir`),
+        FfiConverterTypeKeychainProvider.lower(`keychain`),
+        FfiConverterTypeEmbeddingProvider.lower(`embeddingProvider`),
+        FfiConverterTypeEmbeddingStatus.lower(`embeddingStatus`),
+        FfiConverterTypeLocalLlmProvider.lower(`localLlmProvider`),
+        FfiConverterTypeBiometricProvider.lower(`biometricProvider`),_status)
 }
     )
 
-    protected val pointer: Pointer?
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
 
     override fun destroy() {
         // Only allow a single call to this method.
@@ -1972,7 +1870,7 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -1982,7 +1880,7 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
         this.destroy()
     }
 
-    internal inline fun <R> callWithPointer(block: (ptr: Pointer) -> R): R {
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
         // Check and increment the call counter, to keep the object alive.
         // This needs a compare-and-set retry loop in case of concurrent updates.
         do {
@@ -1994,32 +1892,40 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
                 throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
             }
         } while (! this.callCounter.compareAndSet(c, c + 1L))
-        // Now we can safely do the method call without the pointer being freed concurrently.
+        // Now we can safely do the method call without the handle being freed concurrently.
         try {
-            return block(this.uniffiClonePointer())
+            return block(this.uniffiCloneHandle())
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
 
     // Use a static inner class instead of a closure so as not to accidentally
     // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
         override fun run() {
-            pointer?.let { ptr ->
-                uniffiRustCall { status ->
-                    UniffiLib.INSTANCE.uniffi_mango_core_fn_free_ffiapp(ptr, status)
-                }
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_mango_core_fn_free_ffiapp(handle, status)
             }
         }
     }
 
-    fun uniffiClonePointer(): Pointer {
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
         return uniffiRustCall() { status ->
-            UniffiLib.INSTANCE.uniffi_mango_core_fn_clone_ffiapp(pointer!!, status)
+            UniffiLib.uniffi_mango_core_fn_clone_ffiapp(handle, status)
         }
     }
 
@@ -2028,10 +1934,12 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      * Dispatch an action to the actor loop.
      */override fun `dispatch`(`action`: AppAction)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_dispatch(
-        it, FfiConverterTypeAppAction.lower(`action`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_dispatch(
+        it,
+        
+        FfiConverterTypeAppAction.lower(`action`),_status)
 }
     }
     
@@ -2049,10 +1957,12 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      */
     @Throws(FfiException::class)override fun `exportConversationMarkdown`(`conversationId`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(
-        it, FfiConverterString.lower(`conversationId`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(
+        it,
+        
+        FfiConverterString.lower(`conversationId`),_status)
 }
     }
     )
@@ -2069,10 +1979,12 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      */
     @Throws(FfiException::class)override fun `getDirectoryBookmark`(`sourceId`: kotlin.String): kotlin.ByteArray? {
             return FfiConverterOptionalByteArray.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(
-        it, FfiConverterString.lower(`sourceId`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(
+        it,
+        
+        FfiConverterString.lower(`sourceId`),_status)
 }
     }
     )
@@ -2088,10 +2000,12 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      * actor when attestation verification succeeds.
      */override fun `getRawAttestationReport`(`backendId`: kotlin.String): kotlin.ByteArray? {
             return FfiConverterOptionalByteArray.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(
-        it, FfiConverterString.lower(`backendId`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(
+        it,
+        
+        FfiConverterString.lower(`backendId`),_status)
 }
     }
     )
@@ -2106,10 +2020,12 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      */
     @Throws(FfiException::class)override fun `listDirectoryFingerprints`(`sourceId`: kotlin.String): List<DirectoryFingerprint> {
             return FfiConverterSequenceTypeDirectoryFingerprint.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(
-        it, FfiConverterString.lower(`sourceId`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(
+        it,
+        
+        FfiConverterString.lower(`sourceId`),_status)
 }
     }
     )
@@ -2122,10 +2038,12 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      * Guard with AtomicBool so only one listener thread is spawned.
      */override fun `listenForUpdates`(`reconciler`: AppReconciler)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_listen_for_updates(
-        it, FfiConverterTypeAppReconciler.lower(`reconciler`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_listen_for_updates(
+        it,
+        
+        FfiConverterTypeAppReconciler.lower(`reconciler`),_status)
 }
     }
     
@@ -2145,10 +2063,12 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      */
     @Throws(FfiException::class)override fun `readEncryptedImage`(`messageId`: kotlin.String): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(
-        it, FfiConverterString.lower(`messageId`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(
+        it,
+        
+        FfiConverterString.lower(`messageId`),_status)
 }
     }
     )
@@ -2160,10 +2080,11 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      * Read the latest state snapshot from the shared RwLock.
      */override fun `state`(): AppState {
             return FfiConverterTypeAppState.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_state(
-        it, _status)
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_state(
+        it,
+        _status)
 }
     }
     )
@@ -2180,10 +2101,11 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
      * Deterministic replacement for sleep-based waiting in tests.
      */override fun `sync`()
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_ffiapp_sync(
-        it, _status)
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_sync(
+        it,
+        _status)
 }
     }
     
@@ -2192,55 +2114,54 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     
 
     
+
+
     
+    
+    /**
+     * @suppress
+     */
     companion object
     
 }
 
+
 /**
  * @suppress
  */
-public object FfiConverterTypeFfiApp: FfiConverter<FfiApp, Pointer> {
-
-    override fun lower(value: FfiApp): Pointer {
-        return value.uniffiClonePointer()
+public object FfiConverterTypeFfiApp: FfiConverter<FfiApp, Long> {
+    override fun lower(value: FfiApp): Long {
+        return value.uniffiCloneHandle()
     }
 
-    override fun lift(value: Pointer): FfiApp {
-        return FfiApp(value)
+    override fun lift(value: Long): FfiApp {
+        return FfiApp(UniffiWithHandle, value)
     }
 
     override fun read(buf: ByteBuffer): FfiApp {
-        // The Rust code always writes pointers as 8 bytes, and will
-        // fail to compile if they don't fit.
-        return lift(Pointer(buf.getLong()))
+        return lift(buf.getLong())
     }
 
     override fun allocationSize(value: FfiApp) = 8UL
 
     override fun write(value: FfiApp, buf: ByteBuffer) {
-        // The Rust code always expects pointers written as 8 bytes,
-        // and will fail to compile if they don't fit.
-        buf.putLong(Pointer.nativeValue(lower(value)))
+        buf.putLong(lower(value))
     }
 }
 
 
-// This template implements a class for working with a Rust struct via a Pointer/Arc<T>
+// This template implements a class for working with a Rust struct via a handle
 // to the live Rust struct on the other side of the FFI.
-//
-// Each instance implements core operations for working with the Rust `Arc<T>` and the
-// Kotlin Pointer to work with the live Rust struct on the other side of the FFI.
 //
 // There's some subtlety here, because we have to be careful not to operate on a Rust
 // struct after it has been dropped, and because we must expose a public API for freeing
 // theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
 //
-//   * Each instance holds an opaque pointer to the underlying Rust struct.
-//     Method calls need to read this pointer from the object's state and pass it in to
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
 //     the Rust FFI.
 //
-//   * When an instance is no longer needed, its pointer should be passed to a
+//   * When an instance is no longer needed, its handle should be passed to a
 //     special destructor function provided by the Rust FFI, which will drop the
 //     underlying Rust struct.
 //
@@ -2265,13 +2186,13 @@ public object FfiConverterTypeFfiApp: FfiConverter<FfiApp, Pointer> {
 //      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
 //         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
 //
-// If we try to implement this with mutual exclusion on access to the pointer, there is the
+// If we try to implement this with mutual exclusion on access to the handle, there is the
 // possibility of a race between a method call and a concurrent call to `destroy`:
 //
-//    * Thread A starts a method call, reads the value of the pointer, but is interrupted
-//      before it can pass the pointer over the FFI to Rust.
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
 //    * Thread B calls `destroy` and frees the underlying Rust struct.
-//    * Thread A resumes, passing the already-read pointer value to Rust and triggering
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
 //      a use-after-free.
 //
 // One possible solution would be to use a `ReadWriteLock`, with each method call taking
@@ -2338,27 +2259,38 @@ public interface LocalGenerationContextInterface {
 open class LocalGenerationContext: Disposable, AutoCloseable, LocalGenerationContextInterface
 {
 
-    constructor(pointer: Pointer) {
-        this.pointer = pointer
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
 
     /**
+     * @suppress
+     *
      * This constructor can be used to instantiate a fake object. Only used for tests. Any
      * attempt to actually use an object constructed this way will fail as there is no
      * connected Rust object.
      */
     @Suppress("UNUSED_PARAMETER")
-    constructor(noPointer: NoPointer) {
-        this.pointer = null
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
     }
 
-    protected val pointer: Pointer?
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
 
     override fun destroy() {
         // Only allow a single call to this method.
@@ -2366,7 +2298,7 @@ open class LocalGenerationContext: Disposable, AutoCloseable, LocalGenerationCon
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -2376,7 +2308,7 @@ open class LocalGenerationContext: Disposable, AutoCloseable, LocalGenerationCon
         this.destroy()
     }
 
-    internal inline fun <R> callWithPointer(block: (ptr: Pointer) -> R): R {
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
         // Check and increment the call counter, to keep the object alive.
         // This needs a compare-and-set retry loop in case of concurrent updates.
         do {
@@ -2388,41 +2320,51 @@ open class LocalGenerationContext: Disposable, AutoCloseable, LocalGenerationCon
                 throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
             }
         } while (! this.callCounter.compareAndSet(c, c + 1L))
-        // Now we can safely do the method call without the pointer being freed concurrently.
+        // Now we can safely do the method call without the handle being freed concurrently.
         try {
-            return block(this.uniffiClonePointer())
+            return block(this.uniffiCloneHandle())
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
 
     // Use a static inner class instead of a closure so as not to accidentally
     // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
         override fun run() {
-            pointer?.let { ptr ->
-                uniffiRustCall { status ->
-                    UniffiLib.INSTANCE.uniffi_mango_core_fn_free_localgenerationcontext(ptr, status)
-                }
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_mango_core_fn_free_localgenerationcontext(handle, status)
             }
         }
     }
 
-    fun uniffiClonePointer(): Pointer {
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
         return uniffiRustCall() { status ->
-            UniffiLib.INSTANCE.uniffi_mango_core_fn_clone_localgenerationcontext(pointer!!, status)
+            UniffiLib.uniffi_mango_core_fn_clone_localgenerationcontext(handle, status)
         }
     }
 
     override fun `emitError`(`message`: kotlin.String)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_localgenerationcontext_emit_error(
-        it, FfiConverterString.lower(`message`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_localgenerationcontext_emit_error(
+        it,
+        
+        FfiConverterString.lower(`message`),_status)
 }
     }
     
@@ -2430,10 +2372,12 @@ open class LocalGenerationContext: Disposable, AutoCloseable, LocalGenerationCon
 
     override fun `emitToken`(`token`: kotlin.String)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_localgenerationcontext_emit_token(
-        it, FfiConverterString.lower(`token`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_localgenerationcontext_emit_token(
+        it,
+        
+        FfiConverterString.lower(`token`),_status)
 }
     }
     
@@ -2441,10 +2385,11 @@ open class LocalGenerationContext: Disposable, AutoCloseable, LocalGenerationCon
 
     override fun `isCancelled`(): kotlin.Boolean {
             return FfiConverterBoolean.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(
-        it, _status)
+    UniffiLib.uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(
+        it,
+        _status)
 }
     }
     )
@@ -2454,55 +2399,54 @@ open class LocalGenerationContext: Disposable, AutoCloseable, LocalGenerationCon
     
 
     
+
+
     
+    
+    /**
+     * @suppress
+     */
     companion object
     
 }
 
+
 /**
  * @suppress
  */
-public object FfiConverterTypeLocalGenerationContext: FfiConverter<LocalGenerationContext, Pointer> {
-
-    override fun lower(value: LocalGenerationContext): Pointer {
-        return value.uniffiClonePointer()
+public object FfiConverterTypeLocalGenerationContext: FfiConverter<LocalGenerationContext, Long> {
+    override fun lower(value: LocalGenerationContext): Long {
+        return value.uniffiCloneHandle()
     }
 
-    override fun lift(value: Pointer): LocalGenerationContext {
-        return LocalGenerationContext(value)
+    override fun lift(value: Long): LocalGenerationContext {
+        return LocalGenerationContext(UniffiWithHandle, value)
     }
 
     override fun read(buf: ByteBuffer): LocalGenerationContext {
-        // The Rust code always writes pointers as 8 bytes, and will
-        // fail to compile if they don't fit.
-        return lift(Pointer(buf.getLong()))
+        return lift(buf.getLong())
     }
 
     override fun allocationSize(value: LocalGenerationContext) = 8UL
 
     override fun write(value: LocalGenerationContext, buf: ByteBuffer) {
-        // The Rust code always expects pointers written as 8 bytes,
-        // and will fail to compile if they don't fit.
-        buf.putLong(Pointer.nativeValue(lower(value)))
+        buf.putLong(lower(value))
     }
 }
 
 
-// This template implements a class for working with a Rust struct via a Pointer/Arc<T>
+// This template implements a class for working with a Rust struct via a handle
 // to the live Rust struct on the other side of the FFI.
-//
-// Each instance implements core operations for working with the Rust `Arc<T>` and the
-// Kotlin Pointer to work with the live Rust struct on the other side of the FFI.
 //
 // There's some subtlety here, because we have to be careful not to operate on a Rust
 // struct after it has been dropped, and because we must expose a public API for freeing
 // theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
 //
-//   * Each instance holds an opaque pointer to the underlying Rust struct.
-//     Method calls need to read this pointer from the object's state and pass it in to
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
 //     the Rust FFI.
 //
-//   * When an instance is no longer needed, its pointer should be passed to a
+//   * When an instance is no longer needed, its handle should be passed to a
 //     special destructor function provided by the Rust FFI, which will drop the
 //     underlying Rust struct.
 //
@@ -2527,13 +2471,13 @@ public object FfiConverterTypeLocalGenerationContext: FfiConverter<LocalGenerati
 //      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
 //         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
 //
-// If we try to implement this with mutual exclusion on access to the pointer, there is the
+// If we try to implement this with mutual exclusion on access to the handle, there is the
 // possibility of a race between a method call and a concurrent call to `destroy`:
 //
-//    * Thread A starts a method call, reads the value of the pointer, but is interrupted
-//      before it can pass the pointer over the FFI to Rust.
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
 //    * Thread B calls `destroy` and frees the underlying Rust struct.
-//    * Thread A resumes, passing the already-read pointer value to Rust and triggering
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
 //      a use-after-free.
 //
 // One possible solution would be to use a `ReadWriteLock`, with each method call taking
@@ -2596,27 +2540,38 @@ public interface LocalModelDownloadContextInterface {
 open class LocalModelDownloadContext: Disposable, AutoCloseable, LocalModelDownloadContextInterface
 {
 
-    constructor(pointer: Pointer) {
-        this.pointer = pointer
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
 
     /**
+     * @suppress
+     *
      * This constructor can be used to instantiate a fake object. Only used for tests. Any
      * attempt to actually use an object constructed this way will fail as there is no
      * connected Rust object.
      */
     @Suppress("UNUSED_PARAMETER")
-    constructor(noPointer: NoPointer) {
-        this.pointer = null
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
     }
 
-    protected val pointer: Pointer?
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
 
     override fun destroy() {
         // Only allow a single call to this method.
@@ -2624,7 +2579,7 @@ open class LocalModelDownloadContext: Disposable, AutoCloseable, LocalModelDownl
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -2634,7 +2589,7 @@ open class LocalModelDownloadContext: Disposable, AutoCloseable, LocalModelDownl
         this.destroy()
     }
 
-    internal inline fun <R> callWithPointer(block: (ptr: Pointer) -> R): R {
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
         // Check and increment the call counter, to keep the object alive.
         // This needs a compare-and-set retry loop in case of concurrent updates.
         do {
@@ -2646,41 +2601,52 @@ open class LocalModelDownloadContext: Disposable, AutoCloseable, LocalModelDownl
                 throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
             }
         } while (! this.callCounter.compareAndSet(c, c + 1L))
-        // Now we can safely do the method call without the pointer being freed concurrently.
+        // Now we can safely do the method call without the handle being freed concurrently.
         try {
-            return block(this.uniffiClonePointer())
+            return block(this.uniffiCloneHandle())
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
 
     // Use a static inner class instead of a closure so as not to accidentally
     // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
         override fun run() {
-            pointer?.let { ptr ->
-                uniffiRustCall { status ->
-                    UniffiLib.INSTANCE.uniffi_mango_core_fn_free_localmodeldownloadcontext(ptr, status)
-                }
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_mango_core_fn_free_localmodeldownloadcontext(handle, status)
             }
         }
     }
 
-    fun uniffiClonePointer(): Pointer {
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
         return uniffiRustCall() { status ->
-            UniffiLib.INSTANCE.uniffi_mango_core_fn_clone_localmodeldownloadcontext(pointer!!, status)
+            UniffiLib.uniffi_mango_core_fn_clone_localmodeldownloadcontext(handle, status)
         }
     }
 
     override fun `emitProgress`(`downloadedBytes`: kotlin.ULong, `totalBytes`: kotlin.ULong?)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(
-        it, FfiConverterULong.lower(`downloadedBytes`),FfiConverterOptionalULong.lower(`totalBytes`),_status)
+    UniffiLib.uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(
+        it,
+        
+        FfiConverterULong.lower(`downloadedBytes`),
+        FfiConverterOptionalULong.lower(`totalBytes`),_status)
 }
     }
     
@@ -2689,36 +2655,38 @@ open class LocalModelDownloadContext: Disposable, AutoCloseable, LocalModelDownl
     
 
     
+
+
     
+    
+    /**
+     * @suppress
+     */
     companion object
     
 }
 
+
 /**
  * @suppress
  */
-public object FfiConverterTypeLocalModelDownloadContext: FfiConverter<LocalModelDownloadContext, Pointer> {
-
-    override fun lower(value: LocalModelDownloadContext): Pointer {
-        return value.uniffiClonePointer()
+public object FfiConverterTypeLocalModelDownloadContext: FfiConverter<LocalModelDownloadContext, Long> {
+    override fun lower(value: LocalModelDownloadContext): Long {
+        return value.uniffiCloneHandle()
     }
 
-    override fun lift(value: Pointer): LocalModelDownloadContext {
-        return LocalModelDownloadContext(value)
+    override fun lift(value: Long): LocalModelDownloadContext {
+        return LocalModelDownloadContext(UniffiWithHandle, value)
     }
 
     override fun read(buf: ByteBuffer): LocalModelDownloadContext {
-        // The Rust code always writes pointers as 8 bytes, and will
-        // fail to compile if they don't fit.
-        return lift(Pointer(buf.getLong()))
+        return lift(buf.getLong())
     }
 
     override fun allocationSize(value: LocalModelDownloadContext) = 8UL
 
     override fun write(value: LocalModelDownloadContext, buf: ByteBuffer) {
-        // The Rust code always expects pointers written as 8 bytes,
-        // and will fail to compile if they don't fit.
-        buf.putLong(Pointer.nativeValue(lower(value)))
+        buf.putLong(lower(value))
     }
 }
 
@@ -2732,20 +2700,31 @@ public object FfiConverterTypeLocalModelDownloadContext: FfiConverter<LocalModel
  * with step_count and elapsed_secs for richer UI display.
  */
 data class AgentSessionSummary (
-    var `id`: kotlin.String, 
-    var `title`: kotlin.String, 
-    var `status`: kotlin.String, 
-    var `backendId`: kotlin.String, 
-    var `updatedAt`: kotlin.Long, 
+    var `id`: kotlin.String
+    , 
+    var `title`: kotlin.String
+    , 
+    var `status`: kotlin.String
+    , 
+    var `backendId`: kotlin.String
+    , 
+    var `updatedAt`: kotlin.Long
+    , 
     /**
      * Number of steps taken so far in this session.
      */
-    var `stepCount`: kotlin.UInt, 
+    var `stepCount`: kotlin.UInt
+    , 
     /**
      * Elapsed time in seconds (updated_at - created_at).
      */
     var `elapsedSecs`: kotlin.Long
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -2796,34 +2775,46 @@ public object FfiConverterTypeAgentSessionSummary: FfiConverterRustBuffer<AgentS
  * Maps from AgentStepRow in the persistence layer with display-safe fields.
  */
 data class AgentStepSummary (
-    var `id`: kotlin.String, 
-    var `stepNumber`: kotlin.UInt, 
+    var `id`: kotlin.String
+    , 
+    var `stepNumber`: kotlin.UInt
+    , 
     /**
      * One of: "tool_call", "tool_result", "final_answer"
      */
-    var `actionType`: kotlin.String, 
+    var `actionType`: kotlin.String
+    , 
     /**
      * Name of the tool called, if this is a tool_call step.
      */
-    var `toolName`: kotlin.String?, 
+    var `toolName`: kotlin.String?
+    , 
     /**
      * First ~200 chars of the tool call input payload, if this is a tool_call step (per D-06).
      */
-    var `toolInput`: kotlin.String?, 
+    var `toolInput`: kotlin.String?
+    , 
     /**
      * First 200 chars of the result, if available.
      */
-    var `resultSnippet`: kotlin.String?, 
+    var `resultSnippet`: kotlin.String?
+    , 
     /**
      * One of: "pending", "completed", "failed"
      */
-    var `status`: kotlin.String, 
+    var `status`: kotlin.String
+    , 
     /**
      * Phase 35 — provenance of the tool call. None for non-tool_call steps.
      * "local" for built-in tools, "contextvm" for tools invoked via Nostr.
      */
     var `toolOrigin`: kotlin.String?
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -2871,226 +2862,278 @@ public object FfiConverterTypeAgentStepSummary: FfiConverterRustBuffer<AgentStep
 
 
 data class AppState (
-    var `rev`: kotlin.ULong, 
-    var `router`: Router, 
-    var `busyState`: BusyState, 
-    var `toast`: kotlin.String?, 
+    var `rev`: kotlin.ULong
+    , 
+    var `router`: Router
+    , 
+    var `busyState`: BusyState
+    , 
+    var `toast`: kotlin.String?
+    , 
     /**
      * Display-safe backend summaries for UI rendering (api_key excluded)
      */
-    var `backends`: List<BackendSummary>, 
+    var `backends`: List<BackendSummary>
+    , 
     /**
      * ID of the currently selected backend provider
      */
-    var `activeBackendId`: kotlin.String?, 
+    var `activeBackendId`: kotlin.String?
+    , 
     /**
      * Accumulated tokens during an active streaming response
      */
-    var `streamingText`: kotlin.String?, 
+    var `streamingText`: kotlin.String?
+    , 
     /**
      * Human-readable error message from the last LLM error (per D-11)
      */
-    var `lastError`: kotlin.String?, 
+    var `lastError`: kotlin.String?
+    , 
     /**
      * Per-backend attestation statuses (D-10, D-11). Vec for UniFFI compatibility.
      */
-    var `attestationStatuses`: List<AttestationStatusEntry>, 
+    var `attestationStatuses`: List<AttestationStatusEntry>
+    , 
     /**
      * Conversation summaries loaded from SQLite on startup (PERS-02).
      * Populated by list_conversations in FfiApp::new actor thread.
      */
-    var `conversations`: List<ConversationSummary>, 
+    var `conversations`: List<ConversationSummary>
+    , 
     /**
      * Agent session summaries loaded from SQLite on startup (PERS-05, gap closure).
      * Populated by list_agent_sessions in FfiApp::new actor thread.
      * Phase 9 will add full agent orchestration (write path).
      */
-    var `agentSessions`: List<AgentSessionSummary>, 
+    var `agentSessions`: List<AgentSessionSummary>
+    , 
     /**
      * ID of the currently loaded conversation (None when on Home screen).
      */
-    var `currentConversationId`: kotlin.String?, 
+    var `currentConversationId`: kotlin.String?
+    , 
     /**
      * Messages for the currently loaded conversation (D-05).
      * Populated by LoadConversation and updated incrementally by SendMessage/StreamDone.
      */
-    var `messages`: List<UiMessage>, 
+    var `messages`: List<UiMessage>
+    , 
     /**
      * Info about a pending file attachment in the composer bar (D-17).
      * None when no attachment is pending. Cleared after SendMessage.
      */
-    var `pendingAttachment`: AttachmentInfo?, 
+    var `pendingAttachment`: AttachmentInfo?
+    , 
     /**
      * Onboarding wizard transient state (D-18). Holds API key validation status,
      * attestation demo progress, and selected backend during the wizard flow.
      */
-    var `onboarding`: OnboardingState, 
+    var `onboarding`: OnboardingState
+    , 
     /**
      * True after CompleteOnboarding until the first message is sent (D-17).
      * Platform UIs render a welcome placeholder: "You're all set! Send your first
      * message to start a confidential conversation." Cleared by SendMessage.
      */
-    var `showFirstChatPlaceholder`: kotlin.Boolean, 
+    var `showFirstChatPlaceholder`: kotlin.Boolean
+    , 
     /**
      * All documents in the local library (LRAG-06).
      * Loaded from SQLite on startup; updated by IngestDocument/DeleteDocument.
      */
-    var `documents`: List<DocumentSummary>, 
+    var `documents`: List<DocumentSummary>
+    , 
     /**
      * Progress of an active document ingestion, if any.
      * Set to Some during the extract/chunk/embed pipeline; cleared by EmbeddingComplete.
      */
-    var `ingestionProgress`: IngestionProgress?, 
+    var `ingestionProgress`: IngestionProgress?
+    , 
     /**
      * Document IDs attached to the current conversation for RAG context (D-08).
      * Loaded by LoadConversation; updated by AttachDocumentToConversation/DetachDocumentFromConversation.
      */
-    var `currentConversationAttachedDocs`: List<kotlin.String>, 
+    var `currentConversationAttachedDocs`: List<kotlin.String>
+    , 
     /**
      * ID of the currently viewed agent session (None when on Agents list screen).
      * Set by LoadAgentSession; cleared by ClearAgentDetail.
      */
-    var `currentAgentSessionId`: kotlin.String?, 
+    var `currentAgentSessionId`: kotlin.String?
+    , 
     /**
      * Steps for the currently loaded agent session (AGNT-06).
      * Populated by LoadAgentSession and updated incrementally as steps arrive.
      */
-    var `currentAgentSteps`: List<AgentStepSummary>, 
+    var `currentAgentSteps`: List<AgentStepSummary>
+    , 
     /**
      * How often (in minutes) attestation is automatically re-run for the active backend.
      * Stored in the settings table as "attestation_interval_minutes".
      * Default: 15. Exposed in Advanced Settings on all platforms.
      */
-    var `attestationIntervalMinutes`: kotlin.UInt, 
+    var `attestationIntervalMinutes`: kotlin.UInt
+    , 
     /**
      * Global default system prompt used when a conversation has no per-conversation instructions.
      * Stored in the settings table as "global_system_prompt".
      * None means no default instructions are set.
      */
-    var `globalSystemPrompt`: kotlin.String?, 
+    var `globalSystemPrompt`: kotlin.String?
+    , 
     /**
      * Global default model used for new conversations.
      * Stored in the settings table as "default_model_id".
      * None means new conversations fall back to the selected backend's first model.
      */
-    var `defaultModelId`: kotlin.String?, 
+    var `defaultModelId`: kotlin.String?
+    , 
     /**
      * Embedding provider operational status (SAFE-03).
      * Active: real provider running. Degraded: init failed, NullEmbeddingProvider in use.
      * Unavailable: no provider supplied by design.
      */
-    var `embeddingStatus`: EmbeddingStatus, 
+    var `embeddingStatus`: EmbeddingStatus
+    , 
     /**
      * Device-local LLM capability reported by the native local provider.
      */
-    var `localDeviceCapability`: DeviceCapability, 
+    var `localDeviceCapability`: DeviceCapability
+    , 
     /**
      * Downloadable local models with verified on-disk status.
      */
-    var `localModels`: List<LocalModelSummary>, 
+    var `localModels`: List<LocalModelSummary>
+    , 
     /**
      * Progress for the active local model download, if any.
      */
-    var `localDownloadProgress`: LocalModelDownloadProgress?, 
+    var `localDownloadProgress`: LocalModelDownloadProgress?
+    , 
     /**
      * Global kill switch for on-device LLM inference.
      */
-    var `localInferenceEnabled`: kotlin.Boolean, 
+    var `localInferenceEnabled`: kotlin.Boolean
+    , 
     /**
      * Memory summaries loaded on demand when user navigates to Screen::Memories (per D-14).
      */
-    var `memories`: List<MemorySummary>, 
+    var `memories`: List<MemorySummary>
+    , 
     /**
      * Count of stored memories for Settings badge display (per D-03).
      * Loaded at startup via SELECT COUNT(*) FROM memories.
      * Updated on DeleteMemory and MemoryExtractionComplete (per D-04).
      */
-    var `memoryCount`: kotlin.ULong, 
+    var `memoryCount`: kotlin.ULong
+    , 
     /**
      * Whether a Brave Search API key is configured (per D-11).
      * Never exposes the raw key across UniFFI boundary.
      */
-    var `braveApiKeySet`: kotlin.Boolean, 
+    var `braveApiKeySet`: kotlin.Boolean
+    , 
     /**
      * Whether memory extraction is enabled (MEM-TOGGLE-01).
      * Defaults to true. Persisted via settings table key "memories_enabled".
      */
-    var `memoriesEnabled`: kotlin.Boolean, 
+    var `memoriesEnabled`: kotlin.Boolean
+    , 
     /**
      * True while a ValidateBraveApiKey health-check is in flight.
      * Used by Settings UI to show a loading indicator on the Save button.
      */
-    var `braveApiKeyValidating`: kotlin.Boolean, 
+    var `braveApiKeyValidating`: kotlin.Boolean
+    , 
     /**
      * Whether biometric authentication is available and enrolled on this device (D-20, D-21).
      * Set at actor startup by querying the BiometricProvider.
      */
-    var `biometricAvailable`: kotlin.Boolean, 
+    var `biometricAvailable`: kotlin.Boolean
+    , 
     /**
      * Whether biometric login is enabled for this install.
      * Derived from the presence of the cached DEK in platform keychain storage.
      */
-    var `biometricLoginEnabled`: kotlin.Boolean, 
+    var `biometricLoginEnabled`: kotlin.Boolean
+    , 
     /**
      * True after a successful biometric prompt (CR-01 Phase 28 fix): signals the lock screen
      * UI to reveal the PIN input field so the user can complete the final unlock step.
      * Reset to false on lock, logout, or failed biometric attempt.
      */
-    var `biometricAuthenticated`: kotlin.Boolean, 
+    var `biometricAuthenticated`: kotlin.Boolean
+    , 
     /**
      * Whether a duress PIN is currently configured in the bootstrap DB.
      */
-    var `duressPinConfigured`: kotlin.Boolean, 
+    var `duressPinConfigured`: kotlin.Boolean
+    , 
     /**
      * Lock timeout in seconds. Default: 300 (5 minutes). 0 = never lock (D-13).
      */
-    var `lockTimeoutSeconds`: kotlin.Long, 
+    var `lockTimeoutSeconds`: kotlin.Long
+    , 
     /**
      * True once the user has set up a PIN (auth_params written to bootstrap DB) (D-14).
      */
-    var `authInitialized`: kotlin.Boolean, 
+    var `authInitialized`: kotlin.Boolean
+    , 
     /**
      * True when the main DB was opened with SQLCipher encryption (D-01).
      */
-    var `encryptionEnabled`: kotlin.Boolean, 
+    var `encryptionEnabled`: kotlin.Boolean
+    , 
     /**
      * Directory-source summaries loaded from SQLite on startup / after mutations
      * (DIR-04). Populated by `load_directory_sources_summary`; never includes
      * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
      */
-    var `directorySources`: List<DirectorySourceSummary>, 
+    var `directorySources`: List<DirectorySourceSummary>
+    , 
     /**
      * Phase 35 — discovered tools (announcements merged with persisted
      * enabled state). Populated by AppAction::DiscoverContextvmTools and
      * AppAction::SetContextvmToolEnabled.
      */
-    var `contextvmTools`: List<DiscoverableTool>, 
+    var `contextvmTools`: List<DiscoverableTool>
+    , 
     /**
      * Phase 35 — Settings → TOOLS → "Automatically discover and use tools"
      * toggle. Defaults to false. Persisted under settings key
      * `auto_discover_tools`.
      */
-    var `autoDiscoverToolsEnabled`: kotlin.Boolean, 
+    var `autoDiscoverToolsEnabled`: kotlin.Boolean
+    , 
     /**
      * Phase 35 — current discovery query state for the Tool Discovery
      * screen. Updated by AppAction::DiscoverContextvmTools handler.
      */
-    var `contextvmDiscoveryState`: ContextvmDiscoveryState, 
+    var `contextvmDiscoveryState`: ContextvmDiscoveryState
+    , 
     /**
      * Phase 38 — saved local/remote hybrid routing profiles.
      */
-    var `hybridProfiles`: List<HybridProfile>, 
+    var `hybridProfiles`: List<HybridProfile>
+    , 
     /**
      * Phase 38 — route selected for the most recent hybrid turn, for UI route chips.
      */
-    var `lastTurnRouting`: TurnRoutingSummary?, 
+    var `lastTurnRouting`: TurnRoutingSummary?
+    , 
     /**
      * Phase 38 — list of providers the user has explicitly trusted.
      * When `auto_discover_tools_enabled` is true, only tools from these
      * providers are offered to the LLM automatically.
      */
     var `trustedProviders`: List<TrustedProvider>
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3265,18 +3308,25 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
  * (never crosses UniFFI boundary).
  */
 data class AttachmentInfo (
-    var `filename`: kotlin.String, 
+    var `filename`: kotlin.String
+    , 
     /**
      * Human-readable size string, e.g. "42 KB" or "1 MB"
      */
-    var `sizeDisplay`: kotlin.String, 
+    var `sizeDisplay`: kotlin.String
+    , 
     /**
      * Phase 31 (IMG-04): true when the pending attachment is an image to be
      * sent as a multipart `image_url` part rather than a text file prepended
      * to the user message. Platforms use this to render a distinct pill style.
      */
     var `isImage`: kotlin.Boolean
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3315,9 +3365,15 @@ public object FfiConverterTypeAttachmentInfo: FfiConverterRustBuffer<AttachmentI
  * a trust badge for each backend without the raw report blob.
  */
 data class AttestationStatusEntry (
-    var `backendId`: kotlin.String, 
+    var `backendId`: kotlin.String
+    , 
     var `status`: AttestationStatus
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3351,12 +3407,18 @@ public object FfiConverterTypeAttestationStatusEntry: FfiConverterRustBuffer<Att
  * No secrets (api_key omitted), only display fields.
  */
 data class BackendSummary (
-    var `id`: kotlin.String, 
-    var `name`: kotlin.String, 
-    var `models`: List<kotlin.String>, 
-    var `teeType`: TeeType, 
-    var `isActive`: kotlin.Boolean, 
-    var `healthStatus`: HealthStatus, 
+    var `id`: kotlin.String
+    , 
+    var `name`: kotlin.String
+    , 
+    var `models`: List<kotlin.String>
+    , 
+    var `teeType`: TeeType
+    , 
+    var `isActive`: kotlin.Boolean
+    , 
+    var `healthStatus`: HealthStatus
+    , 
     /**
      * Whether this backend supports function calling (tool use).
      *
@@ -3364,7 +3426,8 @@ data class BackendSummary (
      * Tinfoil supports OpenAI-compatible function calling.
      * Hardcoded to true for v1 known backends; defaults to false for custom backends.
      */
-    var `supportsToolUse`: kotlin.Boolean, 
+    var `supportsToolUse`: kotlin.Boolean
+    , 
     /**
      * Whether the user has stored an API key for this backend.
      *
@@ -3374,7 +3437,12 @@ data class BackendSummary (
      * API key input form for unconfigured seeded backends.
      */
     var `hasApiKey`: kotlin.Boolean
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3429,23 +3497,34 @@ public object FfiConverterTypeBackendSummary: FfiConverterRustBuffer<BackendSumm
  * Phase 5 will expand this with full message loading per conversation.
  */
 data class ConversationSummary (
-    var `id`: kotlin.String, 
-    var `title`: kotlin.String, 
-    var `modelId`: kotlin.String, 
-    var `backendId`: kotlin.String, 
-    var `updatedAt`: kotlin.Long, 
+    var `id`: kotlin.String
+    , 
+    var `title`: kotlin.String
+    , 
+    var `modelId`: kotlin.String
+    , 
+    var `backendId`: kotlin.String
+    , 
+    var `updatedAt`: kotlin.Long
+    , 
     /**
      * Per-conversation system prompt ("Instructions"), if set.
      * None means no per-conversation override; the global fallback applies at inference time.
      */
-    var `systemPrompt`: kotlin.String?, 
+    var `systemPrompt`: kotlin.String?
+    , 
     /**
      * Phase 27 (CHAT-TOOL-01): whether tool use is enabled for this conversation.
      * Loaded from conversations.tools_enabled (MIGRATION_V16). Exposed to UI so the
      * toggle control can reflect the persisted state without additional queries.
      */
     var `toolsEnabled`: kotlin.Boolean
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3490,15 +3569,27 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
 
 
 data class DeviceCapability (
-    var `abi`: kotlin.String, 
-    var `totalRamBytes`: kotlin.ULong, 
-    var `availableRamBytes`: kotlin.ULong, 
-    var `supportsMmap`: kotlin.Boolean, 
-    var `status`: LocalLlmCapabilityStatus, 
-    var `reasonCode`: kotlin.String, 
-    var `reason`: kotlin.String?, 
+    var `abi`: kotlin.String
+    , 
+    var `totalRamBytes`: kotlin.ULong
+    , 
+    var `availableRamBytes`: kotlin.ULong
+    , 
+    var `supportsMmap`: kotlin.Boolean
+    , 
+    var `status`: LocalLlmCapabilityStatus
+    , 
+    var `reasonCode`: kotlin.String
+    , 
+    var `reason`: kotlin.String?
+    , 
     var `availableStorageBytes`: kotlin.ULong
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3558,11 +3649,19 @@ data class DirectoryFileEntry (
      * Path relative to the source root. Used as the stable identifier in
      * directory_files (source_id, file_path) unique key.
      */
-    var `relativePath`: kotlin.String, 
-    var `mtimeSecs`: kotlin.Long, 
-    var `sizeBytes`: kotlin.Long, 
+    var `relativePath`: kotlin.String
+    , 
+    var `mtimeSecs`: kotlin.Long
+    , 
+    var `sizeBytes`: kotlin.Long
+    , 
     var `content`: kotlin.ByteArray
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3603,10 +3702,17 @@ public object FfiConverterTypeDirectoryFileEntry: FfiConverterRustBuffer<Directo
  * against the current on-disk enumeration before dispatching SyncDirectoryFiles.
  */
 data class DirectoryFingerprint (
-    var `relativePath`: kotlin.String, 
-    var `mtimeSecs`: kotlin.Long, 
+    var `relativePath`: kotlin.String
+    , 
+    var `mtimeSecs`: kotlin.Long
+    , 
     var `sizeBytes`: kotlin.Long
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3652,23 +3758,35 @@ public object FfiConverterTypeDirectoryFingerprint: FfiConverterRustBuffer<Direc
  * their own handle stores (DocumentsContract on Android, bookmark URL on iOS).
  */
 data class DirectorySourceSummary (
-    var `id`: kotlin.String, 
-    var `displayName`: kotlin.String, 
+    var `id`: kotlin.String
+    , 
+    var `displayName`: kotlin.String
+    , 
     /**
      * Human-readable filesystem path. Populated on Desktop; `None` on iOS and Android.
      */
-    var `path`: kotlin.String?, 
-    var `fileCount`: kotlin.Long, 
-    var `lastSyncedAt`: kotlin.Long?, 
+    var `path`: kotlin.String?
+    , 
+    var `fileCount`: kotlin.Long
+    , 
+    var `lastSyncedAt`: kotlin.Long?
+    , 
     /**
      * Pre-computed relative-time label (e.g. "Never", "Just now", "3m ago",
      * "2h ago", "Yesterday", "3d ago"). Centralised on the Rust side so
      * desktop/iOS/Android render identical strings (Phase 32 Plan 07).
      */
-    var `lastSyncedLabel`: kotlin.String, 
-    var `exclusionGlobs`: List<kotlin.String>, 
+    var `lastSyncedLabel`: kotlin.String
+    , 
+    var `exclusionGlobs`: List<kotlin.String>
+    , 
     var `syncStatus`: DirectorySyncStatus
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3723,68 +3841,89 @@ data class DiscoverableTool (
     /**
      * Stable id: `<provider_pubkey_hex>:<tool_name>`.
      */
-    var `id`: kotlin.String, 
+    var `id`: kotlin.String
+    , 
     /**
      * LLM-facing tool name (e.g. "get_weather").
      */
-    var `name`: kotlin.String, 
-    var `description`: kotlin.String, 
-    var `providerPubkey`: kotlin.String, 
+    var `name`: kotlin.String
+    , 
+    var `description`: kotlin.String
+    , 
+    var `providerPubkey`: kotlin.String
+    , 
     /**
      * `server_info.name` from the announcement, or None.
      * UI falls back to `pubkey[..8]…` per UI-SPEC §F.
      */
-    var `providerDisplayName`: kotlin.String?, 
+    var `providerDisplayName`: kotlin.String?
+    , 
     /**
      * Provider profile name from kind 0 metadata (Phase 37).
      */
-    var `providerName`: kotlin.String?, 
+    var `providerName`: kotlin.String?
+    , 
     /**
      * Provider profile "about" text from kind 0 metadata (Phase 37).
      */
-    var `providerAbout`: kotlin.String?, 
+    var `providerAbout`: kotlin.String?
+    , 
     /**
      * Provider profile picture URL from kind 0 metadata (Phase 37).
      */
-    var `providerPicture`: kotlin.String?, 
+    var `providerPicture`: kotlin.String?
+    , 
     /**
      * Provider NIP-05 identifier from kind 0 metadata (Phase 37).
      */
-    var `providerNip05`: kotlin.String?, 
-    var `enabled`: kotlin.Boolean, 
+    var `providerNip05`: kotlin.String?
+    , 
+    var `enabled`: kotlin.Boolean
+    , 
     /**
      * Times the user has invoked this tool via the agent loop. 0 if never used.
      */
-    var `usageCount`: kotlin.UInt, 
+    var `usageCount`: kotlin.UInt
+    , 
     /**
      * Unix seconds of the most recent invocation, or None if never used.
      */
-    var `lastUsedAt`: kotlin.Long?, 
+    var `lastUsedAt`: kotlin.Long?
+    , 
     /**
      * Pre-computed "3d ago" / "Just now" label (relative to now at projection
      * time). None when usage_count == 0.
      */
-    var `lastUsedLabel`: kotlin.String?, 
+    var `lastUsedLabel`: kotlin.String?
+    , 
     /**
      * Unix seconds when this announcement was last seen on the Nostr relay set.
      */
-    var `lastSeenAt`: kotlin.Long, 
+    var `lastSeenAt`: kotlin.Long
+    , 
     /**
      * Pre-computed "3d ago" / "Just now" label (relative to now at projection
      * time). Always present (non-None).
      */
-    var `lastSeenLabel`: kotlin.String, 
+    var `lastSeenLabel`: kotlin.String
+    , 
     /**
      * Bech32 npub1… encoding of the provider pubkey (Phase 36, CTX36-NPUB-01).
      * UI uses this for copy-to-clipboard on the Tool Detail screen.
      */
-    var `npub`: kotlin.String, 
+    var `npub`: kotlin.String
+    , 
     /**
      * Pretty-printed JSON schema (Phase 36, CTX36-NPUB-01). UI renders this
      * in the Tool Detail screen SCHEMA expander.
      */
     var `schemaPretty`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3865,13 +4004,23 @@ public object FfiConverterTypeDiscoverableTool: FfiConverterRustBuffer<Discovera
  * additional queries. Maps from DocumentRow in the persistence layer.
  */
 data class DocumentSummary (
-    var `id`: kotlin.String, 
-    var `name`: kotlin.String, 
-    var `format`: kotlin.String, 
-    var `sizeBytes`: kotlin.ULong, 
-    var `ingestionDate`: kotlin.Long, 
+    var `id`: kotlin.String
+    , 
+    var `name`: kotlin.String
+    , 
+    var `format`: kotlin.String
+    , 
+    var `sizeBytes`: kotlin.ULong
+    , 
+    var `ingestionDate`: kotlin.Long
+    , 
     var `chunkCount`: kotlin.ULong
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3920,13 +4069,20 @@ public object FfiConverterTypeDocumentSummary: FfiConverterRustBuffer<DocumentSu
  * PendingAttachment (actor-internal) and the filename in AppState.pending_attachment.
  */
 data class FilePickResult (
-    var `filename`: kotlin.String, 
+    var `filename`: kotlin.String
+    , 
     /**
      * Full text content of the file (UTF-8)
      */
-    var `content`: kotlin.String, 
+    var `content`: kotlin.String
+    , 
     var `sizeBytes`: kotlin.ULong
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -3959,15 +4115,27 @@ public object FfiConverterTypeFilePickResult: FfiConverterRustBuffer<FilePickRes
 
 
 data class HybridProfile (
-    var `id`: kotlin.String, 
-    var `name`: kotlin.String, 
-    var `localBackendId`: kotlin.String, 
-    var `localModelId`: kotlin.String, 
-    var `remoteBackendId`: kotlin.String, 
-    var `remoteModelId`: kotlin.String, 
-    var `policy`: RoutingPolicy, 
+    var `id`: kotlin.String
+    , 
+    var `name`: kotlin.String
+    , 
+    var `localBackendId`: kotlin.String
+    , 
+    var `localModelId`: kotlin.String
+    , 
+    var `remoteBackendId`: kotlin.String
+    , 
+    var `remoteModelId`: kotlin.String
+    , 
+    var `policy`: RoutingPolicy
+    , 
     var `preprocessing`: LocalPreprocessing
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4021,12 +4189,18 @@ public object FfiConverterTypeHybridProfile: FfiConverterRustBuffer<HybridProfil
  * Cleared when EmbeddingComplete is handled.
  */
 data class IngestionProgress (
-    var `documentName`: kotlin.String, 
+    var `documentName`: kotlin.String
+    , 
     /**
      * One of: "extracting", "chunking", "embedding", "indexing", "complete"
      */
     var `stage`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4059,14 +4233,22 @@ public object FfiConverterTypeIngestionProgress: FfiConverterRustBuffer<Ingestio
  * Download progress for a single local model.
  */
 data class LocalModelDownloadProgress (
-    var `modelId`: kotlin.String, 
-    var `downloadedBytes`: kotlin.ULong, 
-    var `totalBytes`: kotlin.ULong?, 
+    var `modelId`: kotlin.String
+    , 
+    var `downloadedBytes`: kotlin.ULong
+    , 
+    var `totalBytes`: kotlin.ULong?
+    , 
     /**
      * One of: "downloading", "verifying", "complete", "failed".
      */
     var `stage`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4105,17 +4287,31 @@ public object FfiConverterTypeLocalModelDownloadProgress: FfiConverterRustBuffer
  * Built-in downloadable local model entry.
  */
 data class LocalModelPreset (
-    var `id`: kotlin.String, 
-    var `name`: kotlin.String, 
-    var `description`: kotlin.String, 
-    var `filename`: kotlin.String, 
-    var `url`: kotlin.String, 
-    var `sha256`: kotlin.String, 
-    var `sizeBytes`: kotlin.ULong, 
-    var `quantization`: kotlin.String, 
-    var `minRamBytes`: kotlin.ULong, 
+    var `id`: kotlin.String
+    , 
+    var `name`: kotlin.String
+    , 
+    var `description`: kotlin.String
+    , 
+    var `filename`: kotlin.String
+    , 
+    var `url`: kotlin.String
+    , 
+    var `sha256`: kotlin.String
+    , 
+    var `sizeBytes`: kotlin.ULong
+    , 
+    var `quantization`: kotlin.String
+    , 
+    var `minRamBytes`: kotlin.ULong
+    , 
     var `chatTemplate`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4172,17 +4368,31 @@ public object FfiConverterTypeLocalModelPreset: FfiConverterRustBuffer<LocalMode
  * UI-safe local model status, derived from catalog + verified file state.
  */
 data class LocalModelSummary (
-    var `id`: kotlin.String, 
-    var `name`: kotlin.String, 
-    var `description`: kotlin.String, 
-    var `quantization`: kotlin.String, 
-    var `sizeBytes`: kotlin.ULong, 
-    var `minRamBytes`: kotlin.ULong, 
-    var `downloaded`: kotlin.Boolean, 
-    var `verified`: kotlin.Boolean, 
-    var `path`: kotlin.String?, 
+    var `id`: kotlin.String
+    , 
+    var `name`: kotlin.String
+    , 
+    var `description`: kotlin.String
+    , 
+    var `quantization`: kotlin.String
+    , 
+    var `sizeBytes`: kotlin.ULong
+    , 
+    var `minRamBytes`: kotlin.ULong
+    , 
+    var `downloaded`: kotlin.Boolean
+    , 
+    var `verified`: kotlin.Boolean
+    , 
+    var `path`: kotlin.String?
+    , 
     var `backendId`: kotlin.String?
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4236,9 +4446,15 @@ public object FfiConverterTypeLocalModelSummary: FfiConverterRustBuffer<LocalMod
 
 
 data class LocalPreprocessing (
-    var `compressHistory`: kotlin.Boolean, 
+    var `compressHistory`: kotlin.Boolean
+    , 
     var `rewriteRagQuery`: kotlin.Boolean
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4274,28 +4490,38 @@ public object FfiConverterTypeLocalPreprocessing: FfiConverterRustBuffer<LocalPr
  * Maps from MemoryRow with display-safe fields.
  */
 data class MemorySummary (
-    var `id`: kotlin.String, 
+    var `id`: kotlin.String
+    , 
     /**
      * Full content of the extracted fact (memories are short enough to carry fully).
      */
-    var `content`: kotlin.String, 
+    var `content`: kotlin.String
+    , 
     /**
      * First ~100 chars for list display (per D-01).
      */
-    var `contentPreview`: kotlin.String, 
+    var `contentPreview`: kotlin.String
+    , 
     /**
      * Unix timestamp (millis) when memory was created.
      */
-    var `createdAt`: kotlin.Long, 
+    var `createdAt`: kotlin.Long
+    , 
     /**
      * Title of the source conversation, if the conversation still exists.
      */
-    var `conversationTitle`: kotlin.String?, 
+    var `conversationTitle`: kotlin.String?
+    , 
     /**
      * The usearch HNSW index key -- needed to remove the vector on delete without extra DB query.
      */
     var `usearchKey`: kotlin.Long
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4348,30 +4574,40 @@ data class OnboardingState (
     /**
      * The backend ID selected or entered by the user during BackendSetup.
      */
-    var `selectedBackendId`: kotlin.String?, 
+    var `selectedBackendId`: kotlin.String?
+    , 
     /**
      * Human-readable progress label during attestation (e.g. "Connecting to backend...").
      * None when attestation is not in progress.
      */
-    var `attestationStage`: kotlin.String?, 
+    var `attestationStage`: kotlin.String?
+    , 
     /**
      * Result of the attestation demo. None until attestation completes.
      */
-    var `attestationResult`: AttestationStatus?, 
+    var `attestationResult`: AttestationStatus?
+    , 
     /**
      * Human-readable TEE label for the attested backend (e.g. "Intel TDX").
      * None until attestation completes.
      */
-    var `attestationTeeLabel`: kotlin.String?, 
+    var `attestationTeeLabel`: kotlin.String?
+    , 
     /**
      * True while the ValidateApiKey health-check is in flight.
      */
-    var `validatingApiKey`: kotlin.Boolean, 
+    var `validatingApiKey`: kotlin.Boolean
+    , 
     /**
      * Error message from the last failed API key validation. Cleared on retry.
      */
     var `apiKeyError`: kotlin.String?
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4418,9 +4654,15 @@ public object FfiConverterTypeOnboardingState: FfiConverterRustBuffer<Onboarding
  * Value is the hex address or actions hash from the verified component.
  */
 data class OrchestratedComponent (
-    var `label`: kotlin.String, 
+    var `label`: kotlin.String
+    , 
     var `value`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4450,9 +4692,15 @@ public object FfiConverterTypeOrchestratedComponent: FfiConverterRustBuffer<Orch
 
 
 data class PlatformHttpHeader (
-    var `name`: kotlin.String, 
+    var `name`: kotlin.String
+    , 
     var `value`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4482,12 +4730,21 @@ public object FfiConverterTypePlatformHttpHeader: FfiConverterRustBuffer<Platfor
 
 
 data class PlatformHttpRequest (
-    var `method`: kotlin.String, 
-    var `url`: kotlin.String, 
-    var `headers`: List<PlatformHttpHeader>, 
-    var `body`: kotlin.ByteArray, 
+    var `method`: kotlin.String
+    , 
+    var `url`: kotlin.String
+    , 
+    var `headers`: List<PlatformHttpHeader>
+    , 
+    var `body`: kotlin.ByteArray
+    , 
     var `timeoutSecs`: kotlin.ULong
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4526,10 +4783,17 @@ public object FfiConverterTypePlatformHttpRequest: FfiConverterRustBuffer<Platfo
 
 
 data class PlatformHttpResponse (
-    var `statusCode`: kotlin.UShort, 
-    var `headers`: List<PlatformHttpHeader>, 
+    var `statusCode`: kotlin.UShort
+    , 
+    var `headers`: List<PlatformHttpHeader>
+    , 
     var `body`: kotlin.ByteArray
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4569,24 +4833,33 @@ data class ProviderPreset (
     /**
      * Short identifier (e.g. "tinfoil") -- used as suggested backend id
      */
-    var `id`: kotlin.String, 
+    var `id`: kotlin.String
+    , 
     /**
      * Display name (e.g. "Tinfoil")
      */
-    var `name`: kotlin.String, 
+    var `name`: kotlin.String
+    , 
     /**
      * Pre-filled base URL
      */
-    var `baseUrl`: kotlin.String, 
+    var `baseUrl`: kotlin.String
+    , 
     /**
      * Pre-filled TEE type
      */
-    var `teeType`: TeeType, 
+    var `teeType`: TeeType
+    , 
     /**
      * Brief description for the UI (e.g. "Intel TDX + NVIDIA H100 CC")
      */
     var `description`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4625,9 +4898,15 @@ public object FfiConverterTypeProviderPreset: FfiConverterRustBuffer<ProviderPre
 
 
 data class Router (
-    var `currentScreen`: Screen, 
+    var `currentScreen`: Screen
+    , 
     var `screenStack`: List<Screen>
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4657,10 +4936,17 @@ public object FfiConverterTypeRouter: FfiConverterRustBuffer<Router> {
 
 
 data class RoutingPolicy (
-    var `escalateIfAttachment`: kotlin.Boolean, 
-    var `preferLocalWhenOffline`: kotlin.Boolean, 
+    var `escalateIfAttachment`: kotlin.Boolean
+    , 
+    var `preferLocalWhenOffline`: kotlin.Boolean
+    , 
     var `escalateIfMessageLongerThan`: kotlin.ULong?
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4699,20 +4985,28 @@ data class TrustedProvider (
     /**
      * Nostr hex pubkey.
      */
-    var `pubkey`: kotlin.String, 
+    var `pubkey`: kotlin.String
+    , 
     /**
      * Optional user-supplied label.
      */
-    var `label`: kotlin.String?, 
+    var `label`: kotlin.String?
+    , 
     /**
      * Unix seconds when the user added this entry.
      */
-    var `addedAt`: kotlin.Long, 
+    var `addedAt`: kotlin.Long
+    , 
     /**
      * Bech32 npub1… encoding, pre-computed for display.
      */
     var `npub`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4748,16 +5042,29 @@ public object FfiConverterTypeTrustedProvider: FfiConverterRustBuffer<TrustedPro
 
 
 data class TurnRoutingSummary (
-    var `conversationId`: kotlin.String?, 
-    var `profileId`: kotlin.String?, 
-    var `backendId`: kotlin.String, 
-    var `modelId`: kotlin.String, 
-    var `decision`: BackendRole, 
-    var `reason`: kotlin.String, 
-    var `providerName`: kotlin.String, 
-    var `teeLabel`: kotlin.String, 
+    var `conversationId`: kotlin.String?
+    , 
+    var `profileId`: kotlin.String?
+    , 
+    var `backendId`: kotlin.String
+    , 
+    var `modelId`: kotlin.String
+    , 
+    var `decision`: BackendRole
+    , 
+    var `reason`: kotlin.String
+    , 
+    var `providerName`: kotlin.String
+    , 
+    var `teeLabel`: kotlin.String
+    , 
     var `teeVerified`: kotlin.Boolean
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4814,61 +5121,80 @@ public object FfiConverterTypeTurnRoutingSummary: FfiConverterRustBuffer<TurnRou
  * without additional queries. Maps from MessageRow with extra UI fields.
  */
 data class UiMessage (
-    var `id`: kotlin.String, 
+    var `id`: kotlin.String
+    , 
     /**
      * Message role: "user", "assistant", or "system"
      */
-    var `role`: kotlin.String, 
-    var `content`: kotlin.String, 
-    var `createdAt`: kotlin.Long, 
+    var `role`: kotlin.String
+    , 
+    var `content`: kotlin.String
+    , 
+    var `createdAt`: kotlin.Long
+    , 
     /**
      * True if this message has an attached file (shown as attachment pill in UI)
      */
-    var `hasAttachment`: kotlin.Boolean, 
+    var `hasAttachment`: kotlin.Boolean
+    , 
     /**
      * Filename of the attached file, if any
      */
-    var `attachmentName`: kotlin.String?, 
+    var `attachmentName`: kotlin.String?
+    , 
     /**
      * Number of distinct documents that contributed RAG context to this message (D-07).
      * None if RAG was not active for this turn.
      */
-    var `ragContextCount`: kotlin.UInt?, 
+    var `ragContextCount`: kotlin.UInt?
+    , 
     /**
      * Absolute path to the encrypted image file for this message, if any (QT-ECE).
      * Non-null when the user sent an image. Decrypt via read_encrypted_image(message_id).
      * Never contains plaintext image bytes — the file at this path is MGO1-encrypted.
      */
-    var `imagePath`: kotlin.String?, 
+    var `imagePath`: kotlin.String?
+    , 
     /**
      * Backend that produced this assistant message, if known.
      */
-    var `routeBackendId`: kotlin.String?, 
+    var `routeBackendId`: kotlin.String?
+    , 
     /**
      * Model that produced this assistant message, if known.
      */
-    var `routeModelId`: kotlin.String?, 
+    var `routeModelId`: kotlin.String?
+    , 
     /**
      * Route role for this assistant message: "local" or "remote", if known.
      */
-    var `routeDecision`: kotlin.String?, 
+    var `routeDecision`: kotlin.String?
+    , 
     /**
      * Human-readable route reason, if known.
      */
-    var `routeReason`: kotlin.String?, 
+    var `routeReason`: kotlin.String?
+    , 
     /**
      * Display provider name for the serving backend, if known.
      */
-    var `routeProviderName`: kotlin.String?, 
+    var `routeProviderName`: kotlin.String?
+    , 
     /**
      * TEE label for the serving backend, if known.
      */
-    var `routeTeeLabel`: kotlin.String?, 
+    var `routeTeeLabel`: kotlin.String?
+    , 
     /**
      * Whether attestation was verified for the serving backend when known.
      */
     var `routeTeeVerified`: kotlin.Boolean?
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -4942,7 +5268,11 @@ sealed class AppAction {
      * Push a screen onto the navigation stack
      */
     data class PushScreen(
-        val `screen`: Screen) : AppAction() {
+        val `screen`: dev.disobey.mango.rust.Screen) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -4956,7 +5286,11 @@ sealed class AppAction {
      * Set the busy/loading indicator
      */
     data class SetBusyState(
-        val `state`: BusyState) : AppAction() {
+        val `state`: dev.disobey.mango.rust.BusyState) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -4964,7 +5298,11 @@ sealed class AppAction {
      * Show an ephemeral toast message
      */
     data class ShowToast(
-        val `message`: kotlin.String) : AppAction() {
+        val `message`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -4985,7 +5323,11 @@ sealed class AppAction {
      */
     data class SendMessage(
         val `text`: kotlin.String, 
-        val `forceRole`: BackendRole?) : AppAction() {
+        val `forceRole`: dev.disobey.mango.rust.BackendRole?) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -4999,7 +5341,11 @@ sealed class AppAction {
      * Set the active backend by ID (per D-09)
      */
     data class SetActiveBackend(
-        val `backendId`: kotlin.String) : AppAction() {
+        val `backendId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5013,7 +5359,11 @@ sealed class AppAction {
      * Load a conversation's messages into AppState.messages (per D-05)
      */
     data class LoadConversation(
-        val `conversationId`: kotlin.String) : AppAction() {
+        val `conversationId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5022,7 +5372,11 @@ sealed class AppAction {
      */
     data class RenameConversation(
         val `id`: kotlin.String, 
-        val `title`: kotlin.String) : AppAction() {
+        val `title`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5031,7 +5385,11 @@ sealed class AppAction {
      * conversation and navigate into it. Per quick/260423-93w.
      */
     data class ForkConversation(
-        val `id`: kotlin.String) : AppAction() {
+        val `id`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5039,7 +5397,11 @@ sealed class AppAction {
      * Delete a conversation and all its messages (per D-13)
      */
     data class DeleteConversation(
-        val `id`: kotlin.String) : AppAction() {
+        val `id`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5066,7 +5428,11 @@ sealed class AppAction {
      */
     data class EditMessage(
         val `messageId`: kotlin.String, 
-        val `newText`: kotlin.String) : AppAction() {
+        val `newText`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5076,7 +5442,11 @@ sealed class AppAction {
     data class AttachFile(
         val `filename`: kotlin.String, 
         val `content`: kotlin.String, 
-        val `sizeBytes`: kotlin.ULong) : AppAction() {
+        val `sizeBytes`: kotlin.ULong) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5094,7 +5464,11 @@ sealed class AppAction {
     data class AttachImage(
         val `filename`: kotlin.String, 
         val `filePath`: kotlin.String, 
-        val `mimeType`: kotlin.String) : AppAction() {
+        val `mimeType`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5102,7 +5476,11 @@ sealed class AppAction {
      * Select a model for the current conversation (per D-06)
      */
     data class SelectModel(
-        val `modelId`: kotlin.String) : AppAction() {
+        val `modelId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5110,7 +5488,11 @@ sealed class AppAction {
      * Set a system prompt for the current conversation (per D-09)
      */
     data class SetSystemPrompt(
-        val `prompt`: kotlin.String?) : AppAction() {
+        val `prompt`: kotlin.String?) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5121,8 +5503,12 @@ sealed class AppAction {
         val `name`: kotlin.String, 
         val `baseUrl`: kotlin.String, 
         val `apiKey`: kotlin.String, 
-        val `teeType`: TeeType, 
-        val `models`: List<kotlin.String>) : AppAction() {
+        val `teeType`: dev.disobey.mango.rust.TeeType, 
+        val `models`: List<kotlin.String>) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5130,7 +5516,11 @@ sealed class AppAction {
      * Remove a backend, clean up health state, and reassign its conversations.
      */
     data class RemoveBackend(
-        val `backendId`: kotlin.String) : AppAction() {
+        val `backendId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5139,7 +5529,11 @@ sealed class AppAction {
      */
     data class ReorderBackend(
         val `backendId`: kotlin.String, 
-        val `newDisplayOrder`: kotlin.Long) : AppAction() {
+        val `newDisplayOrder`: kotlin.Long) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5148,7 +5542,11 @@ sealed class AppAction {
      */
     data class UpdateBackendModels(
         val `backendId`: kotlin.String, 
-        val `models`: List<kotlin.String>) : AppAction() {
+        val `models`: List<kotlin.String>) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5156,7 +5554,11 @@ sealed class AppAction {
      * Persist a backend as the default and set it active for the current session.
      */
     data class SetDefaultBackend(
-        val `backendId`: kotlin.String) : AppAction() {
+        val `backendId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5164,7 +5566,11 @@ sealed class AppAction {
      * Persist a model as the global default for new conversations.
      */
     data class SetDefaultModel(
-        val `modelId`: kotlin.String) : AppAction() {
+        val `modelId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5172,7 +5578,11 @@ sealed class AppAction {
      * Enable or disable on-device local inference globally.
      */
     data class SetLocalInferenceEnabled(
-        val `enabled`: kotlin.Boolean) : AppAction() {
+        val `enabled`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5180,7 +5590,11 @@ sealed class AppAction {
      * Download and verify a built-in local model.
      */
     data class DownloadLocalModel(
-        val `modelId`: kotlin.String) : AppAction() {
+        val `modelId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5188,7 +5602,11 @@ sealed class AppAction {
      * Delete a downloaded local model after unloading it if safe.
      */
     data class DeleteLocalModel(
-        val `modelId`: kotlin.String) : AppAction() {
+        val `modelId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5196,7 +5614,11 @@ sealed class AppAction {
      * Save or update a hybrid local/remote routing profile.
      */
     data class SaveHybridProfile(
-        val `profile`: HybridProfile) : AppAction() {
+        val `profile`: dev.disobey.mango.rust.HybridProfile) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5204,7 +5626,11 @@ sealed class AppAction {
      * Delete a saved hybrid profile.
      */
     data class DeleteHybridProfile(
-        val `profileId`: kotlin.String) : AppAction() {
+        val `profileId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5212,7 +5638,11 @@ sealed class AppAction {
      * Make a hybrid profile the active/default conversation target.
      */
     data class SetActiveHybridProfile(
-        val `profileId`: kotlin.String) : AppAction() {
+        val `profileId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5221,7 +5651,11 @@ sealed class AppAction {
      */
     data class OverrideConversationBackend(
         val `conversationId`: kotlin.String, 
-        val `backendId`: kotlin.String) : AppAction() {
+        val `backendId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5246,7 +5680,11 @@ sealed class AppAction {
      */
     data class UpdateBackendApiKey(
         val `backendId`: kotlin.String, 
-        val `apiKey`: kotlin.String) : AppAction() {
+        val `apiKey`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5255,7 +5693,11 @@ sealed class AppAction {
      * Sets onboarding.validating_api_key=true; on success advances to AttestationDemo.
      */
     data class ValidateApiKey(
-        val `backendId`: kotlin.String) : AppAction() {
+        val `backendId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5284,7 +5726,11 @@ sealed class AppAction {
      */
     data class AddBackendFromPreset(
         val `presetId`: kotlin.String, 
-        val `apiKey`: kotlin.String) : AppAction() {
+        val `apiKey`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5297,7 +5743,11 @@ sealed class AppAction {
      */
     data class IngestDocument(
         val `filename`: kotlin.String, 
-        val `content`: kotlin.ByteArray) : AppAction() {
+        val `content`: kotlin.ByteArray) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5305,7 +5755,11 @@ sealed class AppAction {
      * Delete a document and its chunks/vectors from the library and index (LRAG-04, D-10).
      */
     data class DeleteDocument(
-        val `documentId`: kotlin.String) : AppAction() {
+        val `documentId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5313,7 +5767,11 @@ sealed class AppAction {
      * Attach a library document to the active conversation for RAG context (D-08, D-11).
      */
     data class AttachDocumentToConversation(
-        val `documentId`: kotlin.String) : AppAction() {
+        val `documentId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5321,7 +5779,11 @@ sealed class AppAction {
      * Detach a document from the active conversation.
      */
     data class DetachDocumentFromConversation(
-        val `documentId`: kotlin.String) : AppAction() {
+        val `documentId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5329,7 +5791,11 @@ sealed class AppAction {
      * Launch a new autonomous agent session with the given task description (AGNT-01).
      */
     data class LaunchAgentSession(
-        val `taskDescription`: kotlin.String) : AppAction() {
+        val `taskDescription`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5337,7 +5803,11 @@ sealed class AppAction {
      * Pause a running agent session -- stops the loop, preserves state (AGNT-06).
      */
     data class PauseAgentSession(
-        val `sessionId`: kotlin.String) : AppAction() {
+        val `sessionId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5345,7 +5815,11 @@ sealed class AppAction {
      * Resume a paused agent session -- rebuilds message history and continues (AGNT-06).
      */
     data class ResumeAgentSession(
-        val `sessionId`: kotlin.String) : AppAction() {
+        val `sessionId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5353,7 +5827,11 @@ sealed class AppAction {
      * Cancel an agent session -- marks it cancelled and clears in-flight state (AGNT-06).
      */
     data class CancelAgentSession(
-        val `sessionId`: kotlin.String) : AppAction() {
+        val `sessionId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5361,7 +5839,11 @@ sealed class AppAction {
      * Load agent steps for a session into AppState for UI display (AGNT-06).
      */
     data class LoadAgentSession(
-        val `sessionId`: kotlin.String) : AppAction() {
+        val `sessionId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5379,7 +5861,11 @@ sealed class AppAction {
      * A value of 0 disables periodic re-attestation.
      */
     data class SetAttestationInterval(
-        val `minutes`: kotlin.UInt) : AppAction() {
+        val `minutes`: kotlin.UInt) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5388,7 +5874,11 @@ sealed class AppAction {
      * None or empty string clears the setting.
      */
     data class SetGlobalSystemPrompt(
-        val `prompt`: kotlin.String?) : AppAction() {
+        val `prompt`: kotlin.String?) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5402,7 +5892,11 @@ sealed class AppAction {
      * Delete a memory from both SQLite and the usearch vector index (MEM-05).
      */
     data class DeleteMemory(
-        val `memoryId`: kotlin.String) : AppAction() {
+        val `memoryId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5411,7 +5905,11 @@ sealed class AppAction {
      */
     data class UpdateMemory(
         val `memoryId`: kotlin.String, 
-        val `content`: kotlin.String) : AppAction() {
+        val `content`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5420,7 +5918,11 @@ sealed class AppAction {
      * Follows SetGlobalSystemPrompt pattern (per D-19).
      */
     data class SetBraveApiKey(
-        val `apiKey`: kotlin.String) : AppAction() {
+        val `apiKey`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5431,7 +5933,11 @@ sealed class AppAction {
      * On failure: shows an error toast, does NOT persist the key.
      */
     data class ValidateBraveApiKey(
-        val `apiKey`: kotlin.String) : AppAction() {
+        val `apiKey`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5440,7 +5946,11 @@ sealed class AppAction {
      * Persisted as "1"/"0" in the settings table under key "memories_enabled".
      */
     data class SetMemoriesEnabled(
-        val `enabled`: kotlin.Boolean) : AppAction() {
+        val `enabled`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5450,7 +5960,11 @@ sealed class AppAction {
      */
     data class SetConversationToolsEnabled(
         val `conversationId`: kotlin.String, 
-        val `enabled`: kotlin.Boolean) : AppAction() {
+        val `enabled`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5462,7 +5976,11 @@ sealed class AppAction {
     data class SetupPin(
         val `pin`: kotlin.String, 
         val `duressPin`: kotlin.String?, 
-        val `enableBiometric`: kotlin.Boolean) : AppAction() {
+        val `enableBiometric`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5470,7 +5988,11 @@ sealed class AppAction {
      * Update or clear the duress PIN while the app is unlocked.
      */
     data class SetDuressPin(
-        val `pin`: kotlin.String?) : AppAction() {
+        val `pin`: kotlin.String?) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5479,7 +6001,11 @@ sealed class AppAction {
      * when the keychain provides the raw DEK (D-06).
      */
     data class UnlockWithDek(
-        val `dekHex`: kotlin.String) : AppAction() {
+        val `dekHex`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5488,7 +6014,11 @@ sealed class AppAction {
      * detects duress PIN before attempting decryption (D-19, T-28-11), opens encrypted DB (D-07).
      */
     data class UnlockWithPin(
-        val `pin`: kotlin.String) : AppAction() {
+        val `pin`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5508,7 +6038,11 @@ sealed class AppAction {
      * Enable or disable biometric login while the app is unlocked.
      */
     data class SetBiometricLoginEnabled(
-        val `enabled`: kotlin.Boolean) : AppAction() {
+        val `enabled`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5516,7 +6050,11 @@ sealed class AppAction {
      * Set the lock timeout in seconds. 0 = never lock. Persisted to settings table (D-13).
      */
     data class SetLockTimeout(
-        val `seconds`: kotlin.Long) : AppAction() {
+        val `seconds`: kotlin.Long) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5533,7 +6071,11 @@ sealed class AppAction {
         val `path`: kotlin.String?, 
         val `bookmarkData`: kotlin.ByteArray?, 
         val `treeUri`: kotlin.String?, 
-        val `exclusionGlobs`: List<kotlin.String>) : AppAction() {
+        val `exclusionGlobs`: List<kotlin.String>) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5544,9 +6086,13 @@ sealed class AppAction {
      */
     data class SyncDirectoryFiles(
         val `sourceId`: kotlin.String, 
-        val `files`: List<DirectoryFileEntry>, 
+        val `files`: List<dev.disobey.mango.rust.DirectoryFileEntry>, 
         val `removedPaths`: List<kotlin.String>, 
-        val `isFinalBatch`: kotlin.Boolean) : AppAction() {
+        val `isFinalBatch`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5555,7 +6101,11 @@ sealed class AppAction {
      * usearch key owned by it (DIR-06).
      */
     data class RemoveDirectorySource(
-        val `sourceId`: kotlin.String) : AppAction() {
+        val `sourceId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5566,7 +6116,11 @@ sealed class AppAction {
      */
     data class SetDirectoryExclusions(
         val `sourceId`: kotlin.String, 
-        val `globs`: List<kotlin.String>) : AppAction() {
+        val `globs`: List<kotlin.String>) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5575,7 +6129,11 @@ sealed class AppAction {
      * directory source. Per D-01 the actor does not enumerate on mobile.
      */
     data class TriggerDirectorySync(
-        val `sourceId`: kotlin.String) : AppAction() {
+        val `sourceId`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5585,7 +6143,11 @@ sealed class AppAction {
      */
     data class UpdateDirectorySourceBookmark(
         val `sourceId`: kotlin.String, 
-        val `bookmarkData`: kotlin.ByteArray) : AppAction() {
+        val `bookmarkData`: kotlin.ByteArray) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5604,7 +6166,11 @@ sealed class AppAction {
      */
     data class SetContextvmToolEnabled(
         val `toolId`: kotlin.String, 
-        val `enabled`: kotlin.Boolean) : AppAction() {
+        val `enabled`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5613,7 +6179,11 @@ sealed class AppAction {
      * settings table under `auto_discover_tools`.
      */
     data class SetAutoDiscoverTools(
-        val `enabled`: kotlin.Boolean) : AppAction() {
+        val `enabled`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5631,7 +6201,11 @@ sealed class AppAction {
      */
     data class AddTrustedProvider(
         val `pubkey`: kotlin.String, 
-        val `label`: kotlin.String?) : AppAction() {
+        val `label`: kotlin.String?) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
@@ -5639,12 +6213,21 @@ sealed class AppAction {
      * Remove a provider from the trust list by pubkey.
      */
     data class RemoveTrustedProvider(
-        val `pubkey`: kotlin.String) : AppAction() {
+        val `pubkey`: kotlin.String) : AppAction()
+        
+    {
+        
+
         companion object
     }
     
 
     
+
+    
+    
+
+
     companion object
 }
 
@@ -5898,7 +6481,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
         }
     }
 
-    override fun allocationSize(value: AppAction) = when(value) {
+    override fun allocationSize(value: AppAction): ULong = when(value) {
         is AppAction.PushScreen -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -6927,12 +7510,21 @@ sealed class AppUpdate {
      * Full state snapshot delivered to UI after every action
      */
     data class FullState(
-        val v1: AppState) : AppUpdate() {
+        val v1: dev.disobey.mango.rust.AppState) : AppUpdate()
+        
+    {
+        
+
         companion object
     }
     
 
     
+
+    
+    
+
+
     companion object
 }
 
@@ -6949,7 +7541,7 @@ public object FfiConverterTypeAppUpdate : FfiConverterRustBuffer<AppUpdate>{
         }
     }
 
-    override fun allocationSize(value: AppUpdate) = when(value) {
+    override fun allocationSize(value: AppUpdate): ULong = when(value) {
         is AppUpdate.FullState -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -7052,6 +7644,9 @@ sealed class AttestationException: kotlin.Exception() {
             get() = "teeType=${ `teeType` }"
     }
     
+
+    
+
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<AttestationException> {
         override fun lift(error_buf: RustBuffer.ByValue): AttestationException = FfiConverterTypeAttestationError.lift(error_buf)
@@ -7213,12 +7808,17 @@ sealed class AttestationStatus {
      * - `shape`: "Flat" | "Orchestrated" | "Chutes" (Phase 34 RED-11).
      * - `freshness`: "PerRequest" | "PerEnclave" (RED-09).
      * - `orchestrated_components`: per-component hex/actions hashes for Shape B.
+     *
      * All three are `None` for non-aggregator providers.
      */
     data class Verified(
         val `shape`: kotlin.String?, 
         val `freshness`: kotlin.String?, 
-        val `orchestratedComponents`: List<OrchestratedComponent>?) : AttestationStatus() {
+        val `orchestratedComponents`: List<dev.disobey.mango.rust.OrchestratedComponent>?) : AttestationStatus()
+        
+    {
+        
+
         companion object
     }
     
@@ -7232,7 +7832,11 @@ sealed class AttestationStatus {
      * Verification was attempted and failed.
      */
     data class Failed(
-        val `reason`: kotlin.String) : AttestationStatus() {
+        val `reason`: kotlin.String) : AttestationStatus()
+        
+    {
+        
+
         companion object
     }
     
@@ -7244,6 +7848,11 @@ sealed class AttestationStatus {
     
 
     
+
+    
+    
+
+
     companion object
 }
 
@@ -7267,7 +7876,7 @@ public object FfiConverterTypeAttestationStatus : FfiConverterRustBuffer<Attesta
         }
     }
 
-    override fun allocationSize(value: AttestationStatus) = when(value) {
+    override fun allocationSize(value: AttestationStatus): ULong = when(value) {
         is AttestationStatus.Verified -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -7333,6 +7942,10 @@ enum class BackendRole {
     
     LOCAL,
     REMOTE;
+
+    
+
+
     companion object
 }
 
@@ -7370,7 +7983,11 @@ sealed class BusyState {
      * Generic loading with descriptive message
      */
     data class Loading(
-        val `message`: kotlin.String) : BusyState() {
+        val `message`: kotlin.String) : BusyState()
+        
+    {
+        
+
         companion object
     }
     
@@ -7378,12 +7995,21 @@ sealed class BusyState {
      * LLM streaming in progress; includes model name for UI display
      */
     data class Streaming(
-        val `model`: kotlin.String) : BusyState() {
+        val `model`: kotlin.String) : BusyState()
+        
+    {
+        
+
         companion object
     }
     
 
     
+
+    
+    
+
+
     companion object
 }
 
@@ -7404,7 +8030,7 @@ public object FfiConverterTypeBusyState : FfiConverterRustBuffer<BusyState>{
         }
     }
 
-    override fun allocationSize(value: BusyState) = when(value) {
+    override fun allocationSize(value: BusyState): ULong = when(value) {
         is BusyState.Idle -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -7483,12 +8109,21 @@ sealed class ContextvmDiscoveryState {
      * is logged but the UI uses the locked headline regardless.
      */
     data class Error(
-        val `message`: kotlin.String) : ContextvmDiscoveryState() {
+        val `message`: kotlin.String) : ContextvmDiscoveryState()
+        
+    {
+        
+
         companion object
     }
     
 
     
+
+    
+    
+
+
     companion object
 }
 
@@ -7508,7 +8143,7 @@ public object FfiConverterTypeContextvmDiscoveryState : FfiConverterRustBuffer<C
         }
     }
 
-    override fun allocationSize(value: ContextvmDiscoveryState) = when(value) {
+    override fun allocationSize(value: ContextvmDiscoveryState): ULong = when(value) {
         is ContextvmDiscoveryState.Idle -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -7586,12 +8221,21 @@ sealed class DirectorySyncStatus {
      * Last sync ended with an error; message is human-readable.
      */
     data class Error(
-        val `message`: kotlin.String) : DirectorySyncStatus() {
+        val `message`: kotlin.String) : DirectorySyncStatus()
+        
+    {
+        
+
         companion object
     }
     
 
     
+
+    
+    
+
+
     companion object
 }
 
@@ -7610,7 +8254,7 @@ public object FfiConverterTypeDirectorySyncStatus : FfiConverterRustBuffer<Direc
         }
     }
 
-    override fun allocationSize(value: DirectorySyncStatus) = when(value) {
+    override fun allocationSize(value: DirectorySyncStatus): ULong = when(value) {
         is DirectorySyncStatus.Idle -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -7674,6 +8318,10 @@ enum class EmbeddingStatus {
      * No embedding provider was supplied (e.g. mobile platform without native impl).
      */
     UNAVAILABLE;
+
+    
+
+
     companion object
 }
 
@@ -7718,6 +8366,9 @@ sealed class FfiException: kotlin.Exception() {
             get() = "reason=${ `reason` }"
     }
     
+
+    
+
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<FfiException> {
         override fun lift(error_buf: RustBuffer.ByValue): FfiException = FfiConverterTypeFfiError.lift(error_buf)
@@ -7789,6 +8440,10 @@ enum class HealthStatus {
      * Health is unknown (router not yet integrated or backend not yet checked).
      */
     UNKNOWN;
+
+    
+
+
     companion object
 }
 
@@ -7869,6 +8524,9 @@ sealed class LlmException: kotlin.Exception() {
             get() = "statusCode=${ `statusCode` }, reason=${ `reason` }"
     }
     
+
+    
+
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<LlmException> {
         override fun lift(error_buf: RustBuffer.ByValue): LlmException = FfiConverterTypeLlmError.lift(error_buf)
@@ -7992,6 +8650,10 @@ enum class LocalLlmCapabilityStatus {
     PROBE_UNAVAILABLE,
     RUNTIME_NOT_PACKAGED,
     RUNTIME_LOAD_FAILED;
+
+    
+
+
     companion object
 }
 
@@ -8065,6 +8727,9 @@ sealed class LocalLlmException: kotlin.Exception() {
             get() = ""
     }
     
+
+    
+
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<LocalLlmException> {
         override fun lift(error_buf: RustBuffer.ByValue): LocalLlmException = FfiConverterTypeLocalLlmError.lift(error_buf)
@@ -8195,6 +8860,10 @@ enum class OnboardingStep {
      * Ready to chat: completion screen before navigating to the main chat UI.
      */
     READY_TO_CHAT;
+
+    
+
+
     companion object
 }
 
@@ -8238,7 +8907,11 @@ sealed class Screen {
      * Placeholder for Phase 5 chat
      */
     data class Chat(
-        val `conversationId`: kotlin.String) : Screen() {
+        val `conversationId`: kotlin.String) : Screen()
+        
+    {
+        
+
         companion object
     }
     
@@ -8246,7 +8919,11 @@ sealed class Screen {
      * Onboarding wizard -- shown on first launch and when user re-triggers from settings.
      */
     data class Onboarding(
-        val `step`: OnboardingStep) : Screen() {
+        val `step`: dev.disobey.mango.rust.OnboardingStep) : Screen()
+        
+    {
+        
+
         companion object
     }
     
@@ -8334,7 +9011,11 @@ sealed class Screen {
      * so the native UI can look the row up in `app_state.contextvm_tools`.
      */
     data class ContextvmToolDetail(
-        val `toolId`: kotlin.String) : Screen() {
+        val `toolId`: kotlin.String) : Screen()
+        
+    {
+        
+
         companion object
     }
     
@@ -8358,6 +9039,11 @@ sealed class Screen {
     
 
     
+
+    
+    
+
+
     companion object
 }
 
@@ -8398,7 +9084,7 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
         }
     }
 
-    override fun allocationSize(value: Screen) = when(value) {
+    override fun allocationSize(value: Screen): ULong = when(value) {
         is Screen.Home -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -8637,6 +9323,10 @@ enum class TeeType {
     NVIDIA_H100_CC,
     AMD_SEV_SNP,
     UNKNOWN;
+
+    
+
+
     companion object
 }
 
@@ -8694,9 +9384,16 @@ internal object uniffiCallbackInterfaceAppReconciler {
         }
     }
 
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeAppReconciler.handleMap.clone(handle)
+        }
+    }
+
     internal var vtable = UniffiVTableCallbackInterfaceAppReconciler.UniffiByValue(
-        `reconcile`,
         uniffiFree,
+        uniffiClone,
+        `reconcile`,
     )
 
     // Registers the foreign callback with the Rust side.
@@ -8779,10 +9476,17 @@ internal object uniffiCallbackInterfaceBiometricProvider {
         }
     }
 
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeBiometricProvider.handleMap.clone(handle)
+        }
+    }
+
     internal var vtable = UniffiVTableCallbackInterfaceBiometricProvider.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
         `biometricStatus`,
         `authenticate`,
-        uniffiFree,
     )
 
     // Registers the foreign callback with the Rust side.
@@ -8847,9 +9551,16 @@ internal object uniffiCallbackInterfaceEmbeddingProvider {
         }
     }
 
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeEmbeddingProvider.handleMap.clone(handle)
+        }
+    }
+
     internal var vtable = UniffiVTableCallbackInterfaceEmbeddingProvider.UniffiByValue(
-        `embed`,
         uniffiFree,
+        uniffiClone,
+        `embed`,
     )
 
     // Registers the foreign callback with the Rust side.
@@ -8912,9 +9623,16 @@ internal object uniffiCallbackInterfaceFilePickerProvider {
         }
     }
 
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeFilePickerProvider.handleMap.clone(handle)
+        }
+    }
+
     internal var vtable = UniffiVTableCallbackInterfaceFilePickerProvider.UniffiByValue(
-        `pickFile`,
         uniffiFree,
+        uniffiClone,
+        `pickFile`,
     )
 
     // Registers the foreign callback with the Rust side.
@@ -9006,11 +9724,18 @@ internal object uniffiCallbackInterfaceKeychainProvider {
         }
     }
 
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeKeychainProvider.handleMap.clone(handle)
+        }
+    }
+
     internal var vtable = UniffiVTableCallbackInterfaceKeychainProvider.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
         `store`,
         `load`,
         `delete`,
-        uniffiFree,
     )
 
     // Registers the foreign callback with the Rust side.
@@ -9072,7 +9797,7 @@ internal object uniffiCallbackInterfaceLocalLlmProvider {
         }
     }
     internal object `downloadModelFile`: UniffiCallbackInterfaceLocalLlmProviderMethod1 {
-        override fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`destinationPath`: RustBuffer.ByValue,`context`: Pointer,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+        override fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`destinationPath`: RustBuffer.ByValue,`context`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
             val uniffiObj = FfiConverterTypeLocalLlmProvider.handleMap.get(uniffiHandle)
             val makeCall = { ->
                 uniffiObj.`downloadModelFile`(
@@ -9108,7 +9833,7 @@ internal object uniffiCallbackInterfaceLocalLlmProvider {
         }
     }
     internal object `generate`: UniffiCallbackInterfaceLocalLlmProviderMethod3 {
-        override fun callback(`uniffiHandle`: Long,`promptJson`: RustBuffer.ByValue,`context`: Pointer,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+        override fun callback(`uniffiHandle`: Long,`promptJson`: RustBuffer.ByValue,`context`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
             val uniffiObj = FfiConverterTypeLocalLlmProvider.handleMap.get(uniffiHandle)
             val makeCall = { ->
                 uniffiObj.`generate`(
@@ -9165,7 +9890,15 @@ internal object uniffiCallbackInterfaceLocalLlmProvider {
         }
     }
 
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeLocalLlmProvider.handleMap.clone(handle)
+        }
+    }
+
     internal var vtable = UniffiVTableCallbackInterfaceLocalLlmProvider.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
         `loadModel`,
         `downloadModelFile`,
         `platformHttpRequest`,
@@ -9173,7 +9906,6 @@ internal object uniffiCallbackInterfaceLocalLlmProvider {
         `unload`,
         `loadedModelPath`,
         `deviceCapability`,
-        uniffiFree,
     )
 
     // Registers the foreign callback with the Rust side.
@@ -10259,8 +10991,29 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
          */ fun `knownProviderPresets`(): List<ProviderPreset> {
             return FfiConverterSequenceTypeProviderPreset.lift(
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_func_known_provider_presets(
+    UniffiLib.uniffi_mango_core_fn_func_known_provider_presets(
+    
         _status)
+}
+    )
+    }
+    
+
+        /**
+         * Returns `true` when the given model id is known to accept multimodal image
+         * inputs via the OpenAI-compatible `image_url` content part.
+         *
+         * Input is the raw model id string as it appears in `BackendConfig.models`
+         * (e.g. `"llama3-3-70b"`, `"private/qwen3-vl-30b"`, `"gemma3:27b"`).
+         *
+         * Matching is case-insensitive substring. Unknown models return `false`.
+         */ fun `modelSupportsVision`(`modelId`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_mango_core_fn_func_model_supports_vision(
+    
+        
+        FfiConverterString.lower(`modelId`),_status)
 }
     )
     }
@@ -10279,26 +11032,9 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
          */ fun `localModelCatalog`(): List<LocalModelPreset> {
             return FfiConverterSequenceTypeLocalModelPreset.lift(
     uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_func_local_model_catalog(
-        _status)
-}
-    )
-    }
+    UniffiLib.uniffi_mango_core_fn_func_local_model_catalog(
     
-
-        /**
-         * Returns `true` when the given model id is known to accept multimodal image
-         * inputs via the OpenAI-compatible `image_url` content part.
-         *
-         * Input is the raw model id string as it appears in `BackendConfig.models`
-         * (e.g. `"llama3-3-70b"`, `"private/qwen3-vl-30b"`, `"gemma3:27b"`).
-         *
-         * Matching is case-insensitive substring. Unknown models return `false`.
-         */ fun `modelSupportsVision`(`modelId`: kotlin.String): kotlin.Boolean {
-            return FfiConverterBoolean.lift(
-    uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_mango_core_fn_func_model_supports_vision(
-        FfiConverterString.lower(`modelId`),_status)
+        _status)
 }
     )
     }

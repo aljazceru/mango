@@ -17,7 +17,7 @@ agents = []
 
 [dependencies]
 flume = "0.12"
-uniffi = "0.29"
+uniffi = "0.32"
 
 # Phase 2: Streaming LLM client
 async-openai = { version = "0.34", default-features = false, features = ["chat-completion"] }
@@ -118,4 +118,4 @@ rmcp = { version = "1", features = ["server", "client", "macros", "schemars"] }
 schemars = "1"
 
 [build-dependencies]
-uniffi = { version = "0.29", features = ["build"] }
+uniffi = { version = "0.32", features = ["build"] }

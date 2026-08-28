@@ -39,6 +39,52 @@ fileprivate extension ForeignBytes {
     init(bufferPointer: UnsafeBufferPointer<UInt8>) {
         self.init(len: Int32(bufferPointer.count), data: bufferPointer.baseAddress)
     }
+
+    init(rawBufferPointer: UnsafeRawBufferPointer) {
+        self.init(
+            len: Int32(rawBufferPointer.count),
+            data: rawBufferPointer.baseAddress?.assumingMemoryBound(to: UInt8.self)
+        )
+    }
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Conforms to `FfiConverter` so the compiler enforces the full converter
+// method set. Only the scope-bound `lower(_:_body:)` overload is sound —
+// zero-copy byte buffers only flow foreign -> Rust, and only in argument
+// position. The four protocol-witness methods (`lift`, `lower`, `read`,
+// `write`) `fatalError` at runtime if anyone reaches them.
+//
+// The scope-bound `lower` takes a closure because the `ForeignBytes`
+// pointer is only guaranteed valid for the duration of
+// `Data.withUnsafeBytes`. Callers must run the full FFI call inside
+// the closure body.
+fileprivate enum FfiConverterByRefBytes: FfiConverter {
+    typealias SwiftType = Data
+    typealias FfiType = ForeignBytes
+
+    static func lower<R>(_ value: Data, _ body: (ForeignBytes) throws -> R) rethrows -> R {
+        return try value.withUnsafeBytes { rawBuf in
+            try body(ForeignBytes(rawBufferPointer: rawBuf))
+        }
+    }
+
+    static func lower(_ value: Data) -> ForeignBytes {
+        fatalError("ByRef bytes cannot use the plain lower: returning ForeignBytes escapes the Data.withUnsafeBytes scope. Use the scope-bound lower(_:_body:) overload instead.")
+    }
+
+    static func lift(_ value: ForeignBytes) throws -> Data {
+        fatalError("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+    }
+
+    static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        fatalError("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
+
+    static func write(_ value: Data, into buf: inout [UInt8]) {
+        fatalError("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
 }
 
 // For every type used in the interface, we provide helper methods for conveniently
@@ -352,19 +398,29 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
+// Initial value and increment amount for handles. 
+// These ensure that SWIFT handles always have the lowest bit set
+fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
+fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
+
 fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
     // All mutation happens with this lock held, which is why we implement @unchecked Sendable.
     private let lock = NSLock()
     private var map: [UInt64: T] = [:]
-    private var currentHandle: UInt64 = 1
+    private var currentHandle: UInt64 = UNIFFI_HANDLEMAP_INITIAL
 
     func insert(obj: T) -> UInt64 {
         lock.withLock {
-            let handle = currentHandle
-            currentHandle += 1
-            map[handle] = obj
-            return handle
+            return doInsert(obj)
         }
+    }
+
+    // Low-level insert function, this assumes `lock` is held.
+    private func doInsert(_ obj: T) -> UInt64 {
+        let handle = currentHandle
+        currentHandle += UNIFFI_HANDLEMAP_DELTA
+        map[handle] = obj
+        return handle
     }
 
      func get(handle: UInt64) throws -> T {
@@ -373,6 +429,15 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
                 throw UniffiInternalError.unexpectedStaleHandle
             }
             return obj
+        }
+    }
+
+     func clone(handle: UInt64) throws -> UInt64 {
+        try lock.withLock {
+            guard let obj = map[handle] else {
+                throw UniffiInternalError.unexpectedStaleHandle
+            }
+            return doInsert(obj)
         }
     }
 
@@ -522,7 +587,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -538,7 +607,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -648,13 +718,13 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
     
 }
 open class FfiApp: FfiAppProtocol, @unchecked Sendable {
-    fileprivate let pointer: UnsafeMutableRawPointer!
+    fileprivate let handle: UInt64
 
-    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public struct NoPointer {
+    public struct NoHandle {
         public init() {}
     }
 
@@ -664,27 +734,27 @@ open class FfiApp: FfiAppProtocol, @unchecked Sendable {
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
-        self.pointer = pointer
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
     }
 
     // This constructor can be used to instantiate a fake object.
-    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
     //
     // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public init(noPointer: NoPointer) {
-        self.pointer = nil
+    public init(noHandle: NoHandle) {
+        self.handle = 0
     }
 
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        return try! rustCall { uniffi_mango_core_fn_clone_ffiapp(self.pointer, $0) }
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_mango_core_fn_clone_ffiapp(self.handle, $0) }
     }
     /**
      * Create the app core, spawn the actor thread, and return the FFI handle.
@@ -699,26 +769,28 @@ open class FfiApp: FfiAppProtocol, @unchecked Sendable {
      * on platforms without a native local runtime.
      */
 public convenience init(dataDir: String, keychain: KeychainProvider, embeddingProvider: EmbeddingProvider, embeddingStatus: EmbeddingStatus, localLlmProvider: LocalLlmProvider, biometricProvider: BiometricProvider) {
-    let pointer =
+    let handle =
         try! rustCall() {
+        uniffiCallStatus in
     uniffi_mango_core_fn_constructor_ffiapp_new(
         FfiConverterString.lower(dataDir),
         FfiConverterCallbackInterfaceKeychainProvider_lower(keychain),
         FfiConverterCallbackInterfaceEmbeddingProvider_lower(embeddingProvider),
         FfiConverterTypeEmbeddingStatus_lower(embeddingStatus),
         FfiConverterCallbackInterfaceLocalLlmProvider_lower(localLlmProvider),
-        FfiConverterCallbackInterfaceBiometricProvider_lower(biometricProvider),$0
+        FfiConverterCallbackInterfaceBiometricProvider_lower(biometricProvider),uniffiCallStatus
     )
 }
-    self.init(unsafeFromRawPointer: pointer)
+    self.init(unsafeFromHandle: handle)
 }
 
     deinit {
-        guard let pointer = pointer else {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
             return
         }
 
-        try! rustCall { uniffi_mango_core_fn_free_ffiapp(pointer, $0) }
+        try! rustCall { uniffi_mango_core_fn_free_ffiapp(handle, $0) }
     }
 
     
@@ -728,8 +800,10 @@ public convenience init(dataDir: String, keychain: KeychainProvider, embeddingPr
      * Dispatch an action to the actor loop.
      */
 open func dispatch(action: AppAction)  {try! rustCall() {
-    uniffi_mango_core_fn_method_ffiapp_dispatch(self.uniffiClonePointer(),
-        FfiConverterTypeAppAction_lower(action),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_dispatch(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeAppAction_lower(action),uniffiCallStatus
     )
 }
 }
@@ -745,8 +819,10 @@ open func dispatch(action: AppAction)  {try! rustCall() {
      */
 open func exportConversationMarkdown(conversationId: String)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
-    uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(self.uniffiClonePointer(),
-        FfiConverterString.lower(conversationId),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(conversationId),uniffiCallStatus
     )
 })
 }
@@ -760,8 +836,10 @@ open func exportConversationMarkdown(conversationId: String)throws  -> String  {
      */
 open func getDirectoryBookmark(sourceId: String)throws  -> Data?  {
     return try  FfiConverterOptionData.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
-    uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(self.uniffiClonePointer(),
-        FfiConverterString.lower(sourceId),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sourceId),uniffiCallStatus
     )
 })
 }
@@ -775,8 +853,10 @@ open func getDirectoryBookmark(sourceId: String)throws  -> Data?  {
      */
 open func getRawAttestationReport(backendId: String) -> Data?  {
     return try!  FfiConverterOptionData.lift(try! rustCall() {
-    uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(self.uniffiClonePointer(),
-        FfiConverterString.lower(backendId),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(backendId),uniffiCallStatus
     )
 })
 }
@@ -788,8 +868,10 @@ open func getRawAttestationReport(backendId: String) -> Data?  {
      */
 open func listDirectoryFingerprints(sourceId: String)throws  -> [DirectoryFingerprint]  {
     return try  FfiConverterSequenceTypeDirectoryFingerprint.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
-    uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(self.uniffiClonePointer(),
-        FfiConverterString.lower(sourceId),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sourceId),uniffiCallStatus
     )
 })
 }
@@ -799,8 +881,10 @@ open func listDirectoryFingerprints(sourceId: String)throws  -> [DirectoryFinger
      * Guard with AtomicBool so only one listener thread is spawned.
      */
 open func listenForUpdates(reconciler: AppReconciler)  {try! rustCall() {
-    uniffi_mango_core_fn_method_ffiapp_listen_for_updates(self.uniffiClonePointer(),
-        FfiConverterCallbackInterfaceAppReconciler_lower(reconciler),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_listen_for_updates(
+            self.uniffiCloneHandle(),
+        FfiConverterCallbackInterfaceAppReconciler_lower(reconciler),uniffiCallStatus
     )
 }
 }
@@ -818,8 +902,10 @@ open func listenForUpdates(reconciler: AppReconciler)  {try! rustCall() {
      */
 open func readEncryptedImage(messageId: String)throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
-    uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(self.uniffiClonePointer(),
-        FfiConverterString.lower(messageId),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(messageId),uniffiCallStatus
     )
 })
 }
@@ -829,7 +915,9 @@ open func readEncryptedImage(messageId: String)throws  -> Data  {
      */
 open func state() -> AppState  {
     return try!  FfiConverterTypeAppState_lift(try! rustCall() {
-    uniffi_mango_core_fn_method_ffiapp_state(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_state(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -843,12 +931,15 @@ open func state() -> AppState  {
      * Deterministic replacement for sleep-based waiting in tests.
      */
 open func sync()  {try! rustCall() {
-    uniffi_mango_core_fn_method_ffiapp_sync(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_sync(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
     
 
+    
 }
 
 
@@ -856,33 +947,24 @@ open func sync()  {try! rustCall() {
 @_documentation(visibility: private)
 #endif
 public struct FfiConverterTypeFfiApp: FfiConverter {
-
-    typealias FfiType = UnsafeMutableRawPointer
+    typealias FfiType = UInt64
     typealias SwiftType = FfiApp
 
-    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> FfiApp {
-        return FfiApp(unsafeFromRawPointer: pointer)
+    public static func lift(_ handle: UInt64) throws -> FfiApp {
+        return FfiApp(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: FfiApp) -> UnsafeMutableRawPointer {
-        return value.uniffiClonePointer()
+    public static func lower(_ value: FfiApp) -> UInt64 {
+        return value.uniffiCloneHandle()
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiApp {
-        let v: UInt64 = try readInt(&buf)
-        // The Rust code won't compile if a pointer won't fit in a UInt64.
-        // We have to go via `UInt` because that's the thing that's the size of a pointer.
-        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
-        if (ptr == nil) {
-            throw UniffiInternalError.unexpectedNullPointer
-        }
-        return try lift(ptr!)
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
     }
 
     public static func write(_ value: FfiApp, into buf: inout [UInt8]) {
-        // This fiddling is because `Int` is the thing that's the same size as a pointer.
-        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
-        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+        writeInt(&buf, lower(value))
     }
 }
 
@@ -890,14 +972,14 @@ public struct FfiConverterTypeFfiApp: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeFfiApp_lift(_ pointer: UnsafeMutableRawPointer) throws -> FfiApp {
-    return try FfiConverterTypeFfiApp.lift(pointer)
+public func FfiConverterTypeFfiApp_lift(_ handle: UInt64) throws -> FfiApp {
+    return try FfiConverterTypeFfiApp.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeFfiApp_lower(_ value: FfiApp) -> UnsafeMutableRawPointer {
+public func FfiConverterTypeFfiApp_lower(_ value: FfiApp) -> UInt64 {
     return FfiConverterTypeFfiApp.lower(value)
 }
 
@@ -916,13 +998,13 @@ public protocol LocalGenerationContextProtocol: AnyObject, Sendable {
     
 }
 open class LocalGenerationContext: LocalGenerationContextProtocol, @unchecked Sendable {
-    fileprivate let pointer: UnsafeMutableRawPointer!
+    fileprivate let handle: UInt64
 
-    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public struct NoPointer {
+    public struct NoHandle {
         public init() {}
     }
 
@@ -932,63 +1014,71 @@ open class LocalGenerationContext: LocalGenerationContextProtocol, @unchecked Se
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
-        self.pointer = pointer
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
     }
 
     // This constructor can be used to instantiate a fake object.
-    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
     //
     // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public init(noPointer: NoPointer) {
-        self.pointer = nil
+    public init(noHandle: NoHandle) {
+        self.handle = 0
     }
 
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        return try! rustCall { uniffi_mango_core_fn_clone_localgenerationcontext(self.pointer, $0) }
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_mango_core_fn_clone_localgenerationcontext(self.handle, $0) }
     }
     // No primary constructor declared for this class.
 
     deinit {
-        guard let pointer = pointer else {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
             return
         }
 
-        try! rustCall { uniffi_mango_core_fn_free_localgenerationcontext(pointer, $0) }
+        try! rustCall { uniffi_mango_core_fn_free_localgenerationcontext(handle, $0) }
     }
 
     
 
     
 open func emitError(message: String)  {try! rustCall() {
-    uniffi_mango_core_fn_method_localgenerationcontext_emit_error(self.uniffiClonePointer(),
-        FfiConverterString.lower(message),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_localgenerationcontext_emit_error(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(message),uniffiCallStatus
     )
 }
 }
     
 open func emitToken(token: String)  {try! rustCall() {
-    uniffi_mango_core_fn_method_localgenerationcontext_emit_token(self.uniffiClonePointer(),
-        FfiConverterString.lower(token),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_localgenerationcontext_emit_token(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(token),uniffiCallStatus
     )
 }
 }
     
 open func isCancelled() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
 
+    
 }
 
 
@@ -996,33 +1086,24 @@ open func isCancelled() -> Bool  {
 @_documentation(visibility: private)
 #endif
 public struct FfiConverterTypeLocalGenerationContext: FfiConverter {
-
-    typealias FfiType = UnsafeMutableRawPointer
+    typealias FfiType = UInt64
     typealias SwiftType = LocalGenerationContext
 
-    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> LocalGenerationContext {
-        return LocalGenerationContext(unsafeFromRawPointer: pointer)
+    public static func lift(_ handle: UInt64) throws -> LocalGenerationContext {
+        return LocalGenerationContext(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: LocalGenerationContext) -> UnsafeMutableRawPointer {
-        return value.uniffiClonePointer()
+    public static func lower(_ value: LocalGenerationContext) -> UInt64 {
+        return value.uniffiCloneHandle()
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalGenerationContext {
-        let v: UInt64 = try readInt(&buf)
-        // The Rust code won't compile if a pointer won't fit in a UInt64.
-        // We have to go via `UInt` because that's the thing that's the size of a pointer.
-        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
-        if (ptr == nil) {
-            throw UniffiInternalError.unexpectedNullPointer
-        }
-        return try lift(ptr!)
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
     }
 
     public static func write(_ value: LocalGenerationContext, into buf: inout [UInt8]) {
-        // This fiddling is because `Int` is the thing that's the same size as a pointer.
-        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
-        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+        writeInt(&buf, lower(value))
     }
 }
 
@@ -1030,14 +1111,14 @@ public struct FfiConverterTypeLocalGenerationContext: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeLocalGenerationContext_lift(_ pointer: UnsafeMutableRawPointer) throws -> LocalGenerationContext {
-    return try FfiConverterTypeLocalGenerationContext.lift(pointer)
+public func FfiConverterTypeLocalGenerationContext_lift(_ handle: UInt64) throws -> LocalGenerationContext {
+    return try FfiConverterTypeLocalGenerationContext.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeLocalGenerationContext_lower(_ value: LocalGenerationContext) -> UnsafeMutableRawPointer {
+public func FfiConverterTypeLocalGenerationContext_lower(_ value: LocalGenerationContext) -> UInt64 {
     return FfiConverterTypeLocalGenerationContext.lower(value)
 }
 
@@ -1052,13 +1133,13 @@ public protocol LocalModelDownloadContextProtocol: AnyObject, Sendable {
     
 }
 open class LocalModelDownloadContext: LocalModelDownloadContextProtocol, @unchecked Sendable {
-    fileprivate let pointer: UnsafeMutableRawPointer!
+    fileprivate let handle: UInt64
 
-    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public struct NoPointer {
+    public struct NoHandle {
         public init() {}
     }
 
@@ -1068,50 +1149,54 @@ open class LocalModelDownloadContext: LocalModelDownloadContextProtocol, @unchec
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
-        self.pointer = pointer
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
     }
 
     // This constructor can be used to instantiate a fake object.
-    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
     //
     // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public init(noPointer: NoPointer) {
-        self.pointer = nil
+    public init(noHandle: NoHandle) {
+        self.handle = 0
     }
 
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        return try! rustCall { uniffi_mango_core_fn_clone_localmodeldownloadcontext(self.pointer, $0) }
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_mango_core_fn_clone_localmodeldownloadcontext(self.handle, $0) }
     }
     // No primary constructor declared for this class.
 
     deinit {
-        guard let pointer = pointer else {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
             return
         }
 
-        try! rustCall { uniffi_mango_core_fn_free_localmodeldownloadcontext(pointer, $0) }
+        try! rustCall { uniffi_mango_core_fn_free_localmodeldownloadcontext(handle, $0) }
     }
 
     
 
     
 open func emitProgress(downloadedBytes: UInt64, totalBytes: UInt64?)  {try! rustCall() {
-    uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(
+            self.uniffiCloneHandle(),
         FfiConverterUInt64.lower(downloadedBytes),
-        FfiConverterOptionUInt64.lower(totalBytes),$0
+        FfiConverterOptionUInt64.lower(totalBytes),uniffiCallStatus
     )
 }
 }
     
 
+    
 }
 
 
@@ -1119,33 +1204,24 @@ open func emitProgress(downloadedBytes: UInt64, totalBytes: UInt64?)  {try! rust
 @_documentation(visibility: private)
 #endif
 public struct FfiConverterTypeLocalModelDownloadContext: FfiConverter {
-
-    typealias FfiType = UnsafeMutableRawPointer
+    typealias FfiType = UInt64
     typealias SwiftType = LocalModelDownloadContext
 
-    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> LocalModelDownloadContext {
-        return LocalModelDownloadContext(unsafeFromRawPointer: pointer)
+    public static func lift(_ handle: UInt64) throws -> LocalModelDownloadContext {
+        return LocalModelDownloadContext(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: LocalModelDownloadContext) -> UnsafeMutableRawPointer {
-        return value.uniffiClonePointer()
+    public static func lower(_ value: LocalModelDownloadContext) -> UInt64 {
+        return value.uniffiCloneHandle()
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LocalModelDownloadContext {
-        let v: UInt64 = try readInt(&buf)
-        // The Rust code won't compile if a pointer won't fit in a UInt64.
-        // We have to go via `UInt` because that's the thing that's the size of a pointer.
-        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
-        if (ptr == nil) {
-            throw UniffiInternalError.unexpectedNullPointer
-        }
-        return try lift(ptr!)
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
     }
 
     public static func write(_ value: LocalModelDownloadContext, into buf: inout [UInt8]) {
-        // This fiddling is because `Int` is the thing that's the same size as a pointer.
-        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
-        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+        writeInt(&buf, lower(value))
     }
 }
 
@@ -1153,14 +1229,14 @@ public struct FfiConverterTypeLocalModelDownloadContext: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeLocalModelDownloadContext_lift(_ pointer: UnsafeMutableRawPointer) throws -> LocalModelDownloadContext {
-    return try FfiConverterTypeLocalModelDownloadContext.lift(pointer)
+public func FfiConverterTypeLocalModelDownloadContext_lift(_ handle: UInt64) throws -> LocalModelDownloadContext {
+    return try FfiConverterTypeLocalModelDownloadContext.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeLocalModelDownloadContext_lower(_ value: LocalModelDownloadContext) -> UnsafeMutableRawPointer {
+public func FfiConverterTypeLocalModelDownloadContext_lower(_ value: LocalModelDownloadContext) -> UInt64 {
     return FfiConverterTypeLocalModelDownloadContext.lower(value)
 }
 
@@ -1174,7 +1250,7 @@ public func FfiConverterTypeLocalModelDownloadContext_lower(_ value: LocalModelD
  * so the UI can render the agent session list. Phase 9 adds full agent orchestration
  * with step_count and elapsed_secs for richer UI display.
  */
-public struct AgentSessionSummary {
+public struct AgentSessionSummary: Equatable, Hashable {
     public var id: String
     public var title: String
     public var status: String
@@ -1206,51 +1282,15 @@ public struct AgentSessionSummary {
         self.stepCount = stepCount
         self.elapsedSecs = elapsedSecs
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension AgentSessionSummary: Sendable {}
 #endif
-
-
-extension AgentSessionSummary: Equatable, Hashable {
-    public static func ==(lhs: AgentSessionSummary, rhs: AgentSessionSummary) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.title != rhs.title {
-            return false
-        }
-        if lhs.status != rhs.status {
-            return false
-        }
-        if lhs.backendId != rhs.backendId {
-            return false
-        }
-        if lhs.updatedAt != rhs.updatedAt {
-            return false
-        }
-        if lhs.stepCount != rhs.stepCount {
-            return false
-        }
-        if lhs.elapsedSecs != rhs.elapsedSecs {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(title)
-        hasher.combine(status)
-        hasher.combine(backendId)
-        hasher.combine(updatedAt)
-        hasher.combine(stepCount)
-        hasher.combine(elapsedSecs)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1302,7 +1342,7 @@ public func FfiConverterTypeAgentSessionSummary_lower(_ value: AgentSessionSumma
  * Carried in AppState.current_agent_steps when the user has loaded a session.
  * Maps from AgentStepRow in the persistence layer with display-safe fields.
  */
-public struct AgentStepSummary {
+public struct AgentStepSummary: Equatable, Hashable {
     public var id: String
     public var stepNumber: UInt32
     /**
@@ -1362,55 +1402,15 @@ public struct AgentStepSummary {
         self.status = status
         self.toolOrigin = toolOrigin
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension AgentStepSummary: Sendable {}
 #endif
-
-
-extension AgentStepSummary: Equatable, Hashable {
-    public static func ==(lhs: AgentStepSummary, rhs: AgentStepSummary) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.stepNumber != rhs.stepNumber {
-            return false
-        }
-        if lhs.actionType != rhs.actionType {
-            return false
-        }
-        if lhs.toolName != rhs.toolName {
-            return false
-        }
-        if lhs.toolInput != rhs.toolInput {
-            return false
-        }
-        if lhs.resultSnippet != rhs.resultSnippet {
-            return false
-        }
-        if lhs.status != rhs.status {
-            return false
-        }
-        if lhs.toolOrigin != rhs.toolOrigin {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(stepNumber)
-        hasher.combine(actionType)
-        hasher.combine(toolName)
-        hasher.combine(toolInput)
-        hasher.combine(resultSnippet)
-        hasher.combine(status)
-        hasher.combine(toolOrigin)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1458,7 +1458,7 @@ public func FfiConverterTypeAgentStepSummary_lower(_ value: AgentStepSummary) ->
 }
 
 
-public struct AppState {
+public struct AppState: Equatable, Hashable {
     public var rev: UInt64
     public var router: Router
     public var busyState: BusyState
@@ -1902,215 +1902,15 @@ public struct AppState {
         self.lastTurnRouting = lastTurnRouting
         self.trustedProviders = trustedProviders
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension AppState: Sendable {}
 #endif
-
-
-extension AppState: Equatable, Hashable {
-    public static func ==(lhs: AppState, rhs: AppState) -> Bool {
-        if lhs.rev != rhs.rev {
-            return false
-        }
-        if lhs.router != rhs.router {
-            return false
-        }
-        if lhs.busyState != rhs.busyState {
-            return false
-        }
-        if lhs.toast != rhs.toast {
-            return false
-        }
-        if lhs.backends != rhs.backends {
-            return false
-        }
-        if lhs.activeBackendId != rhs.activeBackendId {
-            return false
-        }
-        if lhs.streamingText != rhs.streamingText {
-            return false
-        }
-        if lhs.lastError != rhs.lastError {
-            return false
-        }
-        if lhs.attestationStatuses != rhs.attestationStatuses {
-            return false
-        }
-        if lhs.conversations != rhs.conversations {
-            return false
-        }
-        if lhs.agentSessions != rhs.agentSessions {
-            return false
-        }
-        if lhs.currentConversationId != rhs.currentConversationId {
-            return false
-        }
-        if lhs.messages != rhs.messages {
-            return false
-        }
-        if lhs.pendingAttachment != rhs.pendingAttachment {
-            return false
-        }
-        if lhs.onboarding != rhs.onboarding {
-            return false
-        }
-        if lhs.showFirstChatPlaceholder != rhs.showFirstChatPlaceholder {
-            return false
-        }
-        if lhs.documents != rhs.documents {
-            return false
-        }
-        if lhs.ingestionProgress != rhs.ingestionProgress {
-            return false
-        }
-        if lhs.currentConversationAttachedDocs != rhs.currentConversationAttachedDocs {
-            return false
-        }
-        if lhs.currentAgentSessionId != rhs.currentAgentSessionId {
-            return false
-        }
-        if lhs.currentAgentSteps != rhs.currentAgentSteps {
-            return false
-        }
-        if lhs.attestationIntervalMinutes != rhs.attestationIntervalMinutes {
-            return false
-        }
-        if lhs.globalSystemPrompt != rhs.globalSystemPrompt {
-            return false
-        }
-        if lhs.defaultModelId != rhs.defaultModelId {
-            return false
-        }
-        if lhs.embeddingStatus != rhs.embeddingStatus {
-            return false
-        }
-        if lhs.localDeviceCapability != rhs.localDeviceCapability {
-            return false
-        }
-        if lhs.localModels != rhs.localModels {
-            return false
-        }
-        if lhs.localDownloadProgress != rhs.localDownloadProgress {
-            return false
-        }
-        if lhs.localInferenceEnabled != rhs.localInferenceEnabled {
-            return false
-        }
-        if lhs.memories != rhs.memories {
-            return false
-        }
-        if lhs.memoryCount != rhs.memoryCount {
-            return false
-        }
-        if lhs.braveApiKeySet != rhs.braveApiKeySet {
-            return false
-        }
-        if lhs.memoriesEnabled != rhs.memoriesEnabled {
-            return false
-        }
-        if lhs.braveApiKeyValidating != rhs.braveApiKeyValidating {
-            return false
-        }
-        if lhs.biometricAvailable != rhs.biometricAvailable {
-            return false
-        }
-        if lhs.biometricLoginEnabled != rhs.biometricLoginEnabled {
-            return false
-        }
-        if lhs.biometricAuthenticated != rhs.biometricAuthenticated {
-            return false
-        }
-        if lhs.duressPinConfigured != rhs.duressPinConfigured {
-            return false
-        }
-        if lhs.lockTimeoutSeconds != rhs.lockTimeoutSeconds {
-            return false
-        }
-        if lhs.authInitialized != rhs.authInitialized {
-            return false
-        }
-        if lhs.encryptionEnabled != rhs.encryptionEnabled {
-            return false
-        }
-        if lhs.directorySources != rhs.directorySources {
-            return false
-        }
-        if lhs.contextvmTools != rhs.contextvmTools {
-            return false
-        }
-        if lhs.autoDiscoverToolsEnabled != rhs.autoDiscoverToolsEnabled {
-            return false
-        }
-        if lhs.contextvmDiscoveryState != rhs.contextvmDiscoveryState {
-            return false
-        }
-        if lhs.hybridProfiles != rhs.hybridProfiles {
-            return false
-        }
-        if lhs.lastTurnRouting != rhs.lastTurnRouting {
-            return false
-        }
-        if lhs.trustedProviders != rhs.trustedProviders {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(rev)
-        hasher.combine(router)
-        hasher.combine(busyState)
-        hasher.combine(toast)
-        hasher.combine(backends)
-        hasher.combine(activeBackendId)
-        hasher.combine(streamingText)
-        hasher.combine(lastError)
-        hasher.combine(attestationStatuses)
-        hasher.combine(conversations)
-        hasher.combine(agentSessions)
-        hasher.combine(currentConversationId)
-        hasher.combine(messages)
-        hasher.combine(pendingAttachment)
-        hasher.combine(onboarding)
-        hasher.combine(showFirstChatPlaceholder)
-        hasher.combine(documents)
-        hasher.combine(ingestionProgress)
-        hasher.combine(currentConversationAttachedDocs)
-        hasher.combine(currentAgentSessionId)
-        hasher.combine(currentAgentSteps)
-        hasher.combine(attestationIntervalMinutes)
-        hasher.combine(globalSystemPrompt)
-        hasher.combine(defaultModelId)
-        hasher.combine(embeddingStatus)
-        hasher.combine(localDeviceCapability)
-        hasher.combine(localModels)
-        hasher.combine(localDownloadProgress)
-        hasher.combine(localInferenceEnabled)
-        hasher.combine(memories)
-        hasher.combine(memoryCount)
-        hasher.combine(braveApiKeySet)
-        hasher.combine(memoriesEnabled)
-        hasher.combine(braveApiKeyValidating)
-        hasher.combine(biometricAvailable)
-        hasher.combine(biometricLoginEnabled)
-        hasher.combine(biometricAuthenticated)
-        hasher.combine(duressPinConfigured)
-        hasher.combine(lockTimeoutSeconds)
-        hasher.combine(authInitialized)
-        hasher.combine(encryptionEnabled)
-        hasher.combine(directorySources)
-        hasher.combine(contextvmTools)
-        hasher.combine(autoDiscoverToolsEnabled)
-        hasher.combine(contextvmDiscoveryState)
-        hasher.combine(hybridProfiles)
-        hasher.combine(lastTurnRouting)
-        hasher.combine(trustedProviders)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2245,7 +2045,7 @@ public func FfiConverterTypeAppState_lower(_ value: AppState) -> RustBuffer {
  * in the input area. The actual file content lives in ActorState.pending_attachment
  * (never crosses UniFFI boundary).
  */
-public struct AttachmentInfo {
+public struct AttachmentInfo: Equatable, Hashable {
     public var filename: String
     /**
      * Human-readable size string, e.g. "42 KB" or "1 MB"
@@ -2273,35 +2073,15 @@ public struct AttachmentInfo {
         self.sizeDisplay = sizeDisplay
         self.isImage = isImage
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension AttachmentInfo: Sendable {}
 #endif
-
-
-extension AttachmentInfo: Equatable, Hashable {
-    public static func ==(lhs: AttachmentInfo, rhs: AttachmentInfo) -> Bool {
-        if lhs.filename != rhs.filename {
-            return false
-        }
-        if lhs.sizeDisplay != rhs.sizeDisplay {
-            return false
-        }
-        if lhs.isImage != rhs.isImage {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(filename)
-        hasher.combine(sizeDisplay)
-        hasher.combine(isImage)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2345,7 +2125,7 @@ public func FfiConverterTypeAttachmentInfo_lower(_ value: AttachmentInfo) -> Rus
  * Per D-11: AppState carries Vec<AttestationStatusEntry> so the UI can render
  * a trust badge for each backend without the raw report blob.
  */
-public struct AttestationStatusEntry {
+public struct AttestationStatusEntry: Equatable, Hashable {
     public var backendId: String
     public var status: AttestationStatus
 
@@ -2355,31 +2135,15 @@ public struct AttestationStatusEntry {
         self.backendId = backendId
         self.status = status
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension AttestationStatusEntry: Sendable {}
 #endif
-
-
-extension AttestationStatusEntry: Equatable, Hashable {
-    public static func ==(lhs: AttestationStatusEntry, rhs: AttestationStatusEntry) -> Bool {
-        if lhs.backendId != rhs.backendId {
-            return false
-        }
-        if lhs.status != rhs.status {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(backendId)
-        hasher.combine(status)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2419,7 +2183,7 @@ public func FfiConverterTypeAttestationStatusEntry_lower(_ value: AttestationSta
  * Display-safe summary for native UI rendering -- UniFFI-exported.
  * No secrets (api_key omitted), only display fields.
  */
-public struct BackendSummary {
+public struct BackendSummary: Equatable, Hashable {
     public var id: String
     public var name: String
     public var models: [String]
@@ -2471,55 +2235,15 @@ public struct BackendSummary {
         self.supportsToolUse = supportsToolUse
         self.hasApiKey = hasApiKey
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension BackendSummary: Sendable {}
 #endif
-
-
-extension BackendSummary: Equatable, Hashable {
-    public static func ==(lhs: BackendSummary, rhs: BackendSummary) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.name != rhs.name {
-            return false
-        }
-        if lhs.models != rhs.models {
-            return false
-        }
-        if lhs.teeType != rhs.teeType {
-            return false
-        }
-        if lhs.isActive != rhs.isActive {
-            return false
-        }
-        if lhs.healthStatus != rhs.healthStatus {
-            return false
-        }
-        if lhs.supportsToolUse != rhs.supportsToolUse {
-            return false
-        }
-        if lhs.hasApiKey != rhs.hasApiKey {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(name)
-        hasher.combine(models)
-        hasher.combine(teeType)
-        hasher.combine(isActive)
-        hasher.combine(healthStatus)
-        hasher.combine(supportsToolUse)
-        hasher.combine(hasApiKey)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2574,7 +2298,7 @@ public func FfiConverterTypeBackendSummary_lower(_ value: BackendSummary) -> Rus
  * can render the conversation list without additional queries.
  * Phase 5 will expand this with full message loading per conversation.
  */
-public struct ConversationSummary {
+public struct ConversationSummary: Equatable, Hashable {
     public var id: String
     public var title: String
     public var modelId: String
@@ -2612,51 +2336,15 @@ public struct ConversationSummary {
         self.systemPrompt = systemPrompt
         self.toolsEnabled = toolsEnabled
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension ConversationSummary: Sendable {}
 #endif
-
-
-extension ConversationSummary: Equatable, Hashable {
-    public static func ==(lhs: ConversationSummary, rhs: ConversationSummary) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.title != rhs.title {
-            return false
-        }
-        if lhs.modelId != rhs.modelId {
-            return false
-        }
-        if lhs.backendId != rhs.backendId {
-            return false
-        }
-        if lhs.updatedAt != rhs.updatedAt {
-            return false
-        }
-        if lhs.systemPrompt != rhs.systemPrompt {
-            return false
-        }
-        if lhs.toolsEnabled != rhs.toolsEnabled {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(title)
-        hasher.combine(modelId)
-        hasher.combine(backendId)
-        hasher.combine(updatedAt)
-        hasher.combine(systemPrompt)
-        hasher.combine(toolsEnabled)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2702,7 +2390,7 @@ public func FfiConverterTypeConversationSummary_lower(_ value: ConversationSumma
 }
 
 
-public struct DeviceCapability {
+public struct DeviceCapability: Equatable, Hashable {
     public var abi: String
     public var totalRamBytes: UInt64
     public var availableRamBytes: UInt64
@@ -2724,55 +2412,15 @@ public struct DeviceCapability {
         self.reason = reason
         self.availableStorageBytes = availableStorageBytes
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension DeviceCapability: Sendable {}
 #endif
-
-
-extension DeviceCapability: Equatable, Hashable {
-    public static func ==(lhs: DeviceCapability, rhs: DeviceCapability) -> Bool {
-        if lhs.abi != rhs.abi {
-            return false
-        }
-        if lhs.totalRamBytes != rhs.totalRamBytes {
-            return false
-        }
-        if lhs.availableRamBytes != rhs.availableRamBytes {
-            return false
-        }
-        if lhs.supportsMmap != rhs.supportsMmap {
-            return false
-        }
-        if lhs.status != rhs.status {
-            return false
-        }
-        if lhs.reasonCode != rhs.reasonCode {
-            return false
-        }
-        if lhs.reason != rhs.reason {
-            return false
-        }
-        if lhs.availableStorageBytes != rhs.availableStorageBytes {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(abi)
-        hasher.combine(totalRamBytes)
-        hasher.combine(availableRamBytes)
-        hasher.combine(supportsMmap)
-        hasher.combine(status)
-        hasher.combine(reasonCode)
-        hasher.combine(reason)
-        hasher.combine(availableStorageBytes)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2828,7 +2476,7 @@ public func FfiConverterTypeDeviceCapability_lower(_ value: DeviceCapability) ->
  * pass this struct across the UniFFI boundary. The actor extracts text, chunks,
  * embeds, and indexes — reusing the existing IngestDocument pipeline per file.
  */
-public struct DirectoryFileEntry {
+public struct DirectoryFileEntry: Equatable, Hashable {
     /**
      * Path relative to the source root. Used as the stable identifier in
      * directory_files (source_id, file_path) unique key.
@@ -2850,39 +2498,15 @@ public struct DirectoryFileEntry {
         self.sizeBytes = sizeBytes
         self.content = content
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension DirectoryFileEntry: Sendable {}
 #endif
-
-
-extension DirectoryFileEntry: Equatable, Hashable {
-    public static func ==(lhs: DirectoryFileEntry, rhs: DirectoryFileEntry) -> Bool {
-        if lhs.relativePath != rhs.relativePath {
-            return false
-        }
-        if lhs.mtimeSecs != rhs.mtimeSecs {
-            return false
-        }
-        if lhs.sizeBytes != rhs.sizeBytes {
-            return false
-        }
-        if lhs.content != rhs.content {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(relativePath)
-        hasher.combine(mtimeSecs)
-        hasher.combine(sizeBytes)
-        hasher.combine(content)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2927,7 +2551,7 @@ public func FfiConverterTypeDirectoryFileEntry_lower(_ value: DirectoryFileEntry
  * (Phase 32, DIR-02/DIR-05). Returned to native sync pipelines so they can diff
  * against the current on-disk enumeration before dispatching SyncDirectoryFiles.
  */
-public struct DirectoryFingerprint {
+public struct DirectoryFingerprint: Equatable, Hashable {
     public var relativePath: String
     public var mtimeSecs: Int64
     public var sizeBytes: Int64
@@ -2939,35 +2563,15 @@ public struct DirectoryFingerprint {
         self.mtimeSecs = mtimeSecs
         self.sizeBytes = sizeBytes
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension DirectoryFingerprint: Sendable {}
 #endif
-
-
-extension DirectoryFingerprint: Equatable, Hashable {
-    public static func ==(lhs: DirectoryFingerprint, rhs: DirectoryFingerprint) -> Bool {
-        if lhs.relativePath != rhs.relativePath {
-            return false
-        }
-        if lhs.mtimeSecs != rhs.mtimeSecs {
-            return false
-        }
-        if lhs.sizeBytes != rhs.sizeBytes {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(relativePath)
-        hasher.combine(mtimeSecs)
-        hasher.combine(sizeBytes)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3018,7 +2622,7 @@ public func FfiConverterTypeDirectoryFingerprint_lower(_ value: DirectoryFingerp
  * of plain filesystem paths. The native UI layers derive a display path from
  * their own handle stores (DocumentsContract on Android, bookmark URL on iOS).
  */
-public struct DirectorySourceSummary {
+public struct DirectorySourceSummary: Equatable, Hashable {
     public var id: String
     public var displayName: String
     /**
@@ -3056,55 +2660,15 @@ public struct DirectorySourceSummary {
         self.exclusionGlobs = exclusionGlobs
         self.syncStatus = syncStatus
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension DirectorySourceSummary: Sendable {}
 #endif
-
-
-extension DirectorySourceSummary: Equatable, Hashable {
-    public static func ==(lhs: DirectorySourceSummary, rhs: DirectorySourceSummary) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.displayName != rhs.displayName {
-            return false
-        }
-        if lhs.path != rhs.path {
-            return false
-        }
-        if lhs.fileCount != rhs.fileCount {
-            return false
-        }
-        if lhs.lastSyncedAt != rhs.lastSyncedAt {
-            return false
-        }
-        if lhs.lastSyncedLabel != rhs.lastSyncedLabel {
-            return false
-        }
-        if lhs.exclusionGlobs != rhs.exclusionGlobs {
-            return false
-        }
-        if lhs.syncStatus != rhs.syncStatus {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(displayName)
-        hasher.combine(path)
-        hasher.combine(fileCount)
-        hasher.combine(lastSyncedAt)
-        hasher.combine(lastSyncedLabel)
-        hasher.combine(exclusionGlobs)
-        hasher.combine(syncStatus)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3156,7 +2720,7 @@ public func FfiConverterTypeDirectorySourceSummary_lower(_ value: DirectorySourc
  * Phase 35 — one tool surfaced by Nostr discovery, bound to AppState
  * for the Tool Discovery sub-screen. Phase 36 adds usage + display fields.
  */
-public struct DiscoverableTool {
+public struct DiscoverableTool: Equatable, Hashable {
     /**
      * Stable id: `<provider_pubkey_hex>:<tool_name>`.
      */
@@ -3290,91 +2854,15 @@ public struct DiscoverableTool {
         self.npub = npub
         self.schemaPretty = schemaPretty
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension DiscoverableTool: Sendable {}
 #endif
-
-
-extension DiscoverableTool: Equatable, Hashable {
-    public static func ==(lhs: DiscoverableTool, rhs: DiscoverableTool) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.name != rhs.name {
-            return false
-        }
-        if lhs.description != rhs.description {
-            return false
-        }
-        if lhs.providerPubkey != rhs.providerPubkey {
-            return false
-        }
-        if lhs.providerDisplayName != rhs.providerDisplayName {
-            return false
-        }
-        if lhs.providerName != rhs.providerName {
-            return false
-        }
-        if lhs.providerAbout != rhs.providerAbout {
-            return false
-        }
-        if lhs.providerPicture != rhs.providerPicture {
-            return false
-        }
-        if lhs.providerNip05 != rhs.providerNip05 {
-            return false
-        }
-        if lhs.enabled != rhs.enabled {
-            return false
-        }
-        if lhs.usageCount != rhs.usageCount {
-            return false
-        }
-        if lhs.lastUsedAt != rhs.lastUsedAt {
-            return false
-        }
-        if lhs.lastUsedLabel != rhs.lastUsedLabel {
-            return false
-        }
-        if lhs.lastSeenAt != rhs.lastSeenAt {
-            return false
-        }
-        if lhs.lastSeenLabel != rhs.lastSeenLabel {
-            return false
-        }
-        if lhs.npub != rhs.npub {
-            return false
-        }
-        if lhs.schemaPretty != rhs.schemaPretty {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(name)
-        hasher.combine(description)
-        hasher.combine(providerPubkey)
-        hasher.combine(providerDisplayName)
-        hasher.combine(providerName)
-        hasher.combine(providerAbout)
-        hasher.combine(providerPicture)
-        hasher.combine(providerNip05)
-        hasher.combine(enabled)
-        hasher.combine(usageCount)
-        hasher.combine(lastUsedAt)
-        hasher.combine(lastUsedLabel)
-        hasher.combine(lastSeenAt)
-        hasher.combine(lastSeenLabel)
-        hasher.combine(npub)
-        hasher.combine(schemaPretty)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3446,7 +2934,7 @@ public func FfiConverterTypeDiscoverableTool_lower(_ value: DiscoverableTool) ->
  * Carried in AppState.documents so the UI can render the document list without
  * additional queries. Maps from DocumentRow in the persistence layer.
  */
-public struct DocumentSummary {
+public struct DocumentSummary: Equatable, Hashable {
     public var id: String
     public var name: String
     public var format: String
@@ -3464,47 +2952,15 @@ public struct DocumentSummary {
         self.ingestionDate = ingestionDate
         self.chunkCount = chunkCount
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension DocumentSummary: Sendable {}
 #endif
-
-
-extension DocumentSummary: Equatable, Hashable {
-    public static func ==(lhs: DocumentSummary, rhs: DocumentSummary) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.name != rhs.name {
-            return false
-        }
-        if lhs.format != rhs.format {
-            return false
-        }
-        if lhs.sizeBytes != rhs.sizeBytes {
-            return false
-        }
-        if lhs.ingestionDate != rhs.ingestionDate {
-            return false
-        }
-        if lhs.chunkCount != rhs.chunkCount {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(name)
-        hasher.combine(format)
-        hasher.combine(sizeBytes)
-        hasher.combine(ingestionDate)
-        hasher.combine(chunkCount)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3555,7 +3011,7 @@ public func FfiConverterTypeDocumentSummary_lower(_ value: DocumentSummary) -> R
  * selected file's name and content back to Rust. The actor stores content in
  * PendingAttachment (actor-internal) and the filename in AppState.pending_attachment.
  */
-public struct FilePickResult {
+public struct FilePickResult: Equatable, Hashable {
     public var filename: String
     /**
      * Full text content of the file (UTF-8)
@@ -3573,35 +3029,15 @@ public struct FilePickResult {
         self.content = content
         self.sizeBytes = sizeBytes
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension FilePickResult: Sendable {}
 #endif
-
-
-extension FilePickResult: Equatable, Hashable {
-    public static func ==(lhs: FilePickResult, rhs: FilePickResult) -> Bool {
-        if lhs.filename != rhs.filename {
-            return false
-        }
-        if lhs.content != rhs.content {
-            return false
-        }
-        if lhs.sizeBytes != rhs.sizeBytes {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(filename)
-        hasher.combine(content)
-        hasher.combine(sizeBytes)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3639,7 +3075,7 @@ public func FfiConverterTypeFilePickResult_lower(_ value: FilePickResult) -> Rus
 }
 
 
-public struct HybridProfile {
+public struct HybridProfile: Equatable, Hashable {
     public var id: String
     public var name: String
     public var localBackendId: String
@@ -3661,55 +3097,15 @@ public struct HybridProfile {
         self.policy = policy
         self.preprocessing = preprocessing
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension HybridProfile: Sendable {}
 #endif
-
-
-extension HybridProfile: Equatable, Hashable {
-    public static func ==(lhs: HybridProfile, rhs: HybridProfile) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.name != rhs.name {
-            return false
-        }
-        if lhs.localBackendId != rhs.localBackendId {
-            return false
-        }
-        if lhs.localModelId != rhs.localModelId {
-            return false
-        }
-        if lhs.remoteBackendId != rhs.remoteBackendId {
-            return false
-        }
-        if lhs.remoteModelId != rhs.remoteModelId {
-            return false
-        }
-        if lhs.policy != rhs.policy {
-            return false
-        }
-        if lhs.preprocessing != rhs.preprocessing {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(name)
-        hasher.combine(localBackendId)
-        hasher.combine(localModelId)
-        hasher.combine(remoteBackendId)
-        hasher.combine(remoteModelId)
-        hasher.combine(policy)
-        hasher.combine(preprocessing)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3763,7 +3159,7 @@ public func FfiConverterTypeHybridProfile_lower(_ value: HybridProfile) -> RustB
  * Shown in the UI during the extract -> chunk -> embed -> index pipeline.
  * Cleared when EmbeddingComplete is handled.
  */
-public struct IngestionProgress {
+public struct IngestionProgress: Equatable, Hashable {
     public var documentName: String
     /**
      * One of: "extracting", "chunking", "embedding", "indexing", "complete"
@@ -3779,31 +3175,15 @@ public struct IngestionProgress {
         self.documentName = documentName
         self.stage = stage
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension IngestionProgress: Sendable {}
 #endif
-
-
-extension IngestionProgress: Equatable, Hashable {
-    public static func ==(lhs: IngestionProgress, rhs: IngestionProgress) -> Bool {
-        if lhs.documentName != rhs.documentName {
-            return false
-        }
-        if lhs.stage != rhs.stage {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(documentName)
-        hasher.combine(stage)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3842,7 +3222,7 @@ public func FfiConverterTypeIngestionProgress_lower(_ value: IngestionProgress) 
 /**
  * Download progress for a single local model.
  */
-public struct LocalModelDownloadProgress {
+public struct LocalModelDownloadProgress: Equatable, Hashable {
     public var modelId: String
     public var downloadedBytes: UInt64
     public var totalBytes: UInt64?
@@ -3862,39 +3242,15 @@ public struct LocalModelDownloadProgress {
         self.totalBytes = totalBytes
         self.stage = stage
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension LocalModelDownloadProgress: Sendable {}
 #endif
-
-
-extension LocalModelDownloadProgress: Equatable, Hashable {
-    public static func ==(lhs: LocalModelDownloadProgress, rhs: LocalModelDownloadProgress) -> Bool {
-        if lhs.modelId != rhs.modelId {
-            return false
-        }
-        if lhs.downloadedBytes != rhs.downloadedBytes {
-            return false
-        }
-        if lhs.totalBytes != rhs.totalBytes {
-            return false
-        }
-        if lhs.stage != rhs.stage {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(modelId)
-        hasher.combine(downloadedBytes)
-        hasher.combine(totalBytes)
-        hasher.combine(stage)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3937,7 +3293,7 @@ public func FfiConverterTypeLocalModelDownloadProgress_lower(_ value: LocalModel
 /**
  * Built-in downloadable local model entry.
  */
-public struct LocalModelPreset {
+public struct LocalModelPreset: Equatable, Hashable {
     public var id: String
     public var name: String
     public var description: String
@@ -3963,63 +3319,15 @@ public struct LocalModelPreset {
         self.minRamBytes = minRamBytes
         self.chatTemplate = chatTemplate
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension LocalModelPreset: Sendable {}
 #endif
-
-
-extension LocalModelPreset: Equatable, Hashable {
-    public static func ==(lhs: LocalModelPreset, rhs: LocalModelPreset) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.name != rhs.name {
-            return false
-        }
-        if lhs.description != rhs.description {
-            return false
-        }
-        if lhs.filename != rhs.filename {
-            return false
-        }
-        if lhs.url != rhs.url {
-            return false
-        }
-        if lhs.sha256 != rhs.sha256 {
-            return false
-        }
-        if lhs.sizeBytes != rhs.sizeBytes {
-            return false
-        }
-        if lhs.quantization != rhs.quantization {
-            return false
-        }
-        if lhs.minRamBytes != rhs.minRamBytes {
-            return false
-        }
-        if lhs.chatTemplate != rhs.chatTemplate {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(name)
-        hasher.combine(description)
-        hasher.combine(filename)
-        hasher.combine(url)
-        hasher.combine(sha256)
-        hasher.combine(sizeBytes)
-        hasher.combine(quantization)
-        hasher.combine(minRamBytes)
-        hasher.combine(chatTemplate)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4074,7 +3382,7 @@ public func FfiConverterTypeLocalModelPreset_lower(_ value: LocalModelPreset) ->
 /**
  * UI-safe local model status, derived from catalog + verified file state.
  */
-public struct LocalModelSummary {
+public struct LocalModelSummary: Equatable, Hashable {
     public var id: String
     public var name: String
     public var description: String
@@ -4100,63 +3408,15 @@ public struct LocalModelSummary {
         self.path = path
         self.backendId = backendId
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension LocalModelSummary: Sendable {}
 #endif
-
-
-extension LocalModelSummary: Equatable, Hashable {
-    public static func ==(lhs: LocalModelSummary, rhs: LocalModelSummary) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.name != rhs.name {
-            return false
-        }
-        if lhs.description != rhs.description {
-            return false
-        }
-        if lhs.quantization != rhs.quantization {
-            return false
-        }
-        if lhs.sizeBytes != rhs.sizeBytes {
-            return false
-        }
-        if lhs.minRamBytes != rhs.minRamBytes {
-            return false
-        }
-        if lhs.downloaded != rhs.downloaded {
-            return false
-        }
-        if lhs.verified != rhs.verified {
-            return false
-        }
-        if lhs.path != rhs.path {
-            return false
-        }
-        if lhs.backendId != rhs.backendId {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(name)
-        hasher.combine(description)
-        hasher.combine(quantization)
-        hasher.combine(sizeBytes)
-        hasher.combine(minRamBytes)
-        hasher.combine(downloaded)
-        hasher.combine(verified)
-        hasher.combine(path)
-        hasher.combine(backendId)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4208,7 +3468,7 @@ public func FfiConverterTypeLocalModelSummary_lower(_ value: LocalModelSummary) 
 }
 
 
-public struct LocalPreprocessing {
+public struct LocalPreprocessing: Equatable, Hashable {
     public var compressHistory: Bool
     public var rewriteRagQuery: Bool
 
@@ -4218,31 +3478,15 @@ public struct LocalPreprocessing {
         self.compressHistory = compressHistory
         self.rewriteRagQuery = rewriteRagQuery
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension LocalPreprocessing: Sendable {}
 #endif
-
-
-extension LocalPreprocessing: Equatable, Hashable {
-    public static func ==(lhs: LocalPreprocessing, rhs: LocalPreprocessing) -> Bool {
-        if lhs.compressHistory != rhs.compressHistory {
-            return false
-        }
-        if lhs.rewriteRagQuery != rhs.rewriteRagQuery {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(compressHistory)
-        hasher.combine(rewriteRagQuery)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4284,7 +3528,7 @@ public func FfiConverterTypeLocalPreprocessing_lower(_ value: LocalPreprocessing
  * Carried in AppState.memories when the user navigates to Screen::Memories.
  * Maps from MemoryRow with display-safe fields.
  */
-public struct MemorySummary {
+public struct MemorySummary: Equatable, Hashable {
     public var id: String
     /**
      * Full content of the extracted fact (memories are short enough to carry fully).
@@ -4332,47 +3576,15 @@ public struct MemorySummary {
         self.conversationTitle = conversationTitle
         self.usearchKey = usearchKey
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension MemorySummary: Sendable {}
 #endif
-
-
-extension MemorySummary: Equatable, Hashable {
-    public static func ==(lhs: MemorySummary, rhs: MemorySummary) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.content != rhs.content {
-            return false
-        }
-        if lhs.contentPreview != rhs.contentPreview {
-            return false
-        }
-        if lhs.createdAt != rhs.createdAt {
-            return false
-        }
-        if lhs.conversationTitle != rhs.conversationTitle {
-            return false
-        }
-        if lhs.usearchKey != rhs.usearchKey {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(content)
-        hasher.combine(contentPreview)
-        hasher.combine(createdAt)
-        hasher.combine(conversationTitle)
-        hasher.combine(usearchKey)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4424,7 +3636,7 @@ public func FfiConverterTypeMemorySummary_lower(_ value: MemorySummary) -> RustB
  * spinners and error messages without additional queries.
  * UniFFI-exported as a Record so all platforms can destructure the fields.
  */
-public struct OnboardingState {
+public struct OnboardingState: Equatable, Hashable {
     /**
      * The backend ID selected or entered by the user during BackendSetup.
      */
@@ -4482,47 +3694,15 @@ public struct OnboardingState {
         self.validatingApiKey = validatingApiKey
         self.apiKeyError = apiKeyError
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension OnboardingState: Sendable {}
 #endif
-
-
-extension OnboardingState: Equatable, Hashable {
-    public static func ==(lhs: OnboardingState, rhs: OnboardingState) -> Bool {
-        if lhs.selectedBackendId != rhs.selectedBackendId {
-            return false
-        }
-        if lhs.attestationStage != rhs.attestationStage {
-            return false
-        }
-        if lhs.attestationResult != rhs.attestationResult {
-            return false
-        }
-        if lhs.attestationTeeLabel != rhs.attestationTeeLabel {
-            return false
-        }
-        if lhs.validatingApiKey != rhs.validatingApiKey {
-            return false
-        }
-        if lhs.apiKeyError != rhs.apiKeyError {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(selectedBackendId)
-        hasher.combine(attestationStage)
-        hasher.combine(attestationResult)
-        hasher.combine(attestationTeeLabel)
-        hasher.combine(validatingApiKey)
-        hasher.combine(apiKeyError)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4571,7 +3751,7 @@ public func FfiConverterTypeOnboardingState_lower(_ value: OnboardingState) -> R
  * Label is one of "gateway" | "model" | "compose_manager".
  * Value is the hex address or actions hash from the verified component.
  */
-public struct OrchestratedComponent {
+public struct OrchestratedComponent: Equatable, Hashable {
     public var label: String
     public var value: String
 
@@ -4581,31 +3761,15 @@ public struct OrchestratedComponent {
         self.label = label
         self.value = value
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension OrchestratedComponent: Sendable {}
 #endif
-
-
-extension OrchestratedComponent: Equatable, Hashable {
-    public static func ==(lhs: OrchestratedComponent, rhs: OrchestratedComponent) -> Bool {
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.value != rhs.value {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(label)
-        hasher.combine(value)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4641,7 +3805,7 @@ public func FfiConverterTypeOrchestratedComponent_lower(_ value: OrchestratedCom
 }
 
 
-public struct PlatformHttpHeader {
+public struct PlatformHttpHeader: Equatable, Hashable {
     public var name: String
     public var value: String
 
@@ -4651,31 +3815,15 @@ public struct PlatformHttpHeader {
         self.name = name
         self.value = value
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension PlatformHttpHeader: Sendable {}
 #endif
-
-
-extension PlatformHttpHeader: Equatable, Hashable {
-    public static func ==(lhs: PlatformHttpHeader, rhs: PlatformHttpHeader) -> Bool {
-        if lhs.name != rhs.name {
-            return false
-        }
-        if lhs.value != rhs.value {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(name)
-        hasher.combine(value)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4711,7 +3859,7 @@ public func FfiConverterTypePlatformHttpHeader_lower(_ value: PlatformHttpHeader
 }
 
 
-public struct PlatformHttpRequest {
+public struct PlatformHttpRequest: Equatable, Hashable {
     public var method: String
     public var url: String
     public var headers: [PlatformHttpHeader]
@@ -4727,43 +3875,15 @@ public struct PlatformHttpRequest {
         self.body = body
         self.timeoutSecs = timeoutSecs
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension PlatformHttpRequest: Sendable {}
 #endif
-
-
-extension PlatformHttpRequest: Equatable, Hashable {
-    public static func ==(lhs: PlatformHttpRequest, rhs: PlatformHttpRequest) -> Bool {
-        if lhs.method != rhs.method {
-            return false
-        }
-        if lhs.url != rhs.url {
-            return false
-        }
-        if lhs.headers != rhs.headers {
-            return false
-        }
-        if lhs.body != rhs.body {
-            return false
-        }
-        if lhs.timeoutSecs != rhs.timeoutSecs {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(method)
-        hasher.combine(url)
-        hasher.combine(headers)
-        hasher.combine(body)
-        hasher.combine(timeoutSecs)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4805,7 +3925,7 @@ public func FfiConverterTypePlatformHttpRequest_lower(_ value: PlatformHttpReque
 }
 
 
-public struct PlatformHttpResponse {
+public struct PlatformHttpResponse: Equatable, Hashable {
     public var statusCode: UInt16
     public var headers: [PlatformHttpHeader]
     public var body: Data
@@ -4817,35 +3937,15 @@ public struct PlatformHttpResponse {
         self.headers = headers
         self.body = body
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension PlatformHttpResponse: Sendable {}
 #endif
-
-
-extension PlatformHttpResponse: Equatable, Hashable {
-    public static func ==(lhs: PlatformHttpResponse, rhs: PlatformHttpResponse) -> Bool {
-        if lhs.statusCode != rhs.statusCode {
-            return false
-        }
-        if lhs.headers != rhs.headers {
-            return false
-        }
-        if lhs.body != rhs.body {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(statusCode)
-        hasher.combine(headers)
-        hasher.combine(body)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4887,7 +3987,7 @@ public func FfiConverterTypePlatformHttpResponse_lower(_ value: PlatformHttpResp
  * A known provider preset for the Add Backend form.
  * UniFFI-exported so all platforms share the same preset data.
  */
-public struct ProviderPreset {
+public struct ProviderPreset: Equatable, Hashable {
     /**
      * Short identifier (e.g. "tinfoil") -- used as suggested backend id
      */
@@ -4933,43 +4033,15 @@ public struct ProviderPreset {
         self.teeType = teeType
         self.description = description
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension ProviderPreset: Sendable {}
 #endif
-
-
-extension ProviderPreset: Equatable, Hashable {
-    public static func ==(lhs: ProviderPreset, rhs: ProviderPreset) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.name != rhs.name {
-            return false
-        }
-        if lhs.baseUrl != rhs.baseUrl {
-            return false
-        }
-        if lhs.teeType != rhs.teeType {
-            return false
-        }
-        if lhs.description != rhs.description {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(name)
-        hasher.combine(baseUrl)
-        hasher.combine(teeType)
-        hasher.combine(description)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5011,7 +4083,7 @@ public func FfiConverterTypeProviderPreset_lower(_ value: ProviderPreset) -> Rus
 }
 
 
-public struct Router {
+public struct Router: Equatable, Hashable {
     public var currentScreen: Screen
     public var screenStack: [Screen]
 
@@ -5021,31 +4093,15 @@ public struct Router {
         self.currentScreen = currentScreen
         self.screenStack = screenStack
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension Router: Sendable {}
 #endif
-
-
-extension Router: Equatable, Hashable {
-    public static func ==(lhs: Router, rhs: Router) -> Bool {
-        if lhs.currentScreen != rhs.currentScreen {
-            return false
-        }
-        if lhs.screenStack != rhs.screenStack {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(currentScreen)
-        hasher.combine(screenStack)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5081,7 +4137,7 @@ public func FfiConverterTypeRouter_lower(_ value: Router) -> RustBuffer {
 }
 
 
-public struct RoutingPolicy {
+public struct RoutingPolicy: Equatable, Hashable {
     public var escalateIfAttachment: Bool
     public var preferLocalWhenOffline: Bool
     public var escalateIfMessageLongerThan: UInt64?
@@ -5093,35 +4149,15 @@ public struct RoutingPolicy {
         self.preferLocalWhenOffline = preferLocalWhenOffline
         self.escalateIfMessageLongerThan = escalateIfMessageLongerThan
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension RoutingPolicy: Sendable {}
 #endif
-
-
-extension RoutingPolicy: Equatable, Hashable {
-    public static func ==(lhs: RoutingPolicy, rhs: RoutingPolicy) -> Bool {
-        if lhs.escalateIfAttachment != rhs.escalateIfAttachment {
-            return false
-        }
-        if lhs.preferLocalWhenOffline != rhs.preferLocalWhenOffline {
-            return false
-        }
-        if lhs.escalateIfMessageLongerThan != rhs.escalateIfMessageLongerThan {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(escalateIfAttachment)
-        hasher.combine(preferLocalWhenOffline)
-        hasher.combine(escalateIfMessageLongerThan)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5162,7 +4198,7 @@ public func FfiConverterTypeRoutingPolicy_lower(_ value: RoutingPolicy) -> RustB
 /**
  * Phase 38 — one entry in the user's trusted-providers list.
  */
-public struct TrustedProvider {
+public struct TrustedProvider: Equatable, Hashable {
     /**
      * Nostr hex pubkey.
      */
@@ -5200,39 +4236,15 @@ public struct TrustedProvider {
         self.addedAt = addedAt
         self.npub = npub
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension TrustedProvider: Sendable {}
 #endif
-
-
-extension TrustedProvider: Equatable, Hashable {
-    public static func ==(lhs: TrustedProvider, rhs: TrustedProvider) -> Bool {
-        if lhs.pubkey != rhs.pubkey {
-            return false
-        }
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.addedAt != rhs.addedAt {
-            return false
-        }
-        if lhs.npub != rhs.npub {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(pubkey)
-        hasher.combine(label)
-        hasher.combine(addedAt)
-        hasher.combine(npub)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5272,7 +4284,7 @@ public func FfiConverterTypeTrustedProvider_lower(_ value: TrustedProvider) -> R
 }
 
 
-public struct TurnRoutingSummary {
+public struct TurnRoutingSummary: Equatable, Hashable {
     public var conversationId: String?
     public var profileId: String?
     public var backendId: String
@@ -5296,59 +4308,15 @@ public struct TurnRoutingSummary {
         self.teeLabel = teeLabel
         self.teeVerified = teeVerified
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension TurnRoutingSummary: Sendable {}
 #endif
-
-
-extension TurnRoutingSummary: Equatable, Hashable {
-    public static func ==(lhs: TurnRoutingSummary, rhs: TurnRoutingSummary) -> Bool {
-        if lhs.conversationId != rhs.conversationId {
-            return false
-        }
-        if lhs.profileId != rhs.profileId {
-            return false
-        }
-        if lhs.backendId != rhs.backendId {
-            return false
-        }
-        if lhs.modelId != rhs.modelId {
-            return false
-        }
-        if lhs.decision != rhs.decision {
-            return false
-        }
-        if lhs.reason != rhs.reason {
-            return false
-        }
-        if lhs.providerName != rhs.providerName {
-            return false
-        }
-        if lhs.teeLabel != rhs.teeLabel {
-            return false
-        }
-        if lhs.teeVerified != rhs.teeVerified {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(conversationId)
-        hasher.combine(profileId)
-        hasher.combine(backendId)
-        hasher.combine(modelId)
-        hasher.combine(decision)
-        hasher.combine(reason)
-        hasher.combine(providerName)
-        hasher.combine(teeLabel)
-        hasher.combine(teeVerified)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5404,7 +4372,7 @@ public func FfiConverterTypeTurnRoutingSummary_lower(_ value: TurnRoutingSummary
  * Phase 5: carried in AppState.messages so the UI can render the chat thread
  * without additional queries. Maps from MessageRow with extra UI fields.
  */
-public struct UiMessage {
+public struct UiMessage: Equatable, Hashable {
     public var id: String
     /**
      * Message role: "user", "assistant", or "system"
@@ -5518,83 +4486,15 @@ public struct UiMessage {
         self.routeTeeLabel = routeTeeLabel
         self.routeTeeVerified = routeTeeVerified
     }
+
+    
+
+    
 }
 
 #if compiler(>=6)
 extension UiMessage: Sendable {}
 #endif
-
-
-extension UiMessage: Equatable, Hashable {
-    public static func ==(lhs: UiMessage, rhs: UiMessage) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.role != rhs.role {
-            return false
-        }
-        if lhs.content != rhs.content {
-            return false
-        }
-        if lhs.createdAt != rhs.createdAt {
-            return false
-        }
-        if lhs.hasAttachment != rhs.hasAttachment {
-            return false
-        }
-        if lhs.attachmentName != rhs.attachmentName {
-            return false
-        }
-        if lhs.ragContextCount != rhs.ragContextCount {
-            return false
-        }
-        if lhs.imagePath != rhs.imagePath {
-            return false
-        }
-        if lhs.routeBackendId != rhs.routeBackendId {
-            return false
-        }
-        if lhs.routeModelId != rhs.routeModelId {
-            return false
-        }
-        if lhs.routeDecision != rhs.routeDecision {
-            return false
-        }
-        if lhs.routeReason != rhs.routeReason {
-            return false
-        }
-        if lhs.routeProviderName != rhs.routeProviderName {
-            return false
-        }
-        if lhs.routeTeeLabel != rhs.routeTeeLabel {
-            return false
-        }
-        if lhs.routeTeeVerified != rhs.routeTeeVerified {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(role)
-        hasher.combine(content)
-        hasher.combine(createdAt)
-        hasher.combine(hasAttachment)
-        hasher.combine(attachmentName)
-        hasher.combine(ragContextCount)
-        hasher.combine(imagePath)
-        hasher.combine(routeBackendId)
-        hasher.combine(routeModelId)
-        hasher.combine(routeDecision)
-        hasher.combine(routeReason)
-        hasher.combine(routeProviderName)
-        hasher.combine(routeTeeLabel)
-        hasher.combine(routeTeeVerified)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5655,10 +4555,9 @@ public func FfiConverterTypeUiMessage_lower(_ value: UiMessage) -> RustBuffer {
     return FfiConverterTypeUiMessage.lower(value)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
-public enum AppAction {
+
+public enum AppAction: Equatable, Hashable {
     
     /**
      * Push a screen onto the navigation stack
@@ -6106,8 +5005,12 @@ public enum AppAction {
      */
     case removeTrustedProvider(pubkey: String
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension AppAction: Sendable {}
@@ -6800,25 +5703,21 @@ public func FfiConverterTypeAppAction_lower(_ value: AppAction) -> RustBuffer {
 }
 
 
-extension AppAction: Equatable, Hashable {}
 
 
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-
-public enum AppUpdate {
+public enum AppUpdate: Equatable, Hashable {
     
     /**
      * Full state snapshot delivered to UI after every action
      */
     case fullState(AppState
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension AppUpdate: Sendable {}
@@ -6869,19 +5768,13 @@ public func FfiConverterTypeAppUpdate_lower(_ value: AppUpdate) -> RustBuffer {
 }
 
 
-extension AppUpdate: Equatable, Hashable {}
-
-
-
-
-
-
 
 /**
  * Error taxonomy for attestation operations -- crosses UniFFI boundary.
  * Mirrors LlmError pattern: thiserror for Display, uniffi::Error for FFI.
  */
-public enum AttestationError: Swift.Error {
+public 
+enum AttestationError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
@@ -6901,8 +5794,21 @@ public enum AttestationError: Swift.Error {
     case CacheLockPoisoned
     case UnsupportedTeeType(teeType: String
     )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
 }
 
+#if compiler(>=6)
+extension AttestationError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7016,22 +5922,6 @@ public func FfiConverterTypeAttestationError_lower(_ value: AttestationError) ->
 }
 
 
-extension AttestationError: Equatable, Hashable {}
-
-
-
-
-extension AttestationError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
-}
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Attestation verification status for a backend.
  *
@@ -7039,7 +5929,7 @@ extension AttestationError: Foundation.LocalizedError {
  * Vec<(backend_id, AttestationStatus)> per D-11.
  */
 
-public enum AttestationStatus {
+public enum AttestationStatus: Equatable, Hashable {
     
     /**
      * Cryptographic verification passed (TDX quote, SNP report, or NRAS JWT verified).
@@ -7048,6 +5938,7 @@ public enum AttestationStatus {
      * - `shape`: "Flat" | "Orchestrated" | "Chutes" (Phase 34 RED-11).
      * - `freshness`: "PerRequest" | "PerEnclave" (RED-09).
      * - `orchestrated_components`: per-component hex/actions hashes for Shape B.
+     *
      * All three are `None` for non-aggregator providers.
      */
     case verified(shape: String?, freshness: String?, orchestratedComponents: [OrchestratedComponent]?
@@ -7065,8 +5956,12 @@ public enum AttestationStatus {
      * Was verified but TTL has elapsed; re-verification pending.
      */
     case expired
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension AttestationStatus: Sendable {}
@@ -7139,22 +6034,18 @@ public func FfiConverterTypeAttestationStatus_lower(_ value: AttestationStatus) 
 }
 
 
-extension AttestationStatus: Equatable, Hashable {}
 
 
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-
-public enum BackendRole {
+public enum BackendRole: Equatable, Hashable {
     
     case local
     case remote
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension BackendRole: Sendable {}
@@ -7209,17 +6100,9 @@ public func FfiConverterTypeBackendRole_lower(_ value: BackendRole) -> RustBuffe
 }
 
 
-extension BackendRole: Equatable, Hashable {}
 
 
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-
-public enum BusyState {
+public enum BusyState: Equatable, Hashable {
     
     /**
      * No async work in progress
@@ -7235,8 +6118,12 @@ public enum BusyState {
      */
     case streaming(model: String
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension BusyState: Sendable {}
@@ -7301,21 +6188,13 @@ public func FfiConverterTypeBusyState_lower(_ value: BusyState) -> RustBuffer {
 }
 
 
-extension BusyState: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Phase 35 — discovery query lifecycle state for the Tool Discovery
  * sub-screen. Maps 1-to-1 to UI-SPEC states C/D/E/F.
  */
 
-public enum ContextvmDiscoveryState {
+public enum ContextvmDiscoveryState: Equatable, Hashable {
     
     /**
      * Initial state before any query has run for this AppState lifecycle.
@@ -7338,8 +6217,12 @@ public enum ContextvmDiscoveryState {
      */
     case error(message: String
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension ContextvmDiscoveryState: Sendable {}
@@ -7408,22 +6291,14 @@ public func FfiConverterTypeContextvmDiscoveryState_lower(_ value: ContextvmDisc
 }
 
 
-extension ContextvmDiscoveryState: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Status of the background sync for a directory source (Phase 32).
  *
  * Used by the UI to render per-source sync indicators.
  */
 
-public enum DirectorySyncStatus {
+public enum DirectorySyncStatus: Equatable, Hashable {
     
     /**
      * No sync in progress, last sync (if any) succeeded.
@@ -7438,8 +6313,12 @@ public enum DirectorySyncStatus {
      */
     case error(message: String
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension DirectorySyncStatus: Sendable {}
@@ -7502,20 +6381,12 @@ public func FfiConverterTypeDirectorySyncStatus_lower(_ value: DirectorySyncStat
 }
 
 
-extension DirectorySyncStatus: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Embedding provider operational status (Phase 15 / SAFE-03).
  */
 
-public enum EmbeddingStatus {
+public enum EmbeddingStatus: Equatable, Hashable {
     
     /**
      * Embedding provider loaded and operational. Semantic RAG is available.
@@ -7530,8 +6401,12 @@ public enum EmbeddingStatus {
      * No embedding provider was supplied (e.g. mobile platform without native impl).
      */
     case unavailable
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension EmbeddingStatus: Sendable {}
@@ -7592,13 +6467,6 @@ public func FfiConverterTypeEmbeddingStatus_lower(_ value: EmbeddingStatus) -> R
 }
 
 
-extension EmbeddingStatus: Equatable, Hashable {}
-
-
-
-
-
-
 
 /**
  * Generic FFI error type for synchronous FfiApp methods that can fail for
@@ -7607,14 +6475,28 @@ extension EmbeddingStatus: Equatable, Hashable {}
  * raw `String` panics the bindgen. Variants are deliberately coarse because
  * native callers log `reason` and surface a toast rather than branching on code.
  */
-public enum FfiError: Swift.Error {
+public 
+enum FfiError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
     case Internal(reason: String
     )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
 }
 
+#if compiler(>=6)
+extension FfiError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7668,29 +6550,13 @@ public func FfiConverterTypeFfiError_lower(_ value: FfiError) -> RustBuffer {
 }
 
 
-extension FfiError: Equatable, Hashable {}
-
-
-
-
-extension FfiError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
-}
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Health status for a backend -- UniFFI-exported for UI display.
  *
  * Maps from the internal HealthState enum in router.rs to a simpler UI-facing enum.
  */
 
-public enum HealthStatus {
+public enum HealthStatus: Equatable, Hashable {
     
     /**
      * Backend is responding normally.
@@ -7708,8 +6574,12 @@ public enum HealthStatus {
      * Health is unknown (router not yet integrated or backend not yet checked).
      */
     case unknown
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension HealthStatus: Sendable {}
@@ -7776,19 +6646,13 @@ public func FfiConverterTypeHealthStatus_lower(_ value: HealthStatus) -> RustBuf
 }
 
 
-extension HealthStatus: Equatable, Hashable {}
-
-
-
-
-
-
 
 /**
  * Error taxonomy for LLM operations -- crosses UniFFI boundary as exception type.
  * Per D-10: 5 variants mapping HTTP/network conditions to human-readable messages.
  */
-public enum LlmError: Swift.Error {
+public 
+enum LlmError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
@@ -7805,8 +6669,21 @@ public enum LlmError: Swift.Error {
     )
     case ApiError(statusCode: UInt16, reason: String
     )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
 }
 
+#if compiler(>=6)
+extension LlmError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7896,27 +6773,11 @@ public func FfiConverterTypeLlmError_lower(_ value: LlmError) -> RustBuffer {
 }
 
 
-extension LlmError: Equatable, Hashable {}
-
-
-
-
-extension LlmError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
-}
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Device-side capability summary for local LLM inference.
  */
 
-public enum LocalLlmCapabilityStatus {
+public enum LocalLlmCapabilityStatus: Equatable, Hashable {
     
     case unknown
     case supported
@@ -7930,8 +6791,12 @@ public enum LocalLlmCapabilityStatus {
     case probeUnavailable
     case runtimeNotPackaged
     case runtimeLoadFailed
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension LocalLlmCapabilityStatus: Sendable {}
@@ -8046,15 +6911,9 @@ public func FfiConverterTypeLocalLlmCapabilityStatus_lower(_ value: LocalLlmCapa
 }
 
 
-extension LocalLlmCapabilityStatus: Equatable, Hashable {}
 
-
-
-
-
-
-
-public enum LocalLlmError: Swift.Error {
+public 
+enum LocalLlmError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
@@ -8068,8 +6927,21 @@ public enum LocalLlmError: Swift.Error {
     case GenerationFailed(reason: String
     )
     case Cancelled
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
 }
 
+#if compiler(>=6)
+extension LocalLlmError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8157,22 +7029,6 @@ public func FfiConverterTypeLocalLlmError_lower(_ value: LocalLlmError) -> RustB
 }
 
 
-extension LocalLlmError: Equatable, Hashable {}
-
-
-
-
-extension LocalLlmError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
-}
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Onboarding wizard step (per D-18).
  *
@@ -8181,7 +7037,7 @@ extension LocalLlmError: Foundation.LocalizedError {
  * UniFFI-exported so all platforms share the same step enum.
  */
 
-public enum OnboardingStep {
+public enum OnboardingStep: Equatable, Hashable {
     
     /**
      * Welcome screen: app intro and privacy guarantee overview.
@@ -8199,8 +7055,12 @@ public enum OnboardingStep {
      * Ready to chat: completion screen before navigating to the main chat UI.
      */
     case readyToChat
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension OnboardingStep: Sendable {}
@@ -8267,17 +7127,9 @@ public func FfiConverterTypeOnboardingStep_lower(_ value: OnboardingStep) -> Rus
 }
 
 
-extension OnboardingStep: Equatable, Hashable {}
 
 
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-
-public enum Screen {
+public enum Screen: Equatable, Hashable {
     
     /**
      * Main screen -- will become conversation list in Phase 5
@@ -8368,8 +7220,12 @@ public enum Screen {
      * PIN/password setup screen -- shown on first launch after onboarding (Phase 28, D-14).
      */
     case pinSetup
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension Screen: Sendable {}
@@ -8544,27 +7400,23 @@ public func FfiConverterTypeScreen_lower(_ value: Screen) -> RustBuffer {
 }
 
 
-extension Screen: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * TEE type for a backend provider -- UniFFI-exported for UI attestation badges
  */
 
-public enum TeeType {
+public enum TeeType: Equatable, Hashable {
     
     case intelTdx
     case nvidiaH100Cc
     case amdSevSnp
     case unknown
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension TeeType: Sendable {}
@@ -8631,13 +7483,6 @@ public func FfiConverterTypeTeeType_lower(_ value: TeeType) -> RustBuffer {
 }
 
 
-extension TeeType: Equatable, Hashable {}
-
-
-
-
-
-
 
 
 
@@ -8654,9 +7499,22 @@ fileprivate struct UniffiCallbackInterfaceAppReconciler {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceAppReconciler] = [UniffiVTableCallbackInterfaceAppReconciler(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceAppReconciler = UniffiVTableCallbackInterfaceAppReconciler(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceAppReconciler.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface AppReconciler: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceAppReconciler.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface AppReconciler: handle missing in uniffiClone")
+            }
+        },
         reconcile: { (
             uniffiHandle: UInt64,
             update: RustBuffer,
@@ -8680,18 +7538,24 @@ fileprivate struct UniffiCallbackInterfaceAppReconciler {
                 makeCall: makeCall,
                 writeReturn: writeReturn
             )
-        },
-        uniffiFree: { (uniffiHandle: UInt64) -> () in
-            let result = try? FfiConverterCallbackInterfaceAppReconciler.handleMap.remove(handle: uniffiHandle)
-            if result == nil {
-                print("Uniffi callback interface AppReconciler: handle missing in uniffiFree")
-            }
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceAppReconciler> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceAppReconciler>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitAppReconciler() {
-    uniffi_mango_core_fn_init_callback_vtable_appreconciler(UniffiCallbackInterfaceAppReconciler.vtable)
+    uniffi_mango_core_fn_init_callback_vtable_appreconciler(UniffiCallbackInterfaceAppReconciler.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -8791,9 +7655,22 @@ fileprivate struct UniffiCallbackInterfaceBiometricProvider {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceBiometricProvider] = [UniffiVTableCallbackInterfaceBiometricProvider(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceBiometricProvider = UniffiVTableCallbackInterfaceBiometricProvider(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceBiometricProvider.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface BiometricProvider: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceBiometricProvider.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface BiometricProvider: handle missing in uniffiClone")
+            }
+        },
         biometricStatus: { (
             uniffiHandle: UInt64,
             uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
@@ -8839,18 +7716,24 @@ fileprivate struct UniffiCallbackInterfaceBiometricProvider {
                 makeCall: makeCall,
                 writeReturn: writeReturn
             )
-        },
-        uniffiFree: { (uniffiHandle: UInt64) -> () in
-            let result = try? FfiConverterCallbackInterfaceBiometricProvider.handleMap.remove(handle: uniffiHandle)
-            if result == nil {
-                print("Uniffi callback interface BiometricProvider: handle missing in uniffiFree")
-            }
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceBiometricProvider> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceBiometricProvider>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitBiometricProvider() {
-    uniffi_mango_core_fn_init_callback_vtable_biometricprovider(UniffiCallbackInterfaceBiometricProvider.vtable)
+    uniffi_mango_core_fn_init_callback_vtable_biometricprovider(UniffiCallbackInterfaceBiometricProvider.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -8943,9 +7826,22 @@ fileprivate struct UniffiCallbackInterfaceEmbeddingProvider {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceEmbeddingProvider] = [UniffiVTableCallbackInterfaceEmbeddingProvider(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceEmbeddingProvider = UniffiVTableCallbackInterfaceEmbeddingProvider(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceEmbeddingProvider.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface EmbeddingProvider: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceEmbeddingProvider.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface EmbeddingProvider: handle missing in uniffiClone")
+            }
+        },
         embed: { (
             uniffiHandle: UInt64,
             texts: RustBuffer,
@@ -8969,18 +7865,24 @@ fileprivate struct UniffiCallbackInterfaceEmbeddingProvider {
                 makeCall: makeCall,
                 writeReturn: writeReturn
             )
-        },
-        uniffiFree: { (uniffiHandle: UInt64) -> () in
-            let result = try? FfiConverterCallbackInterfaceEmbeddingProvider.handleMap.remove(handle: uniffiHandle)
-            if result == nil {
-                print("Uniffi callback interface EmbeddingProvider: handle missing in uniffiFree")
-            }
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceEmbeddingProvider> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceEmbeddingProvider>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitEmbeddingProvider() {
-    uniffi_mango_core_fn_init_callback_vtable_embeddingprovider(UniffiCallbackInterfaceEmbeddingProvider.vtable)
+    uniffi_mango_core_fn_init_callback_vtable_embeddingprovider(UniffiCallbackInterfaceEmbeddingProvider.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -9072,9 +7974,22 @@ fileprivate struct UniffiCallbackInterfaceFilePickerProvider {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceFilePickerProvider] = [UniffiVTableCallbackInterfaceFilePickerProvider(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceFilePickerProvider = UniffiVTableCallbackInterfaceFilePickerProvider(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceFilePickerProvider.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface FilePickerProvider: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceFilePickerProvider.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface FilePickerProvider: handle missing in uniffiClone")
+            }
+        },
         pickFile: { (
             uniffiHandle: UInt64,
             uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
@@ -9096,18 +8011,24 @@ fileprivate struct UniffiCallbackInterfaceFilePickerProvider {
                 makeCall: makeCall,
                 writeReturn: writeReturn
             )
-        },
-        uniffiFree: { (uniffiHandle: UInt64) -> () in
-            let result = try? FfiConverterCallbackInterfaceFilePickerProvider.handleMap.remove(handle: uniffiHandle)
-            if result == nil {
-                print("Uniffi callback interface FilePickerProvider: handle missing in uniffiFree")
-            }
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceFilePickerProvider> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceFilePickerProvider>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitFilePickerProvider() {
-    uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(UniffiCallbackInterfaceFilePickerProvider.vtable)
+    uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(UniffiCallbackInterfaceFilePickerProvider.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -9199,9 +8120,22 @@ fileprivate struct UniffiCallbackInterfaceKeychainProvider {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceKeychainProvider] = [UniffiVTableCallbackInterfaceKeychainProvider(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceKeychainProvider = UniffiVTableCallbackInterfaceKeychainProvider(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceKeychainProvider.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface KeychainProvider: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceKeychainProvider.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface KeychainProvider: handle missing in uniffiClone")
+            }
+        },
         store: { (
             uniffiHandle: UInt64,
             service: RustBuffer,
@@ -9281,18 +8215,24 @@ fileprivate struct UniffiCallbackInterfaceKeychainProvider {
                 makeCall: makeCall,
                 writeReturn: writeReturn
             )
-        },
-        uniffiFree: { (uniffiHandle: UInt64) -> () in
-            let result = try? FfiConverterCallbackInterfaceKeychainProvider.handleMap.remove(handle: uniffiHandle)
-            if result == nil {
-                print("Uniffi callback interface KeychainProvider: handle missing in uniffiFree")
-            }
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceKeychainProvider> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceKeychainProvider>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitKeychainProvider() {
-    uniffi_mango_core_fn_init_callback_vtable_keychainprovider(UniffiCallbackInterfaceKeychainProvider.vtable)
+    uniffi_mango_core_fn_init_callback_vtable_keychainprovider(UniffiCallbackInterfaceKeychainProvider.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -9383,9 +8323,22 @@ fileprivate struct UniffiCallbackInterfaceLocalLlmProvider {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceLocalLlmProvider] = [UniffiVTableCallbackInterfaceLocalLlmProvider(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceLocalLlmProvider = UniffiVTableCallbackInterfaceLocalLlmProvider(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface LocalLlmProvider: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface LocalLlmProvider: handle missing in uniffiClone")
+            }
+        },
         loadModel: { (
             uniffiHandle: UInt64,
             modelPath: RustBuffer,
@@ -9415,7 +8368,7 @@ fileprivate struct UniffiCallbackInterfaceLocalLlmProvider {
             uniffiHandle: UInt64,
             url: RustBuffer,
             destinationPath: RustBuffer,
-            context: UnsafeMutableRawPointer,
+            context: UInt64,
             uniffiOutReturn: UnsafeMutableRawPointer,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -9468,7 +8421,7 @@ fileprivate struct UniffiCallbackInterfaceLocalLlmProvider {
         generate: { (
             uniffiHandle: UInt64,
             promptJson: RustBuffer,
-            context: UnsafeMutableRawPointer,
+            context: UInt64,
             uniffiOutReturn: UnsafeMutableRawPointer,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -9557,18 +8510,24 @@ fileprivate struct UniffiCallbackInterfaceLocalLlmProvider {
                 makeCall: makeCall,
                 writeReturn: writeReturn
             )
-        },
-        uniffiFree: { (uniffiHandle: UInt64) -> () in
-            let result = try? FfiConverterCallbackInterfaceLocalLlmProvider.handleMap.remove(handle: uniffiHandle)
-            if result == nil {
-                print("Uniffi callback interface LocalLlmProvider: handle missing in uniffiFree")
-            }
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceLocalLlmProvider> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceLocalLlmProvider>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitLocalLlmProvider() {
-    uniffi_mango_core_fn_init_callback_vtable_localllmprovider(UniffiCallbackInterfaceLocalLlmProvider.vtable)
+    uniffi_mango_core_fn_init_callback_vtable_localllmprovider(UniffiCallbackInterfaceLocalLlmProvider.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -10522,7 +9481,25 @@ fileprivate struct FfiConverterSequenceTypeScreen: FfiConverterRustBuffer {
  */
 public func knownProviderPresets() -> [ProviderPreset]  {
     return try!  FfiConverterSequenceTypeProviderPreset.lift(try! rustCall() {
-    uniffi_mango_core_fn_func_known_provider_presets($0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_func_known_provider_presets(uniffiCallStatus
+    )
+})
+}
+/**
+ * Returns `true` when the given model id is known to accept multimodal image
+ * inputs via the OpenAI-compatible `image_url` content part.
+ *
+ * Input is the raw model id string as it appears in `BackendConfig.models`
+ * (e.g. `"llama3-3-70b"`, `"private/qwen3-vl-30b"`, `"gemma3:27b"`).
+ *
+ * Matching is case-insensitive substring. Unknown models return `false`.
+ */
+public func modelSupportsVision(modelId: String) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_mango_core_fn_func_model_supports_vision(
+        FfiConverterString.lower(modelId),uniffiCallStatus
     )
 })
 }
@@ -10539,23 +9516,8 @@ public func knownProviderPresets() -> [ProviderPreset]  {
  */
 public func localModelCatalog() -> [LocalModelPreset]  {
     return try!  FfiConverterSequenceTypeLocalModelPreset.lift(try! rustCall() {
-    uniffi_mango_core_fn_func_local_model_catalog($0
-    )
-})
-}
-/**
- * Returns `true` when the given model id is known to accept multimodal image
- * inputs via the OpenAI-compatible `image_url` content part.
- *
- * Input is the raw model id string as it appears in `BackendConfig.models`
- * (e.g. `"llama3-3-70b"`, `"private/qwen3-vl-30b"`, `"gemma3:27b"`).
- *
- * Matching is case-insensitive substring. Unknown models return `false`.
- */
-public func modelSupportsVision(modelId: String) -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_mango_core_fn_func_model_supports_vision(
-        FfiConverterString.lower(modelId),$0
+        uniffiCallStatus in
+    uniffi_mango_core_fn_func_local_model_catalog(uniffiCallStatus
     )
 })
 }
@@ -10569,106 +9531,106 @@ private enum InitializationResult {
 // the code inside is only computed once.
 private let initializationResult: InitializationResult = {
     // Get the bindings contract version from our ComponentInterface
-    let bindings_contract_version = 29
+    let bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
     let scaffolding_contract_version = ffi_mango_core_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_mango_core_checksum_func_known_provider_presets() != 26978) {
+    if (uniffi_mango_core_checksum_func_known_provider_presets() != 16128) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_func_local_model_catalog() != 63566) {
+    if (uniffi_mango_core_checksum_func_model_supports_vision() != 1192) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_func_model_supports_vision() != 37098) {
+    if (uniffi_mango_core_checksum_func_local_model_catalog() != 54432) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_dispatch() != 49208) {
+    if (uniffi_mango_core_checksum_method_ffiapp_dispatch() != 14382) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown() != 12956) {
+    if (uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown() != 60488) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() != 42562) {
+    if (uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() != 13014) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 18789) {
+    if (uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 38325) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints() != 35481) {
+    if (uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints() != 60041) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() != 42682) {
+    if (uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() != 39763) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 38651) {
+    if (uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 26433) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_state() != 64379) {
+    if (uniffi_mango_core_checksum_method_ffiapp_state() != 37810) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_sync() != 43338) {
+    if (uniffi_mango_core_checksum_method_ffiapp_sync() != 35082) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() != 4827) {
+    if (uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() != 7388) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localgenerationcontext_emit_token() != 722) {
+    if (uniffi_mango_core_checksum_method_localgenerationcontext_emit_token() != 18480) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled() != 30851) {
+    if (uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled() != 45499) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress() != 7846) {
+    if (uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress() != 13883) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_constructor_ffiapp_new() != 17337) {
+    if (uniffi_mango_core_checksum_constructor_ffiapp_new() != 21241) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_appreconciler_reconcile() != 36412) {
+    if (uniffi_mango_core_checksum_method_appreconciler_reconcile() != 30340) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_biometricprovider_biometric_status() != 51844) {
+    if (uniffi_mango_core_checksum_method_biometricprovider_biometric_status() != 45522) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_biometricprovider_authenticate() != 25231) {
+    if (uniffi_mango_core_checksum_method_biometricprovider_authenticate() != 26821) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_embeddingprovider_embed() != 3552) {
+    if (uniffi_mango_core_checksum_method_filepickerprovider_pick_file() != 55219) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_filepickerprovider_pick_file() != 8337) {
+    if (uniffi_mango_core_checksum_method_keychainprovider_store() != 31688) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_keychainprovider_store() != 38259) {
+    if (uniffi_mango_core_checksum_method_keychainprovider_load() != 2921) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_keychainprovider_load() != 62612) {
+    if (uniffi_mango_core_checksum_method_keychainprovider_delete() != 17608) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_keychainprovider_delete() != 11222) {
+    if (uniffi_mango_core_checksum_method_embeddingprovider_embed() != 39608) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localllmprovider_load_model() != 31244) {
+    if (uniffi_mango_core_checksum_method_localllmprovider_load_model() != 65082) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localllmprovider_download_model_file() != 41722) {
+    if (uniffi_mango_core_checksum_method_localllmprovider_download_model_file() != 62788) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localllmprovider_platform_http_request() != 10857) {
+    if (uniffi_mango_core_checksum_method_localllmprovider_platform_http_request() != 15192) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localllmprovider_generate() != 30695) {
+    if (uniffi_mango_core_checksum_method_localllmprovider_generate() != 55144) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localllmprovider_unload() != 59285) {
+    if (uniffi_mango_core_checksum_method_localllmprovider_unload() != 45033) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path() != 33154) {
+    if (uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path() != 61589) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_localllmprovider_device_capability() != 48773) {
+    if (uniffi_mango_core_checksum_method_localllmprovider_device_capability() != 56121) {
         return InitializationResult.apiChecksumMismatch
     }
 
