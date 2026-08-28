@@ -6,7 +6,7 @@
 /// native EmbeddingProvider callback, so this module is cfg-gated to non-mobile.
 use std::sync::Mutex;
 
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
 use super::EmbeddingProvider;
 
@@ -28,7 +28,7 @@ impl DesktopEmbeddingProvider {
     /// default cache directory (`~/.cache/huggingface/hub` on Linux/macOS).
     /// Subsequent calls are fast (model is already on disk).
     pub fn new() -> anyhow::Result<Self> {
-        let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2Q))?;
+        let model = TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::AllMiniLML6V2Q))?;
         Ok(Self {
             model: Mutex::new(model),
         })
