@@ -32,7 +32,7 @@ anyhow = "1"
 # Phase 3: Attestation verification
 dcap-qvl = "0.5"
 sev = { version = "7.1", default-features = false, features = ["snp", "crypto_nossl"] }
-rusqlite = { version = "0.39", features = ["bundled-sqlcipher-vendored-openssl"] }
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 argon2 = "0.5"
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 rand = "0.8"
