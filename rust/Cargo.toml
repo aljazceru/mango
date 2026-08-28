@@ -74,7 +74,7 @@ html2text = "0.17"
 rtf-parser = "0.4.2"
 
 # Phase 22: Agent tools expansion
-scraper = "0.26"
+scraper = "0.27"
 evalexpr = "13.1"
 
 # Phase 32: cross-platform glob validation (exposed to mobile UI via UniFFI).
