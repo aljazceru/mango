@@ -36,7 +36,7 @@ rusqlite = { version = "0.39", features = ["bundled-sqlcipher-vendored-openssl"]
 argon2 = "0.5"
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 rand = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"
 hex = "0.4"

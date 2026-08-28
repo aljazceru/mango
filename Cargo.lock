@@ -4371,7 +4371,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "async-openai",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "contextvm-sdk",
  "dcap-qvl",
