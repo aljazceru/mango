@@ -20,7 +20,7 @@ flume = "0.12"
 uniffi = "0.32"
 
 # Phase 2: Streaming LLM client
-async-openai = { version = "0.34", default-features = false, features = ["chat-completion"] }
+async-openai = { version = "0.41", default-features = false, features = ["chat-completion", "rustls-no-provider"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
@@ -40,7 +40,7 @@ base64 = "0.23"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"
 hex = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider", "json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "stream", "query", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "prefer-post-quantum"] }
 sha2 = "0.10"
 x509-cert = "0.2"
