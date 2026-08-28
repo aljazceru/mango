@@ -100,7 +100,7 @@ nostr = { version = "0.44.7", default-features = false, features = ["std"] }
 android_logger = "0.15"
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-keyring = { version = "3.6", features = ["apple-native", "linux-native", "windows-native"] }
+keyring = "4.1"
 # Phase 8: Desktop-only embedding stack.
 fastembed = { version = "5.13.0", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
 
