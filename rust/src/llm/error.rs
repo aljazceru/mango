@@ -90,8 +90,8 @@ pub fn map_openai_error(e: async_openai::error::OpenAIError) -> LlmError {
         }
         OpenAIError::ApiError(ae) => {
             // API-level error parsed from JSON response body
-            let msg = ae.message.clone();
-            let code_str = ae.code.as_deref().unwrap_or("");
+            let msg = ae.api_error.message.clone();
+            let code_str = ae.api_error.code.as_deref().unwrap_or("");
             log::warn!(target: "llm_error", "[llm_error] api error code={} message={}", code_str, msg);
             if code_str.contains("invalid_api_key") || msg.contains("Incorrect API key") {
                 LlmError::AuthError { reason: msg }
