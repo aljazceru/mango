@@ -50,9 +50,9 @@ typedef void (*UniffiRustFutureContinuationCallback)(uint64_t, int8_t
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_FREE
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_FREE
-typedef void (*UniffiForeignFutureFree)(uint64_t
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK
+typedef void (*UniffiForeignFutureDroppedCallback)(uint64_t
     );
 
 #endif
@@ -62,192 +62,184 @@ typedef void (*UniffiCallbackInterfaceFree)(uint64_t
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE
-typedef struct UniffiForeignFuture {
-    uint64_t handle;
-    UniffiForeignFutureFree _Nonnull free;
-} UniffiForeignFuture;
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CLONE
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CLONE
+typedef uint64_t (*UniffiCallbackInterfaceClone)(uint64_t
+    );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U8
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U8
-typedef struct UniffiForeignFutureStructU8 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK_STRUCT
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK_STRUCT
+typedef struct UniffiForeignFutureDroppedCallbackStruct {
+    uint64_t handle;
+    UniffiForeignFutureDroppedCallback _Nonnull free;
+} UniffiForeignFutureDroppedCallbackStruct;
+
+#endif
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U8
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U8
+typedef struct UniffiForeignFutureResultU8 {
     uint8_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU8;
+} UniffiForeignFutureResultU8;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U8
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U8
-typedef void (*UniffiForeignFutureCompleteU8)(uint64_t, UniffiForeignFutureStructU8
+typedef void (*UniffiForeignFutureCompleteU8)(uint64_t, UniffiForeignFutureResultU8
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I8
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I8
-typedef struct UniffiForeignFutureStructI8 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I8
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I8
+typedef struct UniffiForeignFutureResultI8 {
     int8_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI8;
+} UniffiForeignFutureResultI8;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I8
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I8
-typedef void (*UniffiForeignFutureCompleteI8)(uint64_t, UniffiForeignFutureStructI8
+typedef void (*UniffiForeignFutureCompleteI8)(uint64_t, UniffiForeignFutureResultI8
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U16
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U16
-typedef struct UniffiForeignFutureStructU16 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U16
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U16
+typedef struct UniffiForeignFutureResultU16 {
     uint16_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU16;
+} UniffiForeignFutureResultU16;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U16
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U16
-typedef void (*UniffiForeignFutureCompleteU16)(uint64_t, UniffiForeignFutureStructU16
+typedef void (*UniffiForeignFutureCompleteU16)(uint64_t, UniffiForeignFutureResultU16
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I16
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I16
-typedef struct UniffiForeignFutureStructI16 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I16
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I16
+typedef struct UniffiForeignFutureResultI16 {
     int16_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI16;
+} UniffiForeignFutureResultI16;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I16
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I16
-typedef void (*UniffiForeignFutureCompleteI16)(uint64_t, UniffiForeignFutureStructI16
+typedef void (*UniffiForeignFutureCompleteI16)(uint64_t, UniffiForeignFutureResultI16
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U32
-typedef struct UniffiForeignFutureStructU32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U32
+typedef struct UniffiForeignFutureResultU32 {
     uint32_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU32;
+} UniffiForeignFutureResultU32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U32
-typedef void (*UniffiForeignFutureCompleteU32)(uint64_t, UniffiForeignFutureStructU32
+typedef void (*UniffiForeignFutureCompleteU32)(uint64_t, UniffiForeignFutureResultU32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I32
-typedef struct UniffiForeignFutureStructI32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I32
+typedef struct UniffiForeignFutureResultI32 {
     int32_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI32;
+} UniffiForeignFutureResultI32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I32
-typedef void (*UniffiForeignFutureCompleteI32)(uint64_t, UniffiForeignFutureStructI32
+typedef void (*UniffiForeignFutureCompleteI32)(uint64_t, UniffiForeignFutureResultI32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U64
-typedef struct UniffiForeignFutureStructU64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U64
+typedef struct UniffiForeignFutureResultU64 {
     uint64_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU64;
+} UniffiForeignFutureResultU64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U64
-typedef void (*UniffiForeignFutureCompleteU64)(uint64_t, UniffiForeignFutureStructU64
+typedef void (*UniffiForeignFutureCompleteU64)(uint64_t, UniffiForeignFutureResultU64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I64
-typedef struct UniffiForeignFutureStructI64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I64
+typedef struct UniffiForeignFutureResultI64 {
     int64_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI64;
+} UniffiForeignFutureResultI64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I64
-typedef void (*UniffiForeignFutureCompleteI64)(uint64_t, UniffiForeignFutureStructI64
+typedef void (*UniffiForeignFutureCompleteI64)(uint64_t, UniffiForeignFutureResultI64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F32
-typedef struct UniffiForeignFutureStructF32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F32
+typedef struct UniffiForeignFutureResultF32 {
     float returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructF32;
+} UniffiForeignFutureResultF32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F32
-typedef void (*UniffiForeignFutureCompleteF32)(uint64_t, UniffiForeignFutureStructF32
+typedef void (*UniffiForeignFutureCompleteF32)(uint64_t, UniffiForeignFutureResultF32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F64
-typedef struct UniffiForeignFutureStructF64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F64
+typedef struct UniffiForeignFutureResultF64 {
     double returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructF64;
+} UniffiForeignFutureResultF64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F64
-typedef void (*UniffiForeignFutureCompleteF64)(uint64_t, UniffiForeignFutureStructF64
+typedef void (*UniffiForeignFutureCompleteF64)(uint64_t, UniffiForeignFutureResultF64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_POINTER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_POINTER
-typedef struct UniffiForeignFutureStructPointer {
-    void*_Nonnull returnValue;
-    RustCallStatus callStatus;
-} UniffiForeignFutureStructPointer;
-
-#endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_POINTER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_POINTER
-typedef void (*UniffiForeignFutureCompletePointer)(uint64_t, UniffiForeignFutureStructPointer
-    );
-
-#endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_RUST_BUFFER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_RUST_BUFFER
-typedef struct UniffiForeignFutureStructRustBuffer {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_RUST_BUFFER
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_RUST_BUFFER
+typedef struct UniffiForeignFutureResultRustBuffer {
     RustBuffer returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructRustBuffer;
+} UniffiForeignFutureResultRustBuffer;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_RUST_BUFFER
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_RUST_BUFFER
-typedef void (*UniffiForeignFutureCompleteRustBuffer)(uint64_t, UniffiForeignFutureStructRustBuffer
+typedef void (*UniffiForeignFutureCompleteRustBuffer)(uint64_t, UniffiForeignFutureResultRustBuffer
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_VOID
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_VOID
-typedef struct UniffiForeignFutureStructVoid {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_VOID
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_VOID
+typedef struct UniffiForeignFutureResultVoid {
     RustCallStatus callStatus;
-} UniffiForeignFutureStructVoid;
+} UniffiForeignFutureResultVoid;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_VOID
-typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureStructVoid
+typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureResultVoid
     );
 
 #endif
@@ -268,13 +260,6 @@ typedef void (*UniffiCallbackInterfaceBiometricProviderMethod0)(uint64_t, RustBu
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER_METHOD1
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER_METHOD1
 typedef void (*UniffiCallbackInterfaceBiometricProviderMethod1)(uint64_t, RustBuffer, int8_t* _Nonnull, 
-        RustCallStatus *_Nonnull uniffiCallStatus
-    );
-
-#endif
-#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_EMBEDDING_PROVIDER_METHOD0
-#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_EMBEDDING_PROVIDER_METHOD0
-typedef void (*UniffiCallbackInterfaceEmbeddingProviderMethod0)(uint64_t, RustBuffer, RustBuffer* _Nonnull, 
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -307,6 +292,13 @@ typedef void (*UniffiCallbackInterfaceKeychainProviderMethod2)(uint64_t, RustBuf
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_EMBEDDING_PROVIDER_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_EMBEDDING_PROVIDER_METHOD0
+typedef void (*UniffiCallbackInterfaceEmbeddingProviderMethod0)(uint64_t, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD0
 typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod0)(uint64_t, RustBuffer, void* _Nonnull, 
@@ -316,7 +308,7 @@ typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod0)(uint64_t, RustBuf
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD1
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD1
-typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod1)(uint64_t, RustBuffer, RustBuffer, void*_Nonnull, void* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod1)(uint64_t, RustBuffer, RustBuffer, uint64_t, void* _Nonnull, 
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -330,7 +322,7 @@ typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod2)(uint64_t, RustBuf
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD3
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD3
-typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod3)(uint64_t, RustBuffer, void*_Nonnull, void* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod3)(uint64_t, RustBuffer, uint64_t, void* _Nonnull, 
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -359,49 +351,56 @@ typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod6)(uint64_t, RustBuf
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_APP_RECONCILER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_APP_RECONCILER
 typedef struct UniffiVTableCallbackInterfaceAppReconciler {
-    UniffiCallbackInterfaceAppReconcilerMethod0 _Nonnull reconcile;
     UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceAppReconcilerMethod0 _Nonnull reconcile;
 } UniffiVTableCallbackInterfaceAppReconciler;
 
 #endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_BIOMETRIC_PROVIDER
 typedef struct UniffiVTableCallbackInterfaceBiometricProvider {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceBiometricProviderMethod0 _Nonnull biometricStatus;
     UniffiCallbackInterfaceBiometricProviderMethod1 _Nonnull authenticate;
-    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
 } UniffiVTableCallbackInterfaceBiometricProvider;
-
-#endif
-#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EMBEDDING_PROVIDER
-#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EMBEDDING_PROVIDER
-typedef struct UniffiVTableCallbackInterfaceEmbeddingProvider {
-    UniffiCallbackInterfaceEmbeddingProviderMethod0 _Nonnull embed;
-    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
-} UniffiVTableCallbackInterfaceEmbeddingProvider;
 
 #endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_FILE_PICKER_PROVIDER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_FILE_PICKER_PROVIDER
 typedef struct UniffiVTableCallbackInterfaceFilePickerProvider {
-    UniffiCallbackInterfaceFilePickerProviderMethod0 _Nonnull pickFile;
     UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceFilePickerProviderMethod0 _Nonnull pickFile;
 } UniffiVTableCallbackInterfaceFilePickerProvider;
 
 #endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_KEYCHAIN_PROVIDER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_KEYCHAIN_PROVIDER
 typedef struct UniffiVTableCallbackInterfaceKeychainProvider {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceKeychainProviderMethod0 _Nonnull store;
     UniffiCallbackInterfaceKeychainProviderMethod1 _Nonnull load;
     UniffiCallbackInterfaceKeychainProviderMethod2 _Nonnull delete;
-    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
 } UniffiVTableCallbackInterfaceKeychainProvider;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EMBEDDING_PROVIDER
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EMBEDDING_PROVIDER
+typedef struct UniffiVTableCallbackInterfaceEmbeddingProvider {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceEmbeddingProviderMethod0 _Nonnull embed;
+} UniffiVTableCallbackInterfaceEmbeddingProvider;
 
 #endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER
 typedef struct UniffiVTableCallbackInterfaceLocalLlmProvider {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceLocalLlmProviderMethod0 _Nonnull loadModel;
     UniffiCallbackInterfaceLocalLlmProviderMethod1 _Nonnull downloadModelFile;
     UniffiCallbackInterfaceLocalLlmProviderMethod2 _Nonnull platformHttpRequest;
@@ -409,108 +408,107 @@ typedef struct UniffiVTableCallbackInterfaceLocalLlmProvider {
     UniffiCallbackInterfaceLocalLlmProviderMethod4 _Nonnull unload;
     UniffiCallbackInterfaceLocalLlmProviderMethod5 _Nonnull loadedModelPath;
     UniffiCallbackInterfaceLocalLlmProviderMethod6 _Nonnull deviceCapability;
-    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
 } UniffiVTableCallbackInterfaceLocalLlmProvider;
 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_FFIAPP
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_FFIAPP
-void*_Nonnull uniffi_mango_core_fn_clone_ffiapp(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_mango_core_fn_clone_ffiapp(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_FFIAPP
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_FFIAPP
-void uniffi_mango_core_fn_free_ffiapp(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_mango_core_fn_free_ffiapp(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CONSTRUCTOR_FFIAPP_NEW
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CONSTRUCTOR_FFIAPP_NEW
-void*_Nonnull uniffi_mango_core_fn_constructor_ffiapp_new(RustBuffer data_dir, uint64_t keychain, uint64_t embedding_provider, RustBuffer embedding_status, uint64_t local_llm_provider, uint64_t biometric_provider, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_mango_core_fn_constructor_ffiapp_new(RustBuffer data_dir, uint64_t keychain, uint64_t embedding_provider, RustBuffer embedding_status, uint64_t local_llm_provider, uint64_t biometric_provider, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_DISPATCH
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_DISPATCH
-void uniffi_mango_core_fn_method_ffiapp_dispatch(void*_Nonnull ptr, RustBuffer action, RustCallStatus *_Nonnull out_status
+void uniffi_mango_core_fn_method_ffiapp_dispatch(uint64_t ptr, RustBuffer action, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_EXPORT_CONVERSATION_MARKDOWN
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_EXPORT_CONVERSATION_MARKDOWN
-RustBuffer uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(void*_Nonnull ptr, RustBuffer conversation_id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(uint64_t ptr, RustBuffer conversation_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_GET_DIRECTORY_BOOKMARK
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_GET_DIRECTORY_BOOKMARK
-RustBuffer uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(void*_Nonnull ptr, RustBuffer source_id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(uint64_t ptr, RustBuffer source_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_GET_RAW_ATTESTATION_REPORT
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_GET_RAW_ATTESTATION_REPORT
-RustBuffer uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(void*_Nonnull ptr, RustBuffer backend_id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(uint64_t ptr, RustBuffer backend_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_LIST_DIRECTORY_FINGERPRINTS
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_LIST_DIRECTORY_FINGERPRINTS
-RustBuffer uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(void*_Nonnull ptr, RustBuffer source_id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_mango_core_fn_method_ffiapp_list_directory_fingerprints(uint64_t ptr, RustBuffer source_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_LISTEN_FOR_UPDATES
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_LISTEN_FOR_UPDATES
-void uniffi_mango_core_fn_method_ffiapp_listen_for_updates(void*_Nonnull ptr, uint64_t reconciler, RustCallStatus *_Nonnull out_status
+void uniffi_mango_core_fn_method_ffiapp_listen_for_updates(uint64_t ptr, uint64_t reconciler, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_READ_ENCRYPTED_IMAGE
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_READ_ENCRYPTED_IMAGE
-RustBuffer uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(void*_Nonnull ptr, RustBuffer message_id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(uint64_t ptr, RustBuffer message_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_STATE
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_STATE
-RustBuffer uniffi_mango_core_fn_method_ffiapp_state(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_mango_core_fn_method_ffiapp_state(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_SYNC
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_SYNC
-void uniffi_mango_core_fn_method_ffiapp_sync(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_mango_core_fn_method_ffiapp_sync(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALGENERATIONCONTEXT
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALGENERATIONCONTEXT
-void*_Nonnull uniffi_mango_core_fn_clone_localgenerationcontext(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_mango_core_fn_clone_localgenerationcontext(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_LOCALGENERATIONCONTEXT
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_LOCALGENERATIONCONTEXT
-void uniffi_mango_core_fn_free_localgenerationcontext(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_mango_core_fn_free_localgenerationcontext(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_EMIT_ERROR
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_EMIT_ERROR
-void uniffi_mango_core_fn_method_localgenerationcontext_emit_error(void*_Nonnull ptr, RustBuffer message, RustCallStatus *_Nonnull out_status
+void uniffi_mango_core_fn_method_localgenerationcontext_emit_error(uint64_t ptr, RustBuffer message, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_EMIT_TOKEN
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_EMIT_TOKEN
-void uniffi_mango_core_fn_method_localgenerationcontext_emit_token(void*_Nonnull ptr, RustBuffer token, RustCallStatus *_Nonnull out_status
+void uniffi_mango_core_fn_method_localgenerationcontext_emit_token(uint64_t ptr, RustBuffer token, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_IS_CANCELLED
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALGENERATIONCONTEXT_IS_CANCELLED
-int8_t uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+int8_t uniffi_mango_core_fn_method_localgenerationcontext_is_cancelled(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALMODELDOWNLOADCONTEXT
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_CLONE_LOCALMODELDOWNLOADCONTEXT
-void*_Nonnull uniffi_mango_core_fn_clone_localmodeldownloadcontext(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_mango_core_fn_clone_localmodeldownloadcontext(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_LOCALMODELDOWNLOADCONTEXT
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FREE_LOCALMODELDOWNLOADCONTEXT
-void uniffi_mango_core_fn_free_localmodeldownloadcontext(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_mango_core_fn_free_localmodeldownloadcontext(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALMODELDOWNLOADCONTEXT_EMIT_PROGRESS
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_LOCALMODELDOWNLOADCONTEXT_EMIT_PROGRESS
-void uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(void*_Nonnull ptr, uint64_t downloaded_bytes, RustBuffer total_bytes, RustCallStatus *_Nonnull out_status
+void uniffi_mango_core_fn_method_localmodeldownloadcontext_emit_progress(uint64_t ptr, uint64_t downloaded_bytes, RustBuffer total_bytes, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_APPRECONCILER
@@ -523,11 +521,6 @@ void uniffi_mango_core_fn_init_callback_vtable_appreconciler(const UniffiVTableC
 void uniffi_mango_core_fn_init_callback_vtable_biometricprovider(const UniffiVTableCallbackInterfaceBiometricProvider* _Nonnull vtable
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_EMBEDDINGPROVIDER
-#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_EMBEDDINGPROVIDER
-void uniffi_mango_core_fn_init_callback_vtable_embeddingprovider(const UniffiVTableCallbackInterfaceEmbeddingProvider* _Nonnull vtable
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_FILEPICKERPROVIDER
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_FILEPICKERPROVIDER
 void uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(const UniffiVTableCallbackInterfaceFilePickerProvider* _Nonnull vtable
@@ -536,6 +529,11 @@ void uniffi_mango_core_fn_init_callback_vtable_filepickerprovider(const UniffiVT
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_KEYCHAINPROVIDER
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_KEYCHAINPROVIDER
 void uniffi_mango_core_fn_init_callback_vtable_keychainprovider(const UniffiVTableCallbackInterfaceKeychainProvider* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_EMBEDDINGPROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_EMBEDDINGPROVIDER
+void uniffi_mango_core_fn_init_callback_vtable_embeddingprovider(const UniffiVTableCallbackInterfaceEmbeddingProvider* _Nonnull vtable
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_INIT_CALLBACK_VTABLE_LOCALLLMPROVIDER
@@ -549,15 +547,15 @@ RustBuffer uniffi_mango_core_fn_func_known_provider_presets(RustCallStatus *_Non
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_MODEL_SUPPORTS_VISION
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_MODEL_SUPPORTS_VISION
+int8_t uniffi_mango_core_fn_func_model_supports_vision(RustBuffer model_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_LOCAL_MODEL_CATALOG
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_LOCAL_MODEL_CATALOG
 RustBuffer uniffi_mango_core_fn_func_local_model_catalog(RustCallStatus *_Nonnull out_status
     
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_MODEL_SUPPORTS_VISION
-#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_FUNC_MODEL_SUPPORTS_VISION
-int8_t uniffi_mango_core_fn_func_model_supports_vision(RustBuffer model_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_MANGO_CORE_RUSTBUFFER_ALLOC
@@ -780,26 +778,6 @@ void ffi_mango_core_rust_future_free_f64(uint64_t handle
 double ffi_mango_core_rust_future_complete_f64(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
-#ifndef UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_POLL_POINTER
-#define UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_POLL_POINTER
-void ffi_mango_core_rust_future_poll_pointer(uint64_t handle, UniffiRustFutureContinuationCallback _Nonnull callback, uint64_t callback_data
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_CANCEL_POINTER
-#define UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_CANCEL_POINTER
-void ffi_mango_core_rust_future_cancel_pointer(uint64_t handle
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_FREE_POINTER
-#define UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_FREE_POINTER
-void ffi_mango_core_rust_future_free_pointer(uint64_t handle
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_COMPLETE_POINTER
-#define UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_COMPLETE_POINTER
-void*_Nonnull ffi_mango_core_rust_future_complete_pointer(uint64_t handle, RustCallStatus *_Nonnull out_status
-);
-#endif
 #ifndef UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_POLL_RUST_BUFFER
 #define UNIFFI_FFIDEF_FFI_MANGO_CORE_RUST_FUTURE_POLL_RUST_BUFFER
 void ffi_mango_core_rust_future_poll_rust_buffer(uint64_t handle, UniffiRustFutureContinuationCallback _Nonnull callback, uint64_t callback_data
@@ -846,15 +824,15 @@ uint16_t uniffi_mango_core_checksum_func_known_provider_presets(void
     
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_LOCAL_MODEL_CATALOG
-#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_LOCAL_MODEL_CATALOG
-uint16_t uniffi_mango_core_checksum_func_local_model_catalog(void
-    
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_MODEL_SUPPORTS_VISION
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_MODEL_SUPPORTS_VISION
 uint16_t uniffi_mango_core_checksum_func_model_supports_vision(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_LOCAL_MODEL_CATALOG
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_FUNC_LOCAL_MODEL_CATALOG
+uint16_t uniffi_mango_core_checksum_func_local_model_catalog(void
     
 );
 #endif
@@ -960,12 +938,6 @@ uint16_t uniffi_mango_core_checksum_method_biometricprovider_authenticate(void
     
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_EMBEDDINGPROVIDER_EMBED
-#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_EMBEDDINGPROVIDER_EMBED
-uint16_t uniffi_mango_core_checksum_method_embeddingprovider_embed(void
-    
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FILEPICKERPROVIDER_PICK_FILE
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_FILEPICKERPROVIDER_PICK_FILE
 uint16_t uniffi_mango_core_checksum_method_filepickerprovider_pick_file(void
@@ -987,6 +959,12 @@ uint16_t uniffi_mango_core_checksum_method_keychainprovider_load(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_KEYCHAINPROVIDER_DELETE
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_KEYCHAINPROVIDER_DELETE
 uint16_t uniffi_mango_core_checksum_method_keychainprovider_delete(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_EMBEDDINGPROVIDER_EMBED
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_EMBEDDINGPROVIDER_EMBED
+uint16_t uniffi_mango_core_checksum_method_embeddingprovider_embed(void
     
 );
 #endif

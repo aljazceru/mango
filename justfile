@@ -39,19 +39,18 @@ _host-build:
 # Generate Swift bindings from the compiled library
 bindings-swift: _host-build
   cargo run --bin uniffi-bindgen -- generate \
-    --library target/release/lib{{LIB_NAME}}.{{DYLIB_EXT}} \
+    target/release/lib{{LIB_NAME}}.{{DYLIB_EXT}} \
     --language swift \
     --out-dir ios/Bindings \
-    --config rust/uniffi.toml
+    --no-format
 
 # Generate Kotlin bindings from the compiled library
 bindings-kotlin: _host-build
   cargo run --bin uniffi-bindgen -- generate \
-    --library target/release/lib{{LIB_NAME}}.{{DYLIB_EXT}} \
+    target/release/lib{{LIB_NAME}}.{{DYLIB_EXT}} \
     --language kotlin \
     --out-dir android/app/src/main/java \
-    --no-format \
-    --config rust/uniffi.toml
+    --no-format
 
 # ── iOS ───────────────────────────────────────────────────────────────────────
 
