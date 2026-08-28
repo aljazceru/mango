@@ -6,10 +6,10 @@
 /// - T-28-05: GCM authentication tag (16 bytes) detects any ciphertext modification
 /// - T-28-07: Fresh random nonce per encrypt operation via OsRng; no nonce reuse possible
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
-use rand::RngCore;
+use rand::Rng;
 use zeroize::Zeroizing;
 
 /// Magic header identifying Mango encrypted files (version 1).
@@ -27,7 +27,7 @@ pub fn encrypt_file(dek: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
 
     // Generate a fresh 12-byte random nonce (T-28-07: no nonce reuse)
     let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from(nonce_bytes);
 
     // encrypt appends the 16-byte auth tag to ciphertext

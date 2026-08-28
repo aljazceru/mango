@@ -13,10 +13,15 @@ use base64::Engine;
 use flate2::read::GzDecoder;
 use futures::StreamExt;
 use hkdf::Hkdf;
-use hpke::rand_core::TryRngCore;
 use hpke::{
-    aead::AesGcm256, kdf::HkdfSha256, kem::X25519HkdfSha256, setup_sender, Deserializable,
-    Kem as KemTrait, OpModeS, Serializable,
+    aead::{AeadCtxS, AesGcm256},
+    kdf::HkdfSha256,
+    kem::X25519HkdfSha256,
+    setup_sender,
+    Deserializable,
+    Kem as KemTrait,
+    OpModeS,
+    Serializable,
 };
 use once_cell::sync::Lazy;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
@@ -663,9 +668,8 @@ fn encrypt_request_body(
             }
         })?;
 
-    let mut rng = hpke::rand_core::OsRng.unwrap_err();
-    let (encapped_key, mut ctx) =
-        setup_sender::<Aead, Kdf, Kem, _>(&OpModeS::Base, &public_key, REQUEST_INFO, &mut rng)
+    let (encapped_key, mut ctx): (<Kem as KemTrait>::EncappedKey, AeadCtxS<Aead, Kdf, Kem>) =
+        setup_sender::<Aead, Kdf, Kem>(&OpModeS::Base, &public_key, REQUEST_INFO)
             .map_err(|error| LlmError::NetworkError {
                 reason: format!("Failed to initialize HPKE sender context: {error}"),
             })?;
@@ -978,6 +982,11 @@ fn verify_sev_attestation_bundle(
             sev::certs::snp::builtin::turin::ARK,
             sev::certs::snp::builtin::turin::ASK,
         ),
+        sev::Generation::Venice => {
+            return Err(LlmError::NetworkError {
+                reason: "Venice SEV-SNP generation is not yet supported".into(),
+            })
+        }
     };
     let ca_chain = sev::certs::snp::ca::Chain::from_pem(ark_pem, ask_pem).map_err(|error| {
         LlmError::NetworkError {

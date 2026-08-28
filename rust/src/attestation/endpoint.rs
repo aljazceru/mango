@@ -312,12 +312,18 @@ async fn verify_snp_attestation(
         Generation::Milan => "Milan",
         Generation::Genoa => "Genoa",
         Generation::Turin => "Turin",
+        Generation::Venice => "Venice",
     };
 
     let (ark_pem, ask_pem): (&[u8], &[u8]) = match generation {
         Generation::Milan => (builtin::milan::ARK, builtin::milan::ASK),
         Generation::Genoa => (builtin::genoa::ARK, builtin::genoa::ASK),
         Generation::Turin => (builtin::turin::ARK, builtin::turin::ASK),
+        Generation::Venice => {
+            return Err(AttestationError::QuoteVerification {
+                reason: "Venice SEV-SNP generation is not yet supported".into(),
+            })
+        }
     };
     let ca_chain =
         CaChain::from_pem(ark_pem, ask_pem).map_err(|e| AttestationError::QuoteVerification {

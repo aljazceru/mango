@@ -31,9 +31,10 @@ use async_openai::types::chat::{
 use futures::StreamExt;
 use hkdf::Hkdf;
 use k256::ecdh::EphemeralSecret;
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::sec1::ToSec1Point;
+use k256::elliptic_curve::Generate;
 use k256::PublicKey;
-use rand::RngCore;
+use rand::Rng;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use serde_json::Value;
 use sha2::Sha256;
@@ -162,10 +163,10 @@ pub fn derive_session_key(
 ///
 /// **Wire format:** `[eph_pub 65B || nonce 12B || ct+tag]`, hex-encoded.
 ///
-/// **Pitfall 7:** A fresh 12-byte nonce is generated from `rand::thread_rng()`
-/// (which delegates to `OsRng`) on EVERY call. Same key + same plaintext must
-/// produce a different envelope each time — the `envelope_round_trip` unit test
-/// asserts this directly.
+/// **Pitfall 7:** A fresh 12-byte nonce is generated from `rand::rng()`
+/// (which delegates to the OS CSPRNG) on EVERY call. Same key + same plaintext
+/// must produce a different envelope each time — the `envelope_round_trip` unit
+/// test asserts this directly.
 pub fn seal_message(
     plaintext: &[u8],
     aes_key: &[u8; 32],
@@ -175,9 +176,9 @@ pub fn seal_message(
         reason: format!("AES key: {e}"),
     })?;
     let mut nonce_12 = [0u8; AES_NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_12);
+    rand::rng().fill_bytes(&mut nonce_12);
     let ct_tag = cipher
-        .encrypt(Nonce::from_slice(&nonce_12), plaintext)
+        .encrypt(&Nonce::from(nonce_12), plaintext)
         .map_err(|e| LlmError::NetworkError {
             reason: format!("AES-GCM seal: {e}"),
         })?;
@@ -210,8 +211,13 @@ pub fn open_envelope(envelope_hex: &str, aes_key: &[u8; 32]) -> Result<Vec<u8>, 
     let cipher = Aes256Gcm::new_from_slice(aes_key).map_err(|e| LlmError::NetworkError {
         reason: format!("AES key: {e}"),
     })?;
+    let nonce = nonce_12
+        .try_into()
+        .map_err(|_| LlmError::NetworkError {
+            reason: "Venice envelope nonce length invalid".into(),
+        })?;
     cipher
-        .decrypt(Nonce::from_slice(nonce_12), ct_tag)
+        .decrypt(&nonce, ct_tag)
         .map_err(|_| LlmError::NetworkError {
             reason: "Venice E2EE decrypt failed".into(),
         })
@@ -591,8 +597,8 @@ async fn run_streaming_inner(
     let tdx_policy = TdxPolicy::default();
     let verified = ensure_verified_venice_attestation(backend, model, &tdx_policy).await?;
 
-    let eph_secret = EphemeralSecret::random(&mut rand::thread_rng());
-    let eph_pub_point = eph_secret.public_key().to_encoded_point(false);
+    let eph_secret = EphemeralSecret::generate_from_rng(&mut rand::rng());
+    let eph_pub_point = eph_secret.public_key().to_sec1_point(false);
     let mut eph_pub_65 = [0u8; EPH_PUB_LEN];
     if eph_pub_point.as_bytes().len() != EPH_PUB_LEN {
         return Err(LlmError::NetworkError {
@@ -676,8 +682,8 @@ async fn create_chat_completion_inner(
     let tdx_policy = TdxPolicy::default();
     let verified = ensure_verified_venice_attestation(backend, model, &tdx_policy).await?;
 
-    let eph_secret = EphemeralSecret::random(&mut rand::thread_rng());
-    let eph_pub_point = eph_secret.public_key().to_encoded_point(false);
+    let eph_secret = EphemeralSecret::generate_from_rng(&mut rand::rng());
+    let eph_pub_point = eph_secret.public_key().to_sec1_point(false);
     let mut eph_pub_65 = [0u8; EPH_PUB_LEN];
     eph_pub_65.copy_from_slice(eph_pub_point.as_bytes());
 

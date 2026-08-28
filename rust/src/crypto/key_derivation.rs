@@ -4,14 +4,14 @@
 /// - T-28-02: `zeroize::Zeroizing` wrapper on all intermediate key buffers
 /// - T-28-04: Argon2id with 64 MiB memory is intentionally slow (~0.5 s)
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
 use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{phc::PasswordHash, PasswordHasher, PasswordVerifier},
     Argon2, Params, Version,
 };
-use rand::RngCore;
+use rand::Rng;
 use zeroize::{Zeroize, Zeroizing};
 
 /// Default Argon2id memory cost (64 MiB) per D-08.
@@ -24,14 +24,14 @@ pub const DEFAULT_PARALLELISM: u32 = 1;
 /// Generate a 32-byte random DEK from OS entropy.
 pub fn generate_dek() -> [u8; 32] {
     let mut dek = [0u8; 32];
-    OsRng.fill_bytes(&mut dek);
+    rand::rng().fill_bytes(&mut dek);
     dek
 }
 
 /// Generate a 32-byte random salt from OS entropy.
 pub fn generate_salt() -> [u8; 32] {
     let mut salt = [0u8; 32];
-    OsRng.fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     salt
 }
 
@@ -66,7 +66,7 @@ pub fn wrap_dek(kek: &[u8; 32], dek: &[u8; 32]) -> Vec<u8> {
     let cipher = Aes256Gcm::new_from_slice(kek).expect("32-byte key is always valid for AES-256");
 
     let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from(nonce_bytes);
 
     let ciphertext = cipher
@@ -121,10 +121,9 @@ pub fn unwrap_dek(kek: &[u8; 32], wrapped: &[u8]) -> Result<[u8; 32], anyhow::Er
 /// The `_salt` parameter is accepted for API compatibility but the PHC format
 /// embeds its own random salt internally (argon2 crate convention).
 pub fn hash_pin(pin: &[u8], _salt: &[u8]) -> String {
-    let salt_string = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     argon2
-        .hash_password(pin, &salt_string)
+        .hash_password(pin)
         .expect("Argon2 PIN hashing should not fail")
         .to_string()
 }
