@@ -66,19 +66,20 @@ fn nvidia_payload_double_parse() {
 fn ecdh_aes_round_trip() {
     use crate::llm::venice::{derive_session_key, open_envelope, seal_message};
     use k256::ecdh::{diffie_hellman, EphemeralSecret};
-    use k256::elliptic_curve::sec1::ToEncodedPoint;
+    use k256::elliptic_curve::Generate;
+    use k256::elliptic_curve::sec1::ToSec1Point;
     use k256::{PublicKey, SecretKey};
-    use rand::thread_rng;
 
     // Server-side: simulated signing keypair
-    let server_secret = SecretKey::random(&mut thread_rng());
-    let server_pub_point = server_secret.public_key().to_encoded_point(false);
+    let mut rng = rand::rng();
+    let server_secret = SecretKey::generate_from_rng(&mut rng);
+    let server_pub_point = server_secret.public_key().to_sec1_point(false);
     let mut server_pub_65 = [0u8; 65];
     server_pub_65.copy_from_slice(server_pub_point.as_bytes());
 
     // Client-side: ephemeral + ECDH
-    let eph_secret = EphemeralSecret::random(&mut thread_rng());
-    let eph_pub_point = eph_secret.public_key().to_encoded_point(false);
+    let eph_secret = EphemeralSecret::generate_from_rng(&mut rng);
+    let eph_pub_point = eph_secret.public_key().to_sec1_point(false);
     let mut eph_pub_65 = [0u8; 65];
     eph_pub_65.copy_from_slice(eph_pub_point.as_bytes());
 
@@ -105,7 +106,7 @@ fn ecdh_aes_round_trip() {
 
     // Two ephemerals against the same server pub produce DIFFERENT AES keys
     // (per-request randomness — VEN-07).
-    let other_eph = EphemeralSecret::random(&mut thread_rng());
+    let other_eph = EphemeralSecret::generate_from_rng(&mut rng);
     let other_aes = derive_session_key(&other_eph, &server_pub_65).unwrap();
     assert_ne!(
         client_aes, other_aes,

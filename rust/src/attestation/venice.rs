@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use sha3::{Digest, Keccak256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -144,7 +144,7 @@ pub async fn fetch_and_verify_venice_attestation(
 ) -> Result<VerifiedVeniceAttestation, AttestationError> {
     // 1. Fresh nonce
     let mut nonce_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce_hex = hex::encode(nonce_bytes);
 
     // 2. Build URL + GET

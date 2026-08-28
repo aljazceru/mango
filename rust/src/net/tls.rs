@@ -107,10 +107,10 @@ pub fn certificate_public_key_fp_from_der(der: &[u8]) -> Result<String, TlsPinEr
     let cert = x509_cert::Certificate::from_der(der)
         .map_err(|e| TlsPinError::InvalidCertificate(e.to_string()))?;
     let spki = cert
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .to_der()
-        .map_err(|e| TlsPinError::InvalidCertificate(e.to_string()))?;
+        .map_err(|e: x509_cert::der::Error| TlsPinError::InvalidCertificate(e.to_string()))?;
     Ok(hex::encode(Sha256::digest(spki)))
 }
 

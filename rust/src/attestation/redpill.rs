@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -370,7 +370,7 @@ pub async fn fetch_and_verify_redpill_attestation(
     tdx_policy: &super::policy::TdxPolicy,
 ) -> Result<VerifiedRedpillAttestation, RedpillError> {
     let mut nonce = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     let nonce_hex = hex::encode(nonce);
 
     // Strip both trailing slash and a `/v1` suffix so that backends configured

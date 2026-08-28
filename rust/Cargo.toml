@@ -30,25 +30,25 @@ thiserror = "2"
 anyhow = "1"
 
 # Phase 3: Attestation verification
-dcap-qvl = "0.5"
-sev = { version = "7.1", default-features = false, features = ["snp", "crypto_nossl"] }
+dcap-qvl = "0.6"
+sev = { version = "8.0", default-features = false, features = ["snp", "crypto_nossl"] }
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
-argon2 = "0.5"
+argon2 = "0.6"
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
-rand = "0.8"
+rand = "0.10"
 base64 = "0.23"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"
 hex = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "stream", "query", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "prefer-post-quantum"] }
-sha2 = "0.10"
-x509-cert = "0.2"
+sha2 = "0.11"
+x509-cert = "0.3"
 x509-parser = "0.18"
-webpki-roots = "0.26"
-hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
-aes-gcm = "0.10"
-hkdf = "0.12"
+webpki-roots = "1.0"
+hpke = { version = "0.14", default-features = false, features = ["alloc", "x25519", "aes", "getrandom"] }
+aes-gcm = "0.11"
+hkdf = "0.13"
 zeroize = { version = "1", features = ["derive"] }
 
 # Phase 4: Persistence layer
@@ -81,8 +81,8 @@ evalexpr = "13.1"
 globset = "0.4"
 
 # Phase 33: Venice.ai TEE-attested provider — secp256k1 ECDH + Keccak256 address binding
-k256 = { version = "0.13", default-features = false, features = ["ecdh", "arithmetic", "std"] }
-sha3 = { version = "0.10", default-features = false }
+k256 = { version = "0.14", default-features = false, features = ["ecdh", "arithmetic", "std"] }
+sha3 = { version = "0.12", default-features = false }
 urlencoding = "2.1"
 
 # Phase 34: Redpill TEE-attested aggregator — zero new deps; reuses Phase 33 stack

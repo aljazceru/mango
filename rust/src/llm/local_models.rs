@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -190,8 +191,15 @@ pub fn is_local_base_url(base_url: &str) -> bool {
 pub fn verify_file_sha256(path: &Path, expected_sha256: &str) -> std::io::Result<bool> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher)?;
-    let actual = format!("{:x}", hasher.finalize());
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let actual = hex::encode(hasher.finalize());
     Ok(actual.eq_ignore_ascii_case(expected_sha256))
 }
 

@@ -3099,7 +3099,7 @@ async fn download_local_model(
         }),
     )));
 
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = hex::encode(hasher.finalize());
     if !actual.eq_ignore_ascii_case(&preset.sha256) {
         let _ = std::fs::remove_file(&partial_path);
         let _ = llm::local_models::remove_verified_marker(&data_dir, &preset);
@@ -5959,7 +5959,7 @@ fn seed_duress_decoy_data(conn: &rusqlite::Connection) {
     ];
 
     let mut shuffled = decoys.to_vec();
-    shuffled.shuffle(&mut rand::thread_rng());
+    shuffled.shuffle(&mut rand::rng());
     let day_ms = 86_400_000i64;
     let hour_ms = 3_600_000i64;
     let minute_ms = 60_000i64;
