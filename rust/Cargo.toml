@@ -102,7 +102,7 @@ android_logger = "0.15"
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 keyring = "4.1"
 # Phase 8: Desktop-only embedding stack.
-fastembed = { version = "5.13.0", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
+fastembed = { version = "6.0.2", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
 
 # Phase 32: Directory-based RAG ingestion (desktop only).
 # `ignore` powers walk_with_exclusions. globset is exposed on all platforms
