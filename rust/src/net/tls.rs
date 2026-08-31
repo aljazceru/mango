@@ -134,6 +134,30 @@ pub fn attested_reqwest_client(timeout: Duration) -> Result<reqwest::Client, Tls
         .map_err(|e| TlsPinError::Network(e.to_string()))
 }
 
+/// Standard WebPKI-verified HTTPS client (no pinning, no attestation coupling).
+/// Used by account-management transports (e.g. the PPQ account client) that talk
+/// to plain public APIs over rustls with system/webpki roots.
+pub fn plain_https_client(timeout: Duration) -> Result<reqwest::Client, TlsPinError> {
+    ensure_default_crypto_provider();
+
+    let provider: Arc<rustls::crypto::CryptoProvider> = aws_lc_rs::default_provider().into();
+
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| TlsPinError::InvalidConfig(e.to_string()))?
+        .with_root_certificates(Arc::new(root_cert_store()))
+        .with_no_client_auth();
+
+    reqwest::Client::builder()
+        .no_hickory_dns()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(timeout)
+        .use_preconfigured_tls(config)
+        .build()
+        .map_err(|e| TlsPinError::Network(e.to_string()))
+}
+
 pub fn pinned_reqwest_client(
     expected_public_key_fp: &str,
     timeout: Duration,

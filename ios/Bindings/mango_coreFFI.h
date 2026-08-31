@@ -273,7 +273,7 @@ typedef void (*UniffiCallbackInterfaceFilePickerProviderMethod0)(uint64_t, RustB
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_KEYCHAIN_PROVIDER_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_KEYCHAIN_PROVIDER_METHOD0
-typedef void (*UniffiCallbackInterfaceKeychainProviderMethod0)(uint64_t, RustBuffer, RustBuffer, RustBuffer, void* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceKeychainProviderMethod0)(uint64_t, RustBuffer, RustBuffer, RustBuffer, int8_t* _Nonnull, 
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -287,7 +287,7 @@ typedef void (*UniffiCallbackInterfaceKeychainProviderMethod1)(uint64_t, RustBuf
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_KEYCHAIN_PROVIDER_METHOD2
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_KEYCHAIN_PROVIDER_METHOD2
-typedef void (*UniffiCallbackInterfaceKeychainProviderMethod2)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceKeychainProviderMethod2)(uint64_t, RustBuffer, RustBuffer, int8_t* _Nonnull, 
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 

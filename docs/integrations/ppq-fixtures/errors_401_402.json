@@ -1,0 +1,20 @@
+{
+  "sanitized": true,
+  "endpoint": "(error shapes)",
+  "captured_at": "2026-08-31T06:45:00Z",
+  "status_code": 0,
+  "request": {
+    "note": "captured error bodies used by the redacted error taxonomy"
+  },
+  "response": {
+    "401_revoked_key_on_credits_balance": {
+      "error": "Invalid API key",
+      "message": "API key not found or has been revoked"
+    },
+    "402_insufficient_balance_on_chat_completions": {
+      "error": "Payment Required",
+      "message": "Insufficient balance"
+    }
+  },
+  "note": "extra evidence, not gate-required"
+}

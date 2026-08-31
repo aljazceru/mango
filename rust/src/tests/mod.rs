@@ -30,6 +30,7 @@ mod memory;
 mod onboarding;
 mod persistence;
 mod persistence_encrypted;
+mod ppq;
 mod rag;
 mod redpill;
 mod routing;

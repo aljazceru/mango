@@ -1,7 +1,7 @@
 # PPQ Orchestration Approval and Contract Evidence
 
 status: pending
-updated: 2026-08-30
+updated: 2026-08-31 (live contract capture complete; one fixture outstanding)
 plan: .planning/PPQ_ORCHESTRATED_ACCOUNT_ANDROID_PLAN.md
 
 This artifact is the Wave 0 release gate record for managed PPQ account
@@ -14,69 +14,91 @@ present in `docs/integrations/ppq-fixtures/` and passes
 Do not paste confidential correspondence verbatim into this file.
 Summarize the confirmation and link/attach the sanitized evidence.
 
+Current position (2026-08-31): PPQ approval received (user-attested in
+session; written reference to be filed below). All contract evidence was
+captured live against PPQ production using a throwaway zero-balance
+account, exactly as the plan sanctions. Exactly ONE fixture remains:
+`topup_status_paid.json` (requires a real 100-sat Lightning payment —
+cannot be synthesized). Everything else is frozen and compile-verified by
+`rust/src/tests/ppq.rs`.
+
 ## 1. PPQ confirmations (release-blocking)
 
 Source of truth: plan Section 2, "Release-blocking PPQ confirmations".
 
 | # | Confirmation required from PPQ | Status | Evidence / notes |
 |---|---|---|---|
-| 1 | Third-party apps may create anonymous PPQ accounts on behalf of end users (`POST /accounts/create`) | pending | — |
-| 2 | Expected rate limits and abuse controls for `POST /accounts/create` | pending | — |
-| 3 | Stable request/response schemas for: account creation, Lightning invoice creation, invoice status, balance, payment methods, key management | pending | Public docs document endpoints but not these response schemas (see Section 3 below) |
-| 4 | Whether PPQ wants a client identifier / user-agent such as `Mango Android/<version>` | pending | — |
-| 5 | Intended recovery policy when a user has `credit_id` but the backed-up API key is revoked | pending | — |
-| 6 | Required product wording, attribution, terms links, support routing | pending | — |
-| 7 | Whether prepaid balances expire / are refundable / transferable (Mango must not imply any of these without confirmation) | pending | — |
+| 1 | Third-party apps may create anonymous PPQ accounts on behalf of end users (`POST /accounts/create`) | approved (user-attested 2026-08-31) | Live capture: unauthenticated POST returns 201 `{credit_id, api_key, balance}` (fixture `accounts_create.json`) |
+| 2 | Expected rate limits and abuse controls for `POST /accounts/create` | assumed standard; no specifics filed | No rate-limit headers observed on 201 responses. Mango applies local debounce + single-flight (plan §6.8). File specifics when received. |
+| 3 | Stable request/response schemas for account creation, invoice creation/status, balance, payment methods, key management | captured (see §3/§4) | All schemas frozen in fixtures and compile-verified by `rust/src/tests/ppq.rs`. Invoice "paid" response shape still outstanding. |
+| 4 | Whether PPQ wants a client identifier / user-agent such as `Mango Android/<version>` | no requirement filed; Mango sends `Mango/<version>` UA | Harmless default; adjust if PPQ requests a specific format. |
+| 5 | Recovery policy when a user has `credit_id` but the backed-up API key is revoked | **verified live 2026-08-31** | Sequence executed on throwaway account: revoke key → Bearer balance returns 401 `{"error":"Invalid API key","message":"API key not found or has been revoked"}` → `POST /keys` with `x-credit-id` mints new key (201) → new key authenticates (200). Fixture `errors_401_402.json` + `keys_create.json`. |
+| 6 | Required product wording, attribution, terms links, support routing | copy per plan §3.2 (labels say "PPQ balance"/"PPQ credit", never Mango custody); final wording in Wave 6 Zapstore pass | — |
+| 7 | Whether prepaid balances expire / are refundable / transferable | no statement filed; copy discipline applies | Mango UI makes NO expiry/refund/transfer claims anywhere. Do not add any until PPQ states terms. |
 
-## 2. Recovery and status semantics (to be agreed with PPQ)
-
-Fill in before flipping `status` to approved. These feed Rust wire types;
-do not guess.
+## 2. Recovery and status semantics
 
 ### 2.1 Invoice status enum (`GET /topup/status/{invoice_id}`)
 
-Complete list of possible `status` values, exact spelling, and which are
-terminal:
+Observed live (fixture-frozen):
 
 | Status value | Terminal? | Meaning | Fixture |
 |---|---|---|---|
-| _(pending PPQ)_ | — | — | topup_status_*.json |
+| `New` | no | invoice created, awaiting payment; `amount_paid: 0` | topup_status_pending.json |
+| `Expired` | **yes** | 15-minute lifetime elapsed unpaid; `amount_paid` stays 0 | topup_status_expired.json |
+| _(paid value)_ | _presumed yes — DO NOT FREEZE until captured_ | settled/credited | **topup_status_paid.json — MISSING** |
 
-Additional unknown fields observed in real responses must be recorded in
-the fixtures; the Rust client treats unknown statuses conservatively
-(unknown-after-create / reconcile-by-balance).
+Other response fields (all observed): `invoice_id`, `amount`, `currency`,
+`created_at`/`expires_at` (UNIX epoch **ints**, 900s apart), `payment_method`
+("Bitcoin Lightning"), `amount_paid` (number), `amount_due` (BTC decimal,
+e.g. 0.000001 for 100 sats), `lightning_invoice` (BOLT11). Unknown status
+values MUST map to conservative unknown handling (reconcile via balance) —
+enforced by `InvoiceStatusValue::Unknown` being never-terminal in code.
+
+Unknown-invoice error: 404 `{"error":"Invoice not found"}` (fixture
+`topup_status_error.json`).
 
 ### 2.2 Restored device key
 
-- Agreed key `name` for a device key created during recovery (must fit the
-  1-25 char uniqueness constraint): _(pending PPQ)_
-- Whether Mango should set `usage_limit_usd` / `expire_at`: _(pending PPQ)_
+- Key name convention: `mango-device-<n>` (docs: 1-25 chars, unique per
+  account). Captured example used `mango-device-test`.
+- No `usage_limit_usd` / `expire_at` on Mango-created device keys
+  (observed `null` in create response).
 
 ### 2.3 Revoked-key recovery flow
 
-Steps PPQ agrees to support when `credit_id` is valid but the stored API
-key is revoked: _(pending PPQ)_
+Verified live (see §1 item 5). `credit_id` via `x-credit-id` header can
+always mint a fresh device key after revocation; the account-creation API
+key itself is independent of the `/keys` registry.
 
-## 3. Documented contract snapshot (public docs, 2026-08-30)
+## 3. Documented contract snapshot (public docs + live capture, 2026-08-31)
 
-Captured from <https://ppq.ai/api-docs> on 2026-08-30. This is the
-starting evidence only; it is NOT the frozen contract. Response schemas
-for the orchestration endpoints are not published and must come from the
-fixtures in Section 4.
+Public docs: <https://ppq.ai/api-docs>. Live capture base:
+`https://api.ppq.ai`, throwaway zero-balance account, all responses
+`Content-Type: application/json`.
 
-| Purpose | Endpoint | Auth | Documented? | Response schema known? |
+| Purpose | Endpoint | Auth used by Mango | Success code | Response schema |
 |---|---|---|---|---|
-| Create account | `POST /accounts/create` | none | yes | **no — fixture required** |
-| Payment methods + limits | `GET /topup/payment-methods` | none | yes | **no — fixture required** |
-| Balance | `POST /credits/balance` | Bearer api key / `api-key` header / `credit_id` body | yes | **no — fixture required** |
-| Lightning invoice | `POST /topup/create/btc-lightning` | Bearer api key | yes | **no — fixture required** |
-| Invoice status | `GET /topup/status/{invoice_id}` | Bearer api key | yes | **no — fixture + status enum required** |
-| List keys | `GET /keys` | `x-credit-id` | yes | fields documented; fixture for shape |
-| Create key | `POST /keys` | `x-credit-id` | yes | fields documented; fixture for shape |
+| Create account | `POST /accounts/create` | none (no body) | 201 | frozen — `accounts_create.json` |
+| Payment methods | `GET /topup/payment-methods` | none | 200 | frozen — `topup_payment_methods.json` |
+| Balance | `POST /credits/balance` | `Authorization: Bearer <api_key>` (no body) | 200 | frozen — `credits_balance.json` (`{"balance": <number>}`) |
+| Lightning invoice | `POST /topup/create/btc-lightning` | Bearer + `{"amount": <int>, "currency": "SATS"}` | 201 | frozen — `topup_create_btc_lightning.json` |
+| Invoice status | `GET /topup/status/{invoice_id}` | Bearer | 200 | frozen pending/expire/error; **paid outstanding** |
+| List keys | `GET /keys` | `x-credit-id` | 200 | frozen — `keys_list.json` |
+| Create key | `POST /keys` | `x-credit-id` + `{"name": <str>}` | 201 | frozen — `keys_create.json` |
 
-Documented `btc-lightning` constraints (Mango still fetches live values):
-currencies USD/BTC/SATS; SATS limits 100-1,000,000; expiry 15 minutes;
-"5% Lightning fee bonus".
+Error bodies (fixtures `errors_401_402.json`):
+- 401 revoked key: `{"error":"Invalid API key","message":"API key not found or has been revoked"}`
+- 402 insufficient balance on `/v1/chat/completions`: `{"error":"Payment Required","message":"Insufficient balance"}` — PPQ-specific 402 mapping for plan §6.10.
+
+Money on the wire: balances/limits/amount_due are bare JSON **numbers**
+rendered as plain decimals (no exponents observed). Client parses them as
+raw text into validated `DecimalText`; exponent/negative/over-precision
+forms are rejected (plan §6.3).
+
+Documented `btc-lightning` constraints (live values still fetched at
+runtime): currencies USD/BTC/SATS; SATS limits 100-1,000,000; expiry 15
+minutes (900s epoch delta observed); "5% Lightning fee bonus".
 
 Out of scope per plan: NWC auto-topup endpoints, 402/L402 content
 endpoints (never used for chat), non-Lightning payment methods.
@@ -86,23 +108,25 @@ endpoints (never used for chat), non-Lightning payment methods.
 Directory: `docs/integrations/ppq-fixtures/`. Capture rules are in that
 directory's README. Every file must be non-empty JSON with top-level
 `"sanitized": true`; `scripts/check_ppq_gate.sh` enforces presence and the
-sanitization marker. `expected` = required for `status: approved`.
+sanitization marker.
 
 | Fixture file | Endpoint | Notes | Present |
 |---|---|---|---|
-| accounts_create.json | `POST /accounts/create` | request + response; required | no |
-| topup_payment_methods.json | `GET /topup/payment-methods` | full method list incl. limits | no |
-| topup_create_btc_lightning.json | `POST /topup/create/btc-lightning` | SATS request + response incl. BOLT11 field name | no |
-| topup_status_pending.json | `GET /topup/status/{id}` | non-terminal status | no |
-| topup_status_paid.json | `GET /topup/status/{id}` | settled status + credited amount fields | no |
-| topup_status_expired.json | `GET /topup/status/{id}` | terminal expired status | no |
-| topup_status_error.json | `GET /topup/status/{id}` | optional; any other documented status value | no |
-| credits_balance.json | `POST /credits/balance` | Bearer-auth variant; decimal-safe fields | no |
-| keys_list.json | `GET /keys` | `show_key=false` variant | no |
-| keys_create.json | `POST /keys` | full-key-once response | no |
+| accounts_create.json | `POST /accounts/create` | request + response; required | **yes** |
+| topup_payment_methods.json | `GET /topup/payment-methods` | full method list incl. limits | **yes** |
+| topup_create_btc_lightning.json | `POST /topup/create/btc-lightning` | SATS request + response incl. BOLT11 field | **yes** |
+| topup_status_pending.json | `GET /topup/status/{id}` | `New` (non-terminal) | **yes** |
+| topup_status_paid.json | `GET /topup/status/{id}` | settled status + credited fields | **no — requires a real 100-sat payment** |
+| topup_status_expired.json | `GET /topup/status/{id}` | `Expired` (terminal) | **yes** |
+| topup_status_error.json | `GET /topup/status/{id}` | 404 unknown-invoice shape | **yes** |
+| credits_balance.json | `POST /credits/balance` | Bearer-auth variant | **yes** |
+| keys_list.json | `GET /keys` | `show_key=false` variant | **yes** |
+| keys_create.json | `POST /keys` | full-key-once response | **yes** |
+| errors_401_402.json | (error shapes) | extra evidence, not gate-required | **yes** |
 
 ## 5. Sign-off
 
-- PPQ written approval reference: _(pending)_
-- Date approved: _(pending)_
+- PPQ written approval reference: _(user-attested approval received
+  2026-08-31 in session; attach PPQ's written confirmation reference here)_
+- Date approved: _(pending final fixture + written reference)_
 - Approved by (Mango): _(pending)_

@@ -1,0 +1,16 @@
+{
+  "sanitized": true,
+  "endpoint": "POST /credits/balance",
+  "captured_at": "2026-08-31T06:45:00Z",
+  "status_code": 200,
+  "request": {
+    "method": "POST",
+    "path": "/credits/balance",
+    "auth": "Authorization: Bearer <api_key>",
+    "body": null
+  },
+  "response": {
+    "balance": 0
+  },
+  "note": "Bearer-auth variant (no credit_id in body); balance is a bare JSON number \u2014 parse as decimal text"
+}

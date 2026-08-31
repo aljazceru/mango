@@ -1,0 +1,16 @@
+{
+  "sanitized": true,
+  "endpoint": "GET /topup/status/{invoice_id}",
+  "captured_at": "2026-08-31T06:45:00Z",
+  "status_code": 404,
+  "request": {
+    "method": "GET",
+    "path": "/topup/status/{unknown_invoice_id}",
+    "auth": "Authorization: Bearer <api_key>",
+    "body": null
+  },
+  "response": {
+    "error": "Invoice not found"
+  },
+  "note": "error shape for unknown invoice id; treat as terminal-unknown, reconcile via balance"
+}

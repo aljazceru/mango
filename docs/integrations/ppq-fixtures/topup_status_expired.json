@@ -1,0 +1,25 @@
+{
+  "sanitized": true,
+  "endpoint": "GET /topup/status/{invoice_id}",
+  "captured_at": "2026-08-31T06:45:00Z",
+  "status_code": 200,
+  "request": {
+    "method": "GET",
+    "path": "/topup/status/{invoice_id}",
+    "auth": "Authorization: Bearer <api_key>",
+    "body": null
+  },
+  "response": {
+  "invoice_id": "SANITIZEDInvoiceId000000000",
+  "status": "Expired",
+  "amount": 100,
+  "currency": "SATS",
+  "created_at": 1788151443,
+  "expires_at": 1788152343,
+  "payment_method": "Bitcoin Lightning",
+  "amount_paid": 0,
+  "amount_due": 0.000001,
+  "lightning_invoice": "lnbc1u1SANITIZEDqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+},
+  "note": "terminal expired state, captured after the 15-minute invoice lifetime elapsed unpaid; amount_paid stays 0"
+}

@@ -8105,11 +8105,22 @@ public func FfiConverterCallbackInterfaceFilePickerProvider_lower(_ v: FilePicke
  */
 public protocol KeychainProvider: AnyObject, Sendable {
     
-    func store(service: String, key: String, value: String) 
+    /**
+     * Persist a secret. Returns whether the write is durably stored.
+     * Implementations MUST be synchronous-and-verified (Android uses
+     * `commit()`, not `apply()`); PPQ credential provisioning relies on
+     * this returning success only after the value would survive process
+     * death (plan §6.2).
+     */
+    func store(service: String, key: String, value: String)  -> Bool
     
     func load(service: String, key: String)  -> String?
     
-    func delete(service: String, key: String) 
+    /**
+     * Remove a secret. Returns whether the delete succeeded (absence of
+     * the item afterwards counts as success).
+     */
+    func delete(service: String, key: String)  -> Bool
     
 }
 
@@ -8141,11 +8152,11 @@ fileprivate struct UniffiCallbackInterfaceKeychainProvider {
             service: RustBuffer,
             key: RustBuffer,
             value: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
             let makeCall = {
-                () throws -> () in
+                () throws -> Bool in
                 guard let uniffiObj = try? FfiConverterCallbackInterfaceKeychainProvider.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
@@ -8157,7 +8168,7 @@ fileprivate struct UniffiCallbackInterfaceKeychainProvider {
             }
 
             
-            let writeReturn = { () }
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -8194,11 +8205,11 @@ fileprivate struct UniffiCallbackInterfaceKeychainProvider {
             uniffiHandle: UInt64,
             service: RustBuffer,
             key: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
             let makeCall = {
-                () throws -> () in
+                () throws -> Bool in
                 guard let uniffiObj = try? FfiConverterCallbackInterfaceKeychainProvider.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
@@ -8209,7 +8220,7 @@ fileprivate struct UniffiCallbackInterfaceKeychainProvider {
             }
 
             
-            let writeReturn = { () }
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -9600,13 +9611,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_method_filepickerprovider_pick_file() != 55219) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_keychainprovider_store() != 31688) {
+    if (uniffi_mango_core_checksum_method_keychainprovider_store() != 24008) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_keychainprovider_load() != 2921) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_keychainprovider_delete() != 17608) {
+    if (uniffi_mango_core_checksum_method_keychainprovider_delete() != 6109) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_embeddingprovider_embed() != 39608) {

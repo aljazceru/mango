@@ -663,13 +663,13 @@ internal interface UniffiCallbackInterfaceFilePickerProviderMethod0 : com.sun.jn
     fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceKeychainProviderMethod0 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`value`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+    fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`value`: RustBuffer.ByValue,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceKeychainProviderMethod1 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceKeychainProviderMethod2 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+    fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceEmbeddingProviderMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`texts`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
@@ -1187,13 +1187,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_mango_core_checksum_method_filepickerprovider_pick_file() != 55219) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_keychainprovider_store() != 31688) {
+    if (lib.uniffi_mango_core_checksum_method_keychainprovider_store() != 24008) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_keychainprovider_load() != 2921) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_keychainprovider_delete() != 17608) {
+    if (lib.uniffi_mango_core_checksum_method_keychainprovider_delete() != 6109) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_embeddingprovider_embed() != 39608) {
@@ -9664,11 +9664,22 @@ public object FfiConverterTypeFilePickerProvider: FfiConverterCallbackInterface<
  */
 public interface KeychainProvider {
     
-    fun `store`(`service`: kotlin.String, `key`: kotlin.String, `value`: kotlin.String)
+    /**
+     * Persist a secret. Returns whether the write is durably stored.
+     * Implementations MUST be synchronous-and-verified (Android uses
+     * `commit()`, not `apply()`); PPQ credential provisioning relies on
+     * this returning success only after the value would survive process
+     * death (plan §6.2).
+     */
+    fun `store`(`service`: kotlin.String, `key`: kotlin.String, `value`: kotlin.String): kotlin.Boolean
     
     fun `load`(`service`: kotlin.String, `key`: kotlin.String): kotlin.String?
     
-    fun `delete`(`service`: kotlin.String, `key`: kotlin.String)
+    /**
+     * Remove a secret. Returns whether the delete succeeded (absence of
+     * the item afterwards counts as success).
+     */
+    fun `delete`(`service`: kotlin.String, `key`: kotlin.String): kotlin.Boolean
     
     companion object
 }
@@ -9678,7 +9689,7 @@ public interface KeychainProvider {
 // Put the implementation in an object so we don't pollute the top-level namespace
 internal object uniffiCallbackInterfaceKeychainProvider {
     internal object `store`: UniffiCallbackInterfaceKeychainProviderMethod0 {
-        override fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`value`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+        override fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`value`: RustBuffer.ByValue,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,) {
             val uniffiObj = FfiConverterTypeKeychainProvider.handleMap.get(uniffiHandle)
             val makeCall = { ->
                 uniffiObj.`store`(
@@ -9687,7 +9698,7 @@ internal object uniffiCallbackInterfaceKeychainProvider {
                     FfiConverterString.lift(`value`),
                 )
             }
-            val writeReturn = { _: Unit -> Unit }
+            val writeReturn = { value: kotlin.Boolean -> uniffiOutReturn.setValue(FfiConverterBoolean.lower(value)) }
             uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
         }
     }
@@ -9705,7 +9716,7 @@ internal object uniffiCallbackInterfaceKeychainProvider {
         }
     }
     internal object `delete`: UniffiCallbackInterfaceKeychainProviderMethod2 {
-        override fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+        override fun callback(`uniffiHandle`: Long,`service`: RustBuffer.ByValue,`key`: RustBuffer.ByValue,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,) {
             val uniffiObj = FfiConverterTypeKeychainProvider.handleMap.get(uniffiHandle)
             val makeCall = { ->
                 uniffiObj.`delete`(
@@ -9713,7 +9724,7 @@ internal object uniffiCallbackInterfaceKeychainProvider {
                     FfiConverterString.lift(`key`),
                 )
             }
-            val writeReturn = { _: Unit -> Unit }
+            val writeReturn = { value: kotlin.Boolean -> uniffiOutReturn.setValue(FfiConverterBoolean.lower(value)) }
             uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
         }
     }

@@ -1,0 +1,14 @@
+{
+  "sanitized": true,
+  "endpoint": "GET /topup/payment-methods",
+  "captured_at": "2026-08-31T06:45:00Z",
+  "status_code": 200,
+  "request": {
+    "method": "GET",
+    "path": "/topup/payment-methods",
+    "auth": "none",
+    "body": null
+  },
+  "response": {"success":true,"supported_methods":[{"method":"btc-lightning","display_name":"Bitcoin Lightning","supported_currencies":["USD","BTC","SATS"],"limits":{"USD":{"min":0.1,"max":1000},"BTC":{"min":0.000001,"max":0.01},"SATS":{"min":100,"max":1000000}}},{"method":"btc","display_name":"Bitcoin","supported_currencies":["USD","BTC"],"limits":{"USD":{"min":10,"max":10000},"BTC":{"min":0.0001,"max":0.01}}},{"method":"ltc","display_name":"Litecoin","supported_currencies":["USD","LTC"],"limits":{"USD":{"min":2,"max":1000},"LTC":{"min":0.03,"max":100}}},{"method":"lbtc","display_name":"Liquid Bitcoin","supported_currencies":["USD","LBTC"],"limits":{"USD":{"min":2,"max":10000},"LBTC":{"min":0.00005,"max":0.1}}},{"method":"xmr","display_name":"Monero","supported_currencies":["USD","XMR"],"limits":{"USD":{"min":5,"max":10000},"XMR":{"min":0.01,"max":50}}}]},
+  "note": "public nonsecret payload kept verbatim; limits arrive as plain-decimal JSON numbers per currency"
+}

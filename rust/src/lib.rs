@@ -19,6 +19,7 @@ mod llm;
 pub mod memory;
 mod net;
 mod persistence;
+pub mod ppq;
 pub mod rag;
 pub mod routing;
 
@@ -914,9 +915,16 @@ pub trait AppReconciler: Send + Sync + 'static {
 /// keyring on Desktop).
 #[uniffi::export(callback_interface)]
 pub trait KeychainProvider: Send + Sync + 'static {
-    fn store(&self, service: String, key: String, value: String);
+    /// Persist a secret. Returns whether the write is durably stored.
+    /// Implementations MUST be synchronous-and-verified (Android uses
+    /// `commit()`, not `apply()`); PPQ credential provisioning relies on
+    /// this returning success only after the value would survive process
+    /// death (plan §6.2).
+    fn store(&self, service: String, key: String, value: String) -> bool;
     fn load(&self, service: String, key: String) -> Option<String>;
-    fn delete(&self, service: String, key: String);
+    /// Remove a secret. Returns whether the delete succeeded (absence of
+    /// the item afterwards counts as success).
+    fn delete(&self, service: String, key: String) -> bool;
 }
 
 /// Biometric authentication capability bridge. Implemented natively on each platform.
@@ -1099,11 +1107,15 @@ pub struct DirectoryFingerprint {
 pub struct NullKeychainProvider;
 
 impl KeychainProvider for NullKeychainProvider {
-    fn store(&self, _: String, _: String, _: String) {}
+    fn store(&self, _: String, _: String, _: String) -> bool {
+        true
+    }
     fn load(&self, _: String, _: String) -> Option<String> {
         None
     }
-    fn delete(&self, _: String, _: String) {}
+    fn delete(&self, _: String, _: String) -> bool {
+        true
+    }
 }
 
 /// Desktop keychain provider using the OS-native credential store.
@@ -1115,10 +1127,10 @@ pub struct DesktopKeychainProvider;
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 impl KeychainProvider for DesktopKeychainProvider {
-    fn store(&self, service: String, key: String, value: String) {
-        if let Ok(entry) = keyring::Entry::new(&service, &key) {
-            let _ = entry.set_password(&value);
-        }
+    fn store(&self, service: String, key: String, value: String) -> bool {
+        keyring::Entry::new(&service, &key)
+            .and_then(|entry| entry.set_password(&value))
+            .is_ok()
     }
     fn load(&self, service: String, key: String) -> Option<String> {
         keyring::Entry::new(&service, &key)
@@ -1126,9 +1138,13 @@ impl KeychainProvider for DesktopKeychainProvider {
             .get_password()
             .ok()
     }
-    fn delete(&self, service: String, key: String) {
-        if let Ok(entry) = keyring::Entry::new(&service, &key) {
-            let _ = entry.delete_credential();
+    fn delete(&self, service: String, key: String) -> bool {
+        match keyring::Entry::new(&service, &key) {
+            Ok(entry) => matches!(
+                entry.delete_credential(),
+                Ok(()) | Err(keyring::Error::NoEntry)
+            ),
+            Err(_) => false,
         }
     }
 }

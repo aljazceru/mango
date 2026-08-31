@@ -133,14 +133,17 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
         val keychain = object : KeychainProvider {
-            override fun store(service: String, key: String, value: String) {
-                prefs.edit().putString("$service::$key", value).apply()
+            override fun store(service: String, key: String, value: String): Boolean {
+                // commit() (synchronous) per plan §6.2: the Rust secret store relies on
+                // store() returning success only after the write would survive process
+                // death. apply() is async and can silently lose the credential.
+                return prefs.edit().putString("$service::$key", value).commit()
             }
             override fun load(service: String, key: String): String? {
                 return prefs.getString("$service::$key", null)
             }
-            override fun delete(service: String, key: String) {
-                prefs.edit().remove("$service::$key").apply()
+            override fun delete(service: String, key: String): Boolean {
+                return prefs.edit().remove("$service::$key").commit()
             }
         }
         // Real on-device embedding via ONNX Runtime + XNNPACK EP (Phase 11, EMBD-03/05).

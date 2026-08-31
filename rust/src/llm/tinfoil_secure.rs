@@ -17,11 +17,7 @@ use hpke::{
     aead::{AeadCtxS, AesGcm256},
     kdf::HkdfSha256,
     kem::X25519HkdfSha256,
-    setup_sender,
-    Deserializable,
-    Kem as KemTrait,
-    OpModeS,
-    Serializable,
+    setup_sender, Deserializable, Kem as KemTrait, OpModeS, Serializable,
 };
 use once_cell::sync::Lazy;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
@@ -913,10 +909,11 @@ fn encrypt_request_body(
         })?;
 
     let (encapped_key, mut ctx): (<Kem as KemTrait>::EncappedKey, AeadCtxS<Aead, Kdf, Kem>) =
-        setup_sender::<Aead, Kdf, Kem>(&OpModeS::Base, &public_key, REQUEST_INFO)
-            .map_err(|error| LlmError::NetworkError {
+        setup_sender::<Aead, Kdf, Kem>(&OpModeS::Base, &public_key, REQUEST_INFO).map_err(
+            |error| LlmError::NetworkError {
                 reason: format!("Failed to initialize HPKE sender context: {error}"),
-            })?;
+            },
+        )?;
 
     let ciphertext = ctx
         .seal(body, &[])

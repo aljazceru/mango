@@ -1,0 +1,19 @@
+{
+  "sanitized": true,
+  "endpoint": "POST /accounts/create",
+  "captured_at": "2026-08-31T06:45:00Z",
+  "status_code": 201,
+  "request": {
+    "method": "POST",
+    "path": "/accounts/create",
+    "auth": "none",
+    "body": null
+  },
+  "response": {
+    "success": true,
+    "credit_id": "00000000-0000-4000-8000-000000000000",
+    "api_key": "sk-ppq-SANITIZED0000000000000000000",
+    "balance": 0
+  },
+  "note": "balance observed as JSON number (int 0); client must parse as decimal text, not f64"
+}

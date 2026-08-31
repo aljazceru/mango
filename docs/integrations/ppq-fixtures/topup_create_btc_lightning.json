@@ -1,0 +1,25 @@
+{
+  "sanitized": true,
+  "endpoint": "POST /topup/create/btc-lightning",
+  "captured_at": "2026-08-31T06:45:00Z",
+  "status_code": 201,
+  "request": {
+    "method": "POST",
+    "path": "/topup/create/btc-lightning",
+    "auth": "Authorization: Bearer <api_key>",
+    "body": {
+      "amount": 100,
+      "currency": "SATS"
+    }
+  },
+  "response": {
+    "amount": 100,
+    "checkout_url": "https://ppq.ai/checkout/SANITIZED",
+    "created_at": 1788151443,
+    "currency": "SATS",
+    "expires_at": 1788152343,
+    "invoice_id": "SANITIZEDInvoiceId000000000",
+    "lightning_invoice": "lnbc1u1SANITIZEDqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+  },
+  "note": "created_at/expires_at are UNIX epoch ints (900s apart); amount_due in status is BTC float"
+}

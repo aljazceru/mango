@@ -8,7 +8,7 @@ private let logger = Logger(subsystem: "dev.disobey.mango", category: "AppManage
 // MARK: - KeychainProvider
 
 private class IOSKeychainProvider: KeychainProvider {
-    func store(service: String, key: String, value: String) {
+    func store(service: String, key: String, value: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -16,10 +16,10 @@ private class IOSKeychainProvider: KeychainProvider {
         ]
         // Delete existing item first (upsert pattern)
         SecItemDelete(query as CFDictionary)
-        // Add new item
+        // Add new item; success only when the write landed (plan §6.2).
         var addQuery = query
         addQuery[kSecValueData as String] = value.data(using: .utf8)!
-        SecItemAdd(addQuery as CFDictionary, nil)
+        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
     }
 
     func load(service: String, key: String) -> String? {
@@ -36,13 +36,15 @@ private class IOSKeychainProvider: KeychainProvider {
         return String(data: data, encoding: .utf8)
     }
 
-    func delete(service: String, key: String) {
+    func delete(service: String, key: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        // Absence counts as success (idempotent verified delete, plan §6.2).
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 }
 

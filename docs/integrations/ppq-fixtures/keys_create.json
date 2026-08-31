@@ -1,0 +1,28 @@
+{
+  "sanitized": true,
+  "endpoint": "POST /keys",
+  "captured_at": "2026-08-31T06:45:00Z",
+  "status_code": 201,
+  "request": {
+    "method": "POST",
+    "path": "/keys",
+    "auth": "x-credit-id: <credit_id>",
+    "body": {
+      "name": "mango-device-test"
+    }
+  },
+  "response": {
+    "status": "success",
+    "data": {
+      "_id": "a00000000000000000000000",
+      "name": "mango-device-test",
+      "api_key": "sk-ppq-SANITIZED0000000000000000000",
+      "created_at": "2026-08-31T04:44:13.992Z",
+      "usage_limit_usd": null,
+      "reset_period": null,
+      "reset_at": null,
+      "expire_at": null
+    }
+  },
+  "note": "api_key returned only on creation; name must be 1-25 chars, unique per account"
+}
