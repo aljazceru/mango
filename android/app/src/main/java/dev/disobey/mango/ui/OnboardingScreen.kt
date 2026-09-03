@@ -500,10 +500,10 @@ private fun BackendSetupStep(
     if (showRestoreDialog) {
         PpqRestoreDialog(
             biometricAvailable = state.biometricAvailable,
-            onRestore = { bytes, password, useBiometric, pin ->
+            onRestore = { bytes, password, useBiometric, pin, replaceAcknowledged ->
                 scope.launch {
                     val success = AppManager.getInstance(context)
-                        .restorePpqRecoveryBackup(bytes, password, useBiometric, pin)
+                        .restorePpqRecoveryBackup(bytes, password, useBiometric, pin, replaceAcknowledged)
                     if (!success) {
                         Toast.makeText(context, "Restore failed", Toast.LENGTH_SHORT).show()
                     }

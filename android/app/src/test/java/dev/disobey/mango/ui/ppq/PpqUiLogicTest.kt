@@ -20,8 +20,8 @@ class PpqUiLogicTest {
         assertNull(buildLightningUri("lightning:lnbc1pvjluezsp5zy"))
         assertNull(buildLightningUri("LNBC1PVJLUEZSP5ZY"))
         assertNull(buildLightningUri("lnbc 1 pvjluez"))
-        assertNull(buildLightningUri("lnbc1pvjluez\n"))
-        assertNull(buildLightningUri("lnbc1pvjluez\t"))
+        assertNull(buildLightningUri("lnbc1\npvjluez"))
+        assertNull(buildLightningUri("lnbc1\tpvjluez"))
     }
 
     @Test
