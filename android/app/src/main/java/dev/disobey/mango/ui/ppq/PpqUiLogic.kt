@@ -108,3 +108,39 @@ fun ppqBackupFileName(): String {
     val date = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(Date())
     return "mango-ppq-backup-$date.mppq"
 }
+
+/**
+ * Render a PPQ credit balance for humans: the raw wire text can carry
+ * float64 serialization noise ("0.9237520278000001"). The exact text stays
+ * authoritative in state; this is display-only rounding — pure decimal-string
+ * math, never through Double (plan §6.3).
+ *
+ * Keeps at most 4 fraction digits (round-half-up with carry), trims trailing
+ * zeros: "0.9237520278000001" -> "0.9238", "1.0000" -> "1", "0.1666" -> "0.1666".
+ */
+fun formatPpqBalance(raw: String?): String {
+    if (raw.isNullOrBlank()) return "—"
+    val text = raw.trim()
+    val dot = text.indexOf('.')
+    if (dot < 0) return text
+    val whole = text.substring(0, dot)
+    var fraction = text.substring(dot + 1).filter { it.isDigit() }
+    if (fraction.length <= 4) {
+        val trimmed = fraction.trimEnd('0')
+        return if (trimmed.isEmpty()) whole else "$whole.$trimmed"
+    }
+    // Round half-up on the 5th digit, with carry into whole.
+    val keep = fraction.substring(0, 4)
+    val roundUp = fraction[4] >= '5'
+    var frac = if (roundUp) {
+        val v = keep.toLong() + 1
+        if (v >= 10_000) {
+            return (whole.toLong() + v / 10_000).toString()
+        }
+        String.format("%04d", v)
+    } else {
+        keep
+    }
+    frac = frac.trimEnd('0')
+    return if (frac.isEmpty()) whole else "$whole.$frac"
+}

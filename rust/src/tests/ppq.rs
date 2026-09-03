@@ -901,7 +901,7 @@ fn actor_check_topup_settles_and_refreshes_balance() {
         amount_sats: 123,
         created_at: 1_000,
         // expires comfortably in the future relative to the system clock
-        expires_at: crate::now_secs() + 600,
+        expires_at: crate::ppq_now_secs() + 600,
     });
     app.sync();
     assert_eq!(
@@ -979,7 +979,7 @@ fn actor_unknown_status_reconciles_by_balance() {
         bolt11: Zeroizing::new("lnbc50n1SANITIZED".to_string()),
         amount_sats: 50,
         created_at: 1_000,
-        expires_at: crate::now_secs() + 600,
+        expires_at: crate::ppq_now_secs() + 600,
     });
     app.sync();
     assert_eq!(

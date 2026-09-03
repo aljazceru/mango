@@ -2037,7 +2037,7 @@ fn handle_ppq_create_invoice(
     }
     // One active invoice at a time (§6.9 step 3): an unexpired pending
     // invoice means the UI should render that one, not mint another.
-    let now = now_secs();
+    let now = ppq_now_secs();
     if let Some(p) = actor_state.ppq_pending.as_ref() {
         if now < p.expires_at {
             return;
@@ -2098,7 +2098,7 @@ fn handle_ppq_check_topup(actor_state: &mut ActorState, core_tx: &flume::Sender<
         Some(p) => p,
         None => return,
     };
-    let now = now_secs();
+    let now = ppq_now_secs();
     // Retry-After deadline applies to timer, manual, AND resume checks (§6.9 step 6).
     if !ppq::account::poll_allowed(&pending, now) {
         if now >= pending.expires_at
@@ -2186,7 +2186,7 @@ fn handle_ppq_event(
             ppq_set_setting(
                 actor_state,
                 ppq::account::SETTING_CREATED_AT,
-                &now_secs().to_string(),
+                &ppq_now_secs().to_string(),
             );
             actor_state.app_state.ppq.mode = PpqAccountMode::Managed;
             actor_state.app_state.ppq.backup_confirmed = false;
@@ -2211,10 +2211,10 @@ fn handle_ppq_event(
             ppq_set_setting(
                 actor_state,
                 ppq::account::SETTING_BALANCE_AT,
-                &now_secs().to_string(),
+                &ppq_now_secs().to_string(),
             );
             actor_state.app_state.ppq.balance_display = Some(balance.clone());
-            actor_state.app_state.ppq.balance_updated_at = Some(now_secs());
+            actor_state.app_state.ppq.balance_updated_at = Some(ppq_now_secs());
             actor_state.app_state.ppq.error = None;
             if actor_state.ppq_provisioning {
                 actor_state.ppq_provisioning = false;
@@ -2302,7 +2302,7 @@ fn handle_ppq_status_checked(
 ) {
     if let Some(p) = actor_state.ppq_pending.as_mut() {
         if next_poll_at > 0 {
-            p.next_poll_at = now_secs() + next_poll_at;
+            p.next_poll_at = ppq_now_secs() + next_poll_at;
             if let Ok(json) = serde_json::to_string(p) {
                 ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, &json);
             }
@@ -2741,6 +2741,15 @@ fn wipe_local_install(
 /// multiple messages are created within the same second (common in tests and
 /// fast conversations). The `delete_messages_after` query uses `> created_at`
 /// for edit/retry truncation, which requires distinct per-message timestamps.
+/// PPQ epoch math uses SECONDS (invoice created_at/expires_at are seconds on
+/// the wire). `now_secs` is a legacy millis helper — never mix them.
+pub(crate) fn ppq_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -7431,7 +7440,7 @@ fn load_post_unlock(
                     .filter(|v| !v.is_empty())
             {
                 if let Ok(p) = serde_json::from_str::<ppq::account::PendingInvoice>(&json) {
-                    if (now_secs()) < p.expires_at {
+                    if ppq_now_secs() < p.expires_at {
                         summary.funding = Some(PpqFundingSummary {
                             amount_sats: p.amount_sats,
                             bolt11: p.bolt11.clone(),
@@ -8336,7 +8345,7 @@ impl FfiApp {
                                     let _ = persistence::queries::set_setting(
                                         db.conn(),
                                         ppq::account::SETTING_FIRST_FUNDING_REMIND,
-                                        &now_secs().to_string(),
+                                        &ppq_now_secs().to_string(),
                                     );
                                 }
                                 actor_state.app_state.ppq.first_funding_reminder_shown = true;

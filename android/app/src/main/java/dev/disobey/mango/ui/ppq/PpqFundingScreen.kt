@@ -89,7 +89,7 @@ fun PpqFundingScreen(
                 fontWeight = FontWeight.Medium,
             )
             Text(
-                text = summary.balanceDisplay ?: "—",
+                text = formatPpqBalance(summary.balanceDisplay),
                 style = MaterialTheme.typography.titleSmall,
             )
         }
