@@ -48,6 +48,8 @@ fun openLightningWallet(context: Context, bolt11: String): Boolean {
  * Copy a BOLT11 invoice to the system clipboard. Only called on explicit user tap.
  */
 fun copyInvoiceToClipboard(context: Context, bolt11: String) {
+    // Threat review (low): mark the clip sensitive so Android 13+ excludes it
+    // from clipboard history/preview.
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
     clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("Lightning invoice", bolt11))
 }

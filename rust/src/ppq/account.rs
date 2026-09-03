@@ -156,10 +156,13 @@ fn decimals_gt(a: &str, b: &str) -> bool {
 }
 
 fn split_decimal(s: &str) -> (String, String) {
-    match s.split_once('.') {
-        Some((i, f)) => (i.to_string(), f.to_string()),
-        None => (s.to_string(), String::new()),
-    }
+    let (i, f) = match s.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (s, ""),
+    };
+    // Threat review (low): normalize leading zeros so "01.00" == "1.00".
+    let whole = i.trim_start_matches('0');
+    (whole.to_string(), f.to_string())
 }
 
 fn pad(s: String, len: usize) -> String {

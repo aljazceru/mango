@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 fun PpqSetupChoice(
     onAutomatic: () -> Unit,
     onExistingKey: () -> Unit,
+    onRestore: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -52,5 +53,9 @@ fun PpqSetupChoice(
         ) {
             Text("I already have a PPQ API key")
         }
+        TextButton(onClick = onRestore, modifier = Modifier.fillMaxWidth()) {
+            Text("Restore from backup", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
     }
 }

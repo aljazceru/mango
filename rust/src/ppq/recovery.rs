@@ -179,6 +179,11 @@ pub fn decrypt_recovery_document(
     if bytes[5] != VERSION {
         return Err(RecoveryError::UnsupportedBackupVersion);
     }
+    // Threat review (low): KDF id must be Argon2id — reject silently-unknown
+    // KDFs before any derivation work.
+    if bytes[6] != KDF_ID {
+        return Err(RecoveryError::UnsupportedBackupVersion);
+    }
 
     let m_kib = u32::from_le_bytes(
         bytes[7..11]

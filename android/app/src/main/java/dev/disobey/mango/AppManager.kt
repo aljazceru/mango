@@ -258,6 +258,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         backupPassword: String,
         useBiometric: Boolean,
         pin: String?,
+        replaceAcknowledged: Boolean = false,
     ): Boolean = withContext(Dispatchers.IO) {
         val auth = when {
             useBiometric -> SensitiveActionAuth.Biometric
@@ -268,7 +269,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             }
         }
         try {
-            ffiApp.restorePpqRecoveryBackup(bytes, backupPassword, auth).success
+            ffiApp.restorePpqRecoveryBackup(bytes, backupPassword, auth, replaceAcknowledged).success
         } catch (e: Exception) {
             android.util.Log.e("AppManager", "restorePpqRecoveryBackup failed", e)
             false

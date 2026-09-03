@@ -189,10 +189,14 @@ fun PpqBackupDialog(
 @Composable
 fun PpqRestoreDialog(
     biometricAvailable: Boolean,
-    onRestore: (bytes: ByteArray, backupPassword: String, useBiometric: Boolean, pin: String?) -> Unit,
+    onRestore: (bytes: ByteArray, backupPassword: String, useBiometric: Boolean, pin: String?, replaceAcknowledged: Boolean) -> Unit,
     filePicker: () -> Unit,
     onDismiss: () -> Unit,
+    // Threat review (high): restoring over an existing managed account is a
+    // replacement — require an explicit second confirmation.
+    existingManaged: Boolean = false,
 ) {
+    var confirmReplace by remember { mutableStateOf(!existingManaged) }
     var backupPassword by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var useBiometric by remember { mutableStateOf(biometricAvailable) }
@@ -275,8 +279,13 @@ fun PpqRestoreDialog(
         confirmButton = {
             Button(
                 onClick = {
+                    if (!confirmReplace) {
+                        confirmReplace = true
+                        return@Button
+                    }
                     PpqBackupCoordinator.onPpqImportResult = { bytes ->
-                        onRestore(bytes, backupPassword, useBiometric, pin)
+                        PpqBackupCoordinator.onPpqImportResult = null
+                        onRestore(bytes, backupPassword, useBiometric, pin, existingManaged)
                     }
                     filePicker()
                 },

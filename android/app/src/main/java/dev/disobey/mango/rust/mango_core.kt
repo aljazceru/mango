@@ -981,7 +981,7 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(`ptr`: Long,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-    external fun uniffi_mango_core_fn_method_ffiapp_restore_ppq_recovery_backup(`ptr`: Long,`encryptedBytes`: RustBuffer.ByValue,`backupPassword`: RustBuffer.ByValue,`auth`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_mango_core_fn_method_ffiapp_restore_ppq_recovery_backup(`ptr`: Long,`encryptedBytes`: RustBuffer.ByValue,`backupPassword`: RustBuffer.ByValue,`auth`: RustBuffer.ByValue,`replaceAcknowledged`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_mango_core_fn_method_ffiapp_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -1179,7 +1179,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 26433) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_restore_ppq_recovery_backup() != 22942) {
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_restore_ppq_recovery_backup() != 49907) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_state() != 37810) {
@@ -1829,7 +1829,7 @@ public interface FfiAppInterface {
      */
     fun `readEncryptedImage`(`messageId`: kotlin.String): kotlin.ByteArray
     
-    fun `restorePpqRecoveryBackup`(`encryptedBytes`: kotlin.ByteArray, `backupPassword`: kotlin.String, `auth`: SensitiveActionAuth): PpqRecoveryResult
+    fun `restorePpqRecoveryBackup`(`encryptedBytes`: kotlin.ByteArray, `backupPassword`: kotlin.String, `auth`: SensitiveActionAuth, `replaceAcknowledged`: kotlin.Boolean): PpqRecoveryResult
     
     /**
      * Read the latest state snapshot from the shared RwLock.
@@ -2182,7 +2182,7 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     
 
     
-    @Throws(FfiException::class)override fun `restorePpqRecoveryBackup`(`encryptedBytes`: kotlin.ByteArray, `backupPassword`: kotlin.String, `auth`: SensitiveActionAuth): PpqRecoveryResult {
+    @Throws(FfiException::class)override fun `restorePpqRecoveryBackup`(`encryptedBytes`: kotlin.ByteArray, `backupPassword`: kotlin.String, `auth`: SensitiveActionAuth, `replaceAcknowledged`: kotlin.Boolean): PpqRecoveryResult {
             return FfiConverterTypePpqRecoveryResult.lift(
     callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
@@ -2191,7 +2191,8 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
         
         FfiConverterByteArray.lower(`encryptedBytes`),
         FfiConverterString.lower(`backupPassword`),
-        FfiConverterTypeSensitiveActionAuth.lower(`auth`),_status)
+        FfiConverterTypeSensitiveActionAuth.lower(`auth`),
+        FfiConverterBoolean.lower(`replaceAcknowledged`),_status)
 }
     }
     )

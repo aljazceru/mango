@@ -1521,6 +1521,10 @@ pub enum CoreMsg {
         encrypted_bytes: Vec<u8>,
         backup_password: String,
         auth: SensitiveActionAuth,
+        /// Required when the restore would REPLACE an existing managed
+        /// account (threat review high): the UI must show the conflict
+        /// preflight and pass true only after explicit confirmation.
+        replace_acknowledged: bool,
         reply: flume::Sender<Result<PpqRecoveryResult, String>>,
     },
     ConfirmDeleteAllData {
@@ -1971,6 +1975,13 @@ fn handle_ppq_provision(actor_state: &mut ActorState, core_tx: &flume::Sender<Co
         actor_state.app_state.ppq.error = Some("already_managed".to_string());
         return;
     }
+    // Threat review (high): a BYOK user's existing key must never be
+    // silently overwritten by automatic provisioning — switching to a
+    // managed account is a separate explicit flow (plan §3.1/§4.2).
+    if actor_state.app_state.ppq.mode == PpqAccountMode::ExternalKey {
+        actor_state.app_state.ppq.error = Some("external_key_present".to_string());
+        return;
+    }
     actor_state.ppq_provisioning = true;
     actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Provisioning;
     actor_state.app_state.ppq.error = None;
@@ -2280,7 +2291,11 @@ fn handle_ppq_event(
             } else {
                 PpqFundingPhase::Error
             };
-            actor_state.app_state.ppq.error = Some(code.to_string());
+            actor_state.app_state.ppq.error = Some(if uncertain {
+                format!("{code}_uncertain")
+            } else {
+                code.to_string()
+            });
         }
     }
 }
@@ -2425,6 +2440,7 @@ fn handle_ppq_backup_restore(
     encrypted_bytes: &[u8],
     backup_password: &str,
     auth: &SensitiveActionAuth,
+    replace_acknowledged: bool,
 ) -> Result<PpqRecoveryResult, String> {
     if let Err(code) = verify_sensitive_auth(actor_state, auth) {
         if code == "duress" {
@@ -2515,6 +2531,14 @@ fn handle_ppq_backup_restore(
         .as_ref()
         .map(|c| c.as_str() != doc.credit_id.as_str())
         .unwrap_or(false);
+    // Threat review (high): replacing a different funded account requires an
+    // explicit UI-confirmed acknowledgement — never silently overwrite.
+    if is_replacement && !replace_acknowledged {
+        return Ok(PpqRecoveryResult {
+            success: false,
+            error_code: Some("replacement_confirmation_required".to_string()),
+        });
+    }
 
     let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
     if let Err(e) = store.store_provisioned(&doc.credit_id, &final_key) {
@@ -2574,10 +2598,16 @@ fn handle_confirm_delete_all(
 
 fn handle_confirm_forget(
     actor_state: &mut ActorState,
+    core_tx: &flume::Sender<CoreMsg>,
     auth: &SensitiveActionAuth,
     backup_risk_acknowledged: bool,
 ) -> Result<ForgetResult, String> {
     if let Err(code) = verify_sensitive_auth(actor_state, auth) {
+        // Threat review (critical): duress must wipe + return the GENERIC
+        // failure, never signal that the duress PIN matched.
+        if code == "duress" {
+            return Err(ppq_duress_response(actor_state, core_tx));
+        }
         return Err(code.to_string());
     }
     if !backup_risk_acknowledged {
@@ -2647,10 +2677,12 @@ fn wipe_local_install(
         .delete("mango".to_string(), "dek".to_string());
     if matches!(mode, WipeMode::UserRequestedFullReset) {
         // Verified deletion of both PPQ credentials (§6.2): duress never
-        // reaches this branch.
+        // reaches this branch. A failed verified delete FAILS the wipe —
+        // never report success with credentials still present (threat review).
         let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
         if let Err(e) = store.delete_all_verified() {
             log::error!("[reset] PPQ credential verified-delete failed: {e}");
+            return Err("PPQ credential deletion could not be verified".to_string());
         }
     }
     // Both modes clear actor-memory PPQ state and pending invoice metadata
@@ -12519,6 +12551,7 @@ impl FfiApp {
                         encrypted_bytes,
                         backup_password,
                         auth,
+                        replace_acknowledged,
                         reply,
                     } => {
                         let result = handle_ppq_backup_restore(
@@ -12527,6 +12560,7 @@ impl FfiApp {
                             &encrypted_bytes,
                             &backup_password,
                             &auth,
+                            replace_acknowledged,
                         );
                         let _ = reply.send(result);
                         actor_state.app_state.rev += 1;
@@ -12556,6 +12590,7 @@ impl FfiApp {
                     } => {
                         let result = handle_confirm_forget(
                             &mut actor_state,
+                            &core_tx_for_thread,
                             &auth,
                             backup_risk_acknowledged,
                         );
@@ -12726,6 +12761,7 @@ impl FfiApp {
         encrypted_bytes: Vec<u8>,
         backup_password: String,
         auth: SensitiveActionAuth,
+        replace_acknowledged: bool,
     ) -> Result<PpqRecoveryResult, FfiError> {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.core_tx
@@ -12733,6 +12769,7 @@ impl FfiApp {
                 encrypted_bytes,
                 backup_password,
                 auth,
+                replace_acknowledged,
                 reply: reply_tx,
             })
             .map_err(|e| FfiError::Internal {

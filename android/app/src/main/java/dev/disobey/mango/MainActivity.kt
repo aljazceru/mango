@@ -73,13 +73,26 @@ class MainActivity : AppCompatActivity() {
     private val openDocumentLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
-        uri ?: return@registerForActivityResult
+        if (uri == null) {
+            // Threat review (medium): picker cancelled — drop the closure that
+            // captures the backup password + PIN.
+            PpqBackupCoordinator.onPpqImportResult = null
+            return@registerForActivityResult
+        }
         lifecycleScope.launch(Dispatchers.IO) {
             try {
+                // Threat review (medium): cap the read at the Rust-side
+                // recovery-file limit (+1 to detect oversize) before copying.
+                val maxBytes = 64 * 1024L + 1
                 val bytes = contentResolver.openInputStream(uri)?.use { inStream ->
                     ByteArrayOutputStream().use { out ->
-                        inStream.copyTo(out)
-                        out.toByteArray()
+                        val buf = ByteArray(8192)
+                        while (out.size() <= maxBytes) {
+                            val n = inStream.read(buf)
+                            if (n <= 0) break
+                            out.write(buf, 0, n)
+                        }
+                        if (out.size() > maxBytes) null else out.toByteArray()
                     }
                 }
                 withContext(Dispatchers.Main) {
@@ -89,6 +102,7 @@ class MainActivity : AppCompatActivity() {
                     PpqBackupCoordinator.onPpqImportResult = null
                 }
             } catch (e: Exception) {
+                PpqBackupCoordinator.onPpqImportResult = null
                 android.util.Log.e("MainActivity", "PPQ backup read failed: ${e.message}")
             }
         }

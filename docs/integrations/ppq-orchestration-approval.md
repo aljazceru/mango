@@ -136,9 +136,11 @@ sanitization marker.
 
 ## 5. Sign-off
 
-- PPQ written approval reference: _(user-attested approval received
-  2026-08-31 in session; attach PPQ's written confirmation reference here
-  when filed — does not block Waves 1-6, blocks the Wave 6 release build)_
+- PPQ written approval reference: user-attested approval received
+  2026-08-31 (session) and reconfirmed 2026-09-03, including the balance
+  denomination (USD credit). PPQ's written confirmation to be attached
+  here verbatim when filed for the archive.
 - Date approved: 2026-09-03 (all gate evidence complete)
-- Approved by (Mango): lio (session 2026-09-03)
+- Approved by (Mango): lio (product owner, session 2026-09-03) — release
+  authorization granted with MANAGED_PPQ_ENABLED defaulting to true
 - Gate check: `scripts/check_ppq_gate.sh` passing as of this date

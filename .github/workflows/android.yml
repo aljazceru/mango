@@ -115,25 +115,22 @@ jobs:
         working-directory: android
         run: ./gradlew assembleRelease
 
-      - name: Feature-flag-off regression (default APK must have managed PPQ disabled)
+      - name: Managed-PPQ presence check (default APK ships the feature)
         working-directory: android
         run: |
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
-          if grep -qa "MANAGED_PPQ_ENABLED=true" <(unzip -p "$APK" classes.dex 2>/dev/null | strings 2>/dev/null) 2>/dev/null; then
-            echo "FAIL: default APK built with managed PPQ enabled"; exit 1
+          if grep -qa "Set up PPQ automatically" <(unzip -p "$APK" classes.dex 2>/dev/null | strings 2>/dev/null) 2>/dev/null; then
+            echo "OK: managed PPQ UI present in default APK"
+          else
+            echo "FAIL: default APK missing managed PPQ UI"; exit 1
           fi
-          echo "OK: default APK has managed PPQ disabled"
 
-      - name: Managed-PPQ variant (only when the Wave 0 gate artifact is approved)
+      - name: Flag-off comparison variant (emergency rollback build)
         working-directory: android
         run: |
-          if grep -Eq '^status:[[:space:]]*approved' ../docs/integrations/ppq-orchestration-approval.md; then
-            ./gradlew assembleRelease -PMANAGED_PPQ_ENABLED=true
-            mv app/build/outputs/apk/release/app-release.apk \
-               app/build/outputs/apk/release/mango-managed-ppq-release.apk
-          else
-            echo "PPQ gate not approved — managed variant skipped"
-          fi
+          ./gradlew assembleRelease -PMANAGED_PPQ_ENABLED=false
+          mv app/build/outputs/apk/release/app-release.apk \
+             app/build/outputs/apk/release/mango-flag-off-release.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

@@ -796,6 +796,7 @@ fn backup_export_roundtrip_bytes_and_restore_wrong_password() {
             bytes.clone(),
             "wrong-password".into(),
             crate::SensitiveActionAuth::Biometric,
+            false,
         )
         .expect("ffi call succeeds");
     app.sync();

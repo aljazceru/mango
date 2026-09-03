@@ -201,10 +201,18 @@ fun SettingsProvidersScreen(
                                                 }
                                             },
                                         )
+
+        if (FeatureFlags.MANAGED_PPQ_ENABLED) {
+            TextButton(onClick = { showPpqRestoreDialog = true }) {
+                Text("Restore PPQ backup")
+            }
+        }
+
                                     } else {
                                         PpqSetupChoice(
                                             onAutomatic = { onDispatch(AppAction.ProvisionManagedPpq) },
                                             onExistingKey = { ppqByok = true },
+                                            onRestore = { showPpqRestoreDialog = true },
                                         )
                                         if (ppqByok) {
                                             Spacer(Modifier.height(8.dp))
@@ -576,10 +584,10 @@ fun SettingsProvidersScreen(
         if (showPpqRestoreDialog) {
             PpqRestoreDialog(
                 biometricAvailable = appState.biometricAvailable,
-                onRestore = { bytes, password, useBiometric, pin ->
+                onRestore = { bytes, password, useBiometric, pin, replaceAcknowledged ->
                     scope.launch {
                         val success = AppManager.getInstance(context)
-                            .restorePpqRecoveryBackup(bytes, password, useBiometric, pin)
+                            .restorePpqRecoveryBackup(bytes, password, useBiometric, pin, replaceAcknowledged)
                         if (!success) {
                             Toast.makeText(context, "Restore failed", Toast.LENGTH_SHORT).show()
                         }

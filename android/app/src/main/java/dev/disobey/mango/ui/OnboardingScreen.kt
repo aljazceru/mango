@@ -223,7 +223,7 @@ private fun PpqBackendSetupBody(
     onRestore: () -> Unit,
 ) {
     when (summary.mode) {
-        PpqAccountMode.NONE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onBackup)
+        PpqAccountMode.NONE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onBackup, onRestore = onRestore)
         PpqAccountMode.EXTERNAL_KEY -> {
             Button(
                 onClick = onContinue,
@@ -233,7 +233,7 @@ private fun PpqBackendSetupBody(
             }
         }
         PpqAccountMode.MANAGED -> when (summary.setupPhase) {
-            PpqSetupPhase.IDLE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onBackup)
+            PpqSetupPhase.IDLE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onBackup, onRestore = onRestore)
             PpqSetupPhase.PROVISIONING -> {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

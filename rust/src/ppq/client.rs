@@ -184,7 +184,15 @@ impl PpqClient {
         if amount.0 != amount_sats {
             return Err(PpqError::InvalidResponse);
         }
-        if wire.expires_at <= wire.created_at || wire.lightning_invoice.len() < 20 {
+        // Threat review (low): invoice must look like a BOLT11 payment
+        // request — prefix-validated so a malformed response can never
+        // reach the QR/wallet handoff.
+        if wire.expires_at <= wire.created_at
+            || wire.lightning_invoice.len() < 20
+            || !(wire.lightning_invoice.starts_with("lnbc")
+                || wire.lightning_invoice.starts_with("lntb"))
+            || wire.lightning_invoice.chars().any(|c| c.is_whitespace())
+        {
             return Err(PpqError::InvalidResponse);
         }
         Ok(LightningInvoice {
@@ -204,6 +212,15 @@ impl PpqClient {
         api_key: &Zeroizing<String>,
         invoice_id: &str,
     ) -> Result<InvoiceStatus, PpqError> {
+        // Threat review (low): invoice ids come from PPQ responses; a hostile
+        // value must not be able to alter the request path.
+        if invoice_id.is_empty()
+            || !invoice_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(PpqError::InvalidResponse);
+        }
         let path = format!("/topup/status/{invoice_id}");
         let (_status, _headers, body) = self
             .request("GET", &path, WireAuth::Bearer(api_key), None, 200)
@@ -324,6 +341,7 @@ impl PpqClient {
 
         match code {
             401 | 403 => Err(PpqError::AuthenticationExpired),
+            402 => Err(PpqError::AmountOutOfLimits),
             404 => Err(PpqError::NotFound),
             429 => Err(PpqError::RateLimited {
                 retry_after_seconds: parse_retry_after(&headers),
