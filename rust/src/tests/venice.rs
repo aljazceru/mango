@@ -66,8 +66,8 @@ fn nvidia_payload_double_parse() {
 fn ecdh_aes_round_trip() {
     use crate::llm::venice::{derive_session_key, open_envelope, seal_message};
     use k256::ecdh::{diffie_hellman, EphemeralSecret};
-    use k256::elliptic_curve::Generate;
     use k256::elliptic_curve::sec1::ToSec1Point;
+    use k256::elliptic_curve::Generate;
     use k256::{PublicKey, SecretKey};
 
     // Server-side: simulated signing keypair

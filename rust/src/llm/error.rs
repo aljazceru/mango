@@ -20,6 +20,12 @@ pub enum LlmError {
 
     #[error("API error ({status_code}): {reason}")]
     ApiError { status_code: u16, reason: String },
+
+    /// PPQ-specific 402: prepaid balance exhausted (plan §6.10). Callers
+    /// route Managed mode to the top-up flow; External-key mode directs the
+    /// user to PPQ account management. Never auto-retried.
+    #[error("Insufficient PPQ balance: {reason}")]
+    InsufficientPpqBalance { reason: String },
 }
 
 impl LlmError {
@@ -50,6 +56,12 @@ impl LlmError {
                 reason,
             } => {
                 format!("Server error ({}): {}", status_code, reason)
+            }
+            LlmError::InsufficientPpqBalance { reason } => {
+                format!(
+                    "Insufficient PPQ balance: {}. Top up your PPQ account to continue.",
+                    reason
+                )
             }
         }
     }

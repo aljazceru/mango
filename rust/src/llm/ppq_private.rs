@@ -632,6 +632,15 @@ fn map_plain_error_body(
             },
             retry_after_secs: None,
         },
+        // Live-captured PPQ shape (fixture errors_401_402.json):
+        // {"error":"Payment Required","message":"Insufficient balance"}
+        402 => LlmError::InsufficientPpqBalance {
+            reason: if message.is_empty() {
+                "Insufficient balance".to_string()
+            } else {
+                message.to_string()
+            },
+        },
         _ => LlmError::ApiError {
             status_code: status,
             reason: if message.is_empty() {
@@ -1312,6 +1321,9 @@ fn llm_to_attestation_error(error: LlmError) -> AttestationError {
             AttestationError::Unsupported.with_context(&model_id)
         }
         LlmError::ApiError { reason, .. } => AttestationError::QuoteVerification { reason },
+        LlmError::InsufficientPpqBalance { reason } => {
+            AttestationError::QuoteVerification { reason }
+        }
     }
 }
 

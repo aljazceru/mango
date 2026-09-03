@@ -32,6 +32,8 @@ android {
         versionCode = 3
         versionName = "0.3.0"
 
+        buildConfigField("boolean", "MANAGED_PPQ_ENABLED", "false")
+
         externalNativeBuild {
             cmake {
                 arguments += listOf("-DLLAMA_CPP_DIR=$llamaCppDir")
@@ -77,6 +79,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 
@@ -212,6 +215,9 @@ dependencies {
     // Markdown rendering for chat messages
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.39.2")
     implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.39.2")
+
+    // QR code generation for PPQ Lightning invoices (Phase PPQ-04)
+    implementation("com.google.zxing:core:3.5.3")
 
     // Material Icons Extended for chat UI icons
     implementation("androidx.compose.material:material-icons-extended")

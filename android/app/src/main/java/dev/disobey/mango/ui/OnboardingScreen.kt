@@ -52,7 +52,28 @@ import dev.disobey.mango.rust.knownProviderPresets
 import dev.disobey.mango.ui.theme.*
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.window.Dialog
+import dev.disobey.mango.AppManager
+import dev.disobey.mango.FeatureFlags
+import dev.disobey.mango.PpqBackupCoordinator
+import dev.disobey.mango.rust.PpqAccountMode
+import dev.disobey.mango.rust.PpqAccountSummary
+import dev.disobey.mango.rust.PpqFundingPhase
+import dev.disobey.mango.rust.PpqSetupPhase
+import dev.disobey.mango.ui.ppq.PpqBackupDialog
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
+import dev.disobey.mango.ui.ppq.PpqBackupNudge
+import dev.disobey.mango.ui.ppq.PpqFundingScreen
+import dev.disobey.mango.ui.ppq.PpqRestoreDialog
+import dev.disobey.mango.ui.ppq.PpqSetupChoice
+import dev.disobey.mango.ui.ppq.copyInvoiceToClipboard
+import dev.disobey.mango.ui.ppq.defaultOnOpenWallet
+import kotlinx.coroutines.launch
 
 /// Onboarding wizard screen: 4-step guided setup for Mango.
 /// Per D-04 through D-17 and ONBR-01 through ONBR-05.
@@ -188,6 +209,95 @@ private fun WelcomeStep(onDispatch: (AppAction) -> Unit) {
 // MARK: - Step 2: Backend Setup
 
 @Composable
+private fun PpqBackendSetupBody(
+    summary: PpqAccountSummary,
+    onAutomatic: () -> Unit,
+    onBackup: () -> Unit,
+    onDeferBackup: () -> Unit,
+    onCreateInvoice: (ULong) -> Unit,
+    onCheckStatus: () -> Unit,
+    onCancel: () -> Unit,
+    onOpenWallet: (String) -> Unit,
+    onCopyInvoice: (String) -> Unit,
+    onContinue: () -> Unit,
+    onRestore: () -> Unit,
+) {
+    when (summary.mode) {
+        PpqAccountMode.NONE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onBackup)
+        PpqAccountMode.EXTERNAL_KEY -> {
+            Button(
+                onClick = onContinue,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Continue")
+            }
+        }
+        PpqAccountMode.MANAGED -> when (summary.setupPhase) {
+            PpqSetupPhase.IDLE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onBackup)
+            PpqSetupPhase.PROVISIONING -> {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text("Creating PPQ account…", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            PpqSetupPhase.NEEDS_BACKUP -> PpqBackupNudge(
+                onBackup = onBackup,
+                onDeferConfirmed = onDeferBackup,
+            )
+            PpqSetupPhase.NEEDS_FUNDS,
+            PpqSetupPhase.READY -> PpqFundingScreen(
+                summary = summary,
+                onCreateInvoice = onCreateInvoice,
+                onCheckStatus = onCheckStatus,
+                onCancel = onCancel,
+                onOpenWallet = onOpenWallet,
+                onCopyInvoice = onCopyInvoice,
+                onContinue = onContinue,
+            )
+            PpqSetupPhase.RESTORING -> {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text("Restoring PPQ account…", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            PpqSetupPhase.RECOVERABLE_PARTIAL_STATE,
+            PpqSetupPhase.ERROR -> Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = summary.error ?: "PPQ account is in an unexpected state.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    OutlinedButton(
+                        onClick = onRestore,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Restore from backup")
+                    }
+                    Button(
+                        onClick = onAutomatic,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Set up again")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun BackendSetupStep(
     state: AppState,
     selectedPresetId: String,
@@ -196,26 +306,42 @@ private fun BackendSetupStep(
     onApiKeyChanged: (String) -> Unit,
     onDispatch: (AppAction) -> Unit,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val presets = knownProviderPresets()
     val selectedPreset = presets.firstOrNull { it.id == selectedPresetId }
     val keyOptional = selectedPreset?.let { presetKeyOptional(it.id, it.teeType) } == true
     val trimmedKey = apiKeyText.trim()
     val canContinue = selectedPresetId.isNotEmpty() && (keyOptional || trimmedKey.isNotEmpty())
+    val ppqManaged = FeatureFlags.MANAGED_PPQ_ENABLED && selectedPresetId == "ppq-ai"
+    var ppqByok by remember { mutableStateOf(false) }
+    var showBackupDialog by remember { mutableStateOf(false) }
+    var showRestoreDialog by remember { mutableStateOf(false) }
+    val ppqSummary = state.ppq
+
+    LaunchedEffect(selectedPresetId) {
+        ppqByok = false
+        showBackupDialog = false
+        showRestoreDialog = false
+    }
+
+    val showKeyField = !ppqManaged || ppqByok
+    val showPpqPanel = ppqManaged && !ppqByok
 
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
             text = "Choose your provider",
             style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.SemiBold,
         )
 
         Text(
             text = "Select a confidential inference provider or local server.",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         // Provider preset list
@@ -229,107 +355,164 @@ private fun BackendSetupStep(
                         .background(
                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
                                     else MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(8.dp),
                         )
                         .border(
                             width = if (isSelected) 1.5.dp else 0.dp,
                             color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(8.dp),
                         )
                         .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = preset.name,
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                         )
                         Text(
                             text = preset.description,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
                             text = teeTypeLabel(preset.teeType),
                             style = MaterialTheme.typography.labelSmall,
                             color = if (isSelected) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     if (isSelected) {
                         Icon(
                             imageVector = Icons.Filled.CheckCircle,
                             contentDescription = "Selected",
-                            tint = MaterialTheme.colorScheme.primary
+                            tint = MaterialTheme.colorScheme.primary,
                         )
                     }
                 }
             }
         }
 
-        // API key input
-        OutlinedTextField(
-            value = apiKeyText,
-            onValueChange = onApiKeyChanged,
-            label = { Text(if (keyOptional) "API Key (optional)" else "API Key") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation()
-        )
+        if (showKeyField) {
+            // API key input
+            OutlinedTextField(
+                value = apiKeyText,
+                onValueChange = onApiKeyChanged,
+                label = { Text(if (keyOptional) "API Key (optional)" else "API Key") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+            )
 
-        // "Don't have an API key?" help section
-        NoApiKeyHelp()
+            // "Don't have an API key?" help section
+            NoApiKeyHelp()
+        }
 
         // Error text
         state.onboarding.apiKeyError?.let { error ->
             Text(
                 text = error,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error
+                color = MaterialTheme.colorScheme.error,
             )
         }
 
-        // Validate button or spinner
-        if (state.onboarding.validatingApiKey) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                Text("Validating...", style = MaterialTheme.typography.bodySmall)
-            }
-        } else {
-            Button(
-                onClick = {
-                    if (canContinue) {
-                        onDispatch(AppAction.AddBackendFromPreset(presetId = selectedPresetId, apiKey = trimmedKey))
-                        onDispatch(AppAction.ValidateApiKey(backendId = selectedPresetId))
-                    }
+        // Main action area
+        when {
+            showPpqPanel -> PpqBackendSetupBody(
+                summary = ppqSummary,
+                onAutomatic = { onDispatch(AppAction.ProvisionManagedPpq) },
+                onBackup = { showBackupDialog = true },
+                onDeferBackup = { onDispatch(AppAction.DeferPpqBackup) },
+                onCreateInvoice = { amountSats ->
+                    onDispatch(AppAction.CreatePpqLightningTopup(amountSats = amountSats))
                 },
-                enabled = canContinue,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (keyOptional) "Enable & Continue" else "Validate & Continue")
+                onCheckStatus = { onDispatch(AppAction.CheckPpqTopup) },
+                onCancel = { onDispatch(AppAction.CancelPpqTopup) },
+                onOpenWallet = { bolt11 -> defaultOnOpenWallet(context, bolt11) },
+                onCopyInvoice = { bolt11 -> copyInvoiceToClipboard(context, bolt11) },
+                onContinue = { onDispatch(AppAction.NextOnboardingStep) },
+                onRestore = { showRestoreDialog = true },
+            )
+            state.onboarding.validatingApiKey -> {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text("Validating…", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            else -> {
+                Button(
+                    onClick = {
+                        if (canContinue) {
+                            onDispatch(AppAction.AddBackendFromPreset(presetId = selectedPresetId, apiKey = trimmedKey))
+                            onDispatch(AppAction.ValidateApiKey(backendId = selectedPresetId))
+                        }
+                    },
+                    enabled = canContinue,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (keyOptional) "Enable & Continue" else "Validate & Continue")
+                }
             }
         }
 
         // Navigation row: Back and Skip
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             TextButton(
-                onClick = { onDispatch(AppAction.PreviousOnboardingStep) }
+                onClick = { onDispatch(AppAction.PreviousOnboardingStep) },
             ) {
                 Text("Back", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             TextButton(
-                onClick = { onDispatch(AppAction.SkipOnboarding) }
+                onClick = { onDispatch(AppAction.SkipOnboarding) },
             ) {
                 Text("Skip for now", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+    }
+
+    if (showBackupDialog) {
+        PpqBackupDialog(
+            biometricAvailable = state.biometricAvailable,
+            onConfirm = { password, useBiometric, pin ->
+                scope.launch {
+                    val bytes = AppManager.getInstance(context)
+                        .createPpqRecoveryBackup(password, useBiometric, pin)
+                    if (bytes != null) {
+                        PpqBackupCoordinator.requestExport?.invoke(bytes)
+                    } else {
+                        Toast.makeText(context, "Backup failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                showBackupDialog = false
+            },
+            onDismiss = { showBackupDialog = false },
+        )
+    }
+
+    if (showRestoreDialog) {
+        PpqRestoreDialog(
+            biometricAvailable = state.biometricAvailable,
+            onRestore = { bytes, password, useBiometric, pin ->
+                scope.launch {
+                    val success = AppManager.getInstance(context)
+                        .restorePpqRecoveryBackup(bytes, password, useBiometric, pin)
+                    if (!success) {
+                        Toast.makeText(context, "Restore failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                showRestoreDialog = false
+            },
+            filePicker = { PpqBackupCoordinator.requestImport?.invoke() },
+            onDismiss = { showRestoreDialog = false },
+        )
     }
 }
 

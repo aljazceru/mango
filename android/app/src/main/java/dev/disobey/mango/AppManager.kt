@@ -13,6 +13,10 @@ import androidx.compose.runtime.setValue
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppReconciler
 import dev.disobey.mango.rust.AppState
+import dev.disobey.mango.rust.PpqAccountMode
+import dev.disobey.mango.rust.PpqAccountSummary
+import dev.disobey.mango.rust.PpqFundingPhase
+import dev.disobey.mango.rust.PpqSetupPhase
 import dev.disobey.mango.rust.AppUpdate
 import dev.disobey.mango.rust.BiometricProvider
 import dev.disobey.mango.rust.BusyState
@@ -28,9 +32,12 @@ import dev.disobey.mango.rust.AttestationStatus
 import dev.disobey.mango.rust.LocalLlmCapabilityStatus
 import dev.disobey.mango.rust.Router
 import dev.disobey.mango.rust.Screen
+import dev.disobey.mango.rust.SensitiveActionAuth
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 
 class AppManager private constructor(context: Context, activity: FragmentActivity?) : AppReconciler {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -115,6 +122,18 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             hybridProfiles = emptyList(),
             lastTurnRouting = null,
             trustedProviders = emptyList(),
+            ppq = PpqAccountSummary(
+                mode = PpqAccountMode.NONE,
+                setupPhase = PpqSetupPhase.IDLE,
+                fundingPhase = PpqFundingPhase.IDLE,
+                balanceDisplay = null,
+                balanceUpdatedAt = null,
+                backupConfirmed = false,
+                firstFundingReminderShown = false,
+                funding = null,
+                error = null,
+                destructivePreflight = null,
+            ),
         ),
         policy = neverEqualPolicy(),
     )
@@ -203,6 +222,57 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
     // crossing the persistence/SAF permission boundary (T-32-I2 / D-02).
     fun listDirectoryFingerprints(sourceId: String): List<DirectoryFingerprint> {
         return ffiApp.listDirectoryFingerprints(sourceId)
+    }
+
+    /**
+     * Create an encrypted PPQ recovery backup. Returns the encrypted bytes on success,
+     * null on failure. Never logs secrets (backup password, PIN, or bytes).
+     */
+    suspend fun createPpqRecoveryBackup(
+        backupPassword: String,
+        useBiometric: Boolean,
+        pin: String?,
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        val auth = when {
+            useBiometric -> SensitiveActionAuth.Biometric
+            pin != null -> SensitiveActionAuth.MainPin(pin = pin)
+            else -> {
+                android.util.Log.e("AppManager", "createPpqRecoveryBackup: no auth available")
+                return@withContext null
+            }
+        }
+        try {
+            ffiApp.createPpqRecoveryBackup(backupPassword, auth)
+        } catch (e: Exception) {
+            android.util.Log.e("AppManager", "createPpqRecoveryBackup failed", e)
+            null
+        }
+    }
+
+    /**
+     * Restore a PPQ account from an encrypted recovery backup. Returns true on success.
+     * Never logs secrets.
+     */
+    suspend fun restorePpqRecoveryBackup(
+        bytes: ByteArray,
+        backupPassword: String,
+        useBiometric: Boolean,
+        pin: String?,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val auth = when {
+            useBiometric -> SensitiveActionAuth.Biometric
+            pin != null -> SensitiveActionAuth.MainPin(pin = pin)
+            else -> {
+                android.util.Log.e("AppManager", "restorePpqRecoveryBackup: no auth available")
+                return@withContext false
+            }
+        }
+        try {
+            ffiApp.restorePpqRecoveryBackup(bytes, backupPassword, auth).success
+        } catch (e: Exception) {
+            android.util.Log.e("AppManager", "restorePpqRecoveryBackup failed", e)
+            false
+        }
     }
 
     override fun reconcile(update: AppUpdate) {

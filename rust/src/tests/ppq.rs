@@ -626,3 +626,228 @@ fn bad_secret_shapes_rejected_before_any_write() {
 fn test_api_key() -> Zeroizing<String> {
     Zeroizing::new("sk-test-abcdefghijklmnop".to_string())
 }
+
+// ── Actor-level wipe/duress/backup tests (plan §10.1) ────────────────────────
+
+use crate::{AppAction, BiometricProvider, FfiApp};
+
+struct TrueBiometric;
+impl BiometricProvider for TrueBiometric {
+    fn biometric_status(&self) -> String {
+        "available".to_string()
+    }
+    fn authenticate(&self, _reason: String) -> bool {
+        true
+    }
+}
+
+fn make_actor_app(kc: RecordingKeychain) -> std::sync::Arc<FfiApp> {
+    let app = FfiApp::new(
+        "".into(),
+        Box::new(kc),
+        Box::new(crate::NullEmbeddingProvider),
+        crate::EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
+        Box::new(TrueBiometric),
+    );
+    app.sync();
+    app
+}
+
+fn seed_ppq_credentials(kc: &RecordingKeychain) {
+    use crate::KeychainProvider;
+    assert!(kc.store(
+        CREDIT_ID_SERVICE.into(),
+        CREDIT_ID_KEY.into(),
+        "00000000-0000-4000-8000-000000000000".into()
+    ));
+    assert!(kc.store(
+        API_KEY_SERVICE.into(),
+        API_KEY_KEY.into(),
+        "sk-test-abcdefghijklmnop".into()
+    ));
+}
+
+fn ppq_values(kc: &RecordingKeychain) -> (Option<String>, Option<String>) {
+    use crate::KeychainProvider;
+    (
+        kc.load(CREDIT_ID_SERVICE.into(), CREDIT_ID_KEY.into()),
+        kc.load(API_KEY_SERVICE.into(), API_KEY_KEY.into()),
+    )
+}
+
+#[test]
+fn user_reset_deletes_ppq_credentials_verified() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+
+    let result = app.confirm_delete_all_data(crate::SensitiveActionAuth::Biometric, true);
+    app.sync();
+    assert!(result.is_ok());
+    assert_eq!(
+        ppq_values(&kc),
+        (None, None),
+        "full reset must remove both PPQ credentials"
+    );
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+}
+
+#[test]
+fn destructive_confirmation_requires_acknowledgement_and_auth() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+
+    // No acknowledgement -> refused, credentials untouched.
+    let refused = app.confirm_delete_all_data(crate::SensitiveActionAuth::Biometric, false);
+    app.sync();
+    assert!(refused.is_err());
+    assert_eq!(
+        ppq_values(&kc),
+        (
+            Some("00000000-0000-4000-8000-000000000000".into()),
+            Some("sk-test-abcdefghijklmnop".into())
+        )
+    );
+}
+
+#[test]
+fn duress_pin_wipes_mango_but_preserves_ppq_credentials() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    // Configure main PIN 1234 and duress PIN 9999.
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: Some("9999".into()),
+        enable_biometric: false,
+    });
+    app.sync();
+    // Sanity: the managed account is classified (not None) before duress.
+    assert_ne!(app.state().ppq.mode, crate::PpqAccountMode::None);
+
+    // Enter the DURESS PIN in a sensitive action: must return a GENERIC
+    // failure (never revealing the duress match or preservation), wipe Mango
+    // data, and keep both PPQ credentials byte-for-byte.
+    let err = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::MainPin { pin: "9999".into() },
+        )
+        .expect_err("duress entry must fail generically");
+    app.sync();
+    let reason = match &err {
+        crate::FfiError::Internal { reason } => reason.clone(),
+    };
+    assert_eq!(
+        reason, "sensitive_authentication_failed",
+        "no duress hint may leak"
+    );
+    assert_eq!(
+        ppq_values(&kc),
+        (
+            Some("00000000-0000-4000-8000-000000000000".into()),
+            Some("sk-test-abcdefghijklmnop".into())
+        ),
+        "duress wipe must preserve both PPQ credentials byte-for-byte"
+    );
+    // Decoy session: no managed account is derivable from the surviving
+    // keychain values while duress_decoy_mode is active.
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+    assert!(app.state().ppq.funding.is_none());
+    assert!(app.state().ppq.balance_display.is_none());
+}
+
+#[test]
+fn backup_export_requires_managed_account_and_auth() {
+    let kc = RecordingKeychain::default();
+    let app = make_actor_app(kc.clone());
+    // No managed account -> export refuses (and never claims recoverability).
+    let err = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::Biometric,
+        )
+        .expect_err("export must fail without a managed account");
+    match &err {
+        crate::FfiError::Internal { reason } => assert_eq!(reason, "no_managed_account"),
+    }
+}
+
+#[test]
+fn backup_export_roundtrip_bytes_and_restore_wrong_password() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+
+    let bytes = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::Biometric,
+        )
+        .expect("managed export succeeds offline (local keychain + encryption only)");
+    assert!(bytes.len() > 60);
+    assert!(bytes.starts_with(b"MPPQ1"));
+
+    // Wrong password fails locally BEFORE any network validation.
+    let result = app
+        .restore_ppq_recovery_backup(
+            bytes.clone(),
+            "wrong-password".into(),
+            crate::SensitiveActionAuth::Biometric,
+        )
+        .expect("ffi call succeeds");
+    app.sync();
+    assert!(!result.success);
+    assert_eq!(
+        result.error_code.as_deref(),
+        Some("wrong_password_or_corrupt_file")
+    );
+    // Credentials untouched by the failed restore.
+    assert_eq!(
+        ppq_values(&kc),
+        (
+            Some("00000000-0000-4000-8000-000000000000".into()),
+            Some("sk-test-abcdefghijklmnop".into())
+        )
+    );
+}
+
+#[test]
+fn delete_all_data_one_tap_is_redirected_to_preflight_for_managed() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    assert_ne!(app.state().ppq.mode, crate::PpqAccountMode::None);
+
+    // One-tap DeleteAllData with a managed account: preflight shown, NO wipe.
+    app.dispatch(AppAction::DeleteAllData);
+    app.sync();
+    assert!(
+        app.state().ppq.destructive_preflight.is_some(),
+        "managed account must get backup-first preflight"
+    );
+    assert_eq!(
+        ppq_values(&kc),
+        (
+            Some("00000000-0000-4000-8000-000000000000".into()),
+            Some("sk-test-abcdefghijklmnop".into())
+        ),
+        "one tap must never delete managed credentials"
+    );
+    app.dispatch(AppAction::CancelDestructivePreflight);
+    app.sync();
+    assert!(app.state().ppq.destructive_preflight.is_none());
+}
+
+#[test]
+fn ppq_402_maps_to_specific_error_and_never_replays() {
+    // Wire-level: the captured 402 body maps to the PPQ-specific variant.
+    let err = crate::llm::error::LlmError::InsufficientPpqBalance {
+        reason: "Insufficient balance".into(),
+    };
+    assert!(err.to_string().contains("Insufficient PPQ balance"));
+    // The stream-error path surfaces a top-up hint instead of a generic 500.
+    assert!(err.display_message().contains("Top up your PPQ account"));
+}

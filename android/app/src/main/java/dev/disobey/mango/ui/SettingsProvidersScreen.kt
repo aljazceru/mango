@@ -39,28 +39,44 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.size
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import dev.disobey.mango.AppManager
+import dev.disobey.mango.FeatureFlags
+import dev.disobey.mango.PpqBackupCoordinator
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.AttestationStatus
 import dev.disobey.mango.rust.AttestationStatusEntry
 import dev.disobey.mango.rust.BackendSummary
 import dev.disobey.mango.rust.HealthStatus
+import dev.disobey.mango.rust.PpqAccountMode
 import dev.disobey.mango.rust.TeeType
 import dev.disobey.mango.rust.knownProviderPresets
+import dev.disobey.mango.ui.ppq.PpqBackupDialog
+import dev.disobey.mango.ui.ppq.PpqFundingScreen
+import dev.disobey.mango.ui.ppq.PpqProviderPanel
+import dev.disobey.mango.ui.ppq.PpqRestoreDialog
+import dev.disobey.mango.ui.ppq.PpqSetupChoice
+import dev.disobey.mango.ui.ppq.copyInvoiceToClipboard
+import dev.disobey.mango.ui.ppq.defaultOnOpenWallet
 import dev.disobey.mango.ui.theme.*
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,6 +86,8 @@ fun SettingsProvidersScreen(
     onBack: () -> Unit = { onDispatch(AppAction.PopScreen) },
 ) {
     val isDark = isSystemInDarkTheme()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val presetKeys = remember { mutableStateMapOf<String, String>() }
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
     val presets = knownProviderPresets()
@@ -82,6 +100,10 @@ fun SettingsProvidersScreen(
     var addTeeType by remember { mutableStateOf("IntelTdx") }
     var teeExpanded by remember { mutableStateOf(false) }
     var attestationInterval by remember { mutableStateOf("") }
+    var ppqByok by remember { mutableStateOf(false) }
+    var showPpqTopUpDialog by remember { mutableStateOf(false) }
+    var showPpqBackupDialog by remember { mutableStateOf(false) }
+    var showPpqRestoreDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -164,7 +186,54 @@ fun SettingsProvidersScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
 
-                                if (isEnabled && backend != null) {
+                                if (preset.id == "ppq-ai" && FeatureFlags.MANAGED_PPQ_ENABLED) {
+                                    if (isEnabled && backend != null) {
+                                        PpqProviderPanel(
+                                            summary = appState.ppq,
+                                            onTopUp = { showPpqTopUpDialog = true },
+                                            onBackUp = { showPpqBackupDialog = true },
+                                            onRefresh = { onDispatch(AppAction.RefreshPpqAccount) },
+                                            onRemove = {
+                                                if (appState.ppq.mode == PpqAccountMode.MANAGED) {
+                                                    onDispatch(AppAction.BeginForgetManagedPpqFromDevice)
+                                                } else {
+                                                    onDispatch(AppAction.RemoveBackend(backendId = preset.id))
+                                                }
+                                            },
+                                        )
+                                    } else {
+                                        PpqSetupChoice(
+                                            onAutomatic = { onDispatch(AppAction.ProvisionManagedPpq) },
+                                            onExistingKey = { ppqByok = true },
+                                        )
+                                        if (ppqByok) {
+                                            Spacer(Modifier.height(8.dp))
+                                            OutlinedTextField(
+                                                value = presetKeys[preset.id] ?: "",
+                                                onValueChange = { presetKeys[preset.id] = it },
+                                                label = { Text("API Key") },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                singleLine = true,
+                                                shape = RoundedCornerShape(8.dp),
+                                                visualTransformation = PasswordVisualTransformation(),
+                                            )
+                                            Spacer(Modifier.height(6.dp))
+                                            Button(
+                                                onClick = {
+                                                    val key = (presetKeys[preset.id] ?: "").trim()
+                                                    if (key.isNotEmpty()) {
+                                                        onDispatch(AppAction.AddBackendFromPreset(presetId = preset.id, apiKey = key))
+                                                        presetKeys[preset.id] = ""
+                                                    }
+                                                },
+                                                enabled = (presetKeys[preset.id] ?: "").isNotBlank(),
+                                                modifier = Modifier.fillMaxWidth(),
+                                                shape = RoundedCornerShape(8.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = if (isDark) DarkHealthy else LightHealthy)
+                                            ) { Text("Enable", color = Color.Black, fontWeight = FontWeight.Medium) }
+                                        }
+                                    }
+                                } else if (isEnabled && backend != null) {
                                     Spacer(Modifier.height(6.dp))
                                     Row(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -459,6 +528,67 @@ fun SettingsProvidersScreen(
             }
 
             item { Spacer(Modifier.height(32.dp)) }
+        }
+
+        if (showPpqTopUpDialog) {
+            Dialog(onDismissRequest = { showPpqTopUpDialog = false }) {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    tonalElevation = 6.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                ) {
+                    PpqFundingScreen(
+                        summary = appState.ppq,
+                        onCreateInvoice = { amountSats ->
+                            onDispatch(AppAction.CreatePpqLightningTopup(amountSats = amountSats))
+                        },
+                        onCheckStatus = { onDispatch(AppAction.CheckPpqTopup) },
+                        onCancel = { onDispatch(AppAction.CancelPpqTopup) },
+                        onOpenWallet = { bolt11 -> defaultOnOpenWallet(context, bolt11) },
+                        onCopyInvoice = { bolt11 -> copyInvoiceToClipboard(context, bolt11) },
+                        onContinue = { showPpqTopUpDialog = false },
+                    )
+                }
+            }
+        }
+
+        if (showPpqBackupDialog) {
+            PpqBackupDialog(
+                biometricAvailable = appState.biometricAvailable,
+                onConfirm = { password, useBiometric, pin ->
+                    scope.launch {
+                        val bytes = AppManager.getInstance(context)
+                            .createPpqRecoveryBackup(password, useBiometric, pin)
+                        if (bytes != null) {
+                            PpqBackupCoordinator.requestExport?.invoke(bytes)
+                        } else {
+                            Toast.makeText(context, "Backup failed", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    showPpqBackupDialog = false
+                },
+                onDismiss = { showPpqBackupDialog = false },
+            )
+        }
+
+        if (showPpqRestoreDialog) {
+            PpqRestoreDialog(
+                biometricAvailable = appState.biometricAvailable,
+                onRestore = { bytes, password, useBiometric, pin ->
+                    scope.launch {
+                        val success = AppManager.getInstance(context)
+                            .restorePpqRecoveryBackup(bytes, password, useBiometric, pin)
+                        if (!success) {
+                            Toast.makeText(context, "Restore failed", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    showPpqRestoreDialog = false
+                },
+                filePicker = { PpqBackupCoordinator.requestImport?.invoke() },
+                onDismiss = { showPpqRestoreDialog = false },
+            )
         }
     }
 }

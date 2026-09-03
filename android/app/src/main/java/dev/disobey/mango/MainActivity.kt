@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.content.Intent
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -21,7 +22,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import dev.disobey.mango.ui.MainApp
+import dev.disobey.mango.ui.ppq.ppqBackupFileName
 import dev.disobey.mango.ui.theme.AppTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 
 internal fun shouldLockAfterBackground(backgroundedAt: Long, now: Long, timeoutSeconds: Long): Boolean {
     if (backgroundedAt <= 0 || timeoutSeconds < 0) {
@@ -36,6 +41,58 @@ class MainActivity : AppCompatActivity() {
 
     /** Timestamp (millis) when the app last moved to background (D-10). 0 = not backgrounded. */
     private var backgroundedAt: Long = 0
+
+    /** Encrypted PPQ recovery backup bytes awaiting the SAF create-document result. */
+    private var pendingBackupBytes: ByteArray? = null
+
+    /** Last resume-based PPQ invoice refresh; debounce at ~2s. */
+    private var lastPpqResumeCheckAt: Long = 0
+
+    private val createDocumentLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri ->
+        val bytes = pendingBackupBytes ?: return@registerForActivityResult
+        uri ?: return@registerForActivityResult
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(bytes)
+                    out.flush()
+                }
+                withContext(Dispatchers.Main) {
+                    manager.dispatch(AppAction.ConfirmPpqBackupSaved)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "PPQ backup write failed: ${e.message}")
+            } finally {
+                pendingBackupBytes = null
+            }
+        }
+    }
+
+    private val openDocumentLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri ?: return@registerForActivityResult
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { inStream ->
+                    ByteArrayOutputStream().use { out ->
+                        inStream.copyTo(out)
+                        out.toByteArray()
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    if (bytes != null) {
+                        PpqBackupCoordinator.onPpqImportResult?.invoke(bytes)
+                    }
+                    PpqBackupCoordinator.onPpqImportResult = null
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "PPQ backup read failed: ${e.message}")
+            }
+        }
+    }
 
     override fun onPause() {
         super.onPause()
@@ -54,6 +111,19 @@ class MainActivity : AppCompatActivity() {
                 return
             }
             backgroundedAt = 0
+        }
+
+        // Phase PPQ: resume-based check for pending Lightning invoices.
+        if (manager.state.router.currentScreen !is Screen.Locked) {
+            val ppq = manager.state.ppq
+            if (ppq.funding != null) {
+                val now = System.currentTimeMillis()
+                if (now - lastPpqResumeCheckAt > 2_000) {
+                    manager.dispatch(AppAction.CheckPpqTopup)
+                    manager.dispatch(AppAction.RefreshPpqAccount)
+                    lastPpqResumeCheckAt = now
+                }
+            }
         }
 
         // Phase 32 Plan 06: foreground-resume sync for all directory sources
@@ -86,6 +156,15 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         manager = AppManager.getInstance(applicationContext, this)
+
+        // PPQ backup SAF launchers: registered before setContent; composables request via coordinator.
+        PpqBackupCoordinator.requestExport = { bytes ->
+            pendingBackupBytes = bytes
+            createDocumentLauncher.launch(ppqBackupFileName())
+        }
+        PpqBackupCoordinator.requestImport = {
+            openDocumentLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+        }
 
         // Phase 32 Plan 06: enqueue the 15-minute periodic directory-sync worker
         // (D-23). KEEP policy means this is idempotent across config changes.

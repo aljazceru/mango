@@ -642,6 +642,23 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol FfiAppProtocol: AnyObject, Sendable {
     
     /**
+     * Final authenticated step of the backup-aware Delete All Data preflight.
+     * The one-tap path is gone when a managed PPQ account exists (§6.4).
+     */
+    func confirmDeleteAllData(auth: SensitiveActionAuth, backupRiskAcknowledged: Bool) throws  -> ResetResult
+    
+    func confirmForgetManagedPpq(auth: SensitiveActionAuth, backupRiskAcknowledged: Bool) throws  -> ForgetResult
+    
+    /**
+     * ── PPQ managed-account one-shot methods (plan §6.4) ──
+     *
+     * Direct request/reply calls (never AppAction) so backup passwords,
+     * PINs, and ciphertext never sit in long-lived action state. Call from
+     * a worker thread (Kotlin: Dispatchers.IO) — Argon2 work blocks briefly.
+     */
+    func createPpqRecoveryBackup(backupPassword: String, auth: SensitiveActionAuth) throws  -> Data
+    
+    /**
      * Dispatch an action to the actor loop.
      */
     func dispatch(action: AppAction) 
@@ -700,6 +717,8 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
      * Returns Err("no image for this message") when the message has no associated image.
      */
     func readEncryptedImage(messageId: String) throws  -> Data
+    
+    func restorePpqRecoveryBackup(encryptedBytes: Data, backupPassword: String, auth: SensitiveActionAuth) throws  -> PpqRecoveryResult
     
     /**
      * Read the latest state snapshot from the shared RwLock.
@@ -795,6 +814,50 @@ public convenience init(dataDir: String, keychain: KeychainProvider, embeddingPr
 
     
 
+    
+    /**
+     * Final authenticated step of the backup-aware Delete All Data preflight.
+     * The one-tap path is gone when a managed PPQ account exists (§6.4).
+     */
+open func confirmDeleteAllData(auth: SensitiveActionAuth, backupRiskAcknowledged: Bool)throws  -> ResetResult  {
+    return try  FfiConverterTypeResetResult_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_confirm_delete_all_data(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeSensitiveActionAuth_lower(auth),
+        FfiConverterBool.lower(backupRiskAcknowledged),uniffiCallStatus
+    )
+})
+}
+    
+open func confirmForgetManagedPpq(auth: SensitiveActionAuth, backupRiskAcknowledged: Bool)throws  -> ForgetResult  {
+    return try  FfiConverterTypeForgetResult_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_confirm_forget_managed_ppq(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeSensitiveActionAuth_lower(auth),
+        FfiConverterBool.lower(backupRiskAcknowledged),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * ── PPQ managed-account one-shot methods (plan §6.4) ──
+     *
+     * Direct request/reply calls (never AppAction) so backup passwords,
+     * PINs, and ciphertext never sit in long-lived action state. Call from
+     * a worker thread (Kotlin: Dispatchers.IO) — Argon2 work blocks briefly.
+     */
+open func createPpqRecoveryBackup(backupPassword: String, auth: SensitiveActionAuth)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_create_ppq_recovery_backup(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(backupPassword),
+        FfiConverterTypeSensitiveActionAuth_lower(auth),uniffiCallStatus
+    )
+})
+}
     
     /**
      * Dispatch an action to the actor loop.
@@ -906,6 +969,18 @@ open func readEncryptedImage(messageId: String)throws  -> Data  {
     uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(messageId),uniffiCallStatus
+    )
+})
+}
+    
+open func restorePpqRecoveryBackup(encryptedBytes: Data, backupPassword: String, auth: SensitiveActionAuth)throws  -> PpqRecoveryResult  {
+    return try  FfiConverterTypePpqRecoveryResult_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_restore_ppq_recovery_backup(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(encryptedBytes),
+        FfiConverterString.lower(backupPassword),
+        FfiConverterTypeSensitiveActionAuth_lower(auth),uniffiCallStatus
     )
 })
 }
@@ -1514,6 +1589,10 @@ public struct AppState: Equatable, Hashable {
      */
     public var onboarding: OnboardingState
     /**
+     * Display-safe managed PPQ account summary (plan §6.3). No secrets.
+     */
+    public var ppq: PpqAccountSummary
+    /**
      * True after CompleteOnboarding until the first message is sent (D-17).
      * Platform UIs render a welcome placeholder: "You're all set! Send your first
      * message to start a confidential conversation." Cleared by SendMessage.
@@ -1722,6 +1801,9 @@ public struct AppState: Equatable, Hashable {
          * attestation demo progress, and selected backend during the wizard flow.
          */onboarding: OnboardingState, 
         /**
+         * Display-safe managed PPQ account summary (plan §6.3). No secrets.
+         */ppq: PpqAccountSummary, 
+        /**
          * True after CompleteOnboarding until the first message is sent (D-17).
          * Platform UIs render a welcome placeholder: "You're all set! Send your first
          * message to start a confidential conversation." Cleared by SendMessage.
@@ -1868,6 +1950,7 @@ public struct AppState: Equatable, Hashable {
         self.messages = messages
         self.pendingAttachment = pendingAttachment
         self.onboarding = onboarding
+        self.ppq = ppq
         self.showFirstChatPlaceholder = showFirstChatPlaceholder
         self.documents = documents
         self.ingestionProgress = ingestionProgress
@@ -1934,6 +2017,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 messages: FfiConverterSequenceTypeUiMessage.read(from: &buf), 
                 pendingAttachment: FfiConverterOptionTypeAttachmentInfo.read(from: &buf), 
                 onboarding: FfiConverterTypeOnboardingState.read(from: &buf), 
+                ppq: FfiConverterTypePpqAccountSummary.read(from: &buf), 
                 showFirstChatPlaceholder: FfiConverterBool.read(from: &buf), 
                 documents: FfiConverterSequenceTypeDocumentSummary.read(from: &buf), 
                 ingestionProgress: FfiConverterOptionTypeIngestionProgress.read(from: &buf), 
@@ -1986,6 +2070,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterSequenceTypeUiMessage.write(value.messages, into: &buf)
         FfiConverterOptionTypeAttachmentInfo.write(value.pendingAttachment, into: &buf)
         FfiConverterTypeOnboardingState.write(value.onboarding, into: &buf)
+        FfiConverterTypePpqAccountSummary.write(value.ppq, into: &buf)
         FfiConverterBool.write(value.showFirstChatPlaceholder, into: &buf)
         FfiConverterSequenceTypeDocumentSummary.write(value.documents, into: &buf)
         FfiConverterOptionTypeIngestionProgress.write(value.ingestionProgress, into: &buf)
@@ -3075,6 +3160,60 @@ public func FfiConverterTypeFilePickResult_lower(_ value: FilePickResult) -> Rus
 }
 
 
+public struct ForgetResult: Equatable, Hashable {
+    public var success: Bool
+    public var error: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(success: Bool, error: String?) {
+        self.success = success
+        self.error = error
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ForgetResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeForgetResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ForgetResult {
+        return
+            try ForgetResult(
+                success: FfiConverterBool.read(from: &buf), 
+                error: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ForgetResult, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.success, into: &buf)
+        FfiConverterOptionString.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeForgetResult_lift(_ buf: RustBuffer) throws -> ForgetResult {
+    return try FfiConverterTypeForgetResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeForgetResult_lower(_ value: ForgetResult) -> RustBuffer {
+    return FfiConverterTypeForgetResult.lower(value)
+}
+
+
 public struct HybridProfile: Equatable, Hashable {
     public var id: String
     public var name: String
@@ -3984,6 +4123,297 @@ public func FfiConverterTypePlatformHttpResponse_lower(_ value: PlatformHttpResp
 
 
 /**
+ * Display-safe managed-account summary. Contains no secrets: `credit_id`,
+ * API keys, decrypted backups, and PINs never appear here (plan §6.3).
+ */
+public struct PpqAccountSummary: Equatable, Hashable {
+    public var mode: PpqAccountMode
+    public var setupPhase: PpqSetupPhase
+    public var fundingPhase: PpqFundingPhase
+    public var balanceDisplay: String?
+    public var balanceUpdatedAt: Int64?
+    public var backupConfirmed: Bool
+    public var firstFundingReminderShown: Bool
+    public var funding: PpqFundingSummary?
+    /**
+     * Redacted error code (never raw bodies or credentials).
+     */
+    public var error: String?
+    /**
+     * Non-destructive destructive-preflight banner (safe display data).
+     */
+    public var destructivePreflight: PpqDestructivePreflight?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(mode: PpqAccountMode, setupPhase: PpqSetupPhase, fundingPhase: PpqFundingPhase, balanceDisplay: String?, balanceUpdatedAt: Int64?, backupConfirmed: Bool, firstFundingReminderShown: Bool, funding: PpqFundingSummary?, 
+        /**
+         * Redacted error code (never raw bodies or credentials).
+         */error: String?, 
+        /**
+         * Non-destructive destructive-preflight banner (safe display data).
+         */destructivePreflight: PpqDestructivePreflight?) {
+        self.mode = mode
+        self.setupPhase = setupPhase
+        self.fundingPhase = fundingPhase
+        self.balanceDisplay = balanceDisplay
+        self.balanceUpdatedAt = balanceUpdatedAt
+        self.backupConfirmed = backupConfirmed
+        self.firstFundingReminderShown = firstFundingReminderShown
+        self.funding = funding
+        self.error = error
+        self.destructivePreflight = destructivePreflight
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PpqAccountSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePpqAccountSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PpqAccountSummary {
+        return
+            try PpqAccountSummary(
+                mode: FfiConverterTypePpqAccountMode.read(from: &buf), 
+                setupPhase: FfiConverterTypePpqSetupPhase.read(from: &buf), 
+                fundingPhase: FfiConverterTypePpqFundingPhase.read(from: &buf), 
+                balanceDisplay: FfiConverterOptionString.read(from: &buf), 
+                balanceUpdatedAt: FfiConverterOptionInt64.read(from: &buf), 
+                backupConfirmed: FfiConverterBool.read(from: &buf), 
+                firstFundingReminderShown: FfiConverterBool.read(from: &buf), 
+                funding: FfiConverterOptionTypePpqFundingSummary.read(from: &buf), 
+                error: FfiConverterOptionString.read(from: &buf), 
+                destructivePreflight: FfiConverterOptionTypePpqDestructivePreflight.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PpqAccountSummary, into buf: inout [UInt8]) {
+        FfiConverterTypePpqAccountMode.write(value.mode, into: &buf)
+        FfiConverterTypePpqSetupPhase.write(value.setupPhase, into: &buf)
+        FfiConverterTypePpqFundingPhase.write(value.fundingPhase, into: &buf)
+        FfiConverterOptionString.write(value.balanceDisplay, into: &buf)
+        FfiConverterOptionInt64.write(value.balanceUpdatedAt, into: &buf)
+        FfiConverterBool.write(value.backupConfirmed, into: &buf)
+        FfiConverterBool.write(value.firstFundingReminderShown, into: &buf)
+        FfiConverterOptionTypePpqFundingSummary.write(value.funding, into: &buf)
+        FfiConverterOptionString.write(value.error, into: &buf)
+        FfiConverterOptionTypePpqDestructivePreflight.write(value.destructivePreflight, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqAccountSummary_lift(_ buf: RustBuffer) throws -> PpqAccountSummary {
+    return try FfiConverterTypePpqAccountSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqAccountSummary_lower(_ value: PpqAccountSummary) -> RustBuffer {
+    return FfiConverterTypePpqAccountSummary.lower(value)
+}
+
+
+public struct PpqDestructivePreflight: Equatable, Hashable {
+    /**
+     * "delete_all_data" | "forget_managed"
+     */
+    public var kind: String
+    public var balanceDisplay: String?
+    public var balanceIsUnknown: Bool
+    public var backupConfirmed: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * "delete_all_data" | "forget_managed"
+         */kind: String, balanceDisplay: String?, balanceIsUnknown: Bool, backupConfirmed: Bool) {
+        self.kind = kind
+        self.balanceDisplay = balanceDisplay
+        self.balanceIsUnknown = balanceIsUnknown
+        self.backupConfirmed = backupConfirmed
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PpqDestructivePreflight: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePpqDestructivePreflight: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PpqDestructivePreflight {
+        return
+            try PpqDestructivePreflight(
+                kind: FfiConverterString.read(from: &buf), 
+                balanceDisplay: FfiConverterOptionString.read(from: &buf), 
+                balanceIsUnknown: FfiConverterBool.read(from: &buf), 
+                backupConfirmed: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PpqDestructivePreflight, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterOptionString.write(value.balanceDisplay, into: &buf)
+        FfiConverterBool.write(value.balanceIsUnknown, into: &buf)
+        FfiConverterBool.write(value.backupConfirmed, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqDestructivePreflight_lift(_ buf: RustBuffer) throws -> PpqDestructivePreflight {
+    return try FfiConverterTypePpqDestructivePreflight.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqDestructivePreflight_lower(_ value: PpqDestructivePreflight) -> RustBuffer {
+    return FfiConverterTypePpqDestructivePreflight.lower(value)
+}
+
+
+/**
+ * Display-safe PPQ funding invoice. `bolt11` is a payment request (not an
+ * account credential): needed for QR/wallet handoff, never logged, cleared
+ * on paid/cancelled/replaced/expired (plan §6.3).
+ */
+public struct PpqFundingSummary: Equatable, Hashable {
+    public var amountSats: UInt64
+    public var bolt11: String
+    public var expiresAt: Int64
+    public var status: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(amountSats: UInt64, bolt11: String, expiresAt: Int64, status: String) {
+        self.amountSats = amountSats
+        self.bolt11 = bolt11
+        self.expiresAt = expiresAt
+        self.status = status
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PpqFundingSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePpqFundingSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PpqFundingSummary {
+        return
+            try PpqFundingSummary(
+                amountSats: FfiConverterUInt64.read(from: &buf), 
+                bolt11: FfiConverterString.read(from: &buf), 
+                expiresAt: FfiConverterInt64.read(from: &buf), 
+                status: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PpqFundingSummary, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.amountSats, into: &buf)
+        FfiConverterString.write(value.bolt11, into: &buf)
+        FfiConverterInt64.write(value.expiresAt, into: &buf)
+        FfiConverterString.write(value.status, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqFundingSummary_lift(_ buf: RustBuffer) throws -> PpqFundingSummary {
+    return try FfiConverterTypePpqFundingSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqFundingSummary_lower(_ value: PpqFundingSummary) -> RustBuffer {
+    return FfiConverterTypePpqFundingSummary.lower(value)
+}
+
+
+public struct PpqRecoveryResult: Equatable, Hashable {
+    public var success: Bool
+    public var errorCode: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(success: Bool, errorCode: String?) {
+        self.success = success
+        self.errorCode = errorCode
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PpqRecoveryResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePpqRecoveryResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PpqRecoveryResult {
+        return
+            try PpqRecoveryResult(
+                success: FfiConverterBool.read(from: &buf), 
+                errorCode: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PpqRecoveryResult, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.success, into: &buf)
+        FfiConverterOptionString.write(value.errorCode, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqRecoveryResult_lift(_ buf: RustBuffer) throws -> PpqRecoveryResult {
+    return try FfiConverterTypePpqRecoveryResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqRecoveryResult_lower(_ value: PpqRecoveryResult) -> RustBuffer {
+    return FfiConverterTypePpqRecoveryResult.lower(value)
+}
+
+
+/**
  * A known provider preset for the Add Backend form.
  * UniFFI-exported so all platforms share the same preset data.
  */
@@ -4080,6 +4510,60 @@ public func FfiConverterTypeProviderPreset_lift(_ buf: RustBuffer) throws -> Pro
 #endif
 public func FfiConverterTypeProviderPreset_lower(_ value: ProviderPreset) -> RustBuffer {
     return FfiConverterTypeProviderPreset.lower(value)
+}
+
+
+public struct ResetResult: Equatable, Hashable {
+    public var success: Bool
+    public var error: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(success: Bool, error: String?) {
+        self.success = success
+        self.error = error
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ResetResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeResetResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ResetResult {
+        return
+            try ResetResult(
+                success: FfiConverterBool.read(from: &buf), 
+                error: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ResetResult, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.success, into: &buf)
+        FfiConverterOptionString.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeResetResult_lift(_ buf: RustBuffer) throws -> ResetResult {
+    return try FfiConverterTypeResetResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeResetResult_lower(_ value: ResetResult) -> RustBuffer {
+    return FfiConverterTypeResetResult.lower(value)
 }
 
 
@@ -4633,6 +5117,18 @@ public enum AppAction: Equatable, Hashable {
      * Delete all locally stored app data and return to clean-install state.
      */
     case deleteAllData
+    case provisionManagedPpq
+    case refreshPpqAccount
+    case createPpqLightningTopup(amountSats: UInt64
+    )
+    case checkPpqTopup
+    case cancelPpqTopup
+    case confirmPpqBackupSaved
+    case deferPpqBackup
+    case markFirstFundingReminderShown
+    case beginForgetManagedPpqFromDevice
+    case beginDeleteAllDataPreflight
+    case cancelDestructivePreflight
     /**
      * Retry: delete last assistant message and re-send the last user message (per D-07)
      */
@@ -5067,190 +5563,213 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         
         case 16: return .deleteAllData
         
-        case 17: return .retryLastMessage
+        case 17: return .provisionManagedPpq
         
-        case 18: return .editMessage(messageId: try FfiConverterString.read(from: &buf), newText: try FfiConverterString.read(from: &buf)
+        case 18: return .refreshPpqAccount
+        
+        case 19: return .createPpqLightningTopup(amountSats: try FfiConverterUInt64.read(from: &buf)
         )
         
-        case 19: return .attachFile(filename: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf), sizeBytes: try FfiConverterUInt64.read(from: &buf)
+        case 20: return .checkPpqTopup
+        
+        case 21: return .cancelPpqTopup
+        
+        case 22: return .confirmPpqBackupSaved
+        
+        case 23: return .deferPpqBackup
+        
+        case 24: return .markFirstFundingReminderShown
+        
+        case 25: return .beginForgetManagedPpqFromDevice
+        
+        case 26: return .beginDeleteAllDataPreflight
+        
+        case 27: return .cancelDestructivePreflight
+        
+        case 28: return .retryLastMessage
+        
+        case 29: return .editMessage(messageId: try FfiConverterString.read(from: &buf), newText: try FfiConverterString.read(from: &buf)
         )
         
-        case 20: return .clearAttachment
-        
-        case 21: return .attachImage(filename: try FfiConverterString.read(from: &buf), filePath: try FfiConverterString.read(from: &buf), mimeType: try FfiConverterString.read(from: &buf)
+        case 30: return .attachFile(filename: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf), sizeBytes: try FfiConverterUInt64.read(from: &buf)
         )
         
-        case 22: return .selectModel(modelId: try FfiConverterString.read(from: &buf)
+        case 31: return .clearAttachment
+        
+        case 32: return .attachImage(filename: try FfiConverterString.read(from: &buf), filePath: try FfiConverterString.read(from: &buf), mimeType: try FfiConverterString.read(from: &buf)
         )
         
-        case 23: return .setSystemPrompt(prompt: try FfiConverterOptionString.read(from: &buf)
+        case 33: return .selectModel(modelId: try FfiConverterString.read(from: &buf)
         )
         
-        case 24: return .addBackend(name: try FfiConverterString.read(from: &buf), baseUrl: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf), teeType: try FfiConverterTypeTeeType.read(from: &buf), models: try FfiConverterSequenceString.read(from: &buf)
+        case 34: return .setSystemPrompt(prompt: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 25: return .removeBackend(backendId: try FfiConverterString.read(from: &buf)
+        case 35: return .addBackend(name: try FfiConverterString.read(from: &buf), baseUrl: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf), teeType: try FfiConverterTypeTeeType.read(from: &buf), models: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 26: return .reorderBackend(backendId: try FfiConverterString.read(from: &buf), newDisplayOrder: try FfiConverterInt64.read(from: &buf)
+        case 36: return .removeBackend(backendId: try FfiConverterString.read(from: &buf)
         )
         
-        case 27: return .updateBackendModels(backendId: try FfiConverterString.read(from: &buf), models: try FfiConverterSequenceString.read(from: &buf)
+        case 37: return .reorderBackend(backendId: try FfiConverterString.read(from: &buf), newDisplayOrder: try FfiConverterInt64.read(from: &buf)
         )
         
-        case 28: return .setDefaultBackend(backendId: try FfiConverterString.read(from: &buf)
+        case 38: return .updateBackendModels(backendId: try FfiConverterString.read(from: &buf), models: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 29: return .setDefaultModel(modelId: try FfiConverterString.read(from: &buf)
+        case 39: return .setDefaultBackend(backendId: try FfiConverterString.read(from: &buf)
         )
         
-        case 30: return .setLocalInferenceEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 40: return .setDefaultModel(modelId: try FfiConverterString.read(from: &buf)
         )
         
-        case 31: return .downloadLocalModel(modelId: try FfiConverterString.read(from: &buf)
+        case 41: return .setLocalInferenceEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 32: return .deleteLocalModel(modelId: try FfiConverterString.read(from: &buf)
+        case 42: return .downloadLocalModel(modelId: try FfiConverterString.read(from: &buf)
         )
         
-        case 33: return .saveHybridProfile(profile: try FfiConverterTypeHybridProfile.read(from: &buf)
+        case 43: return .deleteLocalModel(modelId: try FfiConverterString.read(from: &buf)
         )
         
-        case 34: return .deleteHybridProfile(profileId: try FfiConverterString.read(from: &buf)
+        case 44: return .saveHybridProfile(profile: try FfiConverterTypeHybridProfile.read(from: &buf)
         )
         
-        case 35: return .setActiveHybridProfile(profileId: try FfiConverterString.read(from: &buf)
+        case 45: return .deleteHybridProfile(profileId: try FfiConverterString.read(from: &buf)
         )
         
-        case 36: return .overrideConversationBackend(conversationId: try FfiConverterString.read(from: &buf), backendId: try FfiConverterString.read(from: &buf)
+        case 46: return .setActiveHybridProfile(profileId: try FfiConverterString.read(from: &buf)
         )
         
-        case 37: return .nextOnboardingStep
-        
-        case 38: return .previousOnboardingStep
-        
-        case 39: return .updateBackendApiKey(backendId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
+        case 47: return .overrideConversationBackend(conversationId: try FfiConverterString.read(from: &buf), backendId: try FfiConverterString.read(from: &buf)
         )
         
-        case 40: return .validateApiKey(backendId: try FfiConverterString.read(from: &buf)
+        case 48: return .nextOnboardingStep
+        
+        case 49: return .previousOnboardingStep
+        
+        case 50: return .updateBackendApiKey(backendId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 41: return .completeOnboarding
-        
-        case 42: return .skipOnboarding
-        
-        case 43: return .addBackendFromPreset(presetId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
+        case 51: return .validateApiKey(backendId: try FfiConverterString.read(from: &buf)
         )
         
-        case 44: return .ingestDocument(filename: try FfiConverterString.read(from: &buf), content: try FfiConverterData.read(from: &buf)
+        case 52: return .completeOnboarding
+        
+        case 53: return .skipOnboarding
+        
+        case 54: return .addBackendFromPreset(presetId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 45: return .deleteDocument(documentId: try FfiConverterString.read(from: &buf)
+        case 55: return .ingestDocument(filename: try FfiConverterString.read(from: &buf), content: try FfiConverterData.read(from: &buf)
         )
         
-        case 46: return .attachDocumentToConversation(documentId: try FfiConverterString.read(from: &buf)
+        case 56: return .deleteDocument(documentId: try FfiConverterString.read(from: &buf)
         )
         
-        case 47: return .detachDocumentFromConversation(documentId: try FfiConverterString.read(from: &buf)
+        case 57: return .attachDocumentToConversation(documentId: try FfiConverterString.read(from: &buf)
         )
         
-        case 48: return .launchAgentSession(taskDescription: try FfiConverterString.read(from: &buf)
+        case 58: return .detachDocumentFromConversation(documentId: try FfiConverterString.read(from: &buf)
         )
         
-        case 49: return .pauseAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 59: return .launchAgentSession(taskDescription: try FfiConverterString.read(from: &buf)
         )
         
-        case 50: return .resumeAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 60: return .pauseAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 51: return .cancelAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 61: return .resumeAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 52: return .loadAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 62: return .cancelAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 53: return .clearAgentDetail
-        
-        case 54: return .setAttestationInterval(minutes: try FfiConverterUInt32.read(from: &buf)
+        case 63: return .loadAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 55: return .setGlobalSystemPrompt(prompt: try FfiConverterOptionString.read(from: &buf)
+        case 64: return .clearAgentDetail
+        
+        case 65: return .setAttestationInterval(minutes: try FfiConverterUInt32.read(from: &buf)
         )
         
-        case 56: return .listMemories
-        
-        case 57: return .deleteMemory(memoryId: try FfiConverterString.read(from: &buf)
+        case 66: return .setGlobalSystemPrompt(prompt: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 58: return .updateMemory(memoryId: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf)
+        case 67: return .listMemories
+        
+        case 68: return .deleteMemory(memoryId: try FfiConverterString.read(from: &buf)
         )
         
-        case 59: return .setBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
+        case 69: return .updateMemory(memoryId: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf)
         )
         
-        case 60: return .validateBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
+        case 70: return .setBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 61: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 71: return .validateBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 62: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 72: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 63: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
+        case 73: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 64: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
+        case 74: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
         )
         
-        case 65: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
+        case 75: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 66: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
+        case 76: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
         )
         
-        case 67: return .lockApp
-        
-        case 68: return .attemptBiometricUnlock
-        
-        case 69: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 77: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
         )
         
-        case 70: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
+        case 78: return .lockApp
+        
+        case 79: return .attemptBiometricUnlock
+        
+        case 80: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 71: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
+        case 81: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
         )
         
-        case 72: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
+        case 82: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 73: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
+        case 83: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
         )
         
-        case 74: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
+        case 84: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
         )
         
-        case 75: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
+        case 85: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 76: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
+        case 86: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
         )
         
-        case 77: return .discoverContextvmTools
-        
-        case 78: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 87: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
         )
         
-        case 79: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
+        case 88: return .discoverContextvmTools
+        
+        case 89: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 80: return .retryContextvmDiscovery
-        
-        case 81: return .addTrustedProvider(pubkey: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        case 90: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 82: return .removeTrustedProvider(pubkey: try FfiConverterString.read(from: &buf)
+        case 91: return .retryContextvmDiscovery
+        
+        case 92: return .addTrustedProvider(pubkey: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 93: return .removeTrustedProvider(pubkey: try FfiConverterString.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -5336,46 +5855,91 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(16))
         
         
-        case .retryLastMessage:
+        case .provisionManagedPpq:
             writeInt(&buf, Int32(17))
         
         
-        case let .editMessage(messageId,newText):
+        case .refreshPpqAccount:
             writeInt(&buf, Int32(18))
+        
+        
+        case let .createPpqLightningTopup(amountSats):
+            writeInt(&buf, Int32(19))
+            FfiConverterUInt64.write(amountSats, into: &buf)
+            
+        
+        case .checkPpqTopup:
+            writeInt(&buf, Int32(20))
+        
+        
+        case .cancelPpqTopup:
+            writeInt(&buf, Int32(21))
+        
+        
+        case .confirmPpqBackupSaved:
+            writeInt(&buf, Int32(22))
+        
+        
+        case .deferPpqBackup:
+            writeInt(&buf, Int32(23))
+        
+        
+        case .markFirstFundingReminderShown:
+            writeInt(&buf, Int32(24))
+        
+        
+        case .beginForgetManagedPpqFromDevice:
+            writeInt(&buf, Int32(25))
+        
+        
+        case .beginDeleteAllDataPreflight:
+            writeInt(&buf, Int32(26))
+        
+        
+        case .cancelDestructivePreflight:
+            writeInt(&buf, Int32(27))
+        
+        
+        case .retryLastMessage:
+            writeInt(&buf, Int32(28))
+        
+        
+        case let .editMessage(messageId,newText):
+            writeInt(&buf, Int32(29))
             FfiConverterString.write(messageId, into: &buf)
             FfiConverterString.write(newText, into: &buf)
             
         
         case let .attachFile(filename,content,sizeBytes):
-            writeInt(&buf, Int32(19))
+            writeInt(&buf, Int32(30))
             FfiConverterString.write(filename, into: &buf)
             FfiConverterString.write(content, into: &buf)
             FfiConverterUInt64.write(sizeBytes, into: &buf)
             
         
         case .clearAttachment:
-            writeInt(&buf, Int32(20))
+            writeInt(&buf, Int32(31))
         
         
         case let .attachImage(filename,filePath,mimeType):
-            writeInt(&buf, Int32(21))
+            writeInt(&buf, Int32(32))
             FfiConverterString.write(filename, into: &buf)
             FfiConverterString.write(filePath, into: &buf)
             FfiConverterString.write(mimeType, into: &buf)
             
         
         case let .selectModel(modelId):
-            writeInt(&buf, Int32(22))
+            writeInt(&buf, Int32(33))
             FfiConverterString.write(modelId, into: &buf)
             
         
         case let .setSystemPrompt(prompt):
-            writeInt(&buf, Int32(23))
+            writeInt(&buf, Int32(34))
             FfiConverterOptionString.write(prompt, into: &buf)
             
         
         case let .addBackend(name,baseUrl,apiKey,teeType,models):
-            writeInt(&buf, Int32(24))
+            writeInt(&buf, Int32(35))
             FfiConverterString.write(name, into: &buf)
             FfiConverterString.write(baseUrl, into: &buf)
             FfiConverterString.write(apiKey, into: &buf)
@@ -5384,239 +5948,239 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .removeBackend(backendId):
-            writeInt(&buf, Int32(25))
+            writeInt(&buf, Int32(36))
             FfiConverterString.write(backendId, into: &buf)
             
         
         case let .reorderBackend(backendId,newDisplayOrder):
-            writeInt(&buf, Int32(26))
+            writeInt(&buf, Int32(37))
             FfiConverterString.write(backendId, into: &buf)
             FfiConverterInt64.write(newDisplayOrder, into: &buf)
             
         
         case let .updateBackendModels(backendId,models):
-            writeInt(&buf, Int32(27))
+            writeInt(&buf, Int32(38))
             FfiConverterString.write(backendId, into: &buf)
             FfiConverterSequenceString.write(models, into: &buf)
             
         
         case let .setDefaultBackend(backendId):
-            writeInt(&buf, Int32(28))
+            writeInt(&buf, Int32(39))
             FfiConverterString.write(backendId, into: &buf)
             
         
         case let .setDefaultModel(modelId):
-            writeInt(&buf, Int32(29))
+            writeInt(&buf, Int32(40))
             FfiConverterString.write(modelId, into: &buf)
             
         
         case let .setLocalInferenceEnabled(enabled):
-            writeInt(&buf, Int32(30))
+            writeInt(&buf, Int32(41))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .downloadLocalModel(modelId):
-            writeInt(&buf, Int32(31))
+            writeInt(&buf, Int32(42))
             FfiConverterString.write(modelId, into: &buf)
             
         
         case let .deleteLocalModel(modelId):
-            writeInt(&buf, Int32(32))
+            writeInt(&buf, Int32(43))
             FfiConverterString.write(modelId, into: &buf)
             
         
         case let .saveHybridProfile(profile):
-            writeInt(&buf, Int32(33))
+            writeInt(&buf, Int32(44))
             FfiConverterTypeHybridProfile.write(profile, into: &buf)
             
         
         case let .deleteHybridProfile(profileId):
-            writeInt(&buf, Int32(34))
+            writeInt(&buf, Int32(45))
             FfiConverterString.write(profileId, into: &buf)
             
         
         case let .setActiveHybridProfile(profileId):
-            writeInt(&buf, Int32(35))
+            writeInt(&buf, Int32(46))
             FfiConverterString.write(profileId, into: &buf)
             
         
         case let .overrideConversationBackend(conversationId,backendId):
-            writeInt(&buf, Int32(36))
+            writeInt(&buf, Int32(47))
             FfiConverterString.write(conversationId, into: &buf)
             FfiConverterString.write(backendId, into: &buf)
             
         
         case .nextOnboardingStep:
-            writeInt(&buf, Int32(37))
+            writeInt(&buf, Int32(48))
         
         
         case .previousOnboardingStep:
-            writeInt(&buf, Int32(38))
+            writeInt(&buf, Int32(49))
         
         
         case let .updateBackendApiKey(backendId,apiKey):
-            writeInt(&buf, Int32(39))
+            writeInt(&buf, Int32(50))
             FfiConverterString.write(backendId, into: &buf)
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .validateApiKey(backendId):
-            writeInt(&buf, Int32(40))
+            writeInt(&buf, Int32(51))
             FfiConverterString.write(backendId, into: &buf)
             
         
         case .completeOnboarding:
-            writeInt(&buf, Int32(41))
+            writeInt(&buf, Int32(52))
         
         
         case .skipOnboarding:
-            writeInt(&buf, Int32(42))
+            writeInt(&buf, Int32(53))
         
         
         case let .addBackendFromPreset(presetId,apiKey):
-            writeInt(&buf, Int32(43))
+            writeInt(&buf, Int32(54))
             FfiConverterString.write(presetId, into: &buf)
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .ingestDocument(filename,content):
-            writeInt(&buf, Int32(44))
+            writeInt(&buf, Int32(55))
             FfiConverterString.write(filename, into: &buf)
             FfiConverterData.write(content, into: &buf)
             
         
         case let .deleteDocument(documentId):
-            writeInt(&buf, Int32(45))
+            writeInt(&buf, Int32(56))
             FfiConverterString.write(documentId, into: &buf)
             
         
         case let .attachDocumentToConversation(documentId):
-            writeInt(&buf, Int32(46))
+            writeInt(&buf, Int32(57))
             FfiConverterString.write(documentId, into: &buf)
             
         
         case let .detachDocumentFromConversation(documentId):
-            writeInt(&buf, Int32(47))
+            writeInt(&buf, Int32(58))
             FfiConverterString.write(documentId, into: &buf)
             
         
         case let .launchAgentSession(taskDescription):
-            writeInt(&buf, Int32(48))
+            writeInt(&buf, Int32(59))
             FfiConverterString.write(taskDescription, into: &buf)
             
         
         case let .pauseAgentSession(sessionId):
-            writeInt(&buf, Int32(49))
+            writeInt(&buf, Int32(60))
             FfiConverterString.write(sessionId, into: &buf)
             
         
         case let .resumeAgentSession(sessionId):
-            writeInt(&buf, Int32(50))
+            writeInt(&buf, Int32(61))
             FfiConverterString.write(sessionId, into: &buf)
             
         
         case let .cancelAgentSession(sessionId):
-            writeInt(&buf, Int32(51))
+            writeInt(&buf, Int32(62))
             FfiConverterString.write(sessionId, into: &buf)
             
         
         case let .loadAgentSession(sessionId):
-            writeInt(&buf, Int32(52))
+            writeInt(&buf, Int32(63))
             FfiConverterString.write(sessionId, into: &buf)
             
         
         case .clearAgentDetail:
-            writeInt(&buf, Int32(53))
+            writeInt(&buf, Int32(64))
         
         
         case let .setAttestationInterval(minutes):
-            writeInt(&buf, Int32(54))
+            writeInt(&buf, Int32(65))
             FfiConverterUInt32.write(minutes, into: &buf)
             
         
         case let .setGlobalSystemPrompt(prompt):
-            writeInt(&buf, Int32(55))
+            writeInt(&buf, Int32(66))
             FfiConverterOptionString.write(prompt, into: &buf)
             
         
         case .listMemories:
-            writeInt(&buf, Int32(56))
+            writeInt(&buf, Int32(67))
         
         
         case let .deleteMemory(memoryId):
-            writeInt(&buf, Int32(57))
+            writeInt(&buf, Int32(68))
             FfiConverterString.write(memoryId, into: &buf)
             
         
         case let .updateMemory(memoryId,content):
-            writeInt(&buf, Int32(58))
+            writeInt(&buf, Int32(69))
             FfiConverterString.write(memoryId, into: &buf)
             FfiConverterString.write(content, into: &buf)
             
         
         case let .setBraveApiKey(apiKey):
-            writeInt(&buf, Int32(59))
+            writeInt(&buf, Int32(70))
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .validateBraveApiKey(apiKey):
-            writeInt(&buf, Int32(60))
+            writeInt(&buf, Int32(71))
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .setMemoriesEnabled(enabled):
-            writeInt(&buf, Int32(61))
+            writeInt(&buf, Int32(72))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setConversationToolsEnabled(conversationId,enabled):
-            writeInt(&buf, Int32(62))
+            writeInt(&buf, Int32(73))
             FfiConverterString.write(conversationId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setupPin(pin,duressPin,enableBiometric):
-            writeInt(&buf, Int32(63))
+            writeInt(&buf, Int32(74))
             FfiConverterString.write(pin, into: &buf)
             FfiConverterOptionString.write(duressPin, into: &buf)
             FfiConverterBool.write(enableBiometric, into: &buf)
             
         
         case let .setDuressPin(pin):
-            writeInt(&buf, Int32(64))
+            writeInt(&buf, Int32(75))
             FfiConverterOptionString.write(pin, into: &buf)
             
         
         case let .unlockWithDek(dekHex):
-            writeInt(&buf, Int32(65))
+            writeInt(&buf, Int32(76))
             FfiConverterString.write(dekHex, into: &buf)
             
         
         case let .unlockWithPin(pin):
-            writeInt(&buf, Int32(66))
+            writeInt(&buf, Int32(77))
             FfiConverterString.write(pin, into: &buf)
             
         
         case .lockApp:
-            writeInt(&buf, Int32(67))
+            writeInt(&buf, Int32(78))
         
         
         case .attemptBiometricUnlock:
-            writeInt(&buf, Int32(68))
+            writeInt(&buf, Int32(79))
         
         
         case let .setBiometricLoginEnabled(enabled):
-            writeInt(&buf, Int32(69))
+            writeInt(&buf, Int32(80))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setLockTimeout(seconds):
-            writeInt(&buf, Int32(70))
+            writeInt(&buf, Int32(81))
             FfiConverterInt64.write(seconds, into: &buf)
             
         
         case let .addDirectorySource(displayName,path,bookmarkData,treeUri,exclusionGlobs):
-            writeInt(&buf, Int32(71))
+            writeInt(&buf, Int32(82))
             FfiConverterString.write(displayName, into: &buf)
             FfiConverterOptionString.write(path, into: &buf)
             FfiConverterOptionData.write(bookmarkData, into: &buf)
@@ -5625,7 +6189,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .syncDirectoryFiles(sourceId,files,removedPaths,isFinalBatch):
-            writeInt(&buf, Int32(72))
+            writeInt(&buf, Int32(83))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceTypeDirectoryFileEntry.write(files, into: &buf)
             FfiConverterSequenceString.write(removedPaths, into: &buf)
@@ -5633,54 +6197,54 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .removeDirectorySource(sourceId):
-            writeInt(&buf, Int32(73))
+            writeInt(&buf, Int32(84))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .setDirectoryExclusions(sourceId,globs):
-            writeInt(&buf, Int32(74))
+            writeInt(&buf, Int32(85))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceString.write(globs, into: &buf)
             
         
         case let .triggerDirectorySync(sourceId):
-            writeInt(&buf, Int32(75))
+            writeInt(&buf, Int32(86))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .updateDirectorySourceBookmark(sourceId,bookmarkData):
-            writeInt(&buf, Int32(76))
+            writeInt(&buf, Int32(87))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterData.write(bookmarkData, into: &buf)
             
         
         case .discoverContextvmTools:
-            writeInt(&buf, Int32(77))
+            writeInt(&buf, Int32(88))
         
         
         case let .setContextvmToolEnabled(toolId,enabled):
-            writeInt(&buf, Int32(78))
+            writeInt(&buf, Int32(89))
             FfiConverterString.write(toolId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setAutoDiscoverTools(enabled):
-            writeInt(&buf, Int32(79))
+            writeInt(&buf, Int32(90))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case .retryContextvmDiscovery:
-            writeInt(&buf, Int32(80))
+            writeInt(&buf, Int32(91))
         
         
         case let .addTrustedProvider(pubkey,label):
-            writeInt(&buf, Int32(81))
+            writeInt(&buf, Int32(92))
             FfiConverterString.write(pubkey, into: &buf)
             FfiConverterOptionString.write(label, into: &buf)
             
         
         case let .removeTrustedProvider(pubkey):
-            writeInt(&buf, Int32(82))
+            writeInt(&buf, Int32(93))
             FfiConverterString.write(pubkey, into: &buf)
             
         }
@@ -6669,6 +7233,13 @@ enum LlmError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     )
     case ApiError(statusCode: UInt16, reason: String
     )
+    /**
+     * PPQ-specific 402: prepaid balance exhausted (plan §6.10). Callers
+     * route Managed mode to the top-up flow; External-key mode directs the
+     * user to PPQ account management. Never auto-retried.
+     */
+    case InsufficientPpqBalance(reason: String
+    )
 
     
 
@@ -6715,6 +7286,9 @@ public struct FfiConverterTypeLlmError: FfiConverterRustBuffer {
             statusCode: try FfiConverterUInt16.read(from: &buf), 
             reason: try FfiConverterString.read(from: &buf)
             )
+        case 6: return .InsufficientPpqBalance(
+            reason: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -6751,6 +7325,11 @@ public struct FfiConverterTypeLlmError: FfiConverterRustBuffer {
         case let .ApiError(statusCode,reason):
             writeInt(&buf, Int32(5))
             FfiConverterUInt16.write(statusCode, into: &buf)
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case let .InsufficientPpqBalance(reason):
+            writeInt(&buf, Int32(6))
             FfiConverterString.write(reason, into: &buf)
             
         }
@@ -7129,6 +7708,288 @@ public func FfiConverterTypeOnboardingStep_lower(_ value: OnboardingStep) -> Rus
 
 
 
+public enum PpqAccountMode: Equatable, Hashable {
+    
+    case none
+    case externalKey
+    case managed
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PpqAccountMode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePpqAccountMode: FfiConverterRustBuffer {
+    typealias SwiftType = PpqAccountMode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PpqAccountMode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .none
+        
+        case 2: return .externalKey
+        
+        case 3: return .managed
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PpqAccountMode, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .none:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .externalKey:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .managed:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqAccountMode_lift(_ buf: RustBuffer) throws -> PpqAccountMode {
+    return try FfiConverterTypePpqAccountMode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqAccountMode_lower(_ value: PpqAccountMode) -> RustBuffer {
+    return FfiConverterTypePpqAccountMode.lower(value)
+}
+
+
+
+
+public enum PpqFundingPhase: Equatable, Hashable {
+    
+    case idle
+    case creatingInvoice
+    case awaitingPayment
+    case confirmed
+    case expired
+    case unknownAfterCreate
+    case error
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PpqFundingPhase: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePpqFundingPhase: FfiConverterRustBuffer {
+    typealias SwiftType = PpqFundingPhase
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PpqFundingPhase {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .idle
+        
+        case 2: return .creatingInvoice
+        
+        case 3: return .awaitingPayment
+        
+        case 4: return .confirmed
+        
+        case 5: return .expired
+        
+        case 6: return .unknownAfterCreate
+        
+        case 7: return .error
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PpqFundingPhase, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .idle:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .creatingInvoice:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .awaitingPayment:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .confirmed:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .expired:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .unknownAfterCreate:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .error:
+            writeInt(&buf, Int32(7))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqFundingPhase_lift(_ buf: RustBuffer) throws -> PpqFundingPhase {
+    return try FfiConverterTypePpqFundingPhase.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqFundingPhase_lower(_ value: PpqFundingPhase) -> RustBuffer {
+    return FfiConverterTypePpqFundingPhase.lower(value)
+}
+
+
+
+
+public enum PpqSetupPhase: Equatable, Hashable {
+    
+    case idle
+    case provisioning
+    case needsBackup
+    case needsFunds
+    case ready
+    case restoring
+    case recoverablePartialState
+    case error
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PpqSetupPhase: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePpqSetupPhase: FfiConverterRustBuffer {
+    typealias SwiftType = PpqSetupPhase
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PpqSetupPhase {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .idle
+        
+        case 2: return .provisioning
+        
+        case 3: return .needsBackup
+        
+        case 4: return .needsFunds
+        
+        case 5: return .ready
+        
+        case 6: return .restoring
+        
+        case 7: return .recoverablePartialState
+        
+        case 8: return .error
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PpqSetupPhase, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .idle:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .provisioning:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .needsBackup:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .needsFunds:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .ready:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .restoring:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .recoverablePartialState:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .error:
+            writeInt(&buf, Int32(8))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqSetupPhase_lift(_ buf: RustBuffer) throws -> PpqSetupPhase {
+    return try FfiConverterTypePpqSetupPhase.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePpqSetupPhase_lower(_ value: PpqSetupPhase) -> RustBuffer {
+    return FfiConverterTypePpqSetupPhase.lower(value)
+}
+
+
+
+
 public enum Screen: Equatable, Hashable {
     
     /**
@@ -7397,6 +8258,80 @@ public func FfiConverterTypeScreen_lift(_ buf: RustBuffer) throws -> Screen {
 #endif
 public func FfiConverterTypeScreen_lower(_ value: Screen) -> RustBuffer {
     return FfiConverterTypeScreen.lower(value)
+}
+
+
+
+/**
+ * Step-up authentication for one-shot destructive/recovery FFI calls
+ * (plan §6.5). A duress PIN entered here triggers `DuressPreservePpq`
+ * server-side of the actor and returns a generic failure.
+ */
+
+public enum SensitiveActionAuth: Equatable, Hashable {
+    
+    case biometric
+    case mainPin(pin: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SensitiveActionAuth: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSensitiveActionAuth: FfiConverterRustBuffer {
+    typealias SwiftType = SensitiveActionAuth
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SensitiveActionAuth {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .biometric
+        
+        case 2: return .mainPin(pin: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SensitiveActionAuth, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .biometric:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .mainPin(pin):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(pin, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSensitiveActionAuth_lift(_ buf: RustBuffer) throws -> SensitiveActionAuth {
+    return try FfiConverterTypeSensitiveActionAuth.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSensitiveActionAuth_lower(_ value: SensitiveActionAuth) -> RustBuffer {
+    return FfiConverterTypeSensitiveActionAuth.lower(value)
 }
 
 
@@ -8844,6 +9779,54 @@ fileprivate struct FfiConverterOptionTypeLocalModelDownloadProgress: FfiConverte
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypePpqDestructivePreflight: FfiConverterRustBuffer {
+    typealias SwiftType = PpqDestructivePreflight?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypePpqDestructivePreflight.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypePpqDestructivePreflight.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypePpqFundingSummary: FfiConverterRustBuffer {
+    typealias SwiftType = PpqFundingSummary?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypePpqFundingSummary.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypePpqFundingSummary.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeTurnRoutingSummary: FfiConverterRustBuffer {
     typealias SwiftType = TurnRoutingSummary?
 
@@ -9557,6 +10540,15 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_func_local_model_catalog() != 54432) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_mango_core_checksum_method_ffiapp_confirm_delete_all_data() != 32915) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_ffiapp_confirm_forget_managed_ppq() != 56233) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_ffiapp_create_ppq_recovery_backup() != 35739) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_mango_core_checksum_method_ffiapp_dispatch() != 14382) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -9576,6 +10568,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 26433) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_ffiapp_restore_ppq_recovery_backup() != 22942) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_state() != 37810) {

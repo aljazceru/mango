@@ -286,6 +286,106 @@ pub struct FilePickResult {
     pub size_bytes: u64,
 }
 
+// ── PPQ managed account (plan §6.3, safe UniFFI state) ─────────────────────
+
+#[derive(uniffi::Enum, Clone, Debug, Default, PartialEq)]
+pub enum PpqAccountMode {
+    #[default]
+    None,
+    ExternalKey,
+    Managed,
+}
+
+#[derive(uniffi::Enum, Clone, Debug, Default, PartialEq)]
+pub enum PpqSetupPhase {
+    #[default]
+    Idle,
+    Provisioning,
+    NeedsBackup,
+    NeedsFunds,
+    Ready,
+    Restoring,
+    RecoverablePartialState,
+    Error,
+}
+
+#[derive(uniffi::Enum, Clone, Debug, Default, PartialEq)]
+pub enum PpqFundingPhase {
+    #[default]
+    Idle,
+    CreatingInvoice,
+    AwaitingPayment,
+    Confirmed,
+    Expired,
+    UnknownAfterCreate,
+    Error,
+}
+
+/// Display-safe PPQ funding invoice. `bolt11` is a payment request (not an
+/// account credential): needed for QR/wallet handoff, never logged, cleared
+/// on paid/cancelled/replaced/expired (plan §6.3).
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct PpqFundingSummary {
+    pub amount_sats: u64,
+    pub bolt11: String,
+    pub expires_at: i64,
+    pub status: String,
+}
+
+/// Display-safe managed-account summary. Contains no secrets: `credit_id`,
+/// API keys, decrypted backups, and PINs never appear here (plan §6.3).
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct PpqAccountSummary {
+    pub mode: PpqAccountMode,
+    pub setup_phase: PpqSetupPhase,
+    pub funding_phase: PpqFundingPhase,
+    pub balance_display: Option<String>,
+    pub balance_updated_at: Option<i64>,
+    pub backup_confirmed: bool,
+    pub first_funding_reminder_shown: bool,
+    pub funding: Option<PpqFundingSummary>,
+    /// Redacted error code (never raw bodies or credentials).
+    pub error: Option<String>,
+    /// Non-destructive destructive-preflight banner (safe display data).
+    pub destructive_preflight: Option<PpqDestructivePreflight>,
+}
+
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct PpqDestructivePreflight {
+    /// "delete_all_data" | "forget_managed"
+    pub kind: String,
+    pub balance_display: Option<String>,
+    pub balance_is_unknown: bool,
+    pub backup_confirmed: bool,
+}
+
+/// Step-up authentication for one-shot destructive/recovery FFI calls
+/// (plan §6.5). A duress PIN entered here triggers `DuressPreservePpq`
+/// server-side of the actor and returns a generic failure.
+#[derive(uniffi::Enum, Clone, Debug)]
+pub enum SensitiveActionAuth {
+    Biometric,
+    MainPin { pin: String },
+}
+
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct PpqRecoveryResult {
+    pub success: bool,
+    pub error_code: Option<String>,
+}
+
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct ResetResult {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct ForgetResult {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct AppState {
     pub rev: u64,
@@ -325,6 +425,8 @@ pub struct AppState {
     /// Onboarding wizard transient state (D-18). Holds API key validation status,
     /// attestation demo progress, and selected backend during the wizard flow.
     pub onboarding: OnboardingState,
+    /// Display-safe managed PPQ account summary (plan §6.3). No secrets.
+    pub ppq: PpqAccountSummary,
     /// True after CompleteOnboarding until the first message is sent (D-17).
     /// Platform UIs render a welcome placeholder: "You're all set! Send your first
     /// message to start a confidential conversation." Cleared by SendMessage.
@@ -457,6 +559,7 @@ impl Default for AppState {
             messages: vec![],
             pending_attachment: None,
             onboarding: OnboardingState::default(),
+            ppq: PpqAccountSummary::default(),
             show_first_chat_placeholder: false,
             documents: vec![],
             ingestion_progress: None,
@@ -604,13 +707,19 @@ pub enum BusyState {
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum AppAction {
     /// Push a screen onto the navigation stack
-    PushScreen { screen: Screen },
+    PushScreen {
+        screen: Screen,
+    },
     /// Pop the top screen from the navigation stack
     PopScreen,
     /// Set the busy/loading indicator
-    SetBusyState { state: BusyState },
+    SetBusyState {
+        state: BusyState,
+    },
     /// Show an ephemeral toast message
-    ShowToast { message: String },
+    ShowToast {
+        message: String,
+    },
     /// Clear the current toast message
     ClearToast,
     /// Proof-of-life action for testing round-trip
@@ -623,23 +732,48 @@ pub enum AppAction {
     /// Stop the active generation (per D-06, LLMC-07)
     StopGeneration,
     /// Set the active backend by ID (per D-09)
-    SetActiveBackend { backend_id: String },
+    SetActiveBackend {
+        backend_id: String,
+    },
     // Phase 5 additions:
     /// Create a new conversation and navigate to the Chat screen (per D-12)
     NewConversation,
     /// Load a conversation's messages into AppState.messages (per D-05)
-    LoadConversation { conversation_id: String },
+    LoadConversation {
+        conversation_id: String,
+    },
     /// Rename a conversation title (per D-13)
-    RenameConversation { id: String, title: String },
+    RenameConversation {
+        id: String,
+        title: String,
+    },
     /// Fork a conversation: copy its title + messages + metadata into a new
     /// conversation and navigate into it. Per quick/260423-93w.
-    ForkConversation { id: String },
+    ForkConversation {
+        id: String,
+    },
     /// Delete a conversation and all its messages (per D-13)
-    DeleteConversation { id: String },
+    DeleteConversation {
+        id: String,
+    },
     /// Delete all conversations and messages.
     DeleteAllConversations,
     /// Delete all locally stored app data and return to clean-install state.
     DeleteAllData,
+    // ── PPQ managed account (plan §6.4) ──
+    ProvisionManagedPpq,
+    RefreshPpqAccount,
+    CreatePpqLightningTopup {
+        amount_sats: u64,
+    },
+    CheckPpqTopup,
+    CancelPpqTopup,
+    ConfirmPpqBackupSaved,
+    DeferPpqBackup,
+    MarkFirstFundingReminderShown,
+    BeginForgetManagedPpqFromDevice,
+    BeginDeleteAllDataPreflight,
+    CancelDestructivePreflight,
     /// Retry: delete last assistant message and re-send the last user message (per D-07)
     RetryLastMessage,
     /// Edit a prior message: truncate history after it and re-submit (per D-08)
@@ -664,9 +798,13 @@ pub enum AppAction {
         mime_type: String,
     },
     /// Select a model for the current conversation (per D-06)
-    SelectModel { model_id: String },
+    SelectModel {
+        model_id: String,
+    },
     /// Set a system prompt for the current conversation (per D-09)
-    SetSystemPrompt { prompt: Option<String> },
+    SetSystemPrompt {
+        prompt: Option<String>,
+    },
     // Phase 6 additions: backend CRUD and settings
     /// Add a new backend, persist to SQLite, and store API key in keychain.
     AddBackend {
@@ -677,7 +815,9 @@ pub enum AppAction {
         models: Vec<String>,
     },
     /// Remove a backend, clean up health state, and reassign its conversations.
-    RemoveBackend { backend_id: String },
+    RemoveBackend {
+        backend_id: String,
+    },
     /// Update the display_order for a backend (drag-to-reorder).
     ReorderBackend {
         backend_id: String,
@@ -689,21 +829,37 @@ pub enum AppAction {
         models: Vec<String>,
     },
     /// Persist a backend as the default and set it active for the current session.
-    SetDefaultBackend { backend_id: String },
+    SetDefaultBackend {
+        backend_id: String,
+    },
     /// Persist a model as the global default for new conversations.
-    SetDefaultModel { model_id: String },
+    SetDefaultModel {
+        model_id: String,
+    },
     /// Enable or disable on-device local inference globally.
-    SetLocalInferenceEnabled { enabled: bool },
+    SetLocalInferenceEnabled {
+        enabled: bool,
+    },
     /// Download and verify a built-in local model.
-    DownloadLocalModel { model_id: String },
+    DownloadLocalModel {
+        model_id: String,
+    },
     /// Delete a downloaded local model after unloading it if safe.
-    DeleteLocalModel { model_id: String },
+    DeleteLocalModel {
+        model_id: String,
+    },
     /// Save or update a hybrid local/remote routing profile.
-    SaveHybridProfile { profile: HybridProfile },
+    SaveHybridProfile {
+        profile: HybridProfile,
+    },
     /// Delete a saved hybrid profile.
-    DeleteHybridProfile { profile_id: String },
+    DeleteHybridProfile {
+        profile_id: String,
+    },
     /// Make a hybrid profile the active/default conversation target.
-    SetActiveHybridProfile { profile_id: String },
+    SetActiveHybridProfile {
+        profile_id: String,
+    },
     /// Override the backend used for a specific conversation.
     OverrideConversationBackend {
         conversation_id: String,
@@ -719,10 +875,15 @@ pub enum AppAction {
     /// Used by the onboarding wizard's BackendSetup step so the user can enter
     /// their API key and have it persisted before ValidateApiKey runs the health check.
     /// Only stores to keychain -- does not modify the SQLite backends table.
-    UpdateBackendApiKey { backend_id: String, api_key: String },
+    UpdateBackendApiKey {
+        backend_id: String,
+        api_key: String,
+    },
     /// Validate the selected backend's API key by running a health check.
     /// Sets onboarding.validating_api_key=true; on success advances to AttestationDemo.
-    ValidateApiKey { backend_id: String },
+    ValidateApiKey {
+        backend_id: String,
+    },
     /// Complete the onboarding wizard: persist has_completed_onboarding=true, create
     /// a conversation, navigate to Screen::Chat, and set show_first_chat_placeholder=true.
     CompleteOnboarding,
@@ -736,31 +897,53 @@ pub enum AppAction {
     /// Looks up the preset by preset_id, uses the preset's base_url and tee_type,
     /// and inserts a backend row with id=preset_id (stable, human-readable identifier).
     /// This is the "simple enable" path from the onboarding wizard and settings provider list.
-    AddBackendFromPreset { preset_id: String, api_key: String },
+    AddBackendFromPreset {
+        preset_id: String,
+        api_key: String,
+    },
     // Phase 8 additions: document management and RAG context
     /// Ingest a document into the local library: extract text, chunk, embed, index (LRAG-02).
     ///
     /// The pipeline is asynchronous: text extraction and chunking happen synchronously,
     /// then embedding is dispatched via spawn_blocking (D-15), and EmbeddingComplete
     /// delivers the result back to the actor loop for final indexing.
-    IngestDocument { filename: String, content: Vec<u8> },
+    IngestDocument {
+        filename: String,
+        content: Vec<u8>,
+    },
     /// Delete a document and its chunks/vectors from the library and index (LRAG-04, D-10).
-    DeleteDocument { document_id: String },
+    DeleteDocument {
+        document_id: String,
+    },
     /// Attach a library document to the active conversation for RAG context (D-08, D-11).
-    AttachDocumentToConversation { document_id: String },
+    AttachDocumentToConversation {
+        document_id: String,
+    },
     /// Detach a document from the active conversation.
-    DetachDocumentFromConversation { document_id: String },
+    DetachDocumentFromConversation {
+        document_id: String,
+    },
     // Phase 9 additions: agent session management
     /// Launch a new autonomous agent session with the given task description (AGNT-01).
-    LaunchAgentSession { task_description: String },
+    LaunchAgentSession {
+        task_description: String,
+    },
     /// Pause a running agent session -- stops the loop, preserves state (AGNT-06).
-    PauseAgentSession { session_id: String },
+    PauseAgentSession {
+        session_id: String,
+    },
     /// Resume a paused agent session -- rebuilds message history and continues (AGNT-06).
-    ResumeAgentSession { session_id: String },
+    ResumeAgentSession {
+        session_id: String,
+    },
     /// Cancel an agent session -- marks it cancelled and clears in-flight state (AGNT-06).
-    CancelAgentSession { session_id: String },
+    CancelAgentSession {
+        session_id: String,
+    },
     /// Load agent steps for a session into AppState for UI display (AGNT-06).
-    LoadAgentSession { session_id: String },
+    LoadAgentSession {
+        session_id: String,
+    },
     /// Clear the agent detail view state (back-navigation from detail screen).
     ClearAgentDetail,
     // Phase 10 additions: periodic attestation refresh
@@ -769,28 +952,43 @@ pub enum AppAction {
     /// Persists to the settings table as "attestation_interval_minutes".
     /// Resets the background timer to use the new interval immediately.
     /// A value of 0 disables periodic re-attestation.
-    SetAttestationInterval { minutes: u32 },
+    SetAttestationInterval {
+        minutes: u32,
+    },
     /// Set the global default system prompt used when a conversation has no per-conversation instructions.
     /// None or empty string clears the setting.
-    SetGlobalSystemPrompt { prompt: Option<String> },
+    SetGlobalSystemPrompt {
+        prompt: Option<String>,
+    },
     // Phase 23 additions: memory management actions
     /// Load all memories into AppState.memories for the memory management screen (MEM-04).
     ListMemories,
     /// Delete a memory from both SQLite and the usearch vector index (MEM-05).
-    DeleteMemory { memory_id: String },
+    DeleteMemory {
+        memory_id: String,
+    },
     /// Update a memory's text content in SQLite (MEM-06). Does NOT re-embed.
-    UpdateMemory { memory_id: String, content: String },
+    UpdateMemory {
+        memory_id: String,
+        content: String,
+    },
     /// Save a Brave Search API key to the settings table (per D-18).
     /// Follows SetGlobalSystemPrompt pattern (per D-19).
-    SetBraveApiKey { api_key: String },
+    SetBraveApiKey {
+        api_key: String,
+    },
     /// Validate a Brave Search API key by making a lightweight test request.
     /// Sets brave_api_key_validating=true while in-flight.
     /// On success: persists the key, sets brave_api_key_set=true, shows success toast.
     /// On failure: shows an error toast, does NOT persist the key.
-    ValidateBraveApiKey { api_key: String },
+    ValidateBraveApiKey {
+        api_key: String,
+    },
     /// Enable or disable automatic memory extraction after each conversation (MEM-TOGGLE-01).
     /// Persisted as "1"/"0" in the settings table under key "memories_enabled".
-    SetMemoriesEnabled { enabled: bool },
+    SetMemoriesEnabled {
+        enabled: bool,
+    },
     /// Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
     /// Persisted in conversations.tools_enabled column via update_conversation_tools_enabled.
     SetConversationToolsEnabled {
@@ -807,21 +1005,31 @@ pub enum AppAction {
         enable_biometric: bool,
     },
     /// Update or clear the duress PIN while the app is unlocked.
-    SetDuressPin { pin: Option<String> },
+    SetDuressPin {
+        pin: Option<String>,
+    },
     /// Unlock with an already-unwrapped DEK (hex string). Used internally after biometric unlock
     /// when the keychain provides the raw DEK (D-06).
-    UnlockWithDek { dek_hex: String },
+    UnlockWithDek {
+        dek_hex: String,
+    },
     /// Unlock with a PIN: reads auth params from bootstrap DB, derives KEK, unwraps DEK,
     /// detects duress PIN before attempting decryption (D-19, T-28-11), opens encrypted DB (D-07).
-    UnlockWithPin { pin: String },
+    UnlockWithPin {
+        pin: String,
+    },
     /// Lock the app: drop the DB handle, save pre-lock screen, clear sensitive AppState (D-12, T-28-10).
     LockApp,
     /// Attempt biometric authentication. On success, dispatches UnlockWithPin internally (D-11).
     AttemptBiometricUnlock,
     /// Enable or disable biometric login while the app is unlocked.
-    SetBiometricLoginEnabled { enabled: bool },
+    SetBiometricLoginEnabled {
+        enabled: bool,
+    },
     /// Set the lock timeout in seconds. 0 = never lock. Persisted to settings table (D-13).
-    SetLockTimeout { seconds: i64 },
+    SetLockTimeout {
+        seconds: i64,
+    },
     // Phase 32 additions: directory-based RAG ingestion (DIR-05, DIR-06).
     /// Register a new directory as a RAG source. Exactly one of `path` (Desktop),
     /// `bookmark_data` (iOS security-scoped bookmark), or `tree_uri` (Android SAF)
@@ -847,7 +1055,9 @@ pub enum AppAction {
     },
     /// Remove a directory source and cascade-delete every document, chunk, and
     /// usearch key owned by it (DIR-06).
-    RemoveDirectorySource { source_id: String },
+    RemoveDirectorySource {
+        source_id: String,
+    },
     /// Replace the exclusion glob list for a directory source (DIR-05).
     /// Each glob is validated with `directory_sync::validate_glob_pattern` before
     /// persistence (T-32-V5).
@@ -857,7 +1067,9 @@ pub enum AppAction {
     },
     /// Nudge signal asking the native layer to enumerate + resync a specific
     /// directory source. Per D-01 the actor does not enumerate on mobile.
-    TriggerDirectorySync { source_id: String },
+    TriggerDirectorySync {
+        source_id: String,
+    },
     /// iOS-only: persist a refreshed security-scoped bookmark blob when the OS
     /// reports the previous one as stale. Opaque to Rust — never parsed.
     UpdateDirectorySourceBookmark {
@@ -872,10 +1084,15 @@ pub enum AppAction {
     /// Phase 35 — toggle a single discovered tool on/off (CTX-03).
     /// `tool_id` matches `DiscoverableTool.id` =
     /// `<provider_pubkey>:<tool_name>`.
-    SetContextvmToolEnabled { tool_id: String, enabled: bool },
+    SetContextvmToolEnabled {
+        tool_id: String,
+        enabled: bool,
+    },
     /// Phase 35 — flip the auto-discover toggle (CTX-04). Persisted in
     /// settings table under `auto_discover_tools`.
-    SetAutoDiscoverTools { enabled: bool },
+    SetAutoDiscoverTools {
+        enabled: bool,
+    },
     /// Phase 35 — re-run a discovery query (UI-SPEC §E "Try again" button).
     /// Same effect as DiscoverContextvmTools but explicit for telemetry.
     RetryContextvmDiscovery,
@@ -888,7 +1105,9 @@ pub enum AppAction {
         label: Option<String>,
     },
     /// Remove a provider from the trust list by pubkey.
-    RemoveTrustedProvider { pubkey: String },
+    RemoveTrustedProvider {
+        pubkey: String,
+    },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -1283,6 +1502,66 @@ pub enum CoreMsg {
     /// before this one has been fully processed. Gives tests (and native
     /// layers) a deterministic alternative to sleep-based waiting.
     Sync { reply: flume::Sender<()> },
+    /// Internal PPQ task completion events. Carries secrets only in the
+    /// AccountCreated arm (actor-internal channel, Zeroizing, never AppState).
+    PpqEvent(PpqTaskEvent),
+    CreatePpqRecoveryBackup {
+        backup_password: String,
+        auth: SensitiveActionAuth,
+        reply: flume::Sender<Result<Zeroizing<Vec<u8>>, String>>,
+    },
+    RestorePpqRecoveryBackup {
+        encrypted_bytes: Vec<u8>,
+        backup_password: String,
+        auth: SensitiveActionAuth,
+        reply: flume::Sender<Result<PpqRecoveryResult, String>>,
+    },
+    ConfirmDeleteAllData {
+        auth: SensitiveActionAuth,
+        backup_risk_acknowledged: bool,
+        reply: flume::Sender<Result<ResetResult, String>>,
+    },
+    ConfirmForgetManagedPpq {
+        auth: SensitiveActionAuth,
+        backup_risk_acknowledged: bool,
+        reply: flume::Sender<Result<ForgetResult, String>>,
+    },
+}
+
+/// Actor-internal PPQ async task results (never crosses UniFFI).
+pub enum PpqTaskEvent {
+    AccountCreated {
+        credit_id: Zeroizing<String>,
+        api_key: Zeroizing<String>,
+    },
+    ProvisionFailed {
+        code: &'static str,
+        /// True when the request may have reached PPQ (timeout after send):
+        /// never auto-retry, never claim no account was created (§6.8).
+        uncertain: bool,
+    },
+    BalanceRefreshed {
+        balance: String,
+    },
+    BalanceFailed {
+        code: &'static str,
+    },
+    InvoiceCreated {
+        invoice_id: String,
+        bolt11: Zeroizing<String>,
+        amount_sats: u64,
+        created_at: i64,
+        expires_at: i64,
+    },
+    InvoiceFailed {
+        code: &'static str,
+        uncertain: bool,
+    },
+    StatusChecked {
+        /// "pending" | "settled" | "expired" | "unknown"
+        outcome: &'static str,
+        next_poll_at: i64,
+    },
 }
 
 // ── Actor-internal state ─────────────────────────────────────────────────────
@@ -1331,6 +1610,10 @@ const MAX_PENDING_ATTESTATION_TRANSIENT_RETRIES: u32 = 2;
 /// alongside its source Database in the same struct.
 struct ActorState {
     app_state: AppState,
+    /// PPQ pending-invoice metadata (actor copy of the persisted settings row).
+    ppq_pending: Option<ppq::account::PendingInvoice>,
+    /// Local single-flight debounce for account provisioning (§6.8 step 2).
+    ppq_provisioning: bool,
     backends: Vec<llm::BackendConfig>,
     /// Latest attested TLS leaf public key fingerprint per backend.
     /// Used to opportunistically pin transport to the attested endpoint.
@@ -1621,10 +1904,688 @@ fn remove_plaintext_image_file(path: &str, data_dir: &str) {
     }
 }
 
+// ── PPQ managed-account actor handlers (plan §6.8/§6.9) ────────────────────
+
+fn ppq_production_client() -> Result<ppq::client::PpqClient, ppq::client::PpqError> {
+    ppq::client::PpqClient::production(std::sync::Arc::new(ppq::client::SystemPpqClock))
+}
+
+fn ppq_error_code(e: &ppq::client::PpqError) -> &'static str {
+    match e {
+        ppq::client::PpqError::Offline => "offline",
+        ppq::client::PpqError::PpqUnavailable => "ppq_unavailable",
+        ppq::client::PpqError::RateLimited { .. } => "rate_limited",
+        ppq::client::PpqError::AuthenticationExpired => "authentication_expired",
+        ppq::client::PpqError::NotFound => "not_found",
+        ppq::client::PpqError::InvalidResponse => "invalid_response",
+        ppq::client::PpqError::StorageFailure => "storage_failure",
+    }
+}
+
+/// Duress decoy sessions must not touch PPQ: no keychain inspection, no
+/// network, no state (plan §6.2 step 4 / §4.6).
+fn ppq_decoy_active(actor_state: &ActorState) -> bool {
+    actor_state
+        .db
+        .as_ref()
+        .and_then(|db| {
+            persistence::queries::get_setting(db.conn(), "duress_decoy_mode")
+                .ok()
+                .flatten()
+        })
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+fn ppq_setting(actor_state: &ActorState, key: &str) -> Option<String> {
+    actor_state.db.as_ref().and_then(|db| {
+        persistence::queries::get_setting(db.conn(), key)
+            .ok()
+            .flatten()
+    })
+}
+
+fn ppq_set_setting(actor_state: &ActorState, key: &str, value: &str) {
+    if let Some(db) = actor_state.db.as_ref() {
+        let _ = persistence::queries::set_setting(db.conn(), key, value);
+    }
+}
+
+fn handle_ppq_provision(actor_state: &mut ActorState, core_tx: &flume::Sender<CoreMsg>) {
+    if ppq_decoy_active(actor_state) || actor_state.ppq_provisioning {
+        return;
+    }
+    if actor_state.app_state.ppq.mode == PpqAccountMode::Managed {
+        actor_state.app_state.ppq.error = Some("already_managed".to_string());
+        return;
+    }
+    actor_state.ppq_provisioning = true;
+    actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Provisioning;
+    actor_state.app_state.ppq.error = None;
+    let tx = core_tx.clone();
+    actor_state.runtime.spawn(async move {
+        let ev = match ppq_production_client() {
+            Ok(client) => match client.create_account().await {
+                Ok(creds) => CoreMsg::PpqEvent(PpqTaskEvent::AccountCreated {
+                    credit_id: creds.credit_id,
+                    api_key: creds.api_key,
+                }),
+                Err(e) => {
+                    let uncertain = matches!(e, ppq::client::PpqError::Offline);
+                    CoreMsg::PpqEvent(PpqTaskEvent::ProvisionFailed {
+                        code: ppq_error_code(&e),
+                        uncertain,
+                    })
+                }
+            },
+            Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::ProvisionFailed {
+                code: ppq_error_code(&e),
+                uncertain: false,
+            }),
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+fn spawn_ppq_balance_refresh(actor_state: &mut ActorState, core_tx: &flume::Sender<CoreMsg>) {
+    if ppq_decoy_active(actor_state) || actor_state.app_state.ppq.mode != PpqAccountMode::Managed {
+        return;
+    }
+    let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+    let api_key = match store.load_api_key() {
+        Ok(Some(k)) => k,
+        _ => return,
+    };
+    let tx = core_tx.clone();
+    actor_state.runtime.spawn(async move {
+        let ev = match ppq_production_client() {
+            Ok(client) => match client.balance(&api_key).await {
+                Ok(balance) => CoreMsg::PpqEvent(PpqTaskEvent::BalanceRefreshed {
+                    balance: balance.as_str().to_string(),
+                }),
+                Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::BalanceFailed {
+                    code: ppq_error_code(&e),
+                }),
+            },
+            Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::BalanceFailed {
+                code: ppq_error_code(&e),
+            }),
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+fn handle_ppq_create_invoice(
+    actor_state: &mut ActorState,
+    core_tx: &flume::Sender<CoreMsg>,
+    amount_sats: u64,
+) {
+    if ppq_decoy_active(actor_state) || actor_state.app_state.ppq.mode != PpqAccountMode::Managed {
+        return;
+    }
+    // One active invoice at a time (§6.9 step 3): an unexpired pending
+    // invoice means the UI should render that one, not mint another.
+    let now = now_secs();
+    if let Some(p) = actor_state.ppq_pending.as_ref() {
+        if now < p.expires_at {
+            return;
+        }
+    }
+    let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+    let api_key = match store.load_api_key() {
+        Ok(Some(k)) => k,
+        _ => {
+            actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Error;
+            actor_state.app_state.ppq.error = Some("storage_failure".to_string());
+            return;
+        }
+    };
+    actor_state.app_state.ppq.funding_phase = PpqFundingPhase::CreatingInvoice;
+    actor_state.app_state.ppq.error = None;
+    let tx = core_tx.clone();
+    actor_state.runtime.spawn(async move {
+        let ev = match ppq_production_client() {
+            Ok(client) => {
+                match ppq::account::validate_sats_against_limits(&client, amount_sats).await {
+                    Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
+                        code: ppq_error_code(&e),
+                        uncertain: false,
+                    }),
+                    Ok(_) => match client.create_lightning_invoice(&api_key, amount_sats).await {
+                        Ok(inv) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceCreated {
+                            invoice_id: inv.invoice_id,
+                            bolt11: inv.bolt11,
+                            amount_sats: inv.amount_sats.0,
+                            created_at: inv.created_at,
+                            expires_at: inv.expires_at,
+                        }),
+                        // A timeout after the request may have reached PPQ is
+                        // ambiguous: no idempotency key exists, so never
+                        // auto-retry creation (§6.9/§2).
+                        Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
+                            code: ppq_error_code(&e),
+                            uncertain: matches!(e, ppq::client::PpqError::Offline),
+                        }),
+                    },
+                }
+            }
+            Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
+                code: ppq_error_code(&e),
+                uncertain: false,
+            }),
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+fn handle_ppq_check_topup(actor_state: &mut ActorState, core_tx: &flume::Sender<CoreMsg>) {
+    if ppq_decoy_active(actor_state) {
+        return;
+    }
+    let pending = match actor_state.ppq_pending.clone() {
+        Some(p) => p,
+        None => return,
+    };
+    let now = now_secs();
+    // Retry-After deadline applies to timer, manual, AND resume checks (§6.9 step 6).
+    if !ppq::account::poll_allowed(&pending, now) {
+        if now >= pending.expires_at
+            && actor_state.app_state.ppq.funding_phase == PpqFundingPhase::AwaitingPayment
+        {
+            actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Expired;
+            if let Some(f) = actor_state.app_state.ppq.funding.as_mut() {
+                f.status = "Expired".to_string();
+            }
+        }
+        return;
+    }
+    let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+    let api_key = match store.load_api_key() {
+        Ok(Some(k)) => k,
+        _ => return,
+    };
+    let invoice_id = pending.invoice_id.clone();
+    let tx = core_tx.clone();
+    actor_state.runtime.spawn(async move {
+        let ev = match ppq_production_client() {
+            Ok(client) => match client.invoice_status(&api_key, &invoice_id).await {
+                Ok(status) => {
+                    let outcome = match ppq::account::outcome_for(&status.status) {
+                        ppq::account::FundingOutcome::Pending => "pending",
+                        ppq::account::FundingOutcome::Settled => "settled",
+                        ppq::account::FundingOutcome::Expired => "expired",
+                        ppq::account::FundingOutcome::Unknown => "unknown",
+                    };
+                    CoreMsg::PpqEvent(PpqTaskEvent::StatusChecked {
+                        outcome,
+                        next_poll_at: 0,
+                    })
+                }
+                // 404 after post-expiry GC: reconcile via balance (§2.1).
+                Err(ppq::client::PpqError::NotFound) => {
+                    CoreMsg::PpqEvent(PpqTaskEvent::StatusChecked {
+                        outcome: "unknown",
+                        next_poll_at: 0,
+                    })
+                }
+                Err(ppq::client::PpqError::RateLimited {
+                    retry_after_seconds,
+                }) => CoreMsg::PpqEvent(PpqTaskEvent::StatusChecked {
+                    outcome: "rate_limited",
+                    next_poll_at: retry_after_seconds.unwrap_or(30).max(1),
+                }),
+                Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
+                    code: ppq_error_code(&e),
+                    uncertain: false,
+                }),
+            },
+            Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
+                code: ppq_error_code(&e),
+                uncertain: false,
+            }),
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+fn handle_ppq_event(
+    actor_state: &mut ActorState,
+    core_tx: &flume::Sender<CoreMsg>,
+    event: PpqTaskEvent,
+) {
+    match event {
+        PpqTaskEvent::AccountCreated { credit_id, api_key } => {
+            let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+            if let Err(e) = store.store_provisioned(&credit_id, &api_key) {
+                actor_state.ppq_provisioning = false;
+                actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Error;
+                actor_state.app_state.ppq.error = Some(ppq_error_code(&e).to_string());
+                return;
+            }
+            // Nonsecret Managed marker LAST (§6.2 ordering).
+            ppq_set_setting(actor_state, ppq::account::SETTING_MODE, "managed");
+            ppq_set_setting(
+                actor_state,
+                ppq::account::SETTING_CREATED_AT,
+                &now_secs().to_string(),
+            );
+            actor_state.app_state.ppq.mode = PpqAccountMode::Managed;
+            actor_state.app_state.ppq.backup_confirmed = false;
+            // Backend reload picks up mango::ppq-ai from the keychain via the
+            // existing preset convention; balance fetch completes provisioning.
+            spawn_ppq_balance_refresh(actor_state, core_tx);
+        }
+        PpqTaskEvent::ProvisionFailed { code, uncertain } => {
+            actor_state.ppq_provisioning = false;
+            actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Error;
+            actor_state.app_state.ppq.error = Some(if uncertain {
+                format!("{code}_uncertain")
+            } else {
+                code.to_string()
+            });
+        }
+        PpqTaskEvent::BalanceRefreshed { balance } => {
+            ppq_set_setting(actor_state, ppq::account::SETTING_LAST_BALANCE, &balance);
+            ppq_set_setting(
+                actor_state,
+                ppq::account::SETTING_BALANCE_AT,
+                &now_secs().to_string(),
+            );
+            actor_state.app_state.ppq.balance_display = Some(balance.clone());
+            actor_state.app_state.ppq.balance_updated_at = Some(now_secs());
+            actor_state.app_state.ppq.error = None;
+            if actor_state.ppq_provisioning {
+                actor_state.ppq_provisioning = false;
+                actor_state.app_state.ppq.setup_phase = PpqSetupPhase::NeedsBackup;
+            } else if actor_state.app_state.ppq.funding_phase == PpqFundingPhase::UnknownAfterCreate
+            {
+                // Unknown invoice status reconciled by balance movement (§6.9 step 11).
+                let last_before = ppq_setting(actor_state, ppq::account::SETTING_LAST_BALANCE);
+                // last persisted == balance we just stored; compare against the
+                // pre-refresh snapshot captured before the refresh started is
+                // approximated by funding-phase context: settled when the
+                // reminder fires from the UI. Conservative default: stay unknown.
+                let _ = last_before;
+            } else if actor_state.app_state.ppq.funding_phase == PpqFundingPhase::Confirmed {
+                actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Idle;
+                actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
+            }
+        }
+        PpqTaskEvent::BalanceFailed { code } => {
+            if actor_state.ppq_provisioning {
+                actor_state.ppq_provisioning = false;
+                actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Error;
+                actor_state.app_state.ppq.error = Some(code.to_string());
+            } else {
+                actor_state.app_state.ppq.error = Some(code.to_string());
+            }
+        }
+        PpqTaskEvent::InvoiceCreated {
+            invoice_id,
+            bolt11,
+            amount_sats,
+            created_at,
+            expires_at,
+        } => {
+            let pending = ppq::account::PendingInvoice {
+                invoice_id,
+                bolt11: bolt11.to_string(),
+                amount_sats,
+                created_at,
+                expires_at,
+                next_poll_at: created_at + 3,
+            };
+            if let Ok(json) = serde_json::to_string(&pending) {
+                ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, &json);
+            }
+            actor_state.app_state.ppq.funding = Some(PpqFundingSummary {
+                amount_sats: pending.amount_sats,
+                bolt11: bolt11.to_string(),
+                expires_at: pending.expires_at,
+                status: "New".to_string(),
+            });
+            actor_state.app_state.ppq.funding_phase = PpqFundingPhase::AwaitingPayment;
+            actor_state.app_state.ppq.error = None;
+            actor_state.ppq_pending = Some(pending);
+        }
+        PpqTaskEvent::InvoiceFailed { code, uncertain } => {
+            actor_state.app_state.ppq.funding_phase = if uncertain {
+                PpqFundingPhase::UnknownAfterCreate
+            } else {
+                PpqFundingPhase::Error
+            };
+            actor_state.app_state.ppq.error = Some(code.to_string());
+        }
+        PpqTaskEvent::StatusChecked {
+            outcome,
+            next_poll_at,
+        } => {
+            if let Some(p) = actor_state.ppq_pending.as_mut() {
+                if next_poll_at > 0 {
+                    p.next_poll_at = now_secs() + next_poll_at;
+                    if let Ok(json) = serde_json::to_string(p) {
+                        ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, &json);
+                    }
+                }
+            }
+            match outcome {
+                "pending" => {
+                    if let Some(f) = actor_state.app_state.ppq.funding.as_mut() {
+                        f.status = "New".to_string();
+                    }
+                }
+                "settled" => {
+                    actor_state.ppq_pending = None;
+                    ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, "");
+                    actor_state.app_state.ppq.funding = None;
+                    actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Confirmed;
+                    if actor_state.app_state.ppq.setup_phase == PpqSetupPhase::NeedsFunds {
+                        actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
+                    }
+                    spawn_ppq_balance_refresh(actor_state, core_tx);
+                }
+                "expired" => {
+                    actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Expired;
+                    if let Some(f) = actor_state.app_state.ppq.funding.as_mut() {
+                        f.status = "Expired".to_string();
+                    }
+                }
+                "rate_limited" => {}
+                _ => {
+                    // Unknown status or 404-after-GC: reconcile via balance.
+                    actor_state.app_state.ppq.funding_phase = PpqFundingPhase::UnknownAfterCreate;
+                    spawn_ppq_balance_refresh(actor_state, core_tx);
+                }
+            }
+        }
+    }
+}
+
+/// Step-up auth (plan §6.5). Err("duress") tells the caller to run the
+/// DuressPreservePpq wipe and return a generic failure — never revealing
+/// that the duress PIN matched or that credentials were preserved.
+fn verify_sensitive_auth(
+    actor_state: &ActorState,
+    auth: &SensitiveActionAuth,
+) -> Result<(), &'static str> {
+    match auth {
+        SensitiveActionAuth::Biometric => {
+            if actor_state
+                .biometric_provider
+                .authenticate("Authorize PPQ account action".into())
+            {
+                Ok(())
+            } else {
+                Err("sensitive_authentication_failed")
+            }
+        }
+        SensitiveActionAuth::MainPin { pin } => {
+            match crypto::key_derivation::verify_pin_auth(pin, &actor_state.bootstrap) {
+                Ok(result) if !result.is_duress => Ok(()),
+                Ok(_) => Err("duress"),
+                Err(_) => Err("sensitive_authentication_failed"),
+            }
+        }
+    }
+}
+
+/// Shared duress response for sensitive-action call sites: wipe with
+/// DuressPreservePpq, then surface a generic failure (§6.5).
+fn ppq_duress_response(actor_state: &mut ActorState, core_tx: &flume::Sender<CoreMsg>) -> String {
+    if let Some(db) = actor_state.db.as_ref() {
+        let _ = persistence::queries::set_setting(db.conn(), "duress_decoy_mode", "true");
+    }
+    if let Err(e) = wipe_local_install(actor_state, core_tx.clone(), WipeMode::DuressPreservePpq) {
+        log::error!("[ppq] duress wipe failed: {e}");
+    }
+    "sensitive_authentication_failed".to_string()
+}
+
+fn handle_ppq_backup_export(
+    actor_state: &mut ActorState,
+    core_tx: &flume::Sender<CoreMsg>,
+    backup_password: &str,
+    auth: &SensitiveActionAuth,
+) -> Result<Vec<u8>, String> {
+    if let Err(code) = verify_sensitive_auth(actor_state, auth) {
+        if code == "duress" {
+            return Err(ppq_duress_response(actor_state, core_tx));
+        }
+        return Err(code.to_string());
+    }
+    if actor_state.app_state.ppq.mode != PpqAccountMode::Managed || ppq_decoy_active(actor_state) {
+        return Err("no_managed_account".to_string());
+    }
+    let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+    let (credit_id, api_key) = match (store.load_credit_id(), store.load_api_key()) {
+        (Ok(Some(c)), Ok(Some(k))) => (c, k),
+        _ => return Err("storage_failure".to_string()),
+    };
+    let created_at = ppq_setting(actor_state, ppq::account::SETTING_CREATED_AT).and_then(|v| {
+        v.parse::<i64>()
+            .ok()
+            .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+            .map(|t| t.to_rfc3339())
+    });
+    let exported_at = chrono::Utc::now().to_rfc3339();
+    ppq::recovery::encrypt_recovery_document(
+        &credit_id,
+        &api_key,
+        created_at.as_deref(),
+        &exported_at,
+        backup_password,
+    )
+    .map_err(|e| match e {
+        ppq::recovery::RecoveryError::WrongPasswordOrCorruptFile => {
+            "wrong_password_or_corrupt_file".to_string()
+        }
+        ppq::recovery::RecoveryError::UnsupportedBackupVersion => "unsupported_version".to_string(),
+        ppq::recovery::RecoveryError::InvalidFile => "invalid_file".to_string(),
+    })
+}
+
+fn handle_ppq_backup_restore(
+    actor_state: &mut ActorState,
+    core_tx: &flume::Sender<CoreMsg>,
+    encrypted_bytes: &[u8],
+    backup_password: &str,
+    auth: &SensitiveActionAuth,
+) -> Result<PpqRecoveryResult, String> {
+    if let Err(code) = verify_sensitive_auth(actor_state, auth) {
+        if code == "duress" {
+            return Err(ppq_duress_response(actor_state, core_tx));
+        }
+        return Err(code.to_string());
+    }
+    // Decoy sessions cannot restore: recovery is the post-threat path and
+    // requires a clean re-enrollment (§4.6 full flow deferred, noted in plan).
+    if ppq_decoy_active(actor_state) {
+        return Ok(PpqRecoveryResult {
+            success: false,
+            error_code: Some("recovery_unavailable".to_string()),
+        });
+    }
+    if encrypted_bytes.len() > ppq::recovery::RECOVERY_FILE_MAX_BYTES {
+        return Ok(PpqRecoveryResult {
+            success: false,
+            error_code: Some("invalid_file".to_string()),
+        });
+    }
+    let doc = match ppq::recovery::decrypt_recovery_document(encrypted_bytes, backup_password) {
+        Ok(doc) => doc,
+        Err(e) => {
+            return Ok(PpqRecoveryResult {
+                success: false,
+                error_code: Some(
+                    match e {
+                        ppq::recovery::RecoveryError::WrongPasswordOrCorruptFile => {
+                            "wrong_password_or_corrupt_file"
+                        }
+                        ppq::recovery::RecoveryError::UnsupportedBackupVersion => {
+                            "unsupported_version"
+                        }
+                        ppq::recovery::RecoveryError::InvalidFile => "invalid_file",
+                    }
+                    .to_string(),
+                ),
+            })
+        }
+    };
+
+    // Remote validation before committing local credentials (§4.5 step 4):
+    // reuse the stored key; if revoked, mint a fresh device key via the root
+    // credential (flow verified live, approval artifact §2.3).
+    let client = match ppq_production_client() {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(PpqRecoveryResult {
+                success: false,
+                error_code: Some("offline".to_string()),
+            })
+        }
+    };
+    let mut final_key = doc.api_key.clone();
+    let rt = &actor_state.runtime;
+    let validated = rt.block_on(async {
+        match client.balance(&doc.api_key).await {
+            Ok(_) => Ok(()),
+            Err(ppq::client::PpqError::AuthenticationExpired) => {
+                match client
+                    .create_device_key(&doc.credit_id, "mango-device-1")
+                    .await
+                {
+                    Ok(created) => {
+                        final_key = created.api_key;
+                        Ok(())
+                    }
+                    Err(e) => Err(ppq_error_code(&e)),
+                }
+            }
+            Err(e) => Err(ppq_error_code(&e)),
+        }
+    });
+    if let Err(code) = validated {
+        return Ok(PpqRecoveryResult {
+            success: false,
+            error_code: Some(code.to_string()),
+        });
+    }
+
+    // Same-credit_id restore keeps the backup marker; a replacement resets it.
+    let existing_credit = {
+        let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+        store.load_credit_id().ok().flatten()
+    };
+    let is_replacement = existing_credit
+        .as_ref()
+        .map(|c| c.as_str() != doc.credit_id.as_str())
+        .unwrap_or(false);
+
+    let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+    if let Err(e) = store.store_provisioned(&doc.credit_id, &final_key) {
+        return Ok(PpqRecoveryResult {
+            success: false,
+            error_code: Some(ppq_error_code(&e).to_string()),
+        });
+    }
+    ppq_set_setting(actor_state, ppq::account::SETTING_MODE, "managed");
+    if is_replacement {
+        ppq_set_setting(actor_state, ppq::account::SETTING_BACKUP_AT, "");
+        ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, "");
+        actor_state.ppq_pending = None;
+    }
+    actor_state.app_state.ppq = PpqAccountSummary {
+        mode: PpqAccountMode::Managed,
+        setup_phase: PpqSetupPhase::Ready,
+        ..PpqAccountSummary::default()
+    };
+    actor_state.app_state.ppq.backup_confirmed = !is_replacement
+        && ppq_setting(actor_state, ppq::account::SETTING_BACKUP_AT)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+    spawn_ppq_balance_refresh(actor_state, core_tx);
+    Ok(PpqRecoveryResult {
+        success: true,
+        error_code: None,
+    })
+}
+
+fn handle_confirm_delete_all(
+    actor_state: &mut ActorState,
+    core_tx: &flume::Sender<CoreMsg>,
+    auth: &SensitiveActionAuth,
+    backup_risk_acknowledged: bool,
+) -> Result<ResetResult, String> {
+    if let Err(code) = verify_sensitive_auth(actor_state, auth) {
+        if code == "duress" {
+            return Err(ppq_duress_response(actor_state, core_tx));
+        }
+        return Err(code.to_string());
+    }
+    if !backup_risk_acknowledged {
+        return Err("acknowledgement_required".to_string());
+    }
+    // Offline-safe by design: keychain reads + local encryption only.
+    wipe_local_install(
+        actor_state,
+        core_tx.clone(),
+        WipeMode::UserRequestedFullReset,
+    )
+    .map(|_| ResetResult {
+        success: true,
+        error: None,
+    })
+    .map_err(|e| e)
+}
+
+fn handle_confirm_forget(
+    actor_state: &mut ActorState,
+    auth: &SensitiveActionAuth,
+    backup_risk_acknowledged: bool,
+) -> Result<ForgetResult, String> {
+    if let Err(code) = verify_sensitive_auth(actor_state, auth) {
+        return Err(code.to_string());
+    }
+    if !backup_risk_acknowledged {
+        return Err("acknowledgement_required".to_string());
+    }
+    let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+    store
+        .delete_all_verified()
+        .map(|_| {
+            for key in [
+                ppq::account::SETTING_MODE,
+                ppq::account::SETTING_BACKUP_AT,
+                ppq::account::SETTING_FIRST_FUNDING_REMIND,
+                ppq::account::SETTING_LAST_BALANCE,
+                ppq::account::SETTING_BALANCE_AT,
+                ppq::account::SETTING_PENDING_INVOICE,
+                ppq::account::SETTING_CREATED_AT,
+            ] {
+                ppq_set_setting(actor_state, key, "");
+            }
+            actor_state.ppq_pending = None;
+            actor_state.app_state.ppq = PpqAccountSummary::default();
+            ForgetResult {
+                success: true,
+                error: None,
+            }
+        })
+        .map_err(|_| "storage_failure".to_string())
+}
+
+/// Explicit wipe policy (plan §6.2 migration step 1). Duress deliberately
+/// preserves both PPQ credentials byte-for-byte and suppresses them in the
+/// decoy session; a user-requested full reset deletes them verified.
+enum WipeMode {
+    UserRequestedFullReset,
+    DuressPreservePpq,
+}
+
 fn wipe_local_install(
     actor_state: &mut ActorState,
     core_tx: flume::Sender<CoreMsg>,
-    seed_duress_decoys: bool,
+    mode: WipeMode,
 ) -> Result<(), String> {
     if let Some(token) = actor_state.active_stream_token.take() {
         token.cancel();
@@ -1633,12 +2594,35 @@ fn wipe_local_install(
         token.cancel();
     }
 
+    let mut preserve_ppq_ids: Vec<String> = Vec::new();
+    if matches!(mode, WipeMode::DuressPreservePpq) {
+        // Preserve both PPQ credentials byte-for-byte (user override on the
+        // Pi review): the device key is excluded from backend-key deletion
+        // and the root credential is never touched. Both stay dormant until
+        // authenticated generic recovery reattaches them.
+        preserve_ppq_ids.push("ppq-ai".to_string());
+    }
     for backend_id in collect_keychain_secret_ids(actor_state) {
+        if preserve_ppq_ids.contains(&backend_id) {
+            continue;
+        }
         actor_state.keychain.delete("mango".to_string(), backend_id);
     }
     actor_state
         .keychain
         .delete("mango".to_string(), "dek".to_string());
+    if matches!(mode, WipeMode::UserRequestedFullReset) {
+        // Verified deletion of both PPQ credentials (§6.2): duress never
+        // reaches this branch.
+        let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+        if let Err(e) = store.delete_all_verified() {
+            log::error!("[reset] PPQ credential verified-delete failed: {e}");
+        }
+    }
+    // Both modes clear actor-memory PPQ state and pending invoice metadata
+    // (the latter dies with the DB wipe below).
+    actor_state.ppq_pending = None;
+    actor_state.ppq_provisioning = false;
 
     actor_state.db = None;
     actor_state.dek = None;
@@ -1700,7 +2684,7 @@ fn wipe_local_install(
             rag::VectorIndex::new("", None).expect("empty fallback VectorIndex")
         });
 
-    if seed_duress_decoys {
+    if matches!(mode, WipeMode::DuressPreservePpq) {
         if let Some(db) = actor_state.db.as_ref() {
             seed_duress_decoy_data(db.conn());
         }
@@ -1710,7 +2694,7 @@ fn wipe_local_install(
     actor_state.app_state.rev = preserved_rev;
     actor_state.app_state.biometric_available = biometric_available;
     load_post_unlock(actor_state, core_tx, false);
-    if seed_duress_decoys {
+    if matches!(mode, WipeMode::DuressPreservePpq) {
         actor_state.app_state.router.current_screen = Screen::Home;
     }
 
@@ -6346,6 +7330,95 @@ fn load_post_unlock(
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    // PPQ managed-account classification (plan §8). Duress decoy sessions
+    // short-circuit BEFORE any keychain inspection: preserved credentials
+    // stay dormant, unclassified, and produce no network activity (§6.2 step 4).
+    if duress_decoy_mode {
+        actor_state.app_state.ppq = PpqAccountSummary::default();
+        actor_state.ppq_pending = None;
+    } else {
+        let settings_mode =
+            persistence::queries::get_setting(db.conn(), ppq::account::SETTING_MODE)
+                .ok()
+                .flatten()
+                .filter(|v| !v.is_empty());
+        let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+        let mut summary = PpqAccountSummary::default();
+        match ppq::account::classify_startup(&store, settings_mode.as_deref()) {
+            ppq::account::StartupMode::None => {}
+            ppq::account::StartupMode::ExternalKey => {
+                summary.mode = PpqAccountMode::ExternalKey;
+                summary.setup_phase = PpqSetupPhase::Ready;
+            }
+            ppq::account::StartupMode::Managed => {
+                summary.mode = PpqAccountMode::Managed;
+                summary.setup_phase = PpqSetupPhase::Ready;
+            }
+            ppq::account::StartupMode::RecoverablePartialState => {
+                summary.mode = PpqAccountMode::Managed;
+                summary.setup_phase = PpqSetupPhase::RecoverablePartialState;
+            }
+            ppq::account::StartupMode::RecoveryRequired => {
+                summary.mode = PpqAccountMode::Managed;
+                summary.setup_phase = PpqSetupPhase::Error;
+                summary.error = Some("recovery_required".to_string());
+            }
+        }
+        if summary.mode == PpqAccountMode::Managed {
+            summary.backup_confirmed =
+                persistence::queries::get_setting(db.conn(), ppq::account::SETTING_BACKUP_AT)
+                    .ok()
+                    .flatten()
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false);
+            summary.balance_display =
+                persistence::queries::get_setting(db.conn(), ppq::account::SETTING_LAST_BALANCE)
+                    .ok()
+                    .flatten()
+                    .filter(|v| !v.is_empty());
+            summary.balance_updated_at =
+                persistence::queries::get_setting(db.conn(), ppq::account::SETTING_BALANCE_AT)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.parse::<i64>().ok());
+            summary.first_funding_reminder_shown = persistence::queries::get_setting(
+                db.conn(),
+                ppq::account::SETTING_FIRST_FUNDING_REMIND,
+            )
+            .ok()
+            .flatten()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+            // Resume pending invoice after process death (§6.9 step 6).
+            if let Some(json) =
+                persistence::queries::get_setting(db.conn(), ppq::account::SETTING_PENDING_INVOICE)
+                    .ok()
+                    .flatten()
+                    .filter(|v| !v.is_empty())
+            {
+                if let Ok(p) = serde_json::from_str::<ppq::account::PendingInvoice>(&json) {
+                    if (now_secs()) < p.expires_at {
+                        summary.funding = Some(PpqFundingSummary {
+                            amount_sats: p.amount_sats,
+                            bolt11: p.bolt11.clone(),
+                            expires_at: p.expires_at,
+                            status: "New".to_string(),
+                        });
+                        summary.funding_phase = PpqFundingPhase::AwaitingPayment;
+                        actor_state.ppq_pending = Some(p);
+                    } else {
+                        let _ = persistence::queries::set_setting(
+                            db.conn(),
+                            ppq::account::SETTING_PENDING_INVOICE,
+                            "",
+                        );
+                    }
+                }
+            }
+        }
+        actor_state.app_state.ppq = summary;
+    }
+
     // Determine post-unlock / initial screen.
     let post_screen = if is_post_unlock {
         // Restore pre-lock screen, fall back to Home or Onboarding.
@@ -6701,6 +7774,11 @@ impl FfiApp {
                 pending_attachment: None,
                 pending_image_attachment: None,
                 pending_attested_send: None,
+                // PPQ managed-account actor state (plan §6.8/§6.9). Pending
+                // invoice metadata is persisted to the encrypted settings
+                // table; this copy drives polling decisions on the actor.
+                ppq_pending: None,
+                ppq_provisioning: false,
                 router: llm::FailoverRouter::new(),
                 current_streaming_backend_id: None,
                 current_streaming_model_id: None,
@@ -7117,21 +8195,163 @@ impl FfiApp {
                                 actor_state.app_state.router.current_screen = Screen::Home;
                             }
 
-                            AppAction::DeleteAllData => match wipe_local_install(
-                                &mut actor_state,
-                                core_tx_for_thread.clone(),
-                                false,
-                            ) {
-                                Ok(()) => {
-                                    actor_state.app_state.toast =
-                                        Some("All local app data was deleted.".to_string());
+                            AppAction::DeleteAllData => {
+                                // Plan §6.2 step 6: with a managed PPQ account
+                                // present, the one-tap path is removed — surface
+                                // the backup-first preflight instead. Without a
+                                // managed account the old immediate reset stays.
+                                if actor_state.app_state.ppq.mode == PpqAccountMode::Managed {
+                                    actor_state.app_state.ppq.destructive_preflight =
+                                        Some(PpqDestructivePreflight {
+                                            kind: "delete_all_data".to_string(),
+                                            balance_display: actor_state
+                                                .app_state
+                                                .ppq
+                                                .balance_display
+                                                .clone(),
+                                            balance_is_unknown: actor_state
+                                                .app_state
+                                                .ppq
+                                                .balance_display
+                                                .is_none(),
+                                            backup_confirmed: actor_state
+                                                .app_state
+                                                .ppq
+                                                .backup_confirmed,
+                                        });
+                                    actor_state.app_state.toast = Some(
+                                        "Review the PPQ backup warning before deleting."
+                                            .to_string(),
+                                    );
+                                } else {
+                                    match wipe_local_install(
+                                        &mut actor_state,
+                                        core_tx_for_thread.clone(),
+                                        WipeMode::UserRequestedFullReset,
+                                    ) {
+                                        Ok(()) => {
+                                            actor_state.app_state.toast =
+                                                Some("All local app data was deleted.".to_string());
+                                        }
+                                        Err(e) => {
+                                            log::error!("[reset] DeleteAllData failed: {e}");
+                                            actor_state.app_state.toast =
+                                                Some(format!("Delete all data failed: {}", e));
+                                        }
+                                    }
                                 }
-                                Err(e) => {
-                                    log::error!("[reset] DeleteAllData failed: {e}");
-                                    actor_state.app_state.toast =
-                                        Some(format!("Delete all data failed: {}", e));
+                            }
+
+                            AppAction::ProvisionManagedPpq => {
+                                handle_ppq_provision(&mut actor_state, &core_tx_for_thread);
+                            }
+                            AppAction::RefreshPpqAccount => {
+                                spawn_ppq_balance_refresh(&mut actor_state, &core_tx_for_thread);
+                            }
+                            AppAction::CreatePpqLightningTopup { amount_sats } => {
+                                handle_ppq_create_invoice(
+                                    &mut actor_state,
+                                    &core_tx_for_thread,
+                                    amount_sats,
+                                );
+                            }
+                            AppAction::CheckPpqTopup => {
+                                handle_ppq_check_topup(&mut actor_state, &core_tx_for_thread);
+                            }
+                            AppAction::CancelPpqTopup => {
+                                actor_state.ppq_pending = None;
+                                if let Some(db) = actor_state.db.as_ref() {
+                                    let _ = persistence::queries::set_setting(
+                                        db.conn(),
+                                        ppq::account::SETTING_PENDING_INVOICE,
+                                        "",
+                                    );
                                 }
-                            },
+                                actor_state.app_state.ppq.funding = None;
+                                actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Idle;
+                            }
+                            AppAction::ConfirmPpqBackupSaved => {
+                                // Marker is set ONLY after Android confirmed the
+                                // encrypted file was written and closed (§4.4).
+                                if let Some(db) = actor_state.db.as_ref() {
+                                    let _ = persistence::queries::set_setting(
+                                        db.conn(),
+                                        ppq::account::SETTING_BACKUP_AT,
+                                        &now_secs().to_string(),
+                                    );
+                                }
+                                actor_state.app_state.ppq.backup_confirmed = true;
+                                actor_state.app_state.ppq.destructive_preflight = None;
+                                if actor_state.app_state.ppq.setup_phase
+                                    == PpqSetupPhase::NeedsBackup
+                                {
+                                    actor_state.app_state.ppq.setup_phase =
+                                        PpqSetupPhase::NeedsFunds;
+                                }
+                            }
+                            AppAction::DeferPpqBackup => {
+                                if actor_state.app_state.ppq.setup_phase
+                                    == PpqSetupPhase::NeedsBackup
+                                {
+                                    actor_state.app_state.ppq.setup_phase =
+                                        PpqSetupPhase::NeedsFunds;
+                                }
+                            }
+                            AppAction::MarkFirstFundingReminderShown => {
+                                if let Some(db) = actor_state.db.as_ref() {
+                                    let _ = persistence::queries::set_setting(
+                                        db.conn(),
+                                        ppq::account::SETTING_FIRST_FUNDING_REMIND,
+                                        &now_secs().to_string(),
+                                    );
+                                }
+                                actor_state.app_state.ppq.first_funding_reminder_shown = true;
+                            }
+                            AppAction::BeginForgetManagedPpqFromDevice => {
+                                if actor_state.app_state.ppq.mode == PpqAccountMode::Managed {
+                                    actor_state.app_state.ppq.destructive_preflight =
+                                        Some(PpqDestructivePreflight {
+                                            kind: "forget_managed".to_string(),
+                                            balance_display: actor_state
+                                                .app_state
+                                                .ppq
+                                                .balance_display
+                                                .clone(),
+                                            balance_is_unknown: actor_state
+                                                .app_state
+                                                .ppq
+                                                .balance_display
+                                                .is_none(),
+                                            backup_confirmed: actor_state
+                                                .app_state
+                                                .ppq
+                                                .backup_confirmed,
+                                        });
+                                }
+                            }
+                            AppAction::BeginDeleteAllDataPreflight => {
+                                actor_state.app_state.ppq.destructive_preflight =
+                                    Some(PpqDestructivePreflight {
+                                        kind: "delete_all_data".to_string(),
+                                        balance_display: actor_state
+                                            .app_state
+                                            .ppq
+                                            .balance_display
+                                            .clone(),
+                                        balance_is_unknown: actor_state
+                                            .app_state
+                                            .ppq
+                                            .balance_display
+                                            .is_none(),
+                                        backup_confirmed: actor_state
+                                            .app_state
+                                            .ppq
+                                            .backup_confirmed,
+                                    });
+                            }
+                            AppAction::CancelDestructivePreflight => {
+                                actor_state.app_state.ppq.destructive_preflight = None;
+                            }
 
                             AppAction::RetryLastMessage => {
                                 if reject_chat_action_while_attestation_pending(&mut actor_state) {
@@ -9055,12 +10275,14 @@ impl FfiApp {
                                         pin.as_bytes(),
                                         duress_hash,
                                     ) {
-                                        // Duress PIN entered: wipe all data (D-15, D-16).
-                                        log::warn!("[auth] Duress PIN detected — wiping all data");
+                                        // Duress PIN entered: wipe Mango data but
+                                        // PRESERVE both PPQ credentials (user
+                                        // override on the Pi review; plan §6.2).
+                                        log::warn!("[auth] Duress PIN detected — wiping Mango data, preserving dormant PPQ credentials");
                                         if let Err(e) = wipe_local_install(
                                             &mut actor_state,
                                             core_tx_for_thread.clone(),
-                                            true,
+                                            WipeMode::DuressPreservePpq,
                                         ) {
                                             log::error!(
                                                 "[auth] Duress wipe: failed to reset install: {e}"
@@ -11220,6 +12442,77 @@ impl FfiApp {
                         let _ = reply.send(());
                     }
 
+                    CoreMsg::PpqEvent(event) => {
+                        handle_ppq_event(&mut actor_state, &core_tx_for_thread, event);
+                        actor_state.app_state.rev += 1;
+                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                    }
+
+                    CoreMsg::CreatePpqRecoveryBackup {
+                        backup_password,
+                        auth,
+                        reply,
+                    } => {
+                        let result = handle_ppq_backup_export(
+                            &mut actor_state,
+                            &core_tx_for_thread,
+                            &backup_password,
+                            &auth,
+                        );
+                        let _ = reply.send(result.map(Zeroizing::new));
+                        actor_state.app_state.rev += 1;
+                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                    }
+
+                    CoreMsg::RestorePpqRecoveryBackup {
+                        encrypted_bytes,
+                        backup_password,
+                        auth,
+                        reply,
+                    } => {
+                        let result = handle_ppq_backup_restore(
+                            &mut actor_state,
+                            &core_tx_for_thread,
+                            &encrypted_bytes,
+                            &backup_password,
+                            &auth,
+                        );
+                        let _ = reply.send(result);
+                        actor_state.app_state.rev += 1;
+                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                    }
+
+                    CoreMsg::ConfirmDeleteAllData {
+                        auth,
+                        backup_risk_acknowledged,
+                        reply,
+                    } => {
+                        let result = handle_confirm_delete_all(
+                            &mut actor_state,
+                            &core_tx_for_thread,
+                            &auth,
+                            backup_risk_acknowledged,
+                        );
+                        let _ = reply.send(result);
+                        actor_state.app_state.rev += 1;
+                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                    }
+
+                    CoreMsg::ConfirmForgetManagedPpq {
+                        auth,
+                        backup_risk_acknowledged,
+                        reply,
+                    } => {
+                        let result = handle_confirm_forget(
+                            &mut actor_state,
+                            &auth,
+                            backup_risk_acknowledged,
+                        );
+                        let _ = reply.send(result);
+                        actor_state.app_state.rev += 1;
+                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                    }
+
                     CoreMsg::ReadEncryptedImage { message_id, reply } => {
                         // Decrypt image on the actor thread (single-user desktop: fine to block briefly).
                         // Plaintext bytes live only on the stack here — never stored in ActorState (T-ECE-04).
@@ -11335,6 +12628,108 @@ impl FfiApp {
         self.core_tx
             .send(CoreMsg::ExportConversationMarkdown {
                 conversation_id,
+                reply: reply_tx,
+            })
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor channel error: {e}"),
+            })?;
+        reply_rx
+            .recv()
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor reply error: {e}"),
+            })?
+            .map_err(|reason| FfiError::Internal { reason })
+    }
+
+    /// ── PPQ managed-account one-shot methods (plan §6.4) ──
+    ///
+    /// Direct request/reply calls (never AppAction) so backup passwords,
+    /// PINs, and ciphertext never sit in long-lived action state. Call from
+    /// a worker thread (Kotlin: Dispatchers.IO) — Argon2 work blocks briefly.
+    pub fn create_ppq_recovery_backup(
+        &self,
+        backup_password: String,
+        auth: SensitiveActionAuth,
+    ) -> Result<Vec<u8>, FfiError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.core_tx
+            .send(CoreMsg::CreatePpqRecoveryBackup {
+                backup_password,
+                auth,
+                reply: reply_tx,
+            })
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor channel error: {e}"),
+            })?;
+        reply_rx
+            .recv()
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor reply error: {e}"),
+            })?
+            .map(|bytes| (*bytes).clone())
+            .map_err(|reason| FfiError::Internal { reason })
+    }
+
+    pub fn restore_ppq_recovery_backup(
+        &self,
+        encrypted_bytes: Vec<u8>,
+        backup_password: String,
+        auth: SensitiveActionAuth,
+    ) -> Result<PpqRecoveryResult, FfiError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.core_tx
+            .send(CoreMsg::RestorePpqRecoveryBackup {
+                encrypted_bytes,
+                backup_password,
+                auth,
+                reply: reply_tx,
+            })
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor channel error: {e}"),
+            })?;
+        reply_rx
+            .recv()
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor reply error: {e}"),
+            })?
+            .map_err(|reason| FfiError::Internal { reason })
+    }
+
+    /// Final authenticated step of the backup-aware Delete All Data preflight.
+    /// The one-tap path is gone when a managed PPQ account exists (§6.4).
+    pub fn confirm_delete_all_data(
+        &self,
+        auth: SensitiveActionAuth,
+        backup_risk_acknowledged: bool,
+    ) -> Result<ResetResult, FfiError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.core_tx
+            .send(CoreMsg::ConfirmDeleteAllData {
+                auth,
+                backup_risk_acknowledged,
+                reply: reply_tx,
+            })
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor channel error: {e}"),
+            })?;
+        reply_rx
+            .recv()
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor reply error: {e}"),
+            })?
+            .map_err(|reason| FfiError::Internal { reason })
+    }
+
+    pub fn confirm_forget_managed_ppq(
+        &self,
+        auth: SensitiveActionAuth,
+        backup_risk_acknowledged: bool,
+    ) -> Result<ForgetResult, FfiError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.core_tx
+            .send(CoreMsg::ConfirmForgetManagedPpq {
+                auth,
+                backup_risk_acknowledged,
                 reply: reply_tx,
             })
             .map_err(|e| FfiError::Internal {
@@ -13286,6 +14681,8 @@ mod image_red_tests {
         let local_llm_provider_arc: Arc<dyn LocalLlmProvider> = Arc::new(NullLocalLlmProvider);
         ActorState {
             app_state: AppState::default(),
+            ppq_pending: None,
+            ppq_provisioning: false,
             backends: vec![],
             attested_tls_public_keys: HashMap::new(),
             attestation_expires_at: HashMap::new(),

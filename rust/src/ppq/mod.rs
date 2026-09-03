@@ -11,8 +11,10 @@
 //!   `docs/integrations/ppq-fixtures/` (Wave 0 evidence). Unknown invoice
 //!   status values are handled conservatively, never guessed.
 
+pub mod account;
 pub mod client;
 pub mod contracts;
+pub mod recovery;
 pub mod secret_store;
 
 pub use client::{PpqClient, PRODUCTION_BASE_URL};

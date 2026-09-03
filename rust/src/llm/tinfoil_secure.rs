@@ -1642,6 +1642,7 @@ fn llm_to_attestation_error(error: LlmError) -> AttestationError {
         LlmError::ModelNotFound { model_id } => AttestationError::QuoteVerification {
             reason: format!("Unexpected model error while verifying attestation: {model_id}"),
         },
+        LlmError::InsufficientPpqBalance { reason } => AttestationError::NetworkError { reason },
     }
 }
 

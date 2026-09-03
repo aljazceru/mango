@@ -483,6 +483,13 @@ fn test_provider_fallback() {
             }
             other => panic!("Expected AttestationResult(Failed), got: {:?}", other),
         },
+        crate::CoreMsg::PpqEvent(_)
+        | crate::CoreMsg::CreatePpqRecoveryBackup { .. }
+        | crate::CoreMsg::RestorePpqRecoveryBackup { .. }
+        | crate::CoreMsg::ConfirmDeleteAllData { .. }
+        | crate::CoreMsg::ConfirmForgetManagedPpq { .. } => {
+            panic!("PPQ messages are not expected in this test")
+        }
         crate::CoreMsg::Action(_) => panic!("Expected InternalEvent, got Action"),
         crate::CoreMsg::ReadEncryptedImage { .. } => {
             panic!("Expected InternalEvent, got ReadEncryptedImage")

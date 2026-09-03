@@ -211,11 +211,9 @@ pub fn open_envelope(envelope_hex: &str, aes_key: &[u8; 32]) -> Result<Vec<u8>, 
     let cipher = Aes256Gcm::new_from_slice(aes_key).map_err(|e| LlmError::NetworkError {
         reason: format!("AES key: {e}"),
     })?;
-    let nonce = nonce_12
-        .try_into()
-        .map_err(|_| LlmError::NetworkError {
-            reason: "Venice envelope nonce length invalid".into(),
-        })?;
+    let nonce = nonce_12.try_into().map_err(|_| LlmError::NetworkError {
+        reason: "Venice envelope nonce length invalid".into(),
+    })?;
     cipher
         .decrypt(&nonce, ct_tag)
         .map_err(|_| LlmError::NetworkError {

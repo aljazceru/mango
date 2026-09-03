@@ -865,6 +865,12 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_mango_core_checksum_func_local_model_catalog(
     ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_confirm_delete_all_data(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_confirm_forget_managed_ppq(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_create_ppq_recovery_backup(
+    ): Int
     external fun uniffi_mango_core_checksum_method_ffiapp_dispatch(
     ): Int
     external fun uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown(
@@ -878,6 +884,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_mango_core_checksum_method_ffiapp_listen_for_updates(
     ): Int
     external fun uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_restore_ppq_recovery_backup(
     ): Int
     external fun uniffi_mango_core_checksum_method_ffiapp_state(
     ): Int
@@ -953,6 +961,12 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_mango_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,`keychain`: Long,`embeddingProvider`: Long,`embeddingStatus`: RustBuffer.ByValue,`localLlmProvider`: Long,`biometricProvider`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_mango_core_fn_method_ffiapp_confirm_delete_all_data(`ptr`: Long,`auth`: RustBuffer.ByValue,`backupRiskAcknowledged`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_confirm_forget_managed_ppq(`ptr`: Long,`auth`: RustBuffer.ByValue,`backupRiskAcknowledged`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_create_ppq_recovery_backup(`ptr`: Long,`backupPassword`: RustBuffer.ByValue,`auth`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_mango_core_fn_method_ffiapp_dispatch(`ptr`: Long,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(`ptr`: Long,`conversationId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -966,6 +980,8 @@ internal object UniffiLib {
     external fun uniffi_mango_core_fn_method_ffiapp_listen_for_updates(`ptr`: Long,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(`ptr`: Long,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_restore_ppq_recovery_backup(`ptr`: Long,`encryptedBytes`: RustBuffer.ByValue,`backupPassword`: RustBuffer.ByValue,`auth`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_mango_core_fn_method_ffiapp_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -1133,6 +1149,15 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_mango_core_checksum_func_local_model_catalog() != 54432) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_confirm_delete_all_data() != 32915) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_confirm_forget_managed_ppq() != 56233) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_create_ppq_recovery_backup() != 35739) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_dispatch() != 14382) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1152,6 +1177,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 26433) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_mango_core_checksum_method_ffiapp_restore_ppq_recovery_backup() != 22942) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_mango_core_checksum_method_ffiapp_state() != 37810) {
@@ -1725,6 +1753,23 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 public interface FfiAppInterface {
     
     /**
+     * Final authenticated step of the backup-aware Delete All Data preflight.
+     * The one-tap path is gone when a managed PPQ account exists (§6.4).
+     */
+    fun `confirmDeleteAllData`(`auth`: SensitiveActionAuth, `backupRiskAcknowledged`: kotlin.Boolean): ResetResult
+    
+    fun `confirmForgetManagedPpq`(`auth`: SensitiveActionAuth, `backupRiskAcknowledged`: kotlin.Boolean): ForgetResult
+    
+    /**
+     * ── PPQ managed-account one-shot methods (plan §6.4) ──
+     *
+     * Direct request/reply calls (never AppAction) so backup passwords,
+     * PINs, and ciphertext never sit in long-lived action state. Call from
+     * a worker thread (Kotlin: Dispatchers.IO) — Argon2 work blocks briefly.
+     */
+    fun `createPpqRecoveryBackup`(`backupPassword`: kotlin.String, `auth`: SensitiveActionAuth): kotlin.ByteArray
+    
+    /**
      * Dispatch an action to the actor loop.
      */
     fun `dispatch`(`action`: AppAction)
@@ -1783,6 +1828,8 @@ public interface FfiAppInterface {
      * Returns Err("no image for this message") when the message has no associated image.
      */
     fun `readEncryptedImage`(`messageId`: kotlin.String): kotlin.ByteArray
+    
+    fun `restorePpqRecoveryBackup`(`encryptedBytes`: kotlin.ByteArray, `backupPassword`: kotlin.String, `auth`: SensitiveActionAuth): PpqRecoveryResult
     
     /**
      * Read the latest state snapshot from the shared RwLock.
@@ -1931,6 +1978,65 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
 
     
     /**
+     * Final authenticated step of the backup-aware Delete All Data preflight.
+     * The one-tap path is gone when a managed PPQ account exists (§6.4).
+     */
+    @Throws(FfiException::class)override fun `confirmDeleteAllData`(`auth`: SensitiveActionAuth, `backupRiskAcknowledged`: kotlin.Boolean): ResetResult {
+            return FfiConverterTypeResetResult.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_confirm_delete_all_data(
+        it,
+        
+        FfiConverterTypeSensitiveActionAuth.lower(`auth`),
+        FfiConverterBoolean.lower(`backupRiskAcknowledged`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `confirmForgetManagedPpq`(`auth`: SensitiveActionAuth, `backupRiskAcknowledged`: kotlin.Boolean): ForgetResult {
+            return FfiConverterTypeForgetResult.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_confirm_forget_managed_ppq(
+        it,
+        
+        FfiConverterTypeSensitiveActionAuth.lower(`auth`),
+        FfiConverterBoolean.lower(`backupRiskAcknowledged`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * ── PPQ managed-account one-shot methods (plan §6.4) ──
+     *
+     * Direct request/reply calls (never AppAction) so backup passwords,
+     * PINs, and ciphertext never sit in long-lived action state. Call from
+     * a worker thread (Kotlin: Dispatchers.IO) — Argon2 work blocks briefly.
+     */
+    @Throws(FfiException::class)override fun `createPpqRecoveryBackup`(`backupPassword`: kotlin.String, `auth`: SensitiveActionAuth): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_create_ppq_recovery_backup(
+        it,
+        
+        FfiConverterString.lower(`backupPassword`),
+        FfiConverterTypeSensitiveActionAuth.lower(`auth`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Dispatch an action to the actor loop.
      */override fun `dispatch`(`action`: AppAction)
         = 
@@ -2069,6 +2175,23 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
         it,
         
         FfiConverterString.lower(`messageId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `restorePpqRecoveryBackup`(`encryptedBytes`: kotlin.ByteArray, `backupPassword`: kotlin.String, `auth`: SensitiveActionAuth): PpqRecoveryResult {
+            return FfiConverterTypePpqRecoveryResult.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_restore_ppq_recovery_backup(
+        it,
+        
+        FfiConverterByteArray.lower(`encryptedBytes`),
+        FfiConverterString.lower(`backupPassword`),
+        FfiConverterTypeSensitiveActionAuth.lower(`auth`),_status)
 }
     }
     )
@@ -2932,6 +3055,11 @@ data class AppState (
     var `onboarding`: OnboardingState
     , 
     /**
+     * Display-safe managed PPQ account summary (plan §6.3). No secrets.
+     */
+    var `ppq`: PpqAccountSummary
+    , 
+    /**
      * True after CompleteOnboarding until the first message is sent (D-17).
      * Platform UIs render a welcome placeholder: "You're all set! Send your first
      * message to start a confidential conversation." Cleared by SendMessage.
@@ -3159,6 +3287,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeUiMessage.read(buf),
             FfiConverterOptionalTypeAttachmentInfo.read(buf),
             FfiConverterTypeOnboardingState.read(buf),
+            FfiConverterTypePpqAccountSummary.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterSequenceTypeDocumentSummary.read(buf),
             FfiConverterOptionalTypeIngestionProgress.read(buf),
@@ -3211,6 +3340,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeUiMessage.allocationSize(value.`messages`) +
             FfiConverterOptionalTypeAttachmentInfo.allocationSize(value.`pendingAttachment`) +
             FfiConverterTypeOnboardingState.allocationSize(value.`onboarding`) +
+            FfiConverterTypePpqAccountSummary.allocationSize(value.`ppq`) +
             FfiConverterBoolean.allocationSize(value.`showFirstChatPlaceholder`) +
             FfiConverterSequenceTypeDocumentSummary.allocationSize(value.`documents`) +
             FfiConverterOptionalTypeIngestionProgress.allocationSize(value.`ingestionProgress`) +
@@ -3262,6 +3392,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeUiMessage.write(value.`messages`, buf)
             FfiConverterOptionalTypeAttachmentInfo.write(value.`pendingAttachment`, buf)
             FfiConverterTypeOnboardingState.write(value.`onboarding`, buf)
+            FfiConverterTypePpqAccountSummary.write(value.`ppq`, buf)
             FfiConverterBoolean.write(value.`showFirstChatPlaceholder`, buf)
             FfiConverterSequenceTypeDocumentSummary.write(value.`documents`, buf)
             FfiConverterOptionalTypeIngestionProgress.write(value.`ingestionProgress`, buf)
@@ -4114,6 +4245,44 @@ public object FfiConverterTypeFilePickResult: FfiConverterRustBuffer<FilePickRes
 
 
 
+data class ForgetResult (
+    var `success`: kotlin.Boolean
+    , 
+    var `error`: kotlin.String?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeForgetResult: FfiConverterRustBuffer<ForgetResult> {
+    override fun read(buf: ByteBuffer): ForgetResult {
+        return ForgetResult(
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ForgetResult) = (
+            FfiConverterBoolean.allocationSize(value.`success`) +
+            FfiConverterOptionalString.allocationSize(value.`error`)
+    )
+
+    override fun write(value: ForgetResult, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`success`, buf)
+            FfiConverterOptionalString.write(value.`error`, buf)
+    }
+}
+
+
+
 data class HybridProfile (
     var `id`: kotlin.String
     , 
@@ -4826,6 +4995,236 @@ public object FfiConverterTypePlatformHttpResponse: FfiConverterRustBuffer<Platf
 
 
 /**
+ * Display-safe managed-account summary. Contains no secrets: `credit_id`,
+ * API keys, decrypted backups, and PINs never appear here (plan §6.3).
+ */
+data class PpqAccountSummary (
+    var `mode`: PpqAccountMode
+    , 
+    var `setupPhase`: PpqSetupPhase
+    , 
+    var `fundingPhase`: PpqFundingPhase
+    , 
+    var `balanceDisplay`: kotlin.String?
+    , 
+    var `balanceUpdatedAt`: kotlin.Long?
+    , 
+    var `backupConfirmed`: kotlin.Boolean
+    , 
+    var `firstFundingReminderShown`: kotlin.Boolean
+    , 
+    var `funding`: PpqFundingSummary?
+    , 
+    /**
+     * Redacted error code (never raw bodies or credentials).
+     */
+    var `error`: kotlin.String?
+    , 
+    /**
+     * Non-destructive destructive-preflight banner (safe display data).
+     */
+    var `destructivePreflight`: PpqDestructivePreflight?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePpqAccountSummary: FfiConverterRustBuffer<PpqAccountSummary> {
+    override fun read(buf: ByteBuffer): PpqAccountSummary {
+        return PpqAccountSummary(
+            FfiConverterTypePpqAccountMode.read(buf),
+            FfiConverterTypePpqSetupPhase.read(buf),
+            FfiConverterTypePpqFundingPhase.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalTypePpqFundingSummary.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalTypePpqDestructivePreflight.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PpqAccountSummary) = (
+            FfiConverterTypePpqAccountMode.allocationSize(value.`mode`) +
+            FfiConverterTypePpqSetupPhase.allocationSize(value.`setupPhase`) +
+            FfiConverterTypePpqFundingPhase.allocationSize(value.`fundingPhase`) +
+            FfiConverterOptionalString.allocationSize(value.`balanceDisplay`) +
+            FfiConverterOptionalLong.allocationSize(value.`balanceUpdatedAt`) +
+            FfiConverterBoolean.allocationSize(value.`backupConfirmed`) +
+            FfiConverterBoolean.allocationSize(value.`firstFundingReminderShown`) +
+            FfiConverterOptionalTypePpqFundingSummary.allocationSize(value.`funding`) +
+            FfiConverterOptionalString.allocationSize(value.`error`) +
+            FfiConverterOptionalTypePpqDestructivePreflight.allocationSize(value.`destructivePreflight`)
+    )
+
+    override fun write(value: PpqAccountSummary, buf: ByteBuffer) {
+            FfiConverterTypePpqAccountMode.write(value.`mode`, buf)
+            FfiConverterTypePpqSetupPhase.write(value.`setupPhase`, buf)
+            FfiConverterTypePpqFundingPhase.write(value.`fundingPhase`, buf)
+            FfiConverterOptionalString.write(value.`balanceDisplay`, buf)
+            FfiConverterOptionalLong.write(value.`balanceUpdatedAt`, buf)
+            FfiConverterBoolean.write(value.`backupConfirmed`, buf)
+            FfiConverterBoolean.write(value.`firstFundingReminderShown`, buf)
+            FfiConverterOptionalTypePpqFundingSummary.write(value.`funding`, buf)
+            FfiConverterOptionalString.write(value.`error`, buf)
+            FfiConverterOptionalTypePpqDestructivePreflight.write(value.`destructivePreflight`, buf)
+    }
+}
+
+
+
+data class PpqDestructivePreflight (
+    /**
+     * "delete_all_data" | "forget_managed"
+     */
+    var `kind`: kotlin.String
+    , 
+    var `balanceDisplay`: kotlin.String?
+    , 
+    var `balanceIsUnknown`: kotlin.Boolean
+    , 
+    var `backupConfirmed`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePpqDestructivePreflight: FfiConverterRustBuffer<PpqDestructivePreflight> {
+    override fun read(buf: ByteBuffer): PpqDestructivePreflight {
+        return PpqDestructivePreflight(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PpqDestructivePreflight) = (
+            FfiConverterString.allocationSize(value.`kind`) +
+            FfiConverterOptionalString.allocationSize(value.`balanceDisplay`) +
+            FfiConverterBoolean.allocationSize(value.`balanceIsUnknown`) +
+            FfiConverterBoolean.allocationSize(value.`backupConfirmed`)
+    )
+
+    override fun write(value: PpqDestructivePreflight, buf: ByteBuffer) {
+            FfiConverterString.write(value.`kind`, buf)
+            FfiConverterOptionalString.write(value.`balanceDisplay`, buf)
+            FfiConverterBoolean.write(value.`balanceIsUnknown`, buf)
+            FfiConverterBoolean.write(value.`backupConfirmed`, buf)
+    }
+}
+
+
+
+/**
+ * Display-safe PPQ funding invoice. `bolt11` is a payment request (not an
+ * account credential): needed for QR/wallet handoff, never logged, cleared
+ * on paid/cancelled/replaced/expired (plan §6.3).
+ */
+data class PpqFundingSummary (
+    var `amountSats`: kotlin.ULong
+    , 
+    var `bolt11`: kotlin.String
+    , 
+    var `expiresAt`: kotlin.Long
+    , 
+    var `status`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePpqFundingSummary: FfiConverterRustBuffer<PpqFundingSummary> {
+    override fun read(buf: ByteBuffer): PpqFundingSummary {
+        return PpqFundingSummary(
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PpqFundingSummary) = (
+            FfiConverterULong.allocationSize(value.`amountSats`) +
+            FfiConverterString.allocationSize(value.`bolt11`) +
+            FfiConverterLong.allocationSize(value.`expiresAt`) +
+            FfiConverterString.allocationSize(value.`status`)
+    )
+
+    override fun write(value: PpqFundingSummary, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`amountSats`, buf)
+            FfiConverterString.write(value.`bolt11`, buf)
+            FfiConverterLong.write(value.`expiresAt`, buf)
+            FfiConverterString.write(value.`status`, buf)
+    }
+}
+
+
+
+data class PpqRecoveryResult (
+    var `success`: kotlin.Boolean
+    , 
+    var `errorCode`: kotlin.String?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePpqRecoveryResult: FfiConverterRustBuffer<PpqRecoveryResult> {
+    override fun read(buf: ByteBuffer): PpqRecoveryResult {
+        return PpqRecoveryResult(
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PpqRecoveryResult) = (
+            FfiConverterBoolean.allocationSize(value.`success`) +
+            FfiConverterOptionalString.allocationSize(value.`errorCode`)
+    )
+
+    override fun write(value: PpqRecoveryResult, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`success`, buf)
+            FfiConverterOptionalString.write(value.`errorCode`, buf)
+    }
+}
+
+
+
+/**
  * A known provider preset for the Add Backend form.
  * UniFFI-exported so all platforms share the same preset data.
  */
@@ -4892,6 +5291,44 @@ public object FfiConverterTypeProviderPreset: FfiConverterRustBuffer<ProviderPre
             FfiConverterString.write(value.`baseUrl`, buf)
             FfiConverterTypeTeeType.write(value.`teeType`, buf)
             FfiConverterString.write(value.`description`, buf)
+    }
+}
+
+
+
+data class ResetResult (
+    var `success`: kotlin.Boolean
+    , 
+    var `error`: kotlin.String?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeResetResult: FfiConverterRustBuffer<ResetResult> {
+    override fun read(buf: ByteBuffer): ResetResult {
+        return ResetResult(
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ResetResult) = (
+            FfiConverterBoolean.allocationSize(value.`success`) +
+            FfiConverterOptionalString.allocationSize(value.`error`)
+    )
+
+    override fun write(value: ResetResult, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`success`, buf)
+            FfiConverterOptionalString.write(value.`error`, buf)
     }
 }
 
@@ -5415,6 +5852,45 @@ sealed class AppAction {
      * Delete all locally stored app data and return to clean-install state.
      */
     object DeleteAllData : AppAction()
+    
+    
+    object ProvisionManagedPpq : AppAction()
+    
+    
+    object RefreshPpqAccount : AppAction()
+    
+    
+    data class CreatePpqLightningTopup(
+        val `amountSats`: kotlin.ULong) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    object CheckPpqTopup : AppAction()
+    
+    
+    object CancelPpqTopup : AppAction()
+    
+    
+    object ConfirmPpqBackupSaved : AppAction()
+    
+    
+    object DeferPpqBackup : AppAction()
+    
+    
+    object MarkFirstFundingReminderShown : AppAction()
+    
+    
+    object BeginForgetManagedPpqFromDevice : AppAction()
+    
+    
+    object BeginDeleteAllDataPreflight : AppAction()
+    
+    
+    object CancelDestructivePreflight : AppAction()
     
     
     /**
@@ -6273,208 +6749,221 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 )
             15 -> AppAction.DeleteAllConversations
             16 -> AppAction.DeleteAllData
-            17 -> AppAction.RetryLastMessage
-            18 -> AppAction.EditMessage(
+            17 -> AppAction.ProvisionManagedPpq
+            18 -> AppAction.RefreshPpqAccount
+            19 -> AppAction.CreatePpqLightningTopup(
+                FfiConverterULong.read(buf),
+                )
+            20 -> AppAction.CheckPpqTopup
+            21 -> AppAction.CancelPpqTopup
+            22 -> AppAction.ConfirmPpqBackupSaved
+            23 -> AppAction.DeferPpqBackup
+            24 -> AppAction.MarkFirstFundingReminderShown
+            25 -> AppAction.BeginForgetManagedPpqFromDevice
+            26 -> AppAction.BeginDeleteAllDataPreflight
+            27 -> AppAction.CancelDestructivePreflight
+            28 -> AppAction.RetryLastMessage
+            29 -> AppAction.EditMessage(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            19 -> AppAction.AttachFile(
+            30 -> AppAction.AttachFile(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterULong.read(buf),
                 )
-            20 -> AppAction.ClearAttachment
-            21 -> AppAction.AttachImage(
+            31 -> AppAction.ClearAttachment
+            32 -> AppAction.AttachImage(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            22 -> AppAction.SelectModel(
+            33 -> AppAction.SelectModel(
                 FfiConverterString.read(buf),
                 )
-            23 -> AppAction.SetSystemPrompt(
+            34 -> AppAction.SetSystemPrompt(
                 FfiConverterOptionalString.read(buf),
                 )
-            24 -> AppAction.AddBackend(
+            35 -> AppAction.AddBackend(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterTypeTeeType.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            25 -> AppAction.RemoveBackend(
+            36 -> AppAction.RemoveBackend(
                 FfiConverterString.read(buf),
                 )
-            26 -> AppAction.ReorderBackend(
+            37 -> AppAction.ReorderBackend(
                 FfiConverterString.read(buf),
                 FfiConverterLong.read(buf),
                 )
-            27 -> AppAction.UpdateBackendModels(
+            38 -> AppAction.UpdateBackendModels(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            28 -> AppAction.SetDefaultBackend(
+            39 -> AppAction.SetDefaultBackend(
                 FfiConverterString.read(buf),
                 )
-            29 -> AppAction.SetDefaultModel(
+            40 -> AppAction.SetDefaultModel(
                 FfiConverterString.read(buf),
                 )
-            30 -> AppAction.SetLocalInferenceEnabled(
+            41 -> AppAction.SetLocalInferenceEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            31 -> AppAction.DownloadLocalModel(
+            42 -> AppAction.DownloadLocalModel(
                 FfiConverterString.read(buf),
                 )
-            32 -> AppAction.DeleteLocalModel(
+            43 -> AppAction.DeleteLocalModel(
                 FfiConverterString.read(buf),
                 )
-            33 -> AppAction.SaveHybridProfile(
+            44 -> AppAction.SaveHybridProfile(
                 FfiConverterTypeHybridProfile.read(buf),
                 )
-            34 -> AppAction.DeleteHybridProfile(
+            45 -> AppAction.DeleteHybridProfile(
                 FfiConverterString.read(buf),
                 )
-            35 -> AppAction.SetActiveHybridProfile(
+            46 -> AppAction.SetActiveHybridProfile(
                 FfiConverterString.read(buf),
                 )
-            36 -> AppAction.OverrideConversationBackend(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            37 -> AppAction.NextOnboardingStep
-            38 -> AppAction.PreviousOnboardingStep
-            39 -> AppAction.UpdateBackendApiKey(
+            47 -> AppAction.OverrideConversationBackend(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            40 -> AppAction.ValidateApiKey(
-                FfiConverterString.read(buf),
-                )
-            41 -> AppAction.CompleteOnboarding
-            42 -> AppAction.SkipOnboarding
-            43 -> AppAction.AddBackendFromPreset(
+            48 -> AppAction.NextOnboardingStep
+            49 -> AppAction.PreviousOnboardingStep
+            50 -> AppAction.UpdateBackendApiKey(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            44 -> AppAction.IngestDocument(
+            51 -> AppAction.ValidateApiKey(
+                FfiConverterString.read(buf),
+                )
+            52 -> AppAction.CompleteOnboarding
+            53 -> AppAction.SkipOnboarding
+            54 -> AppAction.AddBackendFromPreset(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            55 -> AppAction.IngestDocument(
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            45 -> AppAction.DeleteDocument(
+            56 -> AppAction.DeleteDocument(
                 FfiConverterString.read(buf),
                 )
-            46 -> AppAction.AttachDocumentToConversation(
+            57 -> AppAction.AttachDocumentToConversation(
                 FfiConverterString.read(buf),
                 )
-            47 -> AppAction.DetachDocumentFromConversation(
+            58 -> AppAction.DetachDocumentFromConversation(
                 FfiConverterString.read(buf),
                 )
-            48 -> AppAction.LaunchAgentSession(
+            59 -> AppAction.LaunchAgentSession(
                 FfiConverterString.read(buf),
                 )
-            49 -> AppAction.PauseAgentSession(
+            60 -> AppAction.PauseAgentSession(
                 FfiConverterString.read(buf),
                 )
-            50 -> AppAction.ResumeAgentSession(
+            61 -> AppAction.ResumeAgentSession(
                 FfiConverterString.read(buf),
                 )
-            51 -> AppAction.CancelAgentSession(
+            62 -> AppAction.CancelAgentSession(
                 FfiConverterString.read(buf),
                 )
-            52 -> AppAction.LoadAgentSession(
+            63 -> AppAction.LoadAgentSession(
                 FfiConverterString.read(buf),
                 )
-            53 -> AppAction.ClearAgentDetail
-            54 -> AppAction.SetAttestationInterval(
+            64 -> AppAction.ClearAgentDetail
+            65 -> AppAction.SetAttestationInterval(
                 FfiConverterUInt.read(buf),
                 )
-            55 -> AppAction.SetGlobalSystemPrompt(
+            66 -> AppAction.SetGlobalSystemPrompt(
                 FfiConverterOptionalString.read(buf),
                 )
-            56 -> AppAction.ListMemories
-            57 -> AppAction.DeleteMemory(
+            67 -> AppAction.ListMemories
+            68 -> AppAction.DeleteMemory(
                 FfiConverterString.read(buf),
                 )
-            58 -> AppAction.UpdateMemory(
+            69 -> AppAction.UpdateMemory(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            59 -> AppAction.SetBraveApiKey(
+            70 -> AppAction.SetBraveApiKey(
                 FfiConverterString.read(buf),
                 )
-            60 -> AppAction.ValidateBraveApiKey(
+            71 -> AppAction.ValidateBraveApiKey(
                 FfiConverterString.read(buf),
                 )
-            61 -> AppAction.SetMemoriesEnabled(
+            72 -> AppAction.SetMemoriesEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            62 -> AppAction.SetConversationToolsEnabled(
+            73 -> AppAction.SetConversationToolsEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            63 -> AppAction.SetupPin(
+            74 -> AppAction.SetupPin(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            64 -> AppAction.SetDuressPin(
+            75 -> AppAction.SetDuressPin(
                 FfiConverterOptionalString.read(buf),
                 )
-            65 -> AppAction.UnlockWithDek(
+            76 -> AppAction.UnlockWithDek(
                 FfiConverterString.read(buf),
                 )
-            66 -> AppAction.UnlockWithPin(
+            77 -> AppAction.UnlockWithPin(
                 FfiConverterString.read(buf),
                 )
-            67 -> AppAction.LockApp
-            68 -> AppAction.AttemptBiometricUnlock
-            69 -> AppAction.SetBiometricLoginEnabled(
+            78 -> AppAction.LockApp
+            79 -> AppAction.AttemptBiometricUnlock
+            80 -> AppAction.SetBiometricLoginEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            70 -> AppAction.SetLockTimeout(
+            81 -> AppAction.SetLockTimeout(
                 FfiConverterLong.read(buf),
                 )
-            71 -> AppAction.AddDirectorySource(
+            82 -> AppAction.AddDirectorySource(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalByteArray.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            72 -> AppAction.SyncDirectoryFiles(
+            83 -> AppAction.SyncDirectoryFiles(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceTypeDirectoryFileEntry.read(buf),
                 FfiConverterSequenceString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            73 -> AppAction.RemoveDirectorySource(
+            84 -> AppAction.RemoveDirectorySource(
                 FfiConverterString.read(buf),
                 )
-            74 -> AppAction.SetDirectoryExclusions(
+            85 -> AppAction.SetDirectoryExclusions(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            75 -> AppAction.TriggerDirectorySync(
+            86 -> AppAction.TriggerDirectorySync(
                 FfiConverterString.read(buf),
                 )
-            76 -> AppAction.UpdateDirectorySourceBookmark(
+            87 -> AppAction.UpdateDirectorySourceBookmark(
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            77 -> AppAction.DiscoverContextvmTools
-            78 -> AppAction.SetContextvmToolEnabled(
+            88 -> AppAction.DiscoverContextvmTools
+            89 -> AppAction.SetContextvmToolEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            79 -> AppAction.SetAutoDiscoverTools(
+            90 -> AppAction.SetAutoDiscoverTools(
                 FfiConverterBoolean.read(buf),
                 )
-            80 -> AppAction.RetryContextvmDiscovery
-            81 -> AppAction.AddTrustedProvider(
+            91 -> AppAction.RetryContextvmDiscovery
+            92 -> AppAction.AddTrustedProvider(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            82 -> AppAction.RemoveTrustedProvider(
+            93 -> AppAction.RemoveTrustedProvider(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -6584,6 +7073,73 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             )
         }
         is AppAction.DeleteAllData -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.ProvisionManagedPpq -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.RefreshPpqAccount -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.CreatePpqLightningTopup -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`amountSats`)
+            )
+        }
+        is AppAction.CheckPpqTopup -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.CancelPpqTopup -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.ConfirmPpqBackupSaved -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.DeferPpqBackup -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.MarkFirstFundingReminderShown -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.BeginForgetManagedPpqFromDevice -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.BeginDeleteAllDataPreflight -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.CancelDestructivePreflight -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
@@ -7148,46 +7704,91 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 buf.putInt(16)
                 Unit
             }
-            is AppAction.RetryLastMessage -> {
+            is AppAction.ProvisionManagedPpq -> {
                 buf.putInt(17)
                 Unit
             }
-            is AppAction.EditMessage -> {
+            is AppAction.RefreshPpqAccount -> {
                 buf.putInt(18)
+                Unit
+            }
+            is AppAction.CreatePpqLightningTopup -> {
+                buf.putInt(19)
+                FfiConverterULong.write(value.`amountSats`, buf)
+                Unit
+            }
+            is AppAction.CheckPpqTopup -> {
+                buf.putInt(20)
+                Unit
+            }
+            is AppAction.CancelPpqTopup -> {
+                buf.putInt(21)
+                Unit
+            }
+            is AppAction.ConfirmPpqBackupSaved -> {
+                buf.putInt(22)
+                Unit
+            }
+            is AppAction.DeferPpqBackup -> {
+                buf.putInt(23)
+                Unit
+            }
+            is AppAction.MarkFirstFundingReminderShown -> {
+                buf.putInt(24)
+                Unit
+            }
+            is AppAction.BeginForgetManagedPpqFromDevice -> {
+                buf.putInt(25)
+                Unit
+            }
+            is AppAction.BeginDeleteAllDataPreflight -> {
+                buf.putInt(26)
+                Unit
+            }
+            is AppAction.CancelDestructivePreflight -> {
+                buf.putInt(27)
+                Unit
+            }
+            is AppAction.RetryLastMessage -> {
+                buf.putInt(28)
+                Unit
+            }
+            is AppAction.EditMessage -> {
+                buf.putInt(29)
                 FfiConverterString.write(value.`messageId`, buf)
                 FfiConverterString.write(value.`newText`, buf)
                 Unit
             }
             is AppAction.AttachFile -> {
-                buf.putInt(19)
+                buf.putInt(30)
                 FfiConverterString.write(value.`filename`, buf)
                 FfiConverterString.write(value.`content`, buf)
                 FfiConverterULong.write(value.`sizeBytes`, buf)
                 Unit
             }
             is AppAction.ClearAttachment -> {
-                buf.putInt(20)
+                buf.putInt(31)
                 Unit
             }
             is AppAction.AttachImage -> {
-                buf.putInt(21)
+                buf.putInt(32)
                 FfiConverterString.write(value.`filename`, buf)
                 FfiConverterString.write(value.`filePath`, buf)
                 FfiConverterString.write(value.`mimeType`, buf)
                 Unit
             }
             is AppAction.SelectModel -> {
-                buf.putInt(22)
+                buf.putInt(33)
                 FfiConverterString.write(value.`modelId`, buf)
                 Unit
             }
             is AppAction.SetSystemPrompt -> {
-                buf.putInt(23)
+                buf.putInt(34)
                 FfiConverterOptionalString.write(value.`prompt`, buf)
                 Unit
             }
             is AppAction.AddBackend -> {
-                buf.putInt(24)
+                buf.putInt(35)
                 FfiConverterString.write(value.`name`, buf)
                 FfiConverterString.write(value.`baseUrl`, buf)
                 FfiConverterString.write(value.`apiKey`, buf)
@@ -7196,239 +7797,239 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.RemoveBackend -> {
-                buf.putInt(25)
+                buf.putInt(36)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.ReorderBackend -> {
-                buf.putInt(26)
+                buf.putInt(37)
                 FfiConverterString.write(value.`backendId`, buf)
                 FfiConverterLong.write(value.`newDisplayOrder`, buf)
                 Unit
             }
             is AppAction.UpdateBackendModels -> {
-                buf.putInt(27)
+                buf.putInt(38)
                 FfiConverterString.write(value.`backendId`, buf)
                 FfiConverterSequenceString.write(value.`models`, buf)
                 Unit
             }
             is AppAction.SetDefaultBackend -> {
-                buf.putInt(28)
+                buf.putInt(39)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.SetDefaultModel -> {
-                buf.putInt(29)
+                buf.putInt(40)
                 FfiConverterString.write(value.`modelId`, buf)
                 Unit
             }
             is AppAction.SetLocalInferenceEnabled -> {
-                buf.putInt(30)
+                buf.putInt(41)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.DownloadLocalModel -> {
-                buf.putInt(31)
+                buf.putInt(42)
                 FfiConverterString.write(value.`modelId`, buf)
                 Unit
             }
             is AppAction.DeleteLocalModel -> {
-                buf.putInt(32)
+                buf.putInt(43)
                 FfiConverterString.write(value.`modelId`, buf)
                 Unit
             }
             is AppAction.SaveHybridProfile -> {
-                buf.putInt(33)
+                buf.putInt(44)
                 FfiConverterTypeHybridProfile.write(value.`profile`, buf)
                 Unit
             }
             is AppAction.DeleteHybridProfile -> {
-                buf.putInt(34)
+                buf.putInt(45)
                 FfiConverterString.write(value.`profileId`, buf)
                 Unit
             }
             is AppAction.SetActiveHybridProfile -> {
-                buf.putInt(35)
+                buf.putInt(46)
                 FfiConverterString.write(value.`profileId`, buf)
                 Unit
             }
             is AppAction.OverrideConversationBackend -> {
-                buf.putInt(36)
+                buf.putInt(47)
                 FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.NextOnboardingStep -> {
-                buf.putInt(37)
+                buf.putInt(48)
                 Unit
             }
             is AppAction.PreviousOnboardingStep -> {
-                buf.putInt(38)
+                buf.putInt(49)
                 Unit
             }
             is AppAction.UpdateBackendApiKey -> {
-                buf.putInt(39)
+                buf.putInt(50)
                 FfiConverterString.write(value.`backendId`, buf)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.ValidateApiKey -> {
-                buf.putInt(40)
+                buf.putInt(51)
                 FfiConverterString.write(value.`backendId`, buf)
                 Unit
             }
             is AppAction.CompleteOnboarding -> {
-                buf.putInt(41)
+                buf.putInt(52)
                 Unit
             }
             is AppAction.SkipOnboarding -> {
-                buf.putInt(42)
+                buf.putInt(53)
                 Unit
             }
             is AppAction.AddBackendFromPreset -> {
-                buf.putInt(43)
+                buf.putInt(54)
                 FfiConverterString.write(value.`presetId`, buf)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.IngestDocument -> {
-                buf.putInt(44)
+                buf.putInt(55)
                 FfiConverterString.write(value.`filename`, buf)
                 FfiConverterByteArray.write(value.`content`, buf)
                 Unit
             }
             is AppAction.DeleteDocument -> {
-                buf.putInt(45)
+                buf.putInt(56)
                 FfiConverterString.write(value.`documentId`, buf)
                 Unit
             }
             is AppAction.AttachDocumentToConversation -> {
-                buf.putInt(46)
+                buf.putInt(57)
                 FfiConverterString.write(value.`documentId`, buf)
                 Unit
             }
             is AppAction.DetachDocumentFromConversation -> {
-                buf.putInt(47)
+                buf.putInt(58)
                 FfiConverterString.write(value.`documentId`, buf)
                 Unit
             }
             is AppAction.LaunchAgentSession -> {
-                buf.putInt(48)
+                buf.putInt(59)
                 FfiConverterString.write(value.`taskDescription`, buf)
                 Unit
             }
             is AppAction.PauseAgentSession -> {
-                buf.putInt(49)
+                buf.putInt(60)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
             is AppAction.ResumeAgentSession -> {
-                buf.putInt(50)
+                buf.putInt(61)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
             is AppAction.CancelAgentSession -> {
-                buf.putInt(51)
+                buf.putInt(62)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
             is AppAction.LoadAgentSession -> {
-                buf.putInt(52)
+                buf.putInt(63)
                 FfiConverterString.write(value.`sessionId`, buf)
                 Unit
             }
             is AppAction.ClearAgentDetail -> {
-                buf.putInt(53)
+                buf.putInt(64)
                 Unit
             }
             is AppAction.SetAttestationInterval -> {
-                buf.putInt(54)
+                buf.putInt(65)
                 FfiConverterUInt.write(value.`minutes`, buf)
                 Unit
             }
             is AppAction.SetGlobalSystemPrompt -> {
-                buf.putInt(55)
+                buf.putInt(66)
                 FfiConverterOptionalString.write(value.`prompt`, buf)
                 Unit
             }
             is AppAction.ListMemories -> {
-                buf.putInt(56)
+                buf.putInt(67)
                 Unit
             }
             is AppAction.DeleteMemory -> {
-                buf.putInt(57)
+                buf.putInt(68)
                 FfiConverterString.write(value.`memoryId`, buf)
                 Unit
             }
             is AppAction.UpdateMemory -> {
-                buf.putInt(58)
+                buf.putInt(69)
                 FfiConverterString.write(value.`memoryId`, buf)
                 FfiConverterString.write(value.`content`, buf)
                 Unit
             }
             is AppAction.SetBraveApiKey -> {
-                buf.putInt(59)
+                buf.putInt(70)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.ValidateBraveApiKey -> {
-                buf.putInt(60)
+                buf.putInt(71)
                 FfiConverterString.write(value.`apiKey`, buf)
                 Unit
             }
             is AppAction.SetMemoriesEnabled -> {
-                buf.putInt(61)
+                buf.putInt(72)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetConversationToolsEnabled -> {
-                buf.putInt(62)
+                buf.putInt(73)
                 FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetupPin -> {
-                buf.putInt(63)
+                buf.putInt(74)
                 FfiConverterString.write(value.`pin`, buf)
                 FfiConverterOptionalString.write(value.`duressPin`, buf)
                 FfiConverterBoolean.write(value.`enableBiometric`, buf)
                 Unit
             }
             is AppAction.SetDuressPin -> {
-                buf.putInt(64)
+                buf.putInt(75)
                 FfiConverterOptionalString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.UnlockWithDek -> {
-                buf.putInt(65)
+                buf.putInt(76)
                 FfiConverterString.write(value.`dekHex`, buf)
                 Unit
             }
             is AppAction.UnlockWithPin -> {
-                buf.putInt(66)
+                buf.putInt(77)
                 FfiConverterString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.LockApp -> {
-                buf.putInt(67)
+                buf.putInt(78)
                 Unit
             }
             is AppAction.AttemptBiometricUnlock -> {
-                buf.putInt(68)
+                buf.putInt(79)
                 Unit
             }
             is AppAction.SetBiometricLoginEnabled -> {
-                buf.putInt(69)
+                buf.putInt(80)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetLockTimeout -> {
-                buf.putInt(70)
+                buf.putInt(81)
                 FfiConverterLong.write(value.`seconds`, buf)
                 Unit
             }
             is AppAction.AddDirectorySource -> {
-                buf.putInt(71)
+                buf.putInt(82)
                 FfiConverterString.write(value.`displayName`, buf)
                 FfiConverterOptionalString.write(value.`path`, buf)
                 FfiConverterOptionalByteArray.write(value.`bookmarkData`, buf)
@@ -7437,7 +8038,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.SyncDirectoryFiles -> {
-                buf.putInt(72)
+                buf.putInt(83)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceTypeDirectoryFileEntry.write(value.`files`, buf)
                 FfiConverterSequenceString.write(value.`removedPaths`, buf)
@@ -7445,54 +8046,54 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.RemoveDirectorySource -> {
-                buf.putInt(73)
+                buf.putInt(84)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.SetDirectoryExclusions -> {
-                buf.putInt(74)
+                buf.putInt(85)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceString.write(value.`globs`, buf)
                 Unit
             }
             is AppAction.TriggerDirectorySync -> {
-                buf.putInt(75)
+                buf.putInt(86)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.UpdateDirectorySourceBookmark -> {
-                buf.putInt(76)
+                buf.putInt(87)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterByteArray.write(value.`bookmarkData`, buf)
                 Unit
             }
             is AppAction.DiscoverContextvmTools -> {
-                buf.putInt(77)
+                buf.putInt(88)
                 Unit
             }
             is AppAction.SetContextvmToolEnabled -> {
-                buf.putInt(78)
+                buf.putInt(89)
                 FfiConverterString.write(value.`toolId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetAutoDiscoverTools -> {
-                buf.putInt(79)
+                buf.putInt(90)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.RetryContextvmDiscovery -> {
-                buf.putInt(80)
+                buf.putInt(91)
                 Unit
             }
             is AppAction.AddTrustedProvider -> {
-                buf.putInt(81)
+                buf.putInt(92)
                 FfiConverterString.write(value.`pubkey`, buf)
                 FfiConverterOptionalString.write(value.`label`, buf)
                 Unit
             }
             is AppAction.RemoveTrustedProvider -> {
-                buf.putInt(82)
+                buf.putInt(93)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
@@ -8524,6 +9125,19 @@ sealed class LlmException: kotlin.Exception() {
             get() = "statusCode=${ `statusCode` }, reason=${ `reason` }"
     }
     
+    /**
+     * PPQ-specific 402: prepaid balance exhausted (plan §6.10). Callers
+     * route Managed mode to the top-up flow; External-key mode directs the
+     * user to PPQ account management. Never auto-retried.
+     */
+    class InsufficientPpqBalance(
+        
+        val `reason`: kotlin.String
+        ) : LlmException() {
+        override val message
+            get() = "reason=${ `reason` }"
+    }
+    
 
     
 
@@ -8560,6 +9174,9 @@ public object FfiConverterTypeLlmError : FfiConverterRustBuffer<LlmException> {
                 FfiConverterUShort.read(buf),
                 FfiConverterString.read(buf),
                 )
+            6 -> LlmException.InsufficientPpqBalance(
+                FfiConverterString.read(buf),
+                )
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -8593,6 +9210,11 @@ public object FfiConverterTypeLlmError : FfiConverterRustBuffer<LlmException> {
                 + FfiConverterUShort.allocationSize(value.`statusCode`)
                 + FfiConverterString.allocationSize(value.`reason`)
             )
+            is LlmException.InsufficientPpqBalance -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
         }
     }
 
@@ -8622,6 +9244,11 @@ public object FfiConverterTypeLlmError : FfiConverterRustBuffer<LlmException> {
             is LlmException.ApiException -> {
                 buf.putInt(5)
                 FfiConverterUShort.write(value.`statusCode`, buf)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+            is LlmException.InsufficientPpqBalance -> {
+                buf.putInt(6)
                 FfiConverterString.write(value.`reason`, buf)
                 Unit
             }
@@ -8881,6 +9508,120 @@ public object FfiConverterTypeOnboardingStep: FfiConverterRustBuffer<OnboardingS
     override fun allocationSize(value: OnboardingStep) = 4UL
 
     override fun write(value: OnboardingStep, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class PpqAccountMode {
+    
+    NONE,
+    EXTERNAL_KEY,
+    MANAGED;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePpqAccountMode: FfiConverterRustBuffer<PpqAccountMode> {
+    override fun read(buf: ByteBuffer) = try {
+        PpqAccountMode.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: PpqAccountMode) = 4UL
+
+    override fun write(value: PpqAccountMode, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class PpqFundingPhase {
+    
+    IDLE,
+    CREATING_INVOICE,
+    AWAITING_PAYMENT,
+    CONFIRMED,
+    EXPIRED,
+    UNKNOWN_AFTER_CREATE,
+    ERROR;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePpqFundingPhase: FfiConverterRustBuffer<PpqFundingPhase> {
+    override fun read(buf: ByteBuffer) = try {
+        PpqFundingPhase.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: PpqFundingPhase) = 4UL
+
+    override fun write(value: PpqFundingPhase, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class PpqSetupPhase {
+    
+    IDLE,
+    PROVISIONING,
+    NEEDS_BACKUP,
+    NEEDS_FUNDS,
+    READY,
+    RESTORING,
+    RECOVERABLE_PARTIAL_STATE,
+    ERROR;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePpqSetupPhase: FfiConverterRustBuffer<PpqSetupPhase> {
+    override fun read(buf: ByteBuffer) = try {
+        PpqSetupPhase.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: PpqSetupPhase) = 4UL
+
+    override fun write(value: PpqSetupPhase, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
@@ -9303,6 +10044,84 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             }
             is Screen.PinSetup -> {
                 buf.putInt(21)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * Step-up authentication for one-shot destructive/recovery FFI calls
+ * (plan §6.5). A duress PIN entered here triggers `DuressPreservePpq`
+ * server-side of the actor and returns a generic failure.
+ */
+sealed class SensitiveActionAuth {
+    
+    object Biometric : SensitiveActionAuth()
+    
+    
+    data class MainPin(
+        val `pin`: kotlin.String) : SensitiveActionAuth()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSensitiveActionAuth : FfiConverterRustBuffer<SensitiveActionAuth>{
+    override fun read(buf: ByteBuffer): SensitiveActionAuth {
+        return when(buf.getInt()) {
+            1 -> SensitiveActionAuth.Biometric
+            2 -> SensitiveActionAuth.MainPin(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: SensitiveActionAuth): ULong = when(value) {
+        is SensitiveActionAuth.Biometric -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is SensitiveActionAuth.MainPin -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`pin`)
+            )
+        }
+    }
+
+    override fun write(value: SensitiveActionAuth, buf: ByteBuffer) {
+        when(value) {
+            is SensitiveActionAuth.Biometric -> {
+                buf.putInt(1)
+                Unit
+            }
+            is SensitiveActionAuth.MainPin -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`pin`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -10249,6 +11068,70 @@ public object FfiConverterOptionalTypeLocalModelDownloadProgress: FfiConverterRu
         } else {
             buf.put(1)
             FfiConverterTypeLocalModelDownloadProgress.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypePpqDestructivePreflight: FfiConverterRustBuffer<PpqDestructivePreflight?> {
+    override fun read(buf: ByteBuffer): PpqDestructivePreflight? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypePpqDestructivePreflight.read(buf)
+    }
+
+    override fun allocationSize(value: PpqDestructivePreflight?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypePpqDestructivePreflight.allocationSize(value)
+        }
+    }
+
+    override fun write(value: PpqDestructivePreflight?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypePpqDestructivePreflight.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypePpqFundingSummary: FfiConverterRustBuffer<PpqFundingSummary?> {
+    override fun read(buf: ByteBuffer): PpqFundingSummary? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypePpqFundingSummary.read(buf)
+    }
+
+    override fun allocationSize(value: PpqFundingSummary?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypePpqFundingSummary.allocationSize(value)
+        }
+    }
+
+    override fun write(value: PpqFundingSummary?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypePpqFundingSummary.write(value, buf)
         }
     }
 }
