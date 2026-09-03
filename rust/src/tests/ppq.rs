@@ -1004,3 +1004,24 @@ fn actor_unknown_status_reconciles_by_balance() {
 
     std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
 }
+
+/// Decrypt a real exported `.mppq` file. Opt-in via env:
+///   PPQ_BACKUP_FILE=... PPQ_BACKUP_PASSWORD=... cargo test decrypt_real_backup_file -- --ignored
+#[test]
+#[ignore = "requires PPQ_BACKUP_FILE and PPQ_BACKUP_PASSWORD env vars"]
+fn decrypt_real_backup_file() {
+    let path = std::env::var("PPQ_BACKUP_FILE").expect("PPQ_BACKUP_FILE");
+    let password = std::env::var("PPQ_BACKUP_PASSWORD").expect("PPQ_BACKUP_PASSWORD");
+    let bytes = std::fs::read(&path).expect("read backup file");
+    let doc = crate::ppq::recovery::decrypt_recovery_document(&bytes, &password)
+        .expect("backup must decrypt with the saved password");
+    assert_eq!(doc.backend_id, "ppq-ai");
+    assert_eq!(doc.credit_id.len(), 36);
+    assert!(doc.api_key.len() >= 16);
+    // Never print the secrets; lengths only.
+    println!(
+        "decrypted ok: credit_id len {}, api_key len {}",
+        doc.credit_id.len(),
+        doc.api_key.len()
+    );
+}
