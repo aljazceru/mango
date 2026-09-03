@@ -77,6 +77,7 @@ fn fixtures_parse_against_wire_types() {
     for (name, expected) in [
         ("topup_status_pending.json", "New"),
         ("topup_status_expired.json", "Expired"),
+        ("topup_status_paid.json", "Settled"),
     ] {
         let st: WireInvoiceStatus = serde_json::from_str(&fixture_response_text(name)).unwrap();
         assert_eq!(st.status, expected);
@@ -84,7 +85,9 @@ fn fixtures_parse_against_wire_types() {
 
     let bal: crate::ppq::contracts::WireBalance =
         serde_json::from_str(&fixture_response_text("credits_balance.json")).unwrap();
-    assert_eq!(bal.balance.get().trim(), "0");
+    // Live capture: float64 shortest-repr with 17 fraction digits must parse.
+    let balance = DecimalText::from_raw_json(bal.balance.get()).unwrap();
+    assert_eq!(balance.as_str(), "0.08155601999999999");
 }
 
 #[test]
@@ -103,7 +106,14 @@ fn wrong_type_or_missing_fields_rejected() {
 
 #[test]
 fn decimal_text_accepts_and_rejects() {
-    for ok in ["0", "1", "0.15", "123456", "1000000.000001"] {
+    for ok in [
+        "0",
+        "1",
+        "0.15",
+        "123456",
+        "1000000.000001",
+        "0.08155601999999999", // live f64 artifact (fixture credits_balance.json)
+    ] {
         assert!(DecimalText::validate(ok).is_ok(), "{ok} should parse");
     }
     for bad in [
@@ -120,7 +130,7 @@ fn decimal_text_accepts_and_rejects() {
         "+1",
         "0x1",
         "1,5",
-        "0.1234567890123", // 13 fraction digits
+        "0.1234567890123456789", // 19 fraction digits
     ] {
         assert!(
             DecimalText::validate(bad).is_err(),
@@ -153,6 +163,7 @@ fn lightning_limits_come_from_live_shape_only() {
 fn unknown_invoice_status_is_never_terminal() {
     assert!(!InvoiceStatusValue::from_wire("New").is_terminal());
     assert!(InvoiceStatusValue::from_wire("Expired").is_terminal());
+    assert!(InvoiceStatusValue::from_wire("Settled").is_terminal());
     assert!(!InvoiceStatusValue::from_wire("SomethingNewFromPpq").is_terminal());
     assert!(matches!(
         InvoiceStatusValue::from_wire("Whatever"),

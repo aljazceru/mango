@@ -18,8 +18,12 @@ use zeroize::Zeroizing;
 
 /// Maximum digits accepted in a decimal money string (whole + fraction).
 const MAX_DECIMAL_LEN: usize = 32;
-/// Maximum fractional digits accepted in a decimal money string.
-const MAX_FRACTION_DIGITS: usize = 12;
+/// Maximum fractional digits accepted. Live capture (fixture
+/// `credits_balance.json`, 2026-09-03) shows PPQ serializes credit balances
+/// as float64 shortest-repr with up to 17 fraction digits
+/// ("0.08155601999999999"); 18 accepts any f64 artifact while still
+/// rejecting garbage precision.
+const MAX_FRACTION_DIGITS: usize = 18;
 
 /// A validated non-negative decimal number carried as its original text.
 ///
@@ -158,6 +162,8 @@ pub enum InvoiceStatusValue {
     New,
     /// Observed (fixture: topup_status_expired.json). Terminal, unpaid.
     Expired,
+    /// Observed (fixture: topup_status_paid.json). Terminal, paid & credited.
+    Settled,
     /// Any value without a captured fixture. Never treat as terminal.
     Unknown(String),
 }
@@ -167,15 +173,15 @@ impl InvoiceStatusValue {
         match status {
             "New" => Self::New,
             "Expired" => Self::Expired,
+            "Settled" => Self::Settled,
             other => Self::Unknown(other.to_string()),
         }
     }
 
     pub fn is_terminal(&self) -> bool {
         // Only fixture-confirmed terminal states return true; Unknown is
-        // never terminal ("paid" has no captured fixture yet — reconcile
-        // conservatively via balance until it does).
-        matches!(self, Self::Expired)
+        // never terminal (reconcile via balance).
+        matches!(self, Self::Expired | Self::Settled)
     }
 }
 

@@ -1,7 +1,7 @@
 {
   "sanitized": true,
   "endpoint": "POST /credits/balance",
-  "captured_at": "2026-08-31T06:45:00Z",
+  "captured_at": "2026-09-03T12:23:30Z",
   "status_code": 200,
   "request": {
     "method": "POST",
@@ -9,8 +9,6 @@
     "auth": "Authorization: Bearer <api_key>",
     "body": null
   },
-  "response": {
-    "balance": 0
-  },
-  "note": "Bearer-auth variant (no credit_id in body); balance is a bare JSON number \u2014 parse as decimal text"
+  "response": {"balance":0.08155601999999999},
+  "note": "Bearer-auth variant; balance observed as float64 shortest-repr with 17 fraction digits \u2014 the reason DecimalText accepts up to 18 fraction digits; never round-trip through f64"
 }
