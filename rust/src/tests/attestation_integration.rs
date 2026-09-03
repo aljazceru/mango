@@ -487,7 +487,8 @@ fn test_provider_fallback() {
         | crate::CoreMsg::CreatePpqRecoveryBackup { .. }
         | crate::CoreMsg::RestorePpqRecoveryBackup { .. }
         | crate::CoreMsg::ConfirmDeleteAllData { .. }
-        | crate::CoreMsg::ConfirmForgetManagedPpq { .. } => {
+        | crate::CoreMsg::ConfirmForgetManagedPpq { .. }
+        | crate::CoreMsg::SetPpqTestSetting { .. } => {
             panic!("PPQ messages are not expected in this test")
         }
         crate::CoreMsg::Action(_) => panic!("Expected InternalEvent, got Action"),

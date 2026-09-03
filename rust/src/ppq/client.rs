@@ -45,6 +45,10 @@ pub enum PpqError {
     InvalidResponse,
     #[error("local secure storage failure")]
     StorageFailure,
+    /// Requested sats amount is outside the live server-advertised limits
+    /// (plan §6.9: limits are always fetched, never baked in).
+    #[error("amount outside live limits")]
+    AmountOutOfLimits,
 }
 
 /// Injectable clock so invoice expiry / Retry-After math is testable.

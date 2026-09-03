@@ -38,7 +38,7 @@ import androidx.core.content.ContextCompat
 import dev.disobey.mango.rust.PpqAccountSummary
 import dev.disobey.mango.rust.PpqFundingPhase
 
-private val DEFAULT_MIN_SATS = 1000uL
+
 private val DEFAULT_MAX_SATS = 1_000_000uL
 
 /**
@@ -50,8 +50,6 @@ private val DEFAULT_MAX_SATS = 1_000_000uL
 @Composable
 fun PpqFundingScreen(
     summary: PpqAccountSummary,
-    minSats: ULong = DEFAULT_MIN_SATS,
-    maxSats: ULong = DEFAULT_MAX_SATS,
     onCreateInvoice: (amountSats: ULong) -> Unit,
     onCheckStatus: () -> Unit,
     onCancel: () -> Unit,
@@ -105,11 +103,6 @@ fun PpqFundingScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
 
-                Text(
-                    text = "Enter an amount in satoshis (between $minSats and $maxSats).",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
 
                 OutlinedTextField(
                     value = amountText,
@@ -126,9 +119,11 @@ fun PpqFundingScreen(
 
                 Button(
                     onClick = {
-                        val parsed = parseSatsAmount(amountText, minSats, maxSats)
+                        // Bounds are enforced by the Rust core against LIVE
+                        // server-advertised limits (plan §6.9) — never hardcoded here.
+                        val parsed = parseSatsAmount(amountText)
                         if (parsed == null) {
-                            amountError = "Enter an amount between $minSats and $maxSats sats"
+                            amountError = "Enter a whole number of satoshis"
                         } else {
                             onCreateInvoice(parsed)
                         }

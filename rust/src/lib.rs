@@ -1498,6 +1498,13 @@ pub enum CoreMsg {
         conversation_id: String,
         reply: flume::Sender<Result<String, String>>,
     },
+    /// Test-only: write a PPQ settings row.
+    #[cfg(test)]
+    SetPpqTestSetting {
+        key: String,
+        value: String,
+        reply: flume::Sender<()>,
+    },
     /// Round-trip barrier: the actor replies after every message enqueued
     /// before this one has been fully processed. Gives tests (and native
     /// layers) a deterministic alternative to sleep-based waiting.
@@ -1907,7 +1914,11 @@ fn remove_plaintext_image_file(path: &str, data_dir: &str) {
 // ── PPQ managed-account actor handlers (plan §6.8/§6.9) ────────────────────
 
 fn ppq_production_client() -> Result<ppq::client::PpqClient, ppq::client::PpqError> {
-    ppq::client::PpqClient::production(std::sync::Arc::new(ppq::client::SystemPpqClock))
+    // Test hook (plan §6.1/§10.2): scripted local server overrides the base
+    // URL. Loopback is explicitly allowed by the client's URL policy.
+    let base = std::env::var("MANGO_PPQ_TEST_BASE_URL")
+        .unwrap_or_else(|_| ppq::client::PRODUCTION_BASE_URL.to_string());
+    ppq::client::PpqClient::new(&base, std::sync::Arc::new(ppq::client::SystemPpqClock))
 }
 
 fn ppq_error_code(e: &ppq::client::PpqError) -> &'static str {
@@ -1919,6 +1930,7 @@ fn ppq_error_code(e: &ppq::client::PpqError) -> &'static str {
         ppq::client::PpqError::NotFound => "not_found",
         ppq::client::PpqError::InvalidResponse => "invalid_response",
         ppq::client::PpqError::StorageFailure => "storage_failure",
+        ppq::client::PpqError::AmountOutOfLimits => "amount_out_of_limits",
     }
 }
 
@@ -2192,6 +2204,9 @@ fn handle_ppq_event(
             });
         }
         PpqTaskEvent::BalanceRefreshed { balance } => {
+            // Capture the pre-refresh snapshot first: unknown invoice
+            // statuses reconcile against it (plan §6.9 step 11).
+            let prior_balance = ppq_setting(actor_state, ppq::account::SETTING_LAST_BALANCE);
             ppq_set_setting(actor_state, ppq::account::SETTING_LAST_BALANCE, &balance);
             ppq_set_setting(
                 actor_state,
@@ -2206,13 +2221,17 @@ fn handle_ppq_event(
                 actor_state.app_state.ppq.setup_phase = PpqSetupPhase::NeedsBackup;
             } else if actor_state.app_state.ppq.funding_phase == PpqFundingPhase::UnknownAfterCreate
             {
-                // Unknown invoice status reconciled by balance movement (§6.9 step 11).
-                let last_before = ppq_setting(actor_state, ppq::account::SETTING_LAST_BALANCE);
-                // last persisted == balance we just stored; compare against the
-                // pre-refresh snapshot captured before the refresh started is
-                // approximated by funding-phase context: settled when the
-                // reminder fires from the UI. Conservative default: stay unknown.
-                let _ = last_before;
+                // Unknown status (unfrozen PPQ vocabulary or 404-after-GC):
+                // reconcile as funded when the balance rose (§6.9 step 11).
+                let reconciled =
+                    ppq::account::reconcile_unknown_by_balance(prior_balance.as_deref(), &balance)
+                        == ppq::account::FundingOutcome::Settled;
+                if reconciled {
+                    clear_settled_invoice(actor_state);
+                    if actor_state.app_state.ppq.setup_phase == PpqSetupPhase::NeedsFunds {
+                        actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
+                    }
+                }
             } else if actor_state.app_state.ppq.funding_phase == PpqFundingPhase::Confirmed {
                 actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Idle;
                 actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
@@ -2266,6 +2285,15 @@ fn handle_ppq_event(
     }
 }
 
+/// Clear the pending invoice + funding summary (shared by the Settled path
+/// and balance reconciliation).
+fn clear_settled_invoice(actor_state: &mut ActorState) {
+    actor_state.ppq_pending = None;
+    ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, "");
+    actor_state.app_state.ppq.funding = None;
+    actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Confirmed;
+}
+
 fn handle_ppq_status_checked(
     actor_state: &mut ActorState,
     core_tx: &flume::Sender<CoreMsg>,
@@ -2287,10 +2315,7 @@ fn handle_ppq_status_checked(
             }
         }
         "settled" => {
-            actor_state.ppq_pending = None;
-            ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, "");
-            actor_state.app_state.ppq.funding = None;
-            actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Confirmed;
+            clear_settled_invoice(actor_state);
             if actor_state.app_state.ppq.setup_phase == PpqSetupPhase::NeedsFunds {
                 actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
             }
@@ -12451,6 +12476,14 @@ impl FfiApp {
                         let _ = reply.send(());
                     }
 
+                    #[cfg(test)]
+                    CoreMsg::SetPpqTestSetting { key, value, reply } => {
+                        if let Some(db) = actor_state.db.as_ref() {
+                            let _ = persistence::queries::set_setting(db.conn(), &key, &value);
+                        }
+                        let _ = reply.send(());
+                    }
+
                     CoreMsg::PpqEvent(event) => {
                         handle_ppq_event(&mut actor_state, &core_tx_for_thread, event);
                         actor_state.app_state.rev += 1;
@@ -12836,6 +12869,23 @@ impl FfiApp {
     /// Inject an InternalEvent directly into the actor loop for testing.
     /// This bypasses the HTTP/streaming layer and tests the actor's
     /// event processing logic in isolation.
+    /// Test-only: write a PPQ nonsecret settings row (encrypted settings table).
+    #[cfg(test)]
+    pub fn test_set_ppq_setting(&self, key: &str, value: &str) {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        let _ = self.core_tx.send(CoreMsg::SetPpqTestSetting {
+            key: key.to_string(),
+            value: value.to_string(),
+            reply: reply_tx,
+        });
+        let _ = reply_rx.recv();
+    }
+
+    #[cfg(test)]
+    pub fn test_send_ppq_event(&self, event: PpqTaskEvent) {
+        let _ = self.core_tx.send(CoreMsg::PpqEvent(event));
+    }
+
     pub fn test_send_internal(&self, event: llm::InternalEvent) {
         let _ = self.core_tx.send(CoreMsg::InternalEvent(Box::new(event)));
     }

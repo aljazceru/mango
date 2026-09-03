@@ -851,3 +851,156 @@ fn ppq_402_maps_to_specific_error_and_never_replays() {
     // The stream-error path surfaces a top-up hint instead of a generic 500.
     assert!(err.display_message().contains("Top up your PPQ account"));
 }
+
+/// Serializes tests that mutate MANGO_PPQ_TEST_BASE_URL (tests run in
+/// parallel threads of one process; the env var is process-global).
+static PPQ_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+// ── Actor-level invoice settle path with a scripted PPQ server ───────────────
+
+#[test]
+fn actor_check_topup_settles_and_refreshes_balance() {
+    let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use crate::AppAction;
+    use std::io::{Read, Write as IoWrite};
+    use std::net::TcpListener;
+
+    // Scripted server: 1) invoice status = Settled, 2) balance refresh.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let responses = [
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"invoice_id":"inv1","status":"Settled","amount":123,"currency":"SATS","created_at":1000,"expires_at":1900,"amount_paid":0.00000123,"amount_due":0}"#
+            ),
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"balance":1.5}"#
+            ),
+        ];
+        for resp in responses {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp); // drain request (headers arrive in one read)
+            let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.flush();
+        }
+    });
+
+    // Safety: never run this against production.
+    std::env::set_var("MANGO_PPQ_TEST_BASE_URL", format!("http://{addr}"));
+
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    // Force a pending invoice + awaiting state through the event path.
+    app.test_send_ppq_event(crate::PpqTaskEvent::InvoiceCreated {
+        invoice_id: "inv1".into(),
+        bolt11: Zeroizing::new("lnbc1230n1SANITIZED".to_string()),
+        amount_sats: 123,
+        created_at: 1_000,
+        // expires comfortably in the future relative to the system clock
+        expires_at: crate::now_secs() + 600,
+    });
+    app.sync();
+    assert_eq!(
+        app.state().ppq.funding_phase,
+        crate::PpqFundingPhase::AwaitingPayment
+    );
+
+    app.dispatch(AppAction::CheckPpqTopup);
+    app.sync();
+    for _ in 0..50 {
+        app.sync();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if app.state().ppq.funding.is_none() {
+            break;
+        }
+    }
+    let st = app.state();
+    assert!(
+        st.ppq.funding.is_none(),
+        "settled invoice must clear the funding summary"
+    );
+    // Post-settle normalization: settle sets Confirmed, then the balance
+    // refresh completes the transition (funding_phase -> Idle, Ready).
+    assert!(
+        st.ppq.funding_phase == crate::PpqFundingPhase::Idle
+            || st.ppq.funding_phase == crate::PpqFundingPhase::Confirmed
+    );
+    assert_eq!(st.ppq.setup_phase, crate::PpqSetupPhase::Ready);
+    assert_eq!(st.ppq.balance_display.as_deref(), Some("1.5"));
+    assert!(app.state().ppq.error.is_none());
+
+    std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+}
+
+#[test]
+fn actor_unknown_status_reconciles_by_balance() {
+    let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use crate::AppAction;
+    use std::io::{Read, Write as IoWrite};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        // 1) status returns an UNFROZEN word ("Complete"); 2) balance rose.
+        let responses = [
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"invoice_id":"inv2","status":"Complete","amount":50,"currency":"SATS","created_at":1000,"expires_at":1900,"amount_paid":0.0000005,"amount_due":0}"#
+            ),
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"balance":2.0}"#
+            ),
+        ];
+        for resp in responses {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp);
+            let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.flush();
+        }
+    });
+    std::env::set_var("MANGO_PPQ_TEST_BASE_URL", format!("http://{addr}"));
+
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    // Seed a last-balance snapshot of 1.0 so the 2.0 refresh reads as a rise.
+    app.dispatch(AppAction::Noop);
+    app.sync();
+    app.test_set_ppq_setting(crate::ppq::account::SETTING_LAST_BALANCE, "1.0");
+    app.test_send_ppq_event(crate::PpqTaskEvent::InvoiceCreated {
+        invoice_id: "inv2".into(),
+        bolt11: Zeroizing::new("lnbc50n1SANITIZED".to_string()),
+        amount_sats: 50,
+        created_at: 1_000,
+        expires_at: crate::now_secs() + 600,
+    });
+    app.sync();
+    assert_eq!(
+        app.state().ppq.funding_phase,
+        crate::PpqFundingPhase::AwaitingPayment
+    );
+
+    app.dispatch(AppAction::CheckPpqTopup);
+    for _ in 0..50 {
+        app.sync();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if app.state().ppq.funding.is_none() {
+            break;
+        }
+    }
+    let st = app.state();
+    assert!(
+        st.ppq.funding.is_none(),
+        "balance reconciliation must clear an unknown-status paid invoice"
+    );
+    assert_eq!(st.ppq.balance_display.as_deref(), Some("2.0"));
+
+    std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+}
