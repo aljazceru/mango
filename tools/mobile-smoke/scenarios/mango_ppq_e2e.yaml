@@ -1,0 +1,50 @@
+name: ppq_e2e
+# On-device managed PPQ provisioning + funding flow. Requires the APK built
+# with -PMANAGED_PPQ_ENABLED=true. Run via tools/mobile-smoke runner.
+steps:
+  - launch: {}
+  - maybe:
+      when_text: Get Started
+      steps:
+        - tap_text: Get Started
+  - maybe:
+      when_text: PIN (min 4 characters)
+      steps:
+        - type_into_text:
+            field: PIN (min 4 characters)
+            text: "1234"
+        - type_into_text:
+            field: Confirm PIN
+            text: "1234"
+        - tap_text: Set PIN and Continue
+  - wait_for_text:
+      text: Choose your provider
+      tries: 30
+      label: backend-setup
+  - tap_text: PPQ.AI
+  - wait_for_text:
+      text: Set up PPQ automatically
+      tries: 20
+      label: ppq-choice
+  - tap_text: Set up PPQ automatically
+  - wait_for_text:
+      text: Back it up now
+      tries: 90
+      label: account-ready-nudge
+  - tap_text: Do this later
+  - maybe:
+      when_text: I understand
+      steps:
+        - tap_text: I understand
+  - wait_for_text:
+      text: Amount (sats)
+      tries: 20
+      label: funding-screen
+  - type_into_text:
+      field: Amount (sats)
+      text: "100"
+  - tap_text: Create invoice
+  - wait_for_text:
+      text: Open wallet
+      tries: 60
+      label: invoice-card

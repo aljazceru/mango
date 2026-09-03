@@ -2154,6 +2154,13 @@ fn handle_ppq_event(
     event: PpqTaskEvent,
 ) {
     match event {
+        PpqTaskEvent::StatusChecked {
+            outcome,
+            next_poll_at,
+        } => {
+            log::info!("[ppq-debug] StatusChecked outcome={outcome} next_poll_at={next_poll_at} pending={:?}", actor_state.ppq_pending.is_some());
+            handle_ppq_status_checked(actor_state, core_tx, outcome, next_poll_at);
+        }
         PpqTaskEvent::AccountCreated { credit_id, api_key } => {
             let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
             if let Err(e) = store.store_provisioned(&credit_id, &api_key) {
@@ -2256,47 +2263,50 @@ fn handle_ppq_event(
             };
             actor_state.app_state.ppq.error = Some(code.to_string());
         }
-        PpqTaskEvent::StatusChecked {
-            outcome,
-            next_poll_at,
-        } => {
-            if let Some(p) = actor_state.ppq_pending.as_mut() {
-                if next_poll_at > 0 {
-                    p.next_poll_at = now_secs() + next_poll_at;
-                    if let Ok(json) = serde_json::to_string(p) {
-                        ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, &json);
-                    }
-                }
+    }
+}
+
+fn handle_ppq_status_checked(
+    actor_state: &mut ActorState,
+    core_tx: &flume::Sender<CoreMsg>,
+    outcome: &str,
+    next_poll_at: i64,
+) {
+    if let Some(p) = actor_state.ppq_pending.as_mut() {
+        if next_poll_at > 0 {
+            p.next_poll_at = now_secs() + next_poll_at;
+            if let Ok(json) = serde_json::to_string(p) {
+                ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, &json);
             }
-            match outcome {
-                "pending" => {
-                    if let Some(f) = actor_state.app_state.ppq.funding.as_mut() {
-                        f.status = "New".to_string();
-                    }
-                }
-                "settled" => {
-                    actor_state.ppq_pending = None;
-                    ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, "");
-                    actor_state.app_state.ppq.funding = None;
-                    actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Confirmed;
-                    if actor_state.app_state.ppq.setup_phase == PpqSetupPhase::NeedsFunds {
-                        actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
-                    }
-                    spawn_ppq_balance_refresh(actor_state, core_tx);
-                }
-                "expired" => {
-                    actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Expired;
-                    if let Some(f) = actor_state.app_state.ppq.funding.as_mut() {
-                        f.status = "Expired".to_string();
-                    }
-                }
-                "rate_limited" => {}
-                _ => {
-                    // Unknown status or 404-after-GC: reconcile via balance.
-                    actor_state.app_state.ppq.funding_phase = PpqFundingPhase::UnknownAfterCreate;
-                    spawn_ppq_balance_refresh(actor_state, core_tx);
-                }
+        }
+    }
+    match outcome {
+        "pending" => {
+            if let Some(f) = actor_state.app_state.ppq.funding.as_mut() {
+                f.status = "New".to_string();
             }
+        }
+        "settled" => {
+            actor_state.ppq_pending = None;
+            ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, "");
+            actor_state.app_state.ppq.funding = None;
+            actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Confirmed;
+            if actor_state.app_state.ppq.setup_phase == PpqSetupPhase::NeedsFunds {
+                actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
+            }
+            spawn_ppq_balance_refresh(actor_state, core_tx);
+        }
+        "expired" => {
+            actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Expired;
+            if let Some(f) = actor_state.app_state.ppq.funding.as_mut() {
+                f.status = "Expired".to_string();
+            }
+        }
+        "rate_limited" => {}
+        _ => {
+            // Unknown status or 404-after-GC: reconcile via balance.
+            actor_state.app_state.ppq.funding_phase = PpqFundingPhase::UnknownAfterCreate;
+            spawn_ppq_balance_refresh(actor_state, core_tx);
         }
     }
 }
@@ -2535,7 +2545,6 @@ fn handle_confirm_delete_all(
         success: true,
         error: None,
     })
-    .map_err(|e| e)
 }
 
 fn handle_confirm_forget(

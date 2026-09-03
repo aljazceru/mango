@@ -98,9 +98,42 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Rust fmt/clippy/tests (release gate prerequisites)
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace
+
+      - name: Gradle unit tests + lint
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug
+
+      - name: PPQ orchestration gate (required for MANAGED_PPQ_ENABLED builds)
+        run: scripts/check_ppq_gate.sh
+
       - name: Build release APK
         working-directory: android
         run: ./gradlew assembleRelease
+
+      - name: Feature-flag-off regression (default APK must have managed PPQ disabled)
+        working-directory: android
+        run: |
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          if grep -qa "MANAGED_PPQ_ENABLED=true" <(unzip -p "$APK" classes.dex 2>/dev/null | strings 2>/dev/null) 2>/dev/null; then
+            echo "FAIL: default APK built with managed PPQ enabled"; exit 1
+          fi
+          echo "OK: default APK has managed PPQ disabled"
+
+      - name: Managed-PPQ variant (only when the Wave 0 gate artifact is approved)
+        working-directory: android
+        run: |
+          if grep -Eq '^status:[[:space:]]*approved' ../docs/integrations/ppq-orchestration-approval.md; then
+            ./gradlew assembleRelease -PMANAGED_PPQ_ENABLED=true
+            mv app/build/outputs/apk/release/app-release.apk \
+               app/build/outputs/apk/release/mango-managed-ppq-release.apk
+          else
+            echo "PPQ gate not approved — managed variant skipped"
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
