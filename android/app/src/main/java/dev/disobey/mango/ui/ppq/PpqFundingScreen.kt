@@ -84,7 +84,7 @@ fun PpqFundingScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "PPQ balance",
+                text = "PPQ balance (USD)",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Medium,
             )

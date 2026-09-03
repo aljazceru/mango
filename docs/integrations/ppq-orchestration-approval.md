@@ -35,7 +35,7 @@ Source of truth: plan Section 2, "Release-blocking PPQ confirmations".
 | 4 | Whether PPQ wants a client identifier / user-agent such as `Mango Android/<version>` | no requirement filed; Mango sends `Mango/<version>` UA | Harmless default; adjust if PPQ requests a specific format. |
 | 5 | Recovery policy when a user has `credit_id` but the backed-up API key is revoked | **verified live 2026-08-31** | Sequence executed on throwaway account: revoke key → Bearer balance returns 401 `{"error":"Invalid API key","message":"API key not found or has been revoked"}` → `POST /keys` with `x-credit-id` mints new key (201) → new key authenticates (200). Fixture `errors_401_402.json` + `keys_create.json`. |
 | 6 | Required product wording, attribution, terms links, support routing | copy per plan §3.2 (labels say "PPQ balance"/"PPQ credit", never Mango custody); final wording in Wave 6 Zapstore pass | — |
-| 7 | Whether prepaid balances expire / are refundable / transferable | no statement filed; copy discipline applies | Mango UI makes NO expiry/refund/transfer claims anywhere. Do not add any until PPQ states terms. |
+| 7 | Whether prepaid balances expire / are refundable / transferable | **denomination confirmed: USD credit** (user-confirmed from PPQ correspondence 2026-09-03; consistent with docs `price_in_usd`, `usage_limit_usd`, USD top-up ranges, and observed sat→credit conversion). Expiry/refund/transferability STILL unconfirmed | Mango UI labels the balance "PPQ balance (USD)" and makes NO expiry/refund/transfer claims anywhere. Do not add any until PPQ states terms. |
 
 ## 2. Recovery and status semantics
 

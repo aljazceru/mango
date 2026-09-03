@@ -65,7 +65,7 @@ fun PpqProviderPanel(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "PPQ balance: ${formatPpqBalance(summary.balanceDisplay)}",
+                text = "PPQ balance (USD): ${formatPpqBalance(summary.balanceDisplay)}",
                 style = MaterialTheme.typography.bodyMedium,
             )
             summary.balanceUpdatedAt?.let { at ->
