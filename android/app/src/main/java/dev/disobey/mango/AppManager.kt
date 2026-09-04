@@ -40,6 +40,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 
 class AppManager private constructor(context: Context, activity: FragmentActivity?) : AppReconciler {
+    /** §7.5: activity-rebindable biometric bridge injected into Rust. */
+    private lateinit var biometricProxy: RebindableBiometricProvider
+    val biometricRebindable: RebindableBiometricProvider? get() = if (::biometricProxy.isInitialized) biometricProxy else null
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val ffiApp: FfiApp
     private var lastRevApplied: ULong = 0UL
@@ -186,16 +190,14 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         val embedding = embeddingResult.first
         val embeddingStatus = embeddingResult.second
         val localLlm = AndroidLocalLlmProvider(context)
-        // Phase 28: inject BiometricProviderImpl when a FragmentActivity is available,
-        // fall back to a NullBiometricProvider (always returns false) in test/edge cases.
-        val biometric: BiometricProvider = if (activity != null) {
-            BiometricProviderImpl(activity)
-        } else {
-            object : BiometricProvider {
-                override fun biometricStatus(): String = "not_available"
-                override fun authenticate(reason: String): Boolean = false
-            }
-        }
+        // §7.5: inject the rebindable proxy — MainActivity re-attaches the
+        // current activity on every onCreate, so rotation/recreation can never
+        // leave Rust holding a stale weak activity reference. The initial
+        // activity (if any) is attached immediately here.
+        val biometricProxy = RebindableBiometricProvider()
+        activity?.let { biometricProxy.attach(it) }
+        val biometric: BiometricProvider = biometricProxy
+        this.biometricProxy = biometricProxy
         ffiApp = FfiApp(dataDir, keychain, embedding, embeddingStatus, localLlm, biometric)
         val initial = ffiApp.state()
         state = initial

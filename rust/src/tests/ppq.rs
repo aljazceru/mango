@@ -1026,3 +1026,96 @@ fn decrypt_real_backup_file() {
         doc.api_key.len()
     );
 }
+
+#[test]
+fn actor_decoy_reactivation_via_backup_file() {
+    use crate::AppAction;
+    use std::io::{Read, Write as IoWrite};
+    use std::net::TcpListener;
+
+    let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let responses = [
+            // remote validation: restored key is valid
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"balance":3.5}"#
+            ),
+            // post-restore balance refresh
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"balance":3.5}"#
+            ),
+        ];
+        for resp in responses {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp);
+            let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.flush();
+        }
+    });
+    std::env::set_var("MANGO_PPQ_TEST_BASE_URL", format!("http://{addr}"));
+
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    // Trigger a REAL duress wipe (main 1234 / duress 9999): Mango data is
+    // wiped, decoy mode activates, and both PPQ credentials survive dormant.
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: Some("9999".into()),
+        enable_biometric: false,
+    });
+    app.sync();
+    let err = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::MainPin { pin: "9999".into() },
+        )
+        .expect_err("duress entry must fail generically");
+    let _ = err;
+    app.sync();
+    // Decoy session: credentials exist but NOTHING is derivable from state.
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+    assert!(app.state().ppq.balance_display.is_none());
+    assert!(ppq_values(&kc).0.is_some(), "dormant credit_id preserved");
+
+    // File-based restore (possessing the .mppq) reactivates the account.
+    let bytes = crate::ppq::recovery::encrypt_recovery_document(
+        "00000000-0000-4000-8000-000000000000",
+        "sk-test-abcdefghijklmnop",
+        None,
+        "2026-09-03T00:00:00Z",
+        "correct-horse-battery",
+    )
+    .unwrap();
+    let result = app
+        .restore_ppq_recovery_backup(
+            bytes,
+            "correct-horse-battery".to_string(),
+            crate::SensitiveActionAuth::Biometric,
+            false,
+        )
+        .expect("ffi call succeeds");
+    app.sync();
+    for _ in 0..50 {
+        app.sync();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if app.state().ppq.mode == crate::PpqAccountMode::Managed {
+            break;
+        }
+    }
+    assert!(result.success, "file-based restore must work in decoy mode");
+    let st = app.state();
+    assert_eq!(st.ppq.mode, crate::PpqAccountMode::Managed);
+    // Decoy flag cleared: the account is visible again.
+    assert_eq!(
+        app.test_get_ppq_setting("duress_decoy_mode").as_deref(),
+        Some("false")
+    );
+
+    std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+}

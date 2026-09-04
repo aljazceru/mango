@@ -1505,6 +1505,12 @@ pub enum CoreMsg {
         value: String,
         reply: flume::Sender<()>,
     },
+    /// Test-only: read a PPQ settings row.
+    #[cfg(test)]
+    GetPpqTestSetting {
+        key: String,
+        reply: flume::Sender<Option<String>>,
+    },
     /// Round-trip barrier: the actor replies after every message enqueued
     /// before this one has been fully processed. Gives tests (and native
     /// layers) a deterministic alternative to sleep-based waiting.
@@ -2448,14 +2454,13 @@ fn handle_ppq_backup_restore(
         }
         return Err(code.to_string());
     }
-    // Decoy sessions cannot restore: recovery is the post-threat path and
-    // requires a clean re-enrollment (§4.6 full flow deferred, noted in plan).
-    if ppq_decoy_active(actor_state) {
-        return Ok(PpqRecoveryResult {
-            success: false,
-            error_code: Some("recovery_unavailable".to_string()),
-        });
-    }
+    // §4.6 decoy reactivation (file-based only): restoring from a .mppq the
+    // user POSSESSES leaks nothing about dormant credentials — an attacker
+    // without the file + password fails identically, so the decoy is
+    // preserved. Keychain-probing ("is there a preserved account?") stays
+    // unsupported precisely because success would leak that signal.
+    // On success the decoy flag is cleared: the reattached account becomes
+    // the visible managed account again.
     if encrypted_bytes.len() > ppq::recovery::RECOVERY_FILE_MAX_BYTES {
         return Ok(PpqRecoveryResult {
             success: false,
@@ -2546,6 +2551,11 @@ fn handle_ppq_backup_restore(
             success: false,
             error_code: Some(ppq_error_code(&e).to_string()),
         });
+    }
+    // Post-threat reactivation: leaving decoy mode ends the decoy session's
+    // PPQ suppression now that the account is remotely validated (§4.6).
+    if let Some(db) = actor_state.db.as_ref() {
+        let _ = persistence::queries::set_setting(db.conn(), "duress_decoy_mode", "false");
     }
     ppq_set_setting(actor_state, ppq::account::SETTING_MODE, "managed");
     if is_replacement {
@@ -12525,6 +12535,16 @@ impl FfiApp {
                         let _ = reply.send(());
                     }
 
+                    #[cfg(test)]
+                    CoreMsg::GetPpqTestSetting { key, reply } => {
+                        let value = actor_state.db.as_ref().and_then(|db| {
+                            persistence::queries::get_setting(db.conn(), &key)
+                                .ok()
+                                .flatten()
+                        });
+                        let _ = reply.send(value);
+                    }
+
                     CoreMsg::PpqEvent(event) => {
                         handle_ppq_event(&mut actor_state, &core_tx_for_thread, event);
                         actor_state.app_state.rev += 1;
@@ -12928,6 +12948,17 @@ impl FfiApp {
     }
 
     #[cfg(test)]
+    /// Test-only: read a PPQ settings row.
+    #[cfg(test)]
+    pub fn test_get_ppq_setting(&self, key: &str) -> Option<String> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        let _ = self.core_tx.send(CoreMsg::GetPpqTestSetting {
+            key: key.to_string(),
+            reply: reply_tx,
+        });
+        reply_rx.recv().ok().flatten()
+    }
+
     pub fn test_send_ppq_event(&self, event: PpqTaskEvent) {
         let _ = self.core_tx.send(CoreMsg::PpqEvent(event));
     }

@@ -113,6 +113,11 @@ class MainActivity : AppCompatActivity() {
         backgroundedAt = System.currentTimeMillis()
     }
 
+    override fun onDestroy() {
+        manager?.biometricRebindable?.detach(this)
+        super.onDestroy()
+    }
+
     override fun onResume() {
         super.onResume()
         if (backgroundedAt > 0) {
@@ -170,6 +175,8 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         manager = AppManager.getInstance(applicationContext, this)
+        // §7.5: rebind the biometric bridge to THIS activity every recreation.
+        manager.biometricRebindable?.attach(this)
 
         // PPQ backup SAF launchers: registered before setContent; composables request via coordinator.
         PpqBackupCoordinator.requestExport = { bytes ->
