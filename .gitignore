@@ -72,3 +72,5 @@ macpass.txt
 *.db
 *.sqlite
 *.log
+
+.planning/debug/
