@@ -1,0 +1,11 @@
+# Final bounded UI corrections
+
+Use the saved SWE-1.7 session in YOLO mode. Implement these three small corrections directly; do not repeat broad exploration or rebuild unrelated native code. Core recovery tests have independently passed 22/22.
+
+1. Desktop recovery UI is missing. `desktop/iced/src/pin_setup_screen.rs` still always says Set Your PIN, requires confirmation, and offers new duress input even when `AppState.enrollment_resume_pending` is true. Thread the existing flag from the caller through view/submit validation. In resume mode show the earlier-PIN explanation and a single field + Resume action, use the earlier PIN with no new duress setting, and display core failure text. Preserve normal setup. Verify `cargo check -p mango-desktop` and appropriate view-model validation tests. No FFI change needed.
+
+2. Fresh iOS enrollment failures are still invisible on the duress/biometric wizard steps. `PinSetupScreen.swift` only renders `appState.toast` in pinStep and resumeStep, whereas fresh submitSetup happens from advanceFromDuress or biometricStep. Render enrollment errors in a common area visible on every step (avoid duplicate messages), clear stale core errors when starting a new submission, and retain a clear retry path. Keep secure fields and do not expose secrets. Add/update the focused UI test if practical; iOS execution remains unavailable pending a Mac runner.
+
+3. `SystemPromptDraft` in SystemPromptSheetLogic.kt is an unused production class tested only against itself; the actual sheet still uses mutableStateOf and LaunchedEffect. Remove the duplicate state-machine class and its mirror-only tests, retaining tests of the production `systemPromptSaveValue` function and the 5 real Compose instrumented tests. Alternatively integrate it correctly into the actual Compose state flow, but prefer the small removal. Report the reduced truthful unit-test count.
+
+Run targeted desktop checks and Android unit tests after edits; keep reliable command exit codes. Update APP_REVIEW_IMPLEMENTATION_REPORT.md to state the exact final results and outstanding iOS/x86_64 limitations. No commits, pushes, or personal app-data changes. Return implementation/results for the final independent review.

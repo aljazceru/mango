@@ -79,51 +79,57 @@ struct ContentView: View {
                         }
                 }
             case .chat:
-                ChatView(
-                    state: appManager.appState,
-                    inputText: $chatInputText,
-                    onSend: { forceRole in
-                        let text = chatInputText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !text.isEmpty else { return }
-                        appManager.dispatch(.sendMessage(text: text, forceRole: forceRole))
-                        chatInputText = ""
-                    },
-                    onStop: { appManager.dispatch(.stopGeneration) },
-                    onRetry: { appManager.dispatch(.retryLastMessage) },
-                    onEdit: { id, text in appManager.dispatch(.editMessage(messageId: id, newText: text)) },
-                    onCopy: { text in UIPasteboard.general.string = text },
-                    onAttach: { filename, content, sizeBytes in
-                        appManager.dispatch(.attachFile(
-                            filename: filename,
-                            content: content,
-                            sizeBytes: sizeBytes
-                        ))
-                    },
-                    onClearAttachment: { appManager.dispatch(.clearAttachment) },
-                    onSelectModel: { model in appManager.dispatch(.selectModel(modelId: model)) },
-                    onUseHybridProfile: { profileId in
-                        if let convId = appManager.appState.currentConversationId {
-                            appManager.dispatch(.overrideConversationBackend(
-                                conversationId: convId,
-                                backendId: "hybrid:\(profileId)"
+                // Core owns the navigation stack and replaces the root screen, so the
+                // SwiftUI back stack is empty by default. Provide a local NavigationStack
+                // with an explicit, core-backed back button so Chat can return to Home
+                // even when the back stack is empty (e.g. first chat from onboarding).
+                NavigationStack {
+                    ChatView(
+                        state: appManager.appState,
+                        inputText: $chatInputText,
+                        onSend: { forceRole in
+                            let text = chatInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !text.isEmpty else { return }
+                            appManager.dispatch(.sendMessage(text: text, forceRole: forceRole))
+                            chatInputText = ""
+                        },
+                        onStop: { appManager.dispatch(.stopGeneration) },
+                        onRetry: { appManager.dispatch(.retryLastMessage) },
+                        onEdit: { id, text in appManager.dispatch(.editMessage(messageId: id, newText: text)) },
+                        onCopy: { text in UIPasteboard.general.string = text },
+                        onAttach: { filename, content, sizeBytes in
+                            appManager.dispatch(.attachFile(
+                                filename: filename,
+                                content: content,
+                                sizeBytes: sizeBytes
                             ))
-                        }
-                        appManager.dispatch(.setActiveHybridProfile(profileId: profileId))
-                    },
-                    onSetSystemPrompt: { prompt in appManager.dispatch(.setSystemPrompt(prompt: prompt)) },
-                    onSetToolsEnabled: { enabled in
-                        if let convId = appManager.appState.currentConversationId {
-                            appManager.dispatch(.setConversationToolsEnabled(conversationId: convId, enabled: enabled))
-                        }
-                    },
-                    onRenameConversation: { id, title in
-                        appManager.dispatch(.renameConversation(id: id, title: title))
-                    },
-                    onBack: { appManager.dispatch(.popScreen) },
-                    onAttachDocument: { docId in appManager.dispatch(.attachDocumentToConversation(documentId: docId)) },
-                    onDetachDocument: { docId in appManager.dispatch(.detachDocumentFromConversation(documentId: docId)) }
-                )
-                .environmentObject(appManager)
+                        },
+                        onClearAttachment: { appManager.dispatch(.clearAttachment) },
+                        onSelectModel: { model in appManager.dispatch(.selectModel(modelId: model)) },
+                        onUseHybridProfile: { profileId in
+                            if let convId = appManager.appState.currentConversationId {
+                                appManager.dispatch(.overrideConversationBackend(
+                                    conversationId: convId,
+                                    backendId: "hybrid:\(profileId)"
+                                ))
+                            }
+                            appManager.dispatch(.setActiveHybridProfile(profileId: profileId))
+                        },
+                        onSetSystemPrompt: { prompt in appManager.dispatch(.setSystemPrompt(prompt: prompt)) },
+                        onSetToolsEnabled: { enabled in
+                            if let convId = appManager.appState.currentConversationId {
+                                appManager.dispatch(.setConversationToolsEnabled(conversationId: convId, enabled: enabled))
+                            }
+                        },
+                        onRenameConversation: { id, title in
+                            appManager.dispatch(.renameConversation(id: id, title: title))
+                        },
+                        onBack: { appManager.dispatch(.popScreen) },
+                        onAttachDocument: { docId in appManager.dispatch(.attachDocumentToConversation(documentId: docId)) },
+                        onDetachDocument: { docId in appManager.dispatch(.detachDocumentFromConversation(documentId: docId)) }
+                    )
+                    .environmentObject(appManager)
+                }
             case .home:
                 homeView
                 }

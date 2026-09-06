@@ -536,6 +536,12 @@ pub struct AppState {
     /// When `auto_discover_tools_enabled` is true, only tools from these
     /// providers are offered to the LLM automatically.
     pub trusted_providers: Vec<TrustedProvider>,
+    /// True while an interrupted encryption enrollment is pending. A staged
+    /// pending_auth row survived a crash, so the PinSetup screen must explain
+    /// that the user has to re-enter the PIN they previously chose (resuming
+    /// enrollment) instead of presenting a fresh new-credential form.
+    /// Cleared once active auth is committed.
+    pub enrollment_resume_pending: bool,
 }
 
 impl Default for AppState {
@@ -592,6 +598,7 @@ impl Default for AppState {
             hybrid_profiles: vec![],
             last_turn_routing: None,
             trusted_providers: vec![],
+            enrollment_resume_pending: false,
             contextvm_discovery_state: ContextvmDiscoveryState::Idle,
         }
     }
@@ -3193,6 +3200,30 @@ fn default_model_for_preferred(
         .iter()
         .find(|b| b.id == preferred_id)
         .and_then(|b| b.models.first().cloned())
+}
+
+/// Returns true when a first-time (or legacy) enrollment is still pending and
+/// the app must not allow navigation/chat actions until the PIN is committed.
+///
+/// The gate is active when:
+/// - there is a pending auth row (interrupted encryption migration), or
+/// - there is a pending first-run continuation (Complete/Skip routed to PinSetup), or
+/// - the current screen is PinSetup but auth has not yet been committed.
+fn enrollment_gate_active(actor_state: &ActorState) -> bool {
+    if actor_state.db_path == ":memory:" || actor_state.bootstrap.has_auth_params() {
+        return false;
+    }
+    actor_state.bootstrap.has_pending_auth()
+        || actor_state
+            .bootstrap
+            .read_pending_first_run()
+            .ok()
+            .flatten()
+            .is_some()
+        || matches!(
+            actor_state.app_state.router.current_screen,
+            Screen::PinSetup
+        )
 }
 
 fn model_id_for_stream_retry(actor_state: &ActorState) -> String {
@@ -7165,9 +7196,10 @@ fn load_post_unlock(
         })
         .collect();
 
-    // Load conversations.
+    // Load conversations (mutable because the pending-first-run continuation may
+    // append the freshly created first conversation).
     let conversation_rows = persistence::queries::list_conversations(db.conn()).unwrap_or_default();
-    let conversations: Vec<ConversationSummary> = conversation_rows
+    let mut conversations: Vec<ConversationSummary> = conversation_rows
         .iter()
         .map(|row| ConversationSummary {
             id: row.id.clone(),
@@ -7504,22 +7536,34 @@ fn load_post_unlock(
         actor_state.app_state.ppq = summary;
     }
 
+    let pending_first_run = actor_state
+        .bootstrap
+        .read_pending_first_run()
+        .ok()
+        .flatten();
+
     // Determine post-unlock / initial screen.
-    let post_screen = if is_post_unlock {
-        // Restore pre-lock screen, fall back to Home or Onboarding.
-        actor_state
-            .pre_lock_screen
-            .take()
-            .unwrap_or(if !has_completed {
-                Screen::Onboarding {
-                    step: OnboardingStep::Welcome,
-                }
-            } else {
-                Screen::Home
-            })
+    let mut post_screen = if is_post_unlock {
+        if pending_first_run.is_some() && actor_state.bootstrap.has_auth_params() {
+            // A first-run continuation is waiting and auth is already committed.
+            // The continuation block below will resolve the exact destination.
+            let _ = actor_state.pre_lock_screen.take();
+            Screen::Home
+        } else if let Some(pre) = actor_state.pre_lock_screen.take() {
+            pre
+        } else if !has_completed && pending_first_run.is_none() {
+            Screen::Onboarding {
+                step: OnboardingStep::Welcome,
+            }
+        } else {
+            Screen::Home
+        }
     } else {
-        // First startup: check onboarding completion.
-        if !has_completed {
+        // First startup: check onboarding completion and mandatory enrollment gate.
+        if !actor_state.bootstrap.has_auth_params() && pending_first_run.is_some() {
+            // D-14: onboarding was completed but PIN enrollment is still pending.
+            Screen::PinSetup
+        } else if !has_completed && pending_first_run.is_none() {
             Screen::Onboarding {
                 step: OnboardingStep::Welcome,
             }
@@ -7534,6 +7578,162 @@ fn load_post_unlock(
             Screen::PinSetup
         }
     };
+
+    // Apply a pending first-run continuation exactly once, as soon as auth is
+    // committed and the DB is open. This runs both immediately after SetupPin
+    // and on the first unlock after a crash between the auth commit and the
+    // continuation. It is idempotent: the conversation and setting are committed
+    // in a single transaction, and the marker is only cleared after the commit
+    // succeeds.
+    if actor_state.bootstrap.has_auth_params() {
+        if let Some(pending) = pending_first_run {
+            let continuation_result: Result<Screen, String> = (|| {
+                let db = actor_state
+                    .db
+                    .as_mut()
+                    .ok_or_else(|| "db not open".to_string())?;
+                let conn = db.conn_mut();
+                let tx = conn
+                    .transaction()
+                    .map_err(|e| format!("transaction failed: {}", e))?;
+                persistence::queries::set_setting(&tx, "has_completed_onboarding", "true")
+                    .map_err(|e| format!("set has_completed_onboarding failed: {}", e))?;
+
+                match pending.action.as_str() {
+                    "complete" => {
+                        let conv_id = pending.conversation_id.unwrap_or_else(new_uuid);
+                        {
+                            let already_exists = tx
+                                .query_row(
+                                    "SELECT 1 FROM conversations WHERE id = ?1",
+                                    [&conv_id],
+                                    |_| Ok(()),
+                                )
+                                .is_ok();
+                            if !already_exists {
+                                let now = now_secs();
+                                let default_backend =
+                                    persistence::queries::get_setting(&tx, "default_backend_id")
+                                        .ok()
+                                        .flatten()
+                                        .or(final_active_id.clone())
+                                        .unwrap_or_default();
+                                let default_model =
+                                    persistence::queries::get_setting(&tx, "default_model_id")
+                                        .ok()
+                                        .flatten()
+                                        .or_else(|| {
+                                            if let Some(profile_id) =
+                                                routing::profile_id_from_backend_id(
+                                                    &default_backend,
+                                                )
+                                            {
+                                                hybrid_profiles
+                                                    .iter()
+                                                    .find(|profile| profile.id == profile_id)
+                                                    .map(|profile| profile.local_model_id.clone())
+                                            } else {
+                                                backends
+                                                    .iter()
+                                                    .find(|b| b.id == default_backend)
+                                                    .and_then(|b| b.models.first().cloned())
+                                            }
+                                        })
+                                        .unwrap_or_default();
+                                let row = persistence::ConversationRow {
+                                    id: conv_id.clone(),
+                                    title: "New Conversation".to_string(),
+                                    model_id: default_model.clone(),
+                                    backend_id: default_backend.clone(),
+                                    system_prompt: None,
+                                    created_at: now,
+                                    updated_at: now,
+                                    tools_enabled: false,
+                                };
+                                persistence::queries::insert_conversation(&tx, &row).map_err(
+                                    |e| format!("insert first conversation failed: {}", e),
+                                )?;
+                            }
+                            tx.commit().map_err(|e| {
+                                format!("commit first-run continuation failed: {}", e)
+                            })?;
+                        }
+
+                        // Re-read the committed row and update the in-memory snapshot.
+                        let db = actor_state
+                            .db
+                            .as_ref()
+                            .ok_or_else(|| "db missing after commit".to_string())?;
+                        let rows =
+                            persistence::queries::list_conversations(db.conn()).map_err(|e| {
+                                format!("list conversations after commit failed: {}", e)
+                            })?;
+                        if let Some(row) = rows.into_iter().find(|r| r.id == conv_id) {
+                            if !conversations.iter().any(|c| c.id == conv_id) {
+                                conversations.push(ConversationSummary {
+                                    id: row.id,
+                                    title: row.title,
+                                    model_id: row.model_id,
+                                    backend_id: row.backend_id,
+                                    updated_at: row.updated_at,
+                                    system_prompt: row.system_prompt,
+                                    tools_enabled: row.tools_enabled,
+                                });
+                            }
+                        }
+                        Ok(Screen::Chat {
+                            conversation_id: conv_id,
+                        })
+                    }
+                    "skip" => {
+                        tx.commit()
+                            .map_err(|e| format!("commit skip continuation failed: {}", e))?;
+                        Ok(Screen::Home)
+                    }
+                    _ => {
+                        tx.commit()
+                            .map_err(|e| format!("commit unknown continuation failed: {}", e))?;
+                        Ok(Screen::Home)
+                    }
+                }
+            })();
+
+            match continuation_result {
+                Ok(screen) => {
+                    // Whether the conversation row was just inserted or already
+                    // existed from a previously committed attempt (crash between
+                    // commit and marker clear), always establish coherent chat
+                    // state from the persisted row before routing to Chat.
+                    if let Screen::Chat {
+                        ref conversation_id,
+                    } = screen
+                    {
+                        actor_state.app_state.current_conversation_id =
+                            Some(conversation_id.clone());
+                        refresh_messages(actor_state, conversation_id);
+                        actor_state.app_state.show_first_chat_placeholder =
+                            actor_state.app_state.messages.is_empty();
+                    }
+                    post_screen = screen;
+                    if let Err(e) = actor_state.bootstrap.clear_pending_first_run() {
+                        log::warn!("[auth] clear pending_first_run failed: {e}");
+                    }
+                }
+                Err(e) => {
+                    log::error!("[auth] apply first-run continuation failed: {e}");
+                    actor_state.app_state.last_error =
+                        Some("Could not finish setup. It will be retried automatically.".into());
+                    if actor_state.app_state.toast.is_none() {
+                        actor_state.app_state.toast = Some("Could not finish setup".into());
+                    }
+                    // Active auth exists, so keep the user on Home while the marker
+                    // is retained for the next retry.
+                    post_screen = Screen::Home;
+                }
+            }
+            actor_state.app_state.onboarding = OnboardingState::default();
+        }
+    }
 
     // Apply state.
     actor_state.app_state.conversations = conversations;
@@ -7556,7 +7756,26 @@ fn load_post_unlock(
     actor_state.app_state.contextvm_tools = contextvm_tools_for_state;
     actor_state.app_state.hybrid_profiles = hybrid_profiles;
     // Phase 38: load trusted providers.
-    actor_state.app_state.trusted_providers = load_trusted_providers(db.conn());
+    actor_state.app_state.trusted_providers =
+        load_trusted_providers(actor_state.db.as_ref().expect("db open").conn());
+
+    // Reflect whether an interrupted enrollment still holds staged auth so the
+    // PinSetup UI can explain the resume flow instead of a fresh-setup form.
+    actor_state.app_state.enrollment_resume_pending =
+        actor_state.bootstrap.has_pending_auth() && !actor_state.bootstrap.has_auth_params();
+
+    // Once active auth is verified and the encrypted DB is canonical, remove any
+    // leftover plaintext backup or temp files. A failure here is observable and
+    // retryable: the DB remains open and cleanup will be re-attempted on the next
+    // verified open.
+    if actor_state.db_path != ":memory:" && actor_state.bootstrap.has_auth_params() {
+        if let Err(e) = persistence::Database::finalize_encrypted_storage(&actor_state.db_path) {
+            log::error!("[auth] finalize encrypted storage failed: {e}");
+            actor_state.app_state.last_error =
+                Some("Could not finish cleanup; it will be retried automatically.".into());
+        }
+    }
+
     refresh_current_contextvm_dispatch(actor_state);
     actor_state.app_state.lock_timeout_seconds = lock_timeout_seconds;
     actor_state.app_state.biometric_login_enabled = biometric_login_enabled;
@@ -7718,17 +7937,70 @@ impl FfiApp {
 
             // Phase 28: Determine whether to auto-open the main DB or defer to unlock.
             //
-            // Auto-open cases (backward compat per D-01 deviation note):
-            //   A. data_dir is empty → in-memory test mode, open ":memory:" unconditionally.
-            //   B. No auth params in bootstrap DB AND no existing encrypted mango.db → first-time
-            //      user who hasn't set a PIN yet (will be prompted via Screen::PinSetup).
-            //      Open the plaintext DB so the rest of the init proceeds normally.
-            //   C. Existing plaintext mango.db AND no auth params → pre-encryption legacy install,
-            //      open as plaintext and offer PIN setup via auth_initialized=false.
-            //
-            // Deferred-open case:
-            //   D. Auth params exist → returning user, show Screen::Locked, wait for pin/biometric.
+            // First, recover any interrupted first-time enrollment. The bootstrap DB may
+            // contain a pending_auth row from a prior run that crashed before the active
+            // auth row was promoted. Inspect the main DB file to decide how to proceed:
+            //   - encrypted mango.db + pending_auth  → the encrypted replacement already
+            //     happened; resume PinSetup so the user can finish enrollment.
+            //   - plaintext/missing mango.db + pending_auth → the replace step never
+            //     committed; restore the parked plaintext backup, clear the stale pending
+            //     auth, and start the enrollment over.
+            //   - no pending_auth → normal startup below.
+            let mut enrollment_resume = false;
+            if db_path != ":memory:" && bootstrap.has_pending_auth() {
+                let main_encrypted = std::path::Path::new(&db_path).exists()
+                    && persistence::Database::is_encrypted(&db_path);
+                if main_encrypted {
+                    enrollment_resume = true;
+                } else {
+                    match persistence::Database::recover_plaintext_after_failed_enrollment(&db_path)
+                    {
+                        Ok(persistence::EnrollmentRecovery::PlaintextReady) => {
+                            // Plaintext is restored and verified. Clear the stale pending
+                            // auth and continue as a normal unauthenticated install.
+                            if let Err(e) = bootstrap.clear_pending_auth() {
+                                log::warn!("[auth] startup: clear stale pending_auth failed: {e}");
+                            }
+                        }
+                        Ok(persistence::EnrollmentRecovery::NothingToRecover) => {
+                            // Pending auth is only written by SetupPin after a real
+                            // main DB exists, so finding no database files at all
+                            // means the data is gone. Keep the pending auth (it is
+                            // the only record of the key material the user chose)
+                            // and block at PinSetup — do not create a blank
+                            // replacement database.
+                            log::error!(
+                                "[auth] startup: pending auth but no database files; blocking"
+                            );
+                            enrollment_resume = true;
+                        }
+                        Ok(persistence::EnrollmentRecovery::EncryptedReady)
+                        | Ok(persistence::EnrollmentRecovery::EncryptedCandidate) => {
+                            // An encrypted main or a surviving encrypted candidate
+                            // (.enc_tmp / .enc_replaced) is present. Resume enrollment
+                            // so the user can finish it with the previously entered PIN.
+                            enrollment_resume = true;
+                        }
+                        Err(e) => {
+                            log::error!("[auth] startup: enrollment recovery failed: {e}");
+                            // Recovery could not determine a safe state. Block all
+                            // navigation/chat actions and force the user back to PinSetup.
+                            // Do NOT open the main DB or clear pending auth.
+                            enrollment_resume = true;
+                        }
+                    }
+                }
+            }
+
             let has_auth = bootstrap.has_auth_params();
+
+            // Any keychain DEK cached without committed auth params is an orphaned
+            // leftover from an interrupted enrollment. Biometric DEK staging happens
+            // *after* active auth commits, so remove the orphan before deciding
+            // biometric_login_enabled and before any cold-launch bypass attempt.
+            if !has_auth {
+                keychain.delete("mango".to_string(), "dek".to_string());
+            }
 
             // Quick 260421-bys: Case D bypass — if the user has set lock_timeout == Never,
             // a DEK is cached in the keychain and cold_launch_bypass == 1 in the bootstrap DB.
@@ -7751,6 +8023,10 @@ impl FfiApp {
                 // Case A: in-memory / test mode
                 let db = persistence::Database::open(":memory:").expect("in-memory DB open");
                 (Some(db), false, false, false)
+            } else if enrollment_resume {
+                // Case E: encrypted replacement already in place, but active auth not
+                // committed yet. Defer DB open until the user re-enters the same PIN.
+                (None, true, false, false)
             } else if !has_auth {
                 // Case B/C: no auth params → open plaintext (or create new plaintext)
                 let db =
@@ -7839,7 +8115,11 @@ impl FfiApp {
             };
 
             // Set initial screen based on auth state.
-            if has_auth && !bypass_succeeded {
+            if enrollment_resume {
+                // Interrupted enrollment: force PinSetup so the user can finish it.
+                initial_state.router.current_screen = Screen::PinSetup;
+                initial_state.enrollment_resume_pending = true;
+            } else if has_auth && !bypass_succeeded {
                 // Returning user: show lock screen (D-09).
                 initial_state.router.current_screen = Screen::Locked;
             }
@@ -7914,6 +8194,37 @@ impl FfiApp {
             while let Ok(msg) = core_rx.recv() {
                 match msg {
                     CoreMsg::Action(action) => {
+                        // D-14 mandatory enrollment: block navigation/chat actions while a
+                        // first-run (or legacy) enrollment is incomplete. Enrollment actions
+                        // (SetupPin, CompleteOnboarding, SkipOnboarding, UnlockWithPin) are
+                        // intentionally not blocked so the user can finish enrollment.
+                        if enrollment_gate_active(&actor_state) {
+                            let blocked = matches!(
+                                action,
+                                AppAction::PushScreen { .. }
+                                    | AppAction::PopScreen
+                                    | AppAction::NewConversation
+                                    | AppAction::LoadConversation { .. }
+                                    | AppAction::SendMessage { .. }
+                                    | AppAction::RetryLastMessage
+                                    | AppAction::EditMessage { .. }
+                                    | AppAction::ForkConversation { .. }
+                                    | AppAction::NextOnboardingStep
+                                    | AppAction::PreviousOnboardingStep
+                                    | AppAction::DeleteConversation { .. }
+                                    | AppAction::DeleteAllConversations
+                            );
+                            if blocked {
+                                log::warn!("[auth] action blocked while PIN enrollment incomplete");
+                                actor_state.app_state.router.current_screen = Screen::PinSetup;
+                                actor_state.app_state.enrollment_resume_pending =
+                                    actor_state.bootstrap.has_pending_auth();
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                continue;
+                            }
+                        }
+
                         match action {
                             AppAction::PushScreen { screen } => {
                                 if matches!(screen, Screen::Agents) && !features::AGENTS_ENABLED {
@@ -8750,6 +9061,11 @@ impl FfiApp {
                                         prompt.as_deref(),
                                         now,
                                     );
+                                    // Refresh the conversation list so the next
+                                    // time the Android/iOS system prompt sheet
+                                    // opens it sees the saved value, not the
+                                    // pre-edit copy.
+                                    refresh_conversations(&mut actor_state);
                                 }
                             }
 
@@ -9263,6 +9579,36 @@ impl FfiApp {
                             }
 
                             AppAction::CompleteOnboarding => {
+                                // D-14: first-run completion must enroll a PIN before normal use.
+                                // If auth is not yet configured on a real (file-backed) install,
+                                // persist the post-enrollment continuation and route through
+                                // PinSetup instead of exposing Chat/Home. The first conversation
+                                // is created exactly once after the PIN commits (idempotent via
+                                // the stored conversation id and `pending_first_run`).
+                                if actor_state.db_path != ":memory:"
+                                    && !actor_state.bootstrap.has_auth_params()
+                                {
+                                    let conv_id = new_uuid();
+                                    if let Err(e) = actor_state
+                                        .bootstrap
+                                        .set_pending_first_run("complete", Some(&conv_id))
+                                    {
+                                        log::error!(
+                                            "[auth] CompleteOnboarding: pending continuation failed: {e}"
+                                        );
+                                        actor_state.app_state.toast =
+                                            Some("Could not start PIN setup".into());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                    actor_state.app_state.router.current_screen = Screen::PinSetup;
+                                    actor_state.app_state.onboarding = OnboardingState::default();
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
                                 // Persist completion, create conversation, navigate to chat.
                                 let _ = persistence::queries::set_setting(
                                     actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -9321,6 +9667,31 @@ impl FfiApp {
                             }
 
                             AppAction::SkipOnboarding => {
+                                // D-14: even "Skip" must complete PIN enrollment on a real
+                                // install before exposing Home. Persist the skip continuation
+                                // and route to PinSetup; Home is applied after the PIN commits.
+                                if actor_state.db_path != ":memory:"
+                                    && !actor_state.bootstrap.has_auth_params()
+                                {
+                                    if let Err(e) =
+                                        actor_state.bootstrap.set_pending_first_run("skip", None)
+                                    {
+                                        log::error!(
+                                            "[auth] SkipOnboarding: pending continuation failed: {e}"
+                                        );
+                                        actor_state.app_state.toast =
+                                            Some("Could not start PIN setup".into());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                    actor_state.app_state.router.current_screen = Screen::PinSetup;
+                                    actor_state.app_state.onboarding = OnboardingState::default();
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
                                 // Mark onboarding complete without adding a provider.
                                 // User will be taken to Home and can add providers from Settings later.
                                 let _ = persistence::queries::set_setting(
@@ -10043,20 +10414,443 @@ impl FfiApp {
                                 duress_pin,
                                 enable_biometric,
                             } => {
-                                if let Some(db) = actor_state.db.as_ref() {
-                                    let _ = persistence::queries::set_setting(
-                                        db.conn(),
-                                        "duress_decoy_mode",
-                                        "false",
-                                    );
+                                // 1. Resume an interrupted enrollment, or start fresh.
+                                let pending =
+                                    actor_state.bootstrap.read_pending_auth().ok().flatten();
+                                let is_resume = if let Some(ref _p) = pending {
+                                    if actor_state.db_path != ":memory:"
+                                        && Path::new(&actor_state.db_path).exists()
+                                        && persistence::Database::is_encrypted(&actor_state.db_path)
+                                    {
+                                        true
+                                    } else {
+                                        // Stale pending: the encrypted replacement never
+                                        // committed. Recover the plaintext backup and retry
+                                        // enrollment from scratch. On any error, keep the pending
+                                        // auth and stay on PinSetup so the user can retry.
+                                        match persistence::Database::
+                                            recover_plaintext_after_failed_enrollment(
+                                                &actor_state.db_path,
+                                            )
+                                        {
+                                            Ok(persistence::EnrollmentRecovery::PlaintextReady) => {
+                                                // Plaintext is restored and verified. The pending
+                                                // auth is now stale (it wrapped a DEK for an
+                                                // encrypted file that no longer exists).
+                                                if let Err(e) =
+                                                    actor_state.bootstrap.clear_pending_auth()
+                                                {
+                                                    log::error!("[auth] SetupPin stale pending: clear pending auth failed: {e}");
+                                                }
+                                                false
+                                            }
+                                            Ok(persistence::EnrollmentRecovery::NothingToRecover) => {
+                                                // Pending auth is only written after a real main
+                                                // DB existed, so a completely empty data dir means
+                                                // the data is gone. Do NOT clear pending auth or
+                                                // let the fresh path create a blank replacement —
+                                                // block and keep the pending key metadata.
+                                                log::error!("[auth] SetupPin: pending auth but no database files; blocking");
+                                                actor_state.app_state.toast = Some(
+                                                    "Previous data could not be found. Re-enter the PIN you chose earlier, or reinstall to start over."
+                                                        .into(),
+                                                );
+                                                actor_state.app_state.rev += 1;
+                                                emit(
+                                                    &actor_state.app_state,
+                                                    &shared_for_core,
+                                                    &update_tx,
+                                                );
+                                                continue;
+                                            }
+                                            Ok(persistence::EnrollmentRecovery::EncryptedReady)
+                                            | Ok(persistence::EnrollmentRecovery::EncryptedCandidate) => {
+                                                // Encrypted main or a surviving encrypted
+                                                // candidate is present; resume instead.
+                                                true
+                                            }
+                                            Err(e) => {
+                                                log::error!("[auth] SetupPin stale pending: recovery failed: {e}");
+                                                actor_state.app_state.toast = Some(
+                                                    "PIN setup failed: could not restore previous data. Please try again."
+                                                        .into(),
+                                                );
+                                                actor_state.app_state.rev += 1;
+                                                emit(
+                                                    &actor_state.app_state,
+                                                    &shared_for_core,
+                                                    &update_tx,
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    false
+                                };
+
+                                // 0. Credential validation (Finding 1).
+                                // The raw PIN bytes are fed to the KDF unchanged so that
+                                // existing passphrases (incl. legacy formats) keep working;
+                                // validation only *rejects* unusable new credentials.
+                                // Resume must accept the previously chosen PIN as-is, including
+                                // any legacy passphrase length, because pending auth was already
+                                // derived from it.
+                                let trimmed_pin = pin.trim();
+                                if trimmed_pin.is_empty() {
+                                    actor_state.app_state.toast =
+                                        Some("Please enter a valid PIN.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
                                 }
-                                // Generate DEK, derive KEK from PIN, wrap DEK, write bootstrap DB.
-                                // Then migrate any existing plaintext DB to SQLCipher.
+                                if !is_resume && pin.chars().count() < 4 {
+                                    actor_state.app_state.toast =
+                                        Some("PIN must be at least 4 characters.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                // duress_trimmed is needed later to write the duress hash on
+                                // fresh enrollment; for resume it is always None.
+                                let duress_trimmed = if !is_resume {
+                                    duress_pin
+                                        .as_deref()
+                                        .map(str::trim)
+                                        .filter(|s| !s.is_empty())
+                                } else {
+                                    None
+                                };
+
+                                if !is_resume {
+                                    if duress_trimmed.is_some_and(|dp| dp == trimmed_pin) {
+                                        actor_state.app_state.toast = Some(
+                                            "Duress PIN must be different from your main PIN."
+                                                .into(),
+                                        );
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                    if duress_trimmed.is_some_and(|dp| dp.chars().count() < 4) {
+                                        actor_state.app_state.toast = Some(
+                                            "Emergency PIN must be at least 4 characters.".into(),
+                                        );
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+
+                                    if let Some(db) = actor_state.db.as_ref() {
+                                        let _ = persistence::queries::set_setting(
+                                            db.conn(),
+                                            "duress_decoy_mode",
+                                            "false",
+                                        );
+                                    }
+                                }
+
+                                if actor_state.bootstrap.has_auth_params() && !is_resume {
+                                    // Reject duplicate enrollment over an already-initialized
+                                    // vault. This prevents the active wrapped DEK from being
+                                    // overwritten and orphaning the existing database.
+                                    actor_state.app_state.toast =
+                                        Some("A PIN is already configured.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                // 2. Resume path: the encrypted main DB is already in place,
+                                //    pending auth is staged, and the user must re-enter the same
+                                //    PIN to finish the interrupted enrollment.
+                                if is_resume {
+                                    let pending = pending.expect("is_resume implies pending");
+                                    let salt: [u8; 32] = match pending.salt.as_slice().try_into() {
+                                        Ok(s) => s,
+                                        Err(_) => {
+                                            log::error!(
+                                                "[auth] SetupPin: pending salt has wrong length"
+                                            );
+                                            actor_state.app_state.toast = Some(
+                                                "PIN setup failed: corrupt pending auth".into(),
+                                            );
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            continue;
+                                        }
+                                    };
+
+                                    let kek = match crypto::key_derivation::derive_kek(
+                                        pin.as_bytes(),
+                                        &salt,
+                                        pending.kdf_memory_kib,
+                                        pending.kdf_iterations,
+                                        pending.kdf_parallelism,
+                                    ) {
+                                        Ok(k) => k,
+                                        Err(e) => {
+                                            log::error!(
+                                                "[auth] SetupPin resume: KEK derivation failed: {e}"
+                                            );
+                                            actor_state.app_state.toast = Some(
+                                                "PIN setup failed: key derivation error".into(),
+                                            );
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            continue;
+                                        }
+                                    };
+
+                                    let dek = match crypto::key_derivation::unwrap_dek(
+                                        &kek,
+                                        &pending.wrapped_dek,
+                                    ) {
+                                        Ok(d) => Zeroizing::new(d),
+                                        Err(_) => {
+                                            // Wrong PIN: the data is still recoverable with the
+                                            // correct PIN. Stay on PinSetup without destroying state.
+                                            actor_state.app_state.toast =
+                                                Some("Incorrect PIN.".into());
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            continue;
+                                        }
+                                    };
+
+                                    let dek_hex: Zeroizing<String> = Zeroizing::new(
+                                        dek.iter().map(|b| format!("{:02x}", b)).collect(),
+                                    );
+
+                                    // If the canonical main file is missing but an encrypted
+                                    // candidate survived the crash (.enc_tmp / .enc_replaced),
+                                    // verify it against the DEK just unwrapped from the entered
+                                    // PIN and promote it into place. Files that fail
+                                    // verification are preserved for a later retry.
+                                    if actor_state.db_path != ":memory:"
+                                        && !Path::new(&actor_state.db_path).exists()
+                                    {
+                                        match persistence::Database::promote_encrypted_candidate(
+                                            &actor_state.db_path,
+                                            dek_hex.as_str(),
+                                        ) {
+                                            Ok(true) => {}
+                                            Ok(false) => {
+                                                log::error!("[auth] SetupPin resume: no encrypted candidate verified with the pending DEK");
+                                                actor_state.app_state.toast = Some(
+                                                    "PIN setup failed: previous data could not be recovered. Please try again."
+                                                        .into(),
+                                                );
+                                                actor_state.app_state.rev += 1;
+                                                emit(
+                                                    &actor_state.app_state,
+                                                    &shared_for_core,
+                                                    &update_tx,
+                                                );
+                                                continue;
+                                            }
+                                            Err(e) => {
+                                                log::error!("[auth] SetupPin resume: promote candidate failed: {e}");
+                                                actor_state.app_state.toast = Some(
+                                                    "PIN setup failed: previous data could not be recovered. Please try again."
+                                                        .into(),
+                                                );
+                                                actor_state.app_state.rev += 1;
+                                                emit(
+                                                    &actor_state.app_state,
+                                                    &shared_for_core,
+                                                    &update_tx,
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
+
+                                    // Open the encrypted main DB if it isn't already open.
+                                    if actor_state.db.is_none() {
+                                        match persistence::Database::open_encrypted(
+                                            &actor_state.db_path,
+                                            &dek_hex,
+                                        ) {
+                                            Ok(db) => actor_state.db = Some(db),
+                                            Err(e) => {
+                                                log::error!(
+                                                    "[auth] SetupPin resume: open_encrypted failed: {e}"
+                                                );
+                                                actor_state.app_state.toast = Some(
+                                                    "PIN setup failed: could not open encrypted data"
+                                                        .into(),
+                                                );
+                                                actor_state.app_state.rev += 1;
+                                                emit(
+                                                    &actor_state.app_state,
+                                                    &shared_for_core,
+                                                    &update_tx,
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
+
+                                    // Commit active auth only after the DB opens successfully.
+                                    if let Err(e) = actor_state.bootstrap.promote_pending_auth() {
+                                        log::error!(
+                                            "[auth] SetupPin resume: promote_pending_auth failed: {e}"
+                                        );
+                                        // The DB is encrypted but auth was not committed.
+                                        // Roll back to the plaintext backup so the user can retry
+                                        // from the original state. Preserve pending auth until the
+                                        // rollback is verified; only then clear it.
+                                        if let Some(db) = actor_state.db.as_ref() {
+                                            if let Err(e) = db.checkpoint_truncate() {
+                                                log::warn!(
+                                                    "[auth] SetupPin resume promote: checkpoint before rollback failed: {e}"
+                                                );
+                                            }
+                                        }
+                                        actor_state.db = None;
+                                        remove_file_if_exists(&format!(
+                                            "{}-wal",
+                                            actor_state.db_path
+                                        ));
+                                        remove_file_if_exists(&format!(
+                                            "{}-shm",
+                                            actor_state.db_path
+                                        ));
+                                        remove_file_if_exists(&format!(
+                                            "{}-journal",
+                                            actor_state.db_path
+                                        ));
+
+                                        match persistence::Database::rollback_encrypted_to_plaintext(
+                                            &actor_state.db_path,
+                                        ) {
+                                            Ok(()) => {
+                                                if let Err(e) =
+                                                    actor_state.bootstrap.clear_pending_auth()
+                                                {
+                                                    log::error!("[auth] SetupPin resume promote: clear pending auth after rollback failed: {e}");
+                                                }
+                                                if let Ok(db) = persistence::Database::open(
+                                                    &actor_state.db_path,
+                                                ) {
+                                                    actor_state.db = Some(db);
+                                                    load_post_unlock(
+                                                        &mut actor_state,
+                                                        core_tx_for_thread.clone(),
+                                                        false,
+                                                    );
+                                                }
+                                                actor_state.app_state.toast = Some(
+                                                    "PIN setup failed: could not commit auth. Please try again."
+                                                        .into(),
+                                                );
+                                            }
+                                            Err(e) => {
+                                                log::error!("[auth] SetupPin resume promote: rollback failed: {e}");
+                                                // Pending auth and the encrypted main are preserved.
+                                                // The next SetupPin attempt will resume.
+                                                actor_state.app_state.toast = Some(
+                                                    "PIN setup failed: could not restore previous data. Please try again."
+                                                        .into(),
+                                                );
+                                            }
+                                        }
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+
+                                    if let Err(e) =
+                                        persistence::Database::finalize_encrypted_storage(
+                                            &actor_state.db_path,
+                                        )
+                                    {
+                                        log::error!("[auth] SetupPin: finalize failed: {e}");
+                                        actor_state.app_state.last_error = Some(
+                                            "Could not finish cleanup; it will be retried automatically.".into(),
+                                        );
+                                    }
+
+                                    // Stage the biometric DEK only after active auth is
+                                    // committed. Only mark biometric login enabled when the
+                                    // DEK was durably stored; a failed keychain write must not
+                                    // enable a dead unlock path.
+                                    if enable_biometric && actor_state.app_state.biometric_available
+                                    {
+                                        let staged = actor_state.keychain.store(
+                                            "mango".to_string(),
+                                            "dek".to_string(),
+                                            (*dek_hex).clone(),
+                                        );
+                                        actor_state.app_state.biometric_login_enabled = staged;
+                                        if !staged {
+                                            log::warn!("[auth] SetupPin resume: keychain DEK store failed; biometric unlock not enabled");
+                                        }
+                                    }
+
+                                    actor_state.dek = Some(dek);
+                                    if actor_state.db_path != ":memory:" {
+                                        let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_deref();
+                                        actor_state.vector_index = rag::VectorIndex::new(
+                                            &actor_state.data_dir,
+                                            dek_ref,
+                                        )
+                                        .unwrap_or_else(|e| {
+                                            log::warn!("[auth] SetupPin: VectorIndex open with DEK failed, using empty fallback: {e}");
+                                            rag::VectorIndex::new("", None).expect("empty fallback")
+                                        });
+                                    }
+
+                                    actor_state.app_state.auth_initialized = true;
+                                    actor_state.app_state.encryption_enabled =
+                                        actor_state.db_path != ":memory:";
+                                    load_post_unlock(
+                                        &mut actor_state,
+                                        core_tx_for_thread.clone(),
+                                        false,
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                // 3. Fresh enrollment.
+
+                                // Defensive: an encrypted main DB without active or pending auth
+                                // is unrecoverable. This should only happen if external files were
+                                // manipulated.
+                                if actor_state.db_path != ":memory:"
+                                    && Path::new(&actor_state.db_path).exists()
+                                    && persistence::Database::is_encrypted(&actor_state.db_path)
+                                {
+                                    log::error!(
+                                        "[auth] SetupPin: encrypted main DB exists with no auth/pending"
+                                    );
+                                    actor_state.app_state.toast =
+                                        Some("PIN setup failed: data is not recoverable".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
                                 // CR-03: wrap raw DEK bytes in Zeroizing so they are zeroed on drop.
                                 let dek: Zeroizing<[u8; 32]> =
                                     Zeroizing::new(crypto::key_derivation::generate_dek());
                                 let salt = crypto::key_derivation::generate_salt();
-                                // CR-03: derive_kek now returns Zeroizing<[u8; 32]>.
                                 let kek: Zeroizing<[u8; 32]> =
                                     match crypto::key_derivation::derive_kek(
                                         pin.as_bytes(),
@@ -10071,8 +10865,7 @@ impl FfiApp {
                                                 "[auth] SetupPin: KEK derivation failed: {e}"
                                             );
                                             actor_state.app_state.toast = Some(
-                                                "PIN setup failed: key derivation error"
-                                                    .to_string(),
+                                                "PIN setup failed: key derivation error".into(),
                                             );
                                             actor_state.app_state.rev += 1;
                                             emit(
@@ -10088,22 +10881,7 @@ impl FfiApp {
                                     dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                 );
 
-                                // Per D-05/D-06: cache DEK in platform keychain so biometric unlock
-                                // can retrieve it without PIN (ENC-04 gap closure).
-                                if enable_biometric && actor_state.app_state.biometric_available {
-                                    // Note: (*dek_hex).clone() produces a plain String (not
-                                    // Zeroizing) because KeychainProvider::store takes String
-                                    // by value per the UniFFI ABI. The clone is unavoidable;
-                                    // the platform keychain is hardware-backed storage.
-                                    actor_state.keychain.store(
-                                        "mango".to_string(),
-                                        "dek".to_string(),
-                                        (*dek_hex).clone(),
-                                    );
-                                    log::info!("[auth] SetupPin: DEK stored in platform keychain for biometric unlock");
-                                }
-
-                                let duress_hash = duress_pin.as_deref().map(|dp| {
+                                let duress_hash = duress_trimmed.map(|dp| {
                                     crypto::key_derivation::hash_pin(dp.as_bytes(), &salt)
                                 });
                                 let auth_params = crypto::bootstrap_db::AuthParams {
@@ -10114,57 +10892,209 @@ impl FfiApp {
                                     kdf_iterations: crypto::key_derivation::DEFAULT_ITERATIONS,
                                     kdf_parallelism: crypto::key_derivation::DEFAULT_PARALLELISM,
                                 };
+
+                                // Stage pending auth before touching the main DB. On file-backed
+                                // installs the main DB migration is still ahead; on in-memory the
+                                // promotion is immediate.
                                 if let Err(e) =
-                                    actor_state.bootstrap.write_auth_params(&auth_params)
+                                    actor_state.bootstrap.write_pending_auth(&auth_params)
                                 {
-                                    log::error!("[auth] SetupPin: write_auth_params failed: {e}");
+                                    log::error!("[auth] SetupPin: write_pending_auth failed: {e}");
                                     actor_state.app_state.toast =
-                                        Some("PIN setup failed: storage error".to_string());
+                                        Some("PIN setup failed: storage error".into());
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
                                 }
 
-                                // Migrate plaintext DB to SQLCipher if it exists and is not already encrypted.
-                                if actor_state.db_path != ":memory:" {
-                                    if actor_state.db.is_some()
-                                        && !persistence::Database::is_encrypted(
+                                // 4. In-memory / unit tests: no file migration, just promote and use
+                                //    the already-open DB.
+                                if actor_state.db_path == ":memory:" {
+                                    if let Err(e) = actor_state.bootstrap.promote_pending_auth() {
+                                        log::error!(
+                                            "[auth] SetupPin: promote_pending_auth failed: {e}"
+                                        );
+                                        actor_state.app_state.toast =
+                                            Some("PIN setup failed: storage error".into());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                    if let Err(e) = actor_state.bootstrap.clear_pending_first_run()
+                                    {
+                                        log::warn!(
+                                            "[auth] SetupPin: clear pending_first_run failed: {e}"
+                                        );
+                                    }
+                                }
+                                // 5. File-backed install: migrate the plaintext DB to SQLCipher,
+                                //    then promote pending auth and open the encrypted DB.
+                                else if !persistence::Database::is_encrypted(&actor_state.db_path)
+                                {
+                                    // Record whether the source DB existed before we attempt
+                                    // migration. If it disappears and recovery finds nothing, we
+                                    // know we lost data and should not create a blank DB.
+                                    let main_existed_before =
+                                        Path::new(&actor_state.db_path).exists();
+
+                                    // Drop the open plaintext handle before migration.
+                                    actor_state.db = None;
+
+                                    if let Err(e) = persistence::Database::migrate_to_encrypted(
+                                        &actor_state.db_path,
+                                        &dek_hex,
+                                    ) {
+                                        log::error!(
+                                            "[auth] SetupPin: migrate_to_encrypted failed: {e}"
+                                        );
+                                        match persistence::Database::
+                                            recover_plaintext_after_failed_enrollment(
+                                                &actor_state.db_path,
+                                            )
+                                        {
+                                            Ok(persistence::EnrollmentRecovery::PlaintextReady) => {
+                                                if let Err(e) = actor_state.bootstrap.clear_pending_auth() {
+                                                    log::error!("[auth] SetupPin: clear pending auth after migration recovery failed: {e}");
+                                                }
+                                                if let Ok(db) = persistence::Database::open(&actor_state.db_path) {
+                                                    actor_state.db = Some(db);
+                                                    load_post_unlock(
+                                                        &mut actor_state,
+                                                        core_tx_for_thread.clone(),
+                                                        false,
+                                                    );
+                                                }
+                                                actor_state.app_state.toast =
+                                                    Some("PIN setup failed: DB migration error".into());
+                                            }
+                                            Ok(persistence::EnrollmentRecovery::EncryptedReady)
+                                            | Ok(persistence::EnrollmentRecovery::EncryptedCandidate) => {
+                                                // The encrypted main or a surviving encrypted
+                                                // candidate is in place; do not clear pending
+                                                // auth. The next SetupPin attempt will resume
+                                                // (verifying and promoting the candidate with
+                                                // the entered PIN).
+                                                actor_state.app_state.toast =
+                                                    Some("PIN setup failed: DB migration error".into());
+                                            }
+                                            Ok(persistence::EnrollmentRecovery::NothingToRecover) => {
+                                                if main_existed_before {
+                                                    // The original database has vanished and there is
+                                                    // nothing to recover. Do not create a blank DB.
+                                                    log::error!("[auth] SetupPin: migration lost the source database");
+                                                    actor_state.app_state.toast = Some(
+                                                        "PIN setup failed: could not restore previous data. Please try again."
+                                                            .into(),
+                                                    );
+                                                } else {
+                                                    // There was no source to migrate. Clear pending
+                                                    // auth and allow a fresh start.
+                                                    if let Err(e) = actor_state.bootstrap.clear_pending_auth() {
+                                                        log::error!("[auth] SetupPin: clear pending auth (nothing to recover) failed: {e}");
+                                                    }
+                                                    if let Ok(db) = persistence::Database::open(&actor_state.db_path) {
+                                                        actor_state.db = Some(db);
+                                                        load_post_unlock(
+                                                            &mut actor_state,
+                                                            core_tx_for_thread.clone(),
+                                                            false,
+                                                        );
+                                                    }
+                                                    actor_state.app_state.toast =
+                                                        Some("PIN setup failed: DB migration error".into());
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::error!("[auth] SetupPin: migration recovery failed: {e}");
+                                                actor_state.app_state.toast = Some(
+                                                    "PIN setup failed: could not restore previous data. Please try again."
+                                                        .into(),
+                                                );
+                                            }
+                                        }
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+
+                                    // Commit auth only after the encrypted DB has replaced the
+                                    // original and been verified.
+                                    if let Err(e) = actor_state.bootstrap.promote_pending_auth() {
+                                        log::error!(
+                                            "[auth] SetupPin: promote_pending_auth failed: {e}"
+                                        );
+                                        // The DB is encrypted but auth was not committed.
+                                        // Roll back to the plaintext backup so the user can retry
+                                        // from the original state. Preserve pending auth until the
+                                        // rollback is verified; only then clear it.
+                                        match persistence::Database::rollback_encrypted_to_plaintext(
+                                            &actor_state.db_path,
+                                        ) {
+                                            Ok(()) => {
+                                                if let Err(e) =
+                                                    actor_state.bootstrap.clear_pending_auth()
+                                                {
+                                                    log::error!("[auth] SetupPin fresh promote: clear pending auth after rollback failed: {e}");
+                                                }
+                                                if let Ok(db) = persistence::Database::open(
+                                                    &actor_state.db_path,
+                                                ) {
+                                                    actor_state.db = Some(db);
+                                                    load_post_unlock(
+                                                        &mut actor_state,
+                                                        core_tx_for_thread.clone(),
+                                                        false,
+                                                    );
+                                                }
+                                                actor_state.app_state.toast = Some(
+                                                    "PIN setup failed: could not commit auth. Please try again."
+                                                        .into(),
+                                                );
+                                            }
+                                            Err(e) => {
+                                                log::error!("[auth] SetupPin fresh promote: rollback failed: {e}");
+                                                // Pending auth is preserved so the user can retry.
+                                                // The encrypted main remains the canonical file.
+                                                actor_state.app_state.toast = Some(
+                                                    "PIN setup failed: could not restore previous data. Please try again."
+                                                        .into(),
+                                                );
+                                            }
+                                        }
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+
+                                    if let Err(e) =
+                                        persistence::Database::finalize_encrypted_storage(
                                             &actor_state.db_path,
                                         )
                                     {
-                                        // Drop DB handle before migration (can't migrate an open connection).
-                                        actor_state.db = None;
-                                        if let Err(e) = persistence::Database::migrate_to_encrypted(
-                                            &actor_state.db_path,
-                                            &dek_hex,
-                                        ) {
-                                            log::error!("[auth] migrate_to_encrypted failed: {e}");
-                                            actor_state.app_state.toast = Some(
-                                                "PIN setup failed: DB migration error".to_string(),
-                                            );
-                                            actor_state.app_state.rev += 1;
-                                            emit(
-                                                &actor_state.app_state,
-                                                &shared_for_core,
-                                                &update_tx,
-                                            );
-                                            continue;
-                                        }
+                                        log::error!("[auth] SetupPin: finalize failed: {e}");
+                                        actor_state.app_state.last_error = Some(
+                                            "Could not finish cleanup; it will be retried automatically.".into(),
+                                        );
                                     }
-                                    // Open the (now encrypted) DB.
+
                                     match persistence::Database::open_encrypted(
                                         &actor_state.db_path,
                                         &dek_hex,
                                     ) {
-                                        Ok(db) => {
-                                            actor_state.db = Some(db);
-                                        }
+                                        Ok(db) => actor_state.db = Some(db),
                                         Err(e) => {
                                             log::error!(
-                                                "[auth] SetupPin: open_encrypted failed: {e}"
+                                                "[auth] SetupPin: open_encrypted after promotion failed: {e}"
                                             );
-                                            actor_state.app_state.toast =
-                                                Some("PIN setup failed: DB open error".to_string());
+                                            // Auth is committed and the DB is encrypted. Leave
+                                            // auth_initialized/encryption_enabled true; the user
+                                            // can unlock with the PIN on the next launch.
+                                            actor_state.app_state.auth_initialized = true;
+                                            actor_state.app_state.encryption_enabled = true;
+                                            actor_state.app_state.duress_pin_configured =
+                                                auth_params.duress_hash.is_some();
+                                            actor_state.app_state.router.current_screen =
+                                                Screen::Locked;
                                             actor_state.app_state.rev += 1;
                                             emit(
                                                 &actor_state.app_state,
@@ -10174,21 +11104,43 @@ impl FfiApp {
                                             continue;
                                         }
                                     }
-                                    // Phase 29 (D-01, D-04): Store DEK and open VectorIndex with real encryption key.
-                                    actor_state.dek = Some(dek.clone());
+
+                                    actor_state.dek = Some(dek);
                                     let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_deref();
-                                    actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
-                                        .unwrap_or_else(|e| {
-                                            log::warn!("[auth] SetupPin: VectorIndex open with DEK failed, using empty fallback: {e}");
-                                            rag::VectorIndex::new("", None).expect("empty fallback")
-                                        });
+                                    actor_state.vector_index = rag::VectorIndex::new(
+                                        &actor_state.data_dir,
+                                        dek_ref,
+                                    )
+                                    .unwrap_or_else(|e| {
+                                        log::warn!("[auth] SetupPin: VectorIndex open with DEK failed, using empty fallback: {e}");
+                                        rag::VectorIndex::new("", None).expect("empty fallback")
+                                    });
                                 }
+
+                                // 6. Stage the biometric DEK only after active auth is committed
+                                //    and the encrypted DB is known to open. The login flag must
+                                //    reflect whether the DEK was actually durably stored — a
+                                //    failed keychain write must not enable a dead unlock path.
+                                let mut dek_staged = false;
+                                if enable_biometric && actor_state.app_state.biometric_available {
+                                    dek_staged = actor_state.keychain.store(
+                                        "mango".to_string(),
+                                        "dek".to_string(),
+                                        (*dek_hex).clone(),
+                                    );
+                                    if dek_staged {
+                                        log::info!("[auth] SetupPin: DEK stored in platform keychain for biometric unlock");
+                                    } else {
+                                        log::warn!("[auth] SetupPin: keychain DEK store failed; biometric unlock not enabled");
+                                    }
+                                }
+
                                 actor_state.app_state.auth_initialized = true;
                                 actor_state.app_state.encryption_enabled =
                                     actor_state.db_path != ":memory:";
-                                actor_state.app_state.biometric_login_enabled =
-                                    enable_biometric && actor_state.app_state.biometric_available;
-                                actor_state.app_state.duress_pin_configured = duress_pin.is_some();
+                                actor_state.app_state.biometric_login_enabled = dek_staged;
+                                actor_state.app_state.duress_pin_configured =
+                                    auth_params.duress_hash.is_some();
                                 load_post_unlock(
                                     &mut actor_state,
                                     core_tx_for_thread.clone(),

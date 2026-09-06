@@ -16,6 +16,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +35,12 @@ fun SystemPromptSheet(
 ) {
     var promptText by remember { mutableStateOf(initialPrompt) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    // Reset the draft if the caller supplies a new initial prompt while the
+    // sheet is already open (e.g. when switching conversations without closing).
+    LaunchedEffect(initialPrompt) {
+        promptText = initialPrompt
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,

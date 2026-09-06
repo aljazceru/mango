@@ -1,6 +1,6 @@
 repository: https://github.com/aljazceru/mango
 name: Mango
-description: No provider lock-in. No subscriptions. Own your data data. Bring your own key. Protect your chats. And delete them if forced to unlock the app. No tracking, no analytics. The app that serves you.
+description: No provider lock-in. No subscriptions. Own your data. Bring your own key. Protect your chats. And delete them if forced to unlock the app. No tracking, no analytics. PPQ can now be set up automatically inside Mango (no account on ppq.ai needed first), funded via any external Lightning wallet by scanning a QR, and backed up to an encrypted device backup (.mppq) with a password. PPQ holds the balance (prepaid USD credit); Mango never touches funds. Duress wipe preserves PPQ credentials. BYOK and custom providers remain supported. The app that serves you.
 summary: Mango - Confidential AI app
 tags:
     - confidential

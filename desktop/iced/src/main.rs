@@ -1647,18 +1647,29 @@ impl App {
                     // Phase 28: PIN setup screen handlers
                     Message::PinSetupPinChanged(val) => {
                         *setup_pin_input = val;
+                        // Clear stale core failure text when the user starts retyping.
+                        if state.toast.is_some() {
+                            manager.dispatch(AppAction::ClearToast);
+                        }
                     }
                     Message::PinSetupConfirmChanged(val) => {
                         *setup_confirm_input = val;
+                        if state.toast.is_some() {
+                            manager.dispatch(AppAction::ClearToast);
+                        }
                     }
                     Message::PinSetupDuressChanged(val) => {
                         *setup_duress_input = val;
+                        if state.toast.is_some() {
+                            manager.dispatch(AppAction::ClearToast);
+                        }
                     }
                     Message::PinSetupSubmit => {
                         if let Some(action) = pin_setup_screen::build_setup_pin_action(
                             setup_pin_input,
                             setup_confirm_input,
                             setup_duress_input,
+                            state.enrollment_resume_pending,
                         ) {
                             manager.dispatch(action);
                             // Clear setup inputs after dispatch (T-28-23)
@@ -1989,6 +2000,7 @@ impl App {
                         setup_confirm_input,
                         setup_duress_input,
                         state.toast.as_deref(),
+                        state.enrollment_resume_pending,
                         *is_dark,
                     );
                 }

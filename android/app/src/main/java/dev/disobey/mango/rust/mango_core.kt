@@ -3257,6 +3257,15 @@ data class AppState (
      * providers are offered to the LLM automatically.
      */
     var `trustedProviders`: List<TrustedProvider>
+    , 
+    /**
+     * True while an interrupted encryption enrollment is pending. A staged
+     * pending_auth row survived a crash, so the PinSetup screen must explain
+     * that the user has to re-enter the PIN they previously chose (resuming
+     * enrollment) instead of presenting a fresh new-credential form.
+     * Cleared once active auth is committed.
+     */
+    var `enrollmentResumePending`: kotlin.Boolean
     
 ){
     
@@ -3322,6 +3331,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeHybridProfile.read(buf),
             FfiConverterOptionalTypeTurnRoutingSummary.read(buf),
             FfiConverterSequenceTypeTrustedProvider.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -3374,7 +3384,8 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterTypeContextvmDiscoveryState.allocationSize(value.`contextvmDiscoveryState`) +
             FfiConverterSequenceTypeHybridProfile.allocationSize(value.`hybridProfiles`) +
             FfiConverterOptionalTypeTurnRoutingSummary.allocationSize(value.`lastTurnRouting`) +
-            FfiConverterSequenceTypeTrustedProvider.allocationSize(value.`trustedProviders`)
+            FfiConverterSequenceTypeTrustedProvider.allocationSize(value.`trustedProviders`) +
+            FfiConverterBoolean.allocationSize(value.`enrollmentResumePending`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -3427,6 +3438,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeHybridProfile.write(value.`hybridProfiles`, buf)
             FfiConverterOptionalTypeTurnRoutingSummary.write(value.`lastTurnRouting`, buf)
             FfiConverterSequenceTypeTrustedProvider.write(value.`trustedProviders`, buf)
+            FfiConverterBoolean.write(value.`enrollmentResumePending`, buf)
     }
 }
 

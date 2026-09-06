@@ -291,3 +291,80 @@ fn test_bootstrap_db_delete_all_clears_params() {
         "read_auth_params should return None after delete_all"
     );
 }
+
+// ── cold_launch_bypass preservation (Finding 3) ───────────────────────────────
+
+#[test]
+fn test_bootstrap_db_write_preserves_cold_launch_bypass() {
+    let path = temp_bootstrap_path("cold_bypass");
+    let db = BootstrapDb::open(&path).expect("BootstrapDb::open");
+
+    let salt = generate_salt();
+    let dek = generate_dek();
+    let kek = derive_kek(
+        b"primary_pin",
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek");
+    let mut params = AuthParams {
+        salt: salt.to_vec(),
+        wrapped_dek: wrap_dek(&kek, &dek),
+        duress_hash: None,
+        kdf_memory_kib: DEFAULT_MEMORY_KIB,
+        kdf_iterations: DEFAULT_ITERATIONS,
+        kdf_parallelism: DEFAULT_PARALLELISM,
+    };
+
+    db.write_auth_params(&params).expect("write_auth_params");
+    db.write_cold_launch_bypass(true)
+        .expect("write_cold_launch_bypass");
+    assert!(
+        db.read_cold_launch_bypass().unwrap_or(false),
+        "cold_launch_bypass should be true after explicit set"
+    );
+
+    // Simulate SetDuressPin: update the row with a new duress hash.
+    let dummy_salt = generate_salt();
+    let duress_hash = hash_pin(b"duress_pin", &dummy_salt);
+    params.duress_hash = Some(duress_hash);
+    db.write_auth_params(&params).expect("write_auth_params");
+
+    assert!(
+        db.read_cold_launch_bypass().unwrap_or(false),
+        "write_auth_params must preserve cold_launch_bypass on update"
+    );
+}
+
+#[test]
+fn test_bootstrap_db_fresh_insert_defaults_cold_launch_bypass_to_false() {
+    let path = temp_bootstrap_path("cold_default");
+    let db = BootstrapDb::open(&path).expect("BootstrapDb::open");
+
+    let salt = generate_salt();
+    let dek = generate_dek();
+    let kek = derive_kek(
+        b"pin",
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .expect("derive_kek");
+    let params = AuthParams {
+        salt: salt.to_vec(),
+        wrapped_dek: wrap_dek(&kek, &dek),
+        duress_hash: None,
+        kdf_memory_kib: DEFAULT_MEMORY_KIB,
+        kdf_iterations: DEFAULT_ITERATIONS,
+        kdf_parallelism: DEFAULT_PARALLELISM,
+    };
+
+    db.write_auth_params(&params).expect("write_auth_params");
+    assert!(
+        !db.read_cold_launch_bypass().unwrap_or(true),
+        "cold_launch_bypass must default to false on a fresh auth row"
+    );
+}

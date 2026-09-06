@@ -168,7 +168,10 @@ struct ChatView: View {
         }
         .navigationTitle(conversationTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(false)
+        // Core owns the navigation stack, so a SwiftUI-synthesized back button
+        // would have no destination. Hide it and rely on the explicit Back
+        // button in the toolbar calling `onBack`.
+        .navigationBarBackButtonHidden(true)
         .onChange(of: currentConversation?.id) { _, _ in
             forceRemoteNext = false
         }
@@ -176,6 +179,20 @@ struct ChatView: View {
             forceRemoteNext = false
         }
         .toolbar {
+            // Explicit Back button: the core-owned router replaces the root screen,
+            // so the SwiftUI navigation stack is empty. `onBack` pops the core stack
+            // (defaulting to Home when the stack is empty), which is also how the
+            // first chat opened from onboarding returns to Home.
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: onBack) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.backward")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Back")
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+            }
             ToolbarItemGroup(placement: .principal) {
                 // Model picker with inline attestation indicator
                 ModelPickerView(

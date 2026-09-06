@@ -126,6 +126,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             hybridProfiles = emptyList(),
             lastTurnRouting = null,
             trustedProviders = emptyList(),
+            enrollmentResumePending = false,
             ppq = PpqAccountSummary(
                 mode = PpqAccountMode.NONE,
                 setupPhase = PpqSetupPhase.IDLE,

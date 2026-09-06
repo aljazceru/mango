@@ -134,6 +134,11 @@ fetch-llama-cpp:
 check-llama-versions:
   scripts/check_llama_versions.sh
 
+# Compile-only regression check for the NumKong/Bionic `syscall` declaration
+# fix in vendor/numkong (NDK arm64 + x86_64 and host C++).
+check-numkong-headers:
+  scripts/check_numkong_android_headers.sh
+
 # Build pinned llama.cpp Android shared libraries consumed by the app CMake wrapper.
 build-llama-android: fetch-llama-cpp
   #!/usr/bin/env bash

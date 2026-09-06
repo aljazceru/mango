@@ -2,6 +2,13 @@
 members = ["rust", "uniffi-bindgen", "desktop/iced", "tools/contextvm-echo-server"]
 resolver = "2"
 
+# Vendored NumKong 7.8.1 with an `__ANDROID__` guard around its glibc-only
+# `syscall(...)` `noexcept` forward-declaration, which conflicts with Bionic's
+# `<unistd.h>` on x86_64-android. See vendor/numkong/VENDOR.md for provenance
+# and removal conditions.
+[patch.crates-io]
+numkong = { path = "vendor/numkong" }
+
 [workspace.package]
 license = "GPL-3.0-only"
 repository = "https://github.com/aljazceru/mango"

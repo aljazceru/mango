@@ -478,7 +478,7 @@ RustBuffer uniffi_mango_core_fn_method_ffiapp_read_encrypted_image(uint64_t ptr,
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_RESTORE_PPQ_RECOVERY_BACKUP
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_RESTORE_PPQ_RECOVERY_BACKUP
-RustBuffer uniffi_mango_core_fn_method_ffiapp_restore_ppq_recovery_backup(uint64_t ptr, RustBuffer encrypted_bytes, RustBuffer backup_password, RustBuffer auth, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_mango_core_fn_method_ffiapp_restore_ppq_recovery_backup(uint64_t ptr, RustBuffer encrypted_bytes, RustBuffer backup_password, RustBuffer auth, int8_t replace_acknowledged, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_FN_METHOD_FFIAPP_STATE

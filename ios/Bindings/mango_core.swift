@@ -718,7 +718,7 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
      */
     func readEncryptedImage(messageId: String) throws  -> Data
     
-    func restorePpqRecoveryBackup(encryptedBytes: Data, backupPassword: String, auth: SensitiveActionAuth) throws  -> PpqRecoveryResult
+    func restorePpqRecoveryBackup(encryptedBytes: Data, backupPassword: String, auth: SensitiveActionAuth, replaceAcknowledged: Bool) throws  -> PpqRecoveryResult
     
     /**
      * Read the latest state snapshot from the shared RwLock.
@@ -973,14 +973,15 @@ open func readEncryptedImage(messageId: String)throws  -> Data  {
 })
 }
     
-open func restorePpqRecoveryBackup(encryptedBytes: Data, backupPassword: String, auth: SensitiveActionAuth)throws  -> PpqRecoveryResult  {
+open func restorePpqRecoveryBackup(encryptedBytes: Data, backupPassword: String, auth: SensitiveActionAuth, replaceAcknowledged: Bool)throws  -> PpqRecoveryResult  {
     return try  FfiConverterTypePpqRecoveryResult_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
         uniffiCallStatus in
     uniffi_mango_core_fn_method_ffiapp_restore_ppq_recovery_backup(
             self.uniffiCloneHandle(),
         FfiConverterData.lower(encryptedBytes),
         FfiConverterString.lower(backupPassword),
-        FfiConverterTypeSensitiveActionAuth_lower(auth),uniffiCallStatus
+        FfiConverterTypeSensitiveActionAuth_lower(auth),
+        FfiConverterBool.lower(replaceAcknowledged),uniffiCallStatus
     )
 })
 }
@@ -1757,6 +1758,14 @@ public struct AppState: Equatable, Hashable {
      * providers are offered to the LLM automatically.
      */
     public var trustedProviders: [TrustedProvider]
+    /**
+     * True while an interrupted encryption enrollment is pending. A staged
+     * pending_auth row survived a crash, so the PinSetup screen must explain
+     * that the user has to re-enter the PIN they previously chose (resuming
+     * enrollment) instead of presenting a fresh new-credential form.
+     * Cleared once active auth is committed.
+     */
+    public var enrollmentResumePending: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1934,7 +1943,14 @@ public struct AppState: Equatable, Hashable {
          * Phase 38 — list of providers the user has explicitly trusted.
          * When `auto_discover_tools_enabled` is true, only tools from these
          * providers are offered to the LLM automatically.
-         */trustedProviders: [TrustedProvider]) {
+         */trustedProviders: [TrustedProvider], 
+        /**
+         * True while an interrupted encryption enrollment is pending. A staged
+         * pending_auth row survived a crash, so the PinSetup screen must explain
+         * that the user has to re-enter the PIN they previously chose (resuming
+         * enrollment) instead of presenting a fresh new-credential form.
+         * Cleared once active auth is committed.
+         */enrollmentResumePending: Bool) {
         self.rev = rev
         self.router = router
         self.busyState = busyState
@@ -1984,6 +2000,7 @@ public struct AppState: Equatable, Hashable {
         self.hybridProfiles = hybridProfiles
         self.lastTurnRouting = lastTurnRouting
         self.trustedProviders = trustedProviders
+        self.enrollmentResumePending = enrollmentResumePending
     }
 
     
@@ -2050,7 +2067,8 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 contextvmDiscoveryState: FfiConverterTypeContextvmDiscoveryState.read(from: &buf), 
                 hybridProfiles: FfiConverterSequenceTypeHybridProfile.read(from: &buf), 
                 lastTurnRouting: FfiConverterOptionTypeTurnRoutingSummary.read(from: &buf), 
-                trustedProviders: FfiConverterSequenceTypeTrustedProvider.read(from: &buf)
+                trustedProviders: FfiConverterSequenceTypeTrustedProvider.read(from: &buf), 
+                enrollmentResumePending: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -2104,6 +2122,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterSequenceTypeHybridProfile.write(value.hybridProfiles, into: &buf)
         FfiConverterOptionTypeTurnRoutingSummary.write(value.lastTurnRouting, into: &buf)
         FfiConverterSequenceTypeTrustedProvider.write(value.trustedProviders, into: &buf)
+        FfiConverterBool.write(value.enrollmentResumePending, into: &buf)
     }
 }
 
@@ -10570,7 +10589,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 26433) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mango_core_checksum_method_ffiapp_restore_ppq_recovery_backup() != 22942) {
+    if (uniffi_mango_core_checksum_method_ffiapp_restore_ppq_recovery_backup() != 49907) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_state() != 37810) {

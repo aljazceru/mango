@@ -38,6 +38,39 @@ final class MangoIOSSimulatorE2ETests: XCTestCase {
         verifyLockAndUnlock()
     }
 
+    /// Chat is rendered inside a local NavigationStack whose stack is empty
+    /// (the core router owns navigation), so the explicit toolbar Back button
+    /// must dispatch `.popScreen` and return to Home. Regression test for the
+    /// restored iOS chat back navigation.
+    func testChatBackButtonReturnsToHome() throws {
+        completeOnboardingAndPinSetup()
+
+        // On a fresh install the first-run continuation may land on Chat; pop
+        // back to Home before measuring the navigation under test.
+        let earlyBack = app.navigationBars.buttons["Back"].firstMatch
+        if earlyBack.waitForExistence(timeout: 3) {
+            earlyBack.tap()
+        }
+        verifyHome()
+
+        // Open a conversation from Home.
+        tapButton("New")
+        waitForText("New Conversation", timeout: 15)
+
+        // The chat screen must expose an explicit Back affordance (the
+        // synthesized nav back button is hidden; core owns the router).
+        let navBack = app.navigationBars.buttons["Back"].firstMatch
+        let anyBack = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Back")).firstMatch
+        XCTAssertTrue(
+            navBack.waitForExistence(timeout: 10) || anyBack.exists,
+            "Chat screen must expose an explicit Back button"
+        )
+        (navBack.exists ? navBack : anyBack).tap()
+        dismissSpringboardPrompts()
+
+        waitForHome(timeout: 15)
+    }
+
     private func completeOnboardingAndPinSetup() {
         waitForAnyText(["Get Started", "Choose a PIN", "Mango", "Unlock"], timeout: 45)
 

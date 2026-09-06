@@ -58,6 +58,10 @@ fun PinSetupScreen(
     var enableBiometric by remember { mutableStateOf(appState.biometricAvailable) }
     var validationError by remember { mutableStateOf<String?>(null) }
 
+    // A staged pending_auth row survived a crash: the user must re-enter the
+    // PIN they chose earlier to finish enrollment — this is not a fresh setup.
+    val isResume = appState.enrollmentResumePending
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -69,7 +73,7 @@ fun PinSetupScreen(
         Spacer(modifier = Modifier.height(48.dp))
 
         Text(
-            text = "Secure Your App",
+            text = if (isResume) "Finish Securing Your App" else "Secure Your App",
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
             style = MaterialTheme.typography.headlineMedium,
@@ -78,7 +82,11 @@ fun PinSetupScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Set a PIN to protect your data. You will need this PIN every time you open Mango.",
+            text = if (isResume) {
+                "Setup was interrupted before encryption finished. Enter the PIN you chose earlier to finish protecting your data."
+            } else {
+                "Set a PIN to protect your data. You will need this PIN every time you open Mango."
+            },
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
             style = MaterialTheme.typography.bodyMedium,
@@ -91,70 +99,35 @@ fun PinSetupScreen(
         OutlinedTextField(
             value = pin,
             onValueChange = { pin = it; validationError = null },
-            label = { Text("PIN (min 4 characters)") },
+            label = {
+                Text(if (isResume) "PIN" else "PIN (min 4 characters)")
+            },
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        OutlinedTextField(
-            value = confirmPin,
-            onValueChange = { confirmPin = it; validationError = null },
-            label = { Text("Confirm PIN") },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-        HorizontalDivider()
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // ── Duress PIN ─────────────────────────────────────────────────────
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Emergency PIN",
-                    fontWeight = FontWeight.Medium,
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-                Text(
-                    text = "Entering this PIN will silently erase all data",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Switch(
-                checked = enableDuress,
-                onCheckedChange = { enableDuress = it; duressPin = "" },
-            )
-        }
-
-        if (enableDuress) {
+        if (!isResume) {
             Spacer(modifier = Modifier.height(12.dp))
+
             OutlinedTextField(
-                value = duressPin,
-                onValueChange = { duressPin = it; validationError = null },
-                label = { Text("Emergency PIN") },
+                value = confirmPin,
+                onValueChange = { confirmPin = it; validationError = null },
+                label = { Text("Confirm PIN") },
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
 
-        // ── Biometric enrollment ────────────────────────────────────────────
-
-        if (appState.biometricAvailable) {
-            Spacer(modifier = Modifier.height(16.dp))
+        // On resume the pending enrollment already captured any duress PIN and
+        // biometric choice; only the original PIN is needed to finish.
+        if (!isResume) {
+            Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(16.dp))
+
+            // ── Duress PIN ─────────────────────────────────────────────────
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -163,20 +136,63 @@ fun PinSetupScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Use Biometrics",
+                        text = "Emergency PIN",
                         fontWeight = FontWeight.Medium,
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     Text(
-                        text = "Unlock with fingerprint or face",
+                        text = "Entering this PIN will silently erase all data",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
                 Switch(
-                    checked = enableBiometric,
-                    onCheckedChange = { enableBiometric = it },
+                    checked = enableDuress,
+                    onCheckedChange = { enableDuress = it; duressPin = "" },
                 )
+            }
+
+            if (enableDuress) {
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = duressPin,
+                    onValueChange = { duressPin = it; validationError = null },
+                    label = { Text("Emergency PIN") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            // ── Biometric enrollment ───────────────────────────────────────
+
+            if (appState.biometricAvailable) {
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Use Biometrics",
+                            fontWeight = FontWeight.Medium,
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            text = "Unlock with fingerprint or face",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = enableBiometric,
+                        onCheckedChange = { enableBiometric = it },
+                    )
+                }
             }
         }
 
@@ -192,12 +208,41 @@ fun PinSetupScreen(
             )
         }
 
+        // A failed resume (e.g. wrong PIN) arrives as a core toast; surface it
+        // inline here so the failure is visible even where toasts may be missed.
+        appState.toast?.let { toast ->
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = toast,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+            )
+        }
+
         // ── Submit ─────────────────────────────────────────────────────────
 
         Spacer(modifier = Modifier.height(32.dp))
 
         Button(
             onClick = {
+                if (isResume) {
+                    // Resume accepts the previously chosen PIN as-is; the core
+                    // verifies it against the staged pending auth and reports a
+                    // wrong PIN via toast.
+                    if (pin.isEmpty()) {
+                        validationError = "Enter the PIN you chose earlier"
+                    } else {
+                        onDispatchAction(
+                            AppAction.SetupPin(
+                                pin = pin,
+                                duressPin = null,
+                                enableBiometric = false,
+                            )
+                        )
+                    }
+                    return@Button
+                }
                 // Validation (D-18)
                 when {
                     pin.length < 4 -> {
@@ -225,7 +270,7 @@ fun PinSetupScreen(
             },
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Set PIN and Continue")
+            Text(if (isResume) "Resume Setup" else "Set PIN and Continue")
         }
 
         Spacer(modifier = Modifier.height(32.dp))

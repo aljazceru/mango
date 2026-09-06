@@ -14,6 +14,18 @@ It also integrates:
 
 - Brave Search for web search tools
 
+### PPQ managed accounts
+
+Mango can set up a PPQ account automatically inside the app, so you do not need a PPQ account first. You fund it from any external Lightning wallet by scanning a QR code. Your PPQ balance is prepaid USD credit held by PPQ; Mango never touches the funds. Your credentials are stored on the device and can be exported to an encrypted `.mppq` backup with a password. A duress wipe erases local data while preserving PPQ credentials, and existing BYOK PPQ keys and custom providers still work. Back up, restore, or top up from **Settings → Providers**.
+
+- Automatic PPQ setup
+- Lightning top-up via external wallet or QR
+- Encrypted `.mppq` backup and restore
+- Duress wipe preserves PPQ credentials
+- BYOK and custom providers still supported
+
+Top-ups use Bitcoin Lightning in the range PPQ currently advertises (100–1,000,000 sats per PPQ's live limits).
+
 ## Features
 - Chat with selectable models and streaming responses
 - RAG by attaching documents to conversations

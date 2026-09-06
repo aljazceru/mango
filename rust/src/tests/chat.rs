@@ -626,6 +626,53 @@ fn test_system_prompt_resolution_global() {
     );
 }
 
+#[test]
+fn test_set_system_prompt_refreshes_conversation_snapshot() {
+    // Regression: SetSystemPrompt must persist the row AND refresh
+    // app_state.conversations so the next Instructions-sheet open shows the
+    // saved value rather than the pre-edit copy.
+    let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    wait(&app);
+
+    let conv_id = app
+        .state()
+        .current_conversation_id
+        .clone()
+        .expect("conversation created");
+
+    app.dispatch(AppAction::SetSystemPrompt {
+        prompt: Some("You are terse.".into()),
+    });
+    wait(&app);
+
+    let state = app.state();
+    let conv = state
+        .conversations
+        .iter()
+        .find(|c| c.id == conv_id)
+        .expect("conversation still present");
+    assert_eq!(
+        conv.system_prompt.as_deref(),
+        Some("You are terse."),
+        "snapshot must reflect the saved system prompt"
+    );
+
+    // Clearing the prompt also propagates into the snapshot.
+    app.dispatch(AppAction::SetSystemPrompt { prompt: None });
+    wait(&app);
+    let state = app.state();
+    let conv = state
+        .conversations
+        .iter()
+        .find(|c| c.id == conv_id)
+        .expect("conversation still present");
+    assert!(
+        conv.system_prompt.is_none(),
+        "snapshot must reflect a cleared system prompt"
+    );
+}
+
 // ── StreamDone persists assistant message ─────────────────────────────────────
 
 #[test]

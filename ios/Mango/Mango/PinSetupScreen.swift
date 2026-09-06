@@ -36,31 +36,105 @@ struct PinSetupScreen: View {
 
     private var appState: AppState { appManager.appState }
 
+    /// Local validation or the last core failure (e.g. storage error,
+    /// "Incorrect PIN.", or a failed enrollment). iOS has no global toast
+    /// rendering, so each step surfaces this inline.
+    private var currentError: String? {
+        pinError ?? duressError ?? appState.toast
+    }
+
     enum SetupStep {
         case pin, duress, biometric
+    }
+
+    /// Clear stale core and local errors before a new submission so the UI
+    /// never mixes an old failure with the current attempt.
+    private func clearSubmissionErrors() {
+        pinError = nil
+        duressError = nil
+        appManager.dispatch(.clearToast)
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                progressIndicator
-                    .padding(.top, 8)
+                if !appState.enrollmentResumePending {
+                    progressIndicator
+                        .padding(.top, 8)
+                }
 
                 Spacer()
 
-                switch step {
-                case .pin:
-                    pinStep
-                case .duress:
-                    duressStep
-                case .biometric:
-                    biometricStep
+                if appState.enrollmentResumePending {
+                    resumeStep
+                } else {
+                    switch step {
+                    case .pin:
+                        pinStep
+                    case .duress:
+                        duressStep
+                    case .biometric:
+                        biometricStep
+                    }
                 }
 
                 Spacer()
             }
             .navigationTitle(stepTitle)
             .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    // MARK: - Interrupted enrollment resume
+
+    /// Shown when a staged pending_auth row survived a crash before the
+    /// enrollment finished. Only the PIN chosen earlier can complete it — the
+    /// duress/biometric choices were already captured — so this is a single
+    /// field plus an explicit explanation, not a new-credential form.
+    private var resumeStep: some View {
+        VStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Finish Encryption Setup")
+                    .font(.title2.weight(.semibold))
+                Text("Setup was interrupted before encryption finished. Enter the PIN or password you chose earlier to finish protecting your data.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 32)
+
+            VStack(spacing: 12) {
+                SecureField("PIN or password", text: $pin)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+                    .padding(.horizontal, 32)
+
+                if let error = currentError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 32)
+                }
+            }
+
+            Button("Resume Setup") {
+                clearSubmissionErrors()
+                guard !pin.isEmpty else {
+                    pinError = "Enter the PIN you chose earlier."
+                    return
+                }
+                appManager.dispatch(.setupPin(
+                    pin: pin,
+                    duressPin: nil,
+                    enableBiometric: false
+                ))
+            }
+            .buttonStyle(.borderedProminent)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 32)
+            .disabled(pin.isEmpty)
         }
     }
 
@@ -92,7 +166,7 @@ struct PinSetupScreen: View {
                     .autocorrectionDisabled(true)
                     .padding(.horizontal, 32)
 
-                if let error = pinError {
+                if let error = currentError {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -132,14 +206,14 @@ struct PinSetupScreen: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
                         .padding(.horizontal, 32)
-
-                    if let error = duressError {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 32)
-                    }
                 }
+            }
+
+            if let error = currentError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 32)
             }
 
             VStack(spacing: 12) {
@@ -186,6 +260,13 @@ struct PinSetupScreen: View {
             Toggle("Enable biometric unlock", isOn: $enableBiometric)
                 .padding(.horizontal, 32)
 
+            if let error = currentError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 32)
+            }
+
             Button("Set Up Encryption") {
                 submitSetup()
             }
@@ -221,6 +302,7 @@ struct PinSetupScreen: View {
     }
 
     private var stepTitle: String {
+        if appState.enrollmentResumePending { return "Resume Setup" }
         switch step {
         case .pin: return "Set Up PIN"
         case .duress: return "Emergency PIN"
@@ -231,7 +313,7 @@ struct PinSetupScreen: View {
     // MARK: - Validation & navigation
 
     private func validateAndAdvanceFromPin() {
-        pinError = nil
+        clearSubmissionErrors()
         guard pin.count >= 4 else {
             pinError = "PIN must be at least 4 characters."
             return
@@ -244,7 +326,7 @@ struct PinSetupScreen: View {
     }
 
     private func validateAndAdvanceFromDuress() {
-        duressError = nil
+        clearSubmissionErrors()
         // D-18: duress PIN must differ from the real PIN by at least 1 character.
         guard duressPin != pin else {
             duressError = "Emergency PIN must differ from your real PIN."
@@ -266,6 +348,7 @@ struct PinSetupScreen: View {
     }
 
     private func submitSetup() {
+        clearSubmissionErrors()
         let finalDuressPin = skipDuress || duressPin.isEmpty ? nil : duressPin
         appManager.dispatch(.setupPin(
             pin: pin,

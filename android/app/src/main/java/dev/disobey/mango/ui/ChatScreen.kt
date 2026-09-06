@@ -48,6 +48,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -425,15 +426,21 @@ fun ChatScreen(
     }
 
     // System prompt bottom sheet (per CHAT-11 / D-09)
+    // Key the sheet on conversation id so reopening after a switch resets the
+    // draft to the *current* conversation's saved system prompt; the sheet
+    // re-initializes its text each time it is shown.
+    val currentSystemPrompt = currentConversation?.systemPrompt ?: ""
     if (showSystemPromptSheet) {
-        SystemPromptSheet(
-            initialPrompt = "",
-            onSave = { prompt ->
-                onSetSystemPrompt(if (prompt.isBlank()) null else prompt)
-                showSystemPromptSheet = false
-            },
-            onDismiss = { showSystemPromptSheet = false },
-        )
+        key(currentConversation?.id) {
+            SystemPromptSheet(
+                initialPrompt = currentSystemPrompt,
+                onSave = { prompt ->
+                    onSetSystemPrompt(systemPromptSaveValue(prompt))
+                    showSystemPromptSheet = false
+                },
+                onDismiss = { showSystemPromptSheet = false },
+            )
+        }
     }
 
     // Phase 31 (IMG-05/06, D-6): paperclip action sheet — Take Photo / Choose Photo / Attach File.
