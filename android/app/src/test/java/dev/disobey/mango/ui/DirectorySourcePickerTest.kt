@@ -5,6 +5,7 @@ import android.os.Build
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -99,6 +100,41 @@ class DirectorySourcePickerTest {
         assertEquals(
             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
             PERSISTABLE_URI_FLAGS,
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 7: Lint contract on the SDK gate (release remediation finding 5)
+    // -------------------------------------------------------------------------
+
+    /**
+     * `:app:lintDebug` must accept the `MediaStore.Downloads` (API 29) access in
+     * `initialTreeUriForSdk`. That only holds while the helper carries
+     * `@ChecksSdkIntAtLeast(api = Q)` — without it lint cannot recognize the
+     * Boolean helper as an SDK-int guard and fails the release build with NewApi.
+     *
+     * `ChecksSdkIntAtLeast` has CLASS retention (not RUNTIME), so reflection cannot
+     * see it; assert on the compiled `DirectorySourcePickerKt.class` bytes instead.
+     * This keeps the lint contract a tested property instead of an incidental
+     * detail someone can strip in a refactor.
+     */
+    @Test
+    fun `useDownloadsUriForSdk is annotated as a lint-recognized SDK gate`() {
+        val classBytes = javaClass.classLoader
+            .getResourceAsStream("dev/disobey/mango/ui/DirectorySourcePickerKt.class")
+            ?.use { it.readBytes() }
+        assertNotNull(
+            "Compiled DirectorySourcePickerKt.class must be on the unit-test classpath",
+            classBytes,
+        )
+        // Constant-pool scan: CLASS-retention annotations survive in the bytecode.
+        // The type descriptor appears iff some declaration in the file is annotated.
+        val containsAnnotation = String(classBytes!!, Charsets.ISO_8859_1)
+            .contains("Landroidx/annotation/ChecksSdkIntAtLeast;")
+        assertTrue(
+            "useDownloadsUriForSdk MUST carry @ChecksSdkIntAtLeast so Android lint " +
+                "recognizes the API 29 gate in initialTreeUriForSdk (:app:lintDebug NewApi)",
+            containsAnnotation,
         )
     }
 }

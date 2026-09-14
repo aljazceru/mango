@@ -11,16 +11,21 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   NDK_VERSION: "28.2.13676358"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  build:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PR validation: builds, tests, lint, gates and a debug APK. Requires NO
+  # signing secrets — release signing is a tag-only concern (release job).
+  # ─────────────────────────────────────────────────────────────────────────────
+  validate:
+    name: Validate (no signing secrets)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -46,14 +51,16 @@ jobs:
       - name: Build host Rust (for uniffi-bindgen)
         run: cargo build -p mango_core --release
 
+      # Crate-level rust/uniffi.toml supplies package_name/cdylib_name and
+      # `android = true` (Android-cleaner variant — lint-clean on minSdk 28).
+      # No --config override: uniffi-bindgen 0.32 ignores old-style flat files.
       - name: Generate Kotlin bindings
         run: |
           cargo run -p uniffi-bindgen -- generate \
             --library target/release/libmango_core.so \
             --language kotlin \
             --out-dir android/app/src/main/java \
-            --no-format \
-            --config rust/uniffi.toml
+            --no-format
 
       - name: Cross-compile Rust for Android (arm64)
         run: |
@@ -111,36 +118,208 @@ jobs:
       - name: PPQ orchestration gate (required for MANAGED_PPQ_ENABLED builds)
         run: scripts/check_ppq_gate.sh
 
-      - name: Build release APK
+      - name: Packaging gate selftest (multi-dex + SIGPIPE regression)
+        run: scripts/check_ppq_packaging.sh selftest
+
+      # Debug APK: signed with the auto-generated debug keystore — no secrets.
+      # applicationIdSuffix ".dev"; release signing is exercised only on tags.
+      - name: Build debug APK (validation packaging)
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - name: Managed-PPQ presence check (debug APK ships the feature)
+        run: |
+          scripts/check_ppq_packaging.sh present \
+            android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mango-android-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Signed release: runs ONLY on v* tags. Consumes the repository secrets
+  # documented in docs/release/android-signing.md; secret values are never
+  # printed. Gradle's requireReleaseSigning guard stays authoritative — if any
+  # signing variable is missing the build fails, there is no unsigned fallback.
+  # ─────────────────────────────────────────────────────────────────────────────
+  release:
+    name: Signed release (tags only)
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # attach APKs to the tag release
+    env:
+      # Mapped from the repository secrets documented in
+      # docs/release/android-signing.md. Secret values are never printed;
+      # Gradle's requireReleaseSigning guard fails the build if any is blank.
+      # (KEYSTORE_PATH is exported by the provisioning step below via
+      # $GITHUB_ENV because the runner context is not available here.)
+      KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build host Rust (for uniffi-bindgen)
+        run: cargo build -p mango_core --release
+
+      # See validate job: crate-level rust/uniffi.toml drives generation
+      # (package name + android = true cleaner variant).
+      - name: Generate Kotlin bindings
+        run: |
+          cargo run -p uniffi-bindgen -- generate \
+            --library target/release/libmango_core.so \
+            --language kotlin \
+            --out-dir android/app/src/main/java \
+            --no-format
+
+      - name: Cross-compile Rust for Android (arm64)
+        run: |
+          cargo ndk -o android/app/src/main/jniLibs -P 28 \
+            -t arm64-v8a \
+            build -p mango_core --release
+
+      - name: Bundle libc++_shared.so (required by ONNX Runtime)
+        run: |
+          NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          cp "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+            android/app/src/main/jniLibs/arm64-v8a/
+
+      - name: Build and bundle llama.cpp Android libraries
+        run: |
+          source android/llama.cpp.version
+          LLAMA_CPP_DIR="$GITHUB_WORKSPACE/../llama.cpp"
+          if [[ -d "$LLAMA_CPP_DIR/.git" ]]; then
+            git -C "$LLAMA_CPP_DIR" fetch --tags "$LLAMA_CPP_REPO" "$LLAMA_CPP_TAG"
+            git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
+          else
+            git clone --branch "$LLAMA_CPP_TAG" "$LLAMA_CPP_REPO" "$LLAMA_CPP_DIR"
+            git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
+          fi
+          NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build-android-arm64" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_BUILD_TESTS=OFF
+          cmake --build "$LLAMA_CPP_DIR/build-android-arm64" --config Release --parallel \
+            --target ggml-base ggml-cpu ggml llama llama-common
+          for lib in libggml-base.so libggml-cpu.so libggml.so libllama.so libllama-common.so; do
+            cp "$LLAMA_CPP_DIR/build-android-arm64/bin/$lib" android/app/src/main/jniLibs/arm64-v8a/
+          done
+          scripts/check_llama_versions.sh
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Rust fmt/clippy/tests (release gate prerequisites)
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace
+
+      - name: Gradle unit tests + lint
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug
+
+      - name: PPQ orchestration gate (required for MANAGED_PPQ_ENABLED builds)
+        run: scripts/check_ppq_gate.sh
+
+      - name: Packaging gate selftest (multi-dex + SIGPIPE regression)
+        run: scripts/check_ppq_packaging.sh selftest
+
+      # Decode the release keystore from the base64 repository secret. The
+      # secret flows through env indirection only; it is never echoed, logged,
+      # or included in artifacts. Gradle reads the keystore via KEYSTORE_PATH
+      # (exported here, pointing outside the checkout workspace).
+      - name: Provision release signing material (from repository secrets)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${ANDROID_KEYSTORE_BASE64}" ]]; then
+            echo "::error::Repository secret ANDROID_KEYSTORE_BASE64 is not set — cannot sign the release. See docs/release/android-signing.md" >&2
+            exit 1
+          fi
+          keystore="$RUNNER_TEMP/mango-release.keystore"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          if [[ ! -s "$keystore" ]]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 decoded to an empty keystore — check the secret value." >&2
+            exit 1
+          fi
+          echo "KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+
+      - name: Build default release APK (managed PPQ enabled)
         working-directory: android
         run: ./gradlew assembleRelease
 
-      - name: Managed-PPQ presence check (default APK ships the feature)
+      # Preserve the default artifact BEFORE the flag-off rebuild can overwrite
+      # app-release.apk, into a dedicated distribution directory that contains
+      # exactly the two APKs we intend to publish.
+      - name: Preserve default APK and verify managed-PPQ presence
         working-directory: android
         run: |
-          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
-          if grep -qa "Set up PPQ automatically" <(unzip -p "$APK" classes.dex 2>/dev/null | strings 2>/dev/null) 2>/dev/null; then
-            echo "OK: managed PPQ UI present in default APK"
-          else
-            echo "FAIL: default APK missing managed PPQ UI"; exit 1
-          fi
+          set -euo pipefail
+          src="app/build/outputs/apk/release/app-release.apk"
+          dist="app/build/outputs/apk/dist"
+          [[ -f "$src" ]] || { echo "::error::default release APK missing: $src"; exit 1; }
+          mkdir -p "$dist"
+          cp "$src" "$dist/mango-default-release.apk"
+          ../scripts/check_ppq_packaging.sh present "$dist/mango-default-release.apk"
 
-      - name: Flag-off comparison variant (emergency rollback build)
+      # Emergency-rollback comparison build: same pipeline with the managed-PPQ
+      # UI compiled out. The default APK is already safe in dist/.
+      - name: Build flag-off comparison APK (managed PPQ disabled)
         working-directory: android
         run: |
+          set -euo pipefail
           ./gradlew assembleRelease -PMANAGED_PPQ_ENABLED=false
-          mv app/build/outputs/apk/release/app-release.apk \
-             app/build/outputs/apk/release/mango-flag-off-release.apk
+          src="app/build/outputs/apk/release/app-release.apk"
+          dist="app/build/outputs/apk/dist"
+          [[ -f "$src" ]] || { echo "::error::flag-off release APK missing: $src"; exit 1; }
+          mv "$src" "$dist/mango-flag-off-release.apk"
+          ../scripts/check_ppq_packaging.sh absent "$dist/mango-flag-off-release.apk"
 
-      - name: Upload APK
+      - name: Upload release APKs
         uses: actions/upload-artifact@v4
         with:
-          name: mango-android-${{ github.sha }}
-          path: android/app/build/outputs/apk/release/*.apk
+          name: mango-android-release-${{ github.sha }}
+          path: |
+            android/app/build/outputs/apk/dist/mango-default-release.apk
+            android/app/build/outputs/apk/dist/mango-flag-off-release.apk
+          if-no-files-found: error
           retention-days: 30
 
-      - name: Attach APK to release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Attach APKs to release
         uses: softprops/action-gh-release@v2
         with:
-          files: android/app/build/outputs/apk/release/*.apk
+          files: |
+            android/app/build/outputs/apk/dist/mango-default-release.apk
+            android/app/build/outputs/apk/dist/mango-flag-off-release.apk

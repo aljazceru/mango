@@ -126,7 +126,7 @@ pub async fn fetch_and_verify_nvidia(
     nvidia_payload: &str,
     nonce_hex: &str,
     backend_id: &str,
-) -> Result<AttestationEvent, AttestationError> {
+) -> Result<Option<AttestationEvent>, AttestationError> {
     use std::time::SystemTime;
 
     log::debug!(target: "attestation", "[attestation] fetch_and_verify_nvidia backend={}", backend_id);
@@ -146,7 +146,9 @@ pub async fn fetch_and_verify_nvidia(
     // top-level nvidia_payload with an EMPTY evidence_list on TDX-only (CPU)
     // enclaves. NRAS rejects empty lists outright (4005 INVALID_EVIDENCE) and
     // there is no GPU evidence to attest, so skip the roundtrip entirely.
-    // Trust is still gated by the TDX quote verification in the caller.
+    // Pretag C: skipping must not fabricate a Verified NvidiaH100Cc result
+    // (nothing was verified) — return Ok(None). Trust stays gated by the TDX
+    // quote verification in the caller; all callers discard the value.
     if serde_json::from_str::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| {
@@ -161,22 +163,7 @@ pub async fn fetch_and_verify_nvidia(
             "[attestation] empty GPU evidence_list for backend={} — skipping NRAS",
             backend_id
         );
-        let now_secs = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        return Ok(AttestationEvent::Verified {
-            backend_id: backend_id.to_string(),
-            tee_type: "NvidiaH100Cc".to_string(),
-            report_blob: Vec::new(),
-            expires_at: now_secs + 3600,
-            tls_public_key_fp: None,
-            vcek_url: None,
-            vcek_der: None,
-            shape: None,
-            freshness: None,
-            orchestrated_components: None,
-        });
+        return Ok(None);
     }
 
     // Step 2: POST to NRAS GPU attestation endpoint
@@ -314,7 +301,7 @@ pub async fn fetch_and_verify_nvidia(
     // Per D-08: NVIDIA CC TTL is 1 hour
     let expires_at = now_secs + 3600;
 
-    Ok(AttestationEvent::Verified {
+    Ok(Some(AttestationEvent::Verified {
         backend_id: backend_id.to_string(),
         tee_type: "NvidiaH100Cc".to_string(),
         report_blob: jwt_token.into_bytes(),
@@ -326,7 +313,7 @@ pub async fn fetch_and_verify_nvidia(
         shape: None,
         freshness: None,
         orchestrated_components: None,
-    })
+    }))
 }
 
 /// Build the NRAS v3 GPU attestation request body.
@@ -454,17 +441,19 @@ mod nras_request_tests {
     }
 
     // Upstream drift 2026-08: Redpill aci/1 aggregator ships an empty
-    // evidence_list on TDX-only enclaves. Must short-circuit to Ok (no NRAS
-    // roundtrip) instead of failing with 4005 INVALID_EVIDENCE.
+    // evidence_list on TDX-only enclaves. Must short-circuit (no NRAS
+    // roundtrip) instead of failing with 4005 INVALID_EVIDENCE. Pretag C:
+    // nothing was GPU-verified, so the result is None — never a fabricated
+    // NvidiaH100Cc Verified event.
     #[tokio::test]
     async fn empty_evidence_list_skips_nras_roundtrip() {
         let payload = r#"{"nonce":"aa","arch":"HOPPER","evidence_list":[]}"#;
         let evt = super::fetch_and_verify_nvidia(payload, "aa", "test-backend")
             .await
-            .expect("empty evidence_list must skip NRAS and verify");
-        assert!(matches!(
-            evt,
-            super::super::AttestationEvent::Verified { .. }
-        ));
+            .expect("empty evidence_list must skip NRAS without error");
+        assert!(
+            evt.is_none(),
+            "empty evidence_list must not fabricate a Verified event"
+        );
     }
 }

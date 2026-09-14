@@ -71,10 +71,15 @@ import dev.disobey.mango.rust.knownProviderPresets
 import dev.disobey.mango.ui.ppq.PpqBackupDialog
 import dev.disobey.mango.ui.ppq.PpqFundingScreen
 import dev.disobey.mango.ui.ppq.PpqProviderPanel
+import dev.disobey.mango.ui.ppq.PpqReplaceConfirmDialog
+import dev.disobey.mango.ui.ppq.PpqRestoreAttempt
 import dev.disobey.mango.ui.ppq.PpqRestoreDialog
+import dev.disobey.mango.ui.ppq.PpqRestoreFailureReaction
 import dev.disobey.mango.ui.ppq.PpqSetupChoice
 import dev.disobey.mango.ui.ppq.copyInvoiceToClipboard
 import dev.disobey.mango.ui.ppq.defaultOnOpenWallet
+import dev.disobey.mango.ui.ppq.ppqRestoreErrorMessage
+import dev.disobey.mango.ui.ppq.ppqRestoreFailureReaction
 import dev.disobey.mango.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -104,6 +109,9 @@ fun SettingsProvidersScreen(
     var showPpqTopUpDialog by remember { mutableStateOf(false) }
     var showPpqBackupDialog by remember { mutableStateOf(false) }
     var showPpqRestoreDialog by remember { mutableStateOf(false) }
+    // Non-null while the user must explicitly confirm replacing the on-device
+    // PPQ account after Rust answered `replacement_confirmation_required`.
+    var ppqReplaceAttempt by remember { mutableStateOf<PpqRestoreAttempt?>(null) }
 
     Scaffold(
         topBar = {
@@ -584,18 +592,54 @@ fun SettingsProvidersScreen(
         if (showPpqRestoreDialog) {
             PpqRestoreDialog(
                 biometricAvailable = appState.biometricAvailable,
+                existingManaged = appState.ppq.mode == PpqAccountMode.MANAGED,
                 onRestore = { bytes, password, useBiometric, pin, replaceAcknowledged ->
+                    showPpqRestoreDialog = false
                     scope.launch {
-                        val success = AppManager.getInstance(context)
+                        val outcome = AppManager.getInstance(context)
                             .restorePpqRecoveryBackup(bytes, password, useBiometric, pin, replaceAcknowledged)
-                        if (!success) {
-                            Toast.makeText(context, "Restore failed", Toast.LENGTH_SHORT).show()
+                        when (val reaction = ppqRestoreFailureReaction(outcome.success, outcome.errorCode)) {
+                            PpqRestoreFailureReaction.None -> {}
+                            // Rust proved this backup replaces a stored account the UI
+                            // could not know about (e.g. mode "None" with a dormant
+                            // preserved account) — ask for explicit consent, then retry.
+                            PpqRestoreFailureReaction.OfferReplacementConfirmation ->
+                                ppqReplaceAttempt = PpqRestoreAttempt(bytes, password, useBiometric, pin)
+                            is PpqRestoreFailureReaction.ShowError -> Toast.makeText(
+                                context,
+                                reaction.message,
+                                Toast.LENGTH_LONG,
+                            ).show()
                         }
                     }
-                    showPpqRestoreDialog = false
                 },
                 filePicker = { PpqBackupCoordinator.requestImport?.invoke() },
                 onDismiss = { showPpqRestoreDialog = false },
+            )
+        }
+
+        ppqReplaceAttempt?.let { attempt ->
+            PpqReplaceConfirmDialog(
+                onConfirmReplace = {
+                    ppqReplaceAttempt = null
+                    scope.launch {
+                        val outcome = AppManager.getInstance(context).restorePpqRecoveryBackup(
+                            attempt.bytes,
+                            attempt.backupPassword,
+                            attempt.useBiometric,
+                            attempt.pin,
+                            replaceAcknowledged = true,
+                        )
+                        if (!outcome.success) {
+                            Toast.makeText(
+                                context,
+                                ppqRestoreErrorMessage(outcome.errorCode),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                },
+                onDismiss = { ppqReplaceAttempt = null },
             )
         }
     }

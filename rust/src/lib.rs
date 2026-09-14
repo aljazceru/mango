@@ -1015,6 +1015,15 @@ pub enum AppAction {
     SetDuressPin {
         pin: Option<String>,
     },
+    /// Change the main PIN while the app is unlocked. Requires the current
+    /// PIN (the duress PIN is rejected as simply incorrect — it must never
+    /// re-wrap credentials), re-wraps the SAME DEK under a fresh salt with
+    /// the new PIN's KEK, and preserves the duress hash. Biometric login
+    /// keeps working: it wraps the same unchanged DEK.
+    ChangePin {
+        current_pin: String,
+        new_pin: String,
+    },
     /// Unlock with an already-unwrapped DEK (hex string). Used internally after biometric unlock
     /// when the keychain provides the raw DEK (D-06).
     UnlockWithDek {
@@ -1518,13 +1527,19 @@ pub enum CoreMsg {
         key: String,
         reply: flume::Sender<Option<String>>,
     },
+    /// Test-only: read the actor's current PPQ task epoch, so tests can
+    /// construct stale (pre-lock/pre-wipe) task results deterministically.
+    #[cfg(test)]
+    GetPpqTaskEpoch { reply: flume::Sender<u64> },
     /// Round-trip barrier: the actor replies after every message enqueued
     /// before this one has been fully processed. Gives tests (and native
     /// layers) a deterministic alternative to sleep-based waiting.
     Sync { reply: flume::Sender<()> },
-    /// Internal PPQ task completion events. Carries secrets only in the
-    /// AccountCreated arm (actor-internal channel, Zeroizing, never AppState).
-    PpqEvent(PpqTaskEvent),
+    /// Internal PPQ task completion events, scoped to the actor's current
+    /// PPQ session epoch (finding 2). Carries secrets only in the
+    /// AccountCreated arm (actor-internal channel, Zeroizing, never AppState,
+    /// never UniFFI/FFI).
+    PpqEvent(PpqTaskResult),
     CreatePpqRecoveryBackup {
         backup_password: String,
         auth: SensitiveActionAuth,
@@ -1582,10 +1597,27 @@ pub enum PpqTaskEvent {
         uncertain: bool,
     },
     StatusChecked {
+        /// Invoice this status reply was issued for: replies for a
+        /// cancelled/replaced invoice must never mutate funding state
+        /// (finding 2). Actor-internal identity, never crosses FFI.
+        invoice_id: String,
         /// "pending" | "settled" | "expired" | "unknown"
         outcome: &'static str,
         next_poll_at: i64,
     },
+}
+
+/// Session-scoped wrapper for PPQ async task results (finding 2).
+///
+/// `epoch` is the actor's PPQ task epoch captured when the task was
+/// spawned. `handle_ppq_event` drops any result whose epoch no longer
+/// matches the actor's current epoch, so replies that land after lock,
+/// wipe, duress decoy activation, forget, restore/replacement, or invoice
+/// cancellation/replacement can never mutate a different session's state.
+/// Task identity lives here, actor-internally — it never crosses FFI.
+pub struct PpqTaskResult {
+    pub epoch: u64,
+    pub event: PpqTaskEvent,
 }
 
 // ── Actor-internal state ─────────────────────────────────────────────────────
@@ -1638,6 +1670,38 @@ struct ActorState {
     ppq_pending: Option<ppq::account::PendingInvoice>,
     /// Local single-flight debounce for account provisioning (§6.8 step 2).
     ppq_provisioning: bool,
+    /// PPQ async-task session epoch (finding 2). Bumped by
+    /// `ppq_invalidate_tasks` on lock, wipe, duress, forget, restore, and
+    /// invoice cancellation/replacement. In-flight task results carrying an
+    /// older epoch are dropped by `handle_ppq_event`, so late replies can
+    /// never mutate a locked/wiped/replaced session.
+    ppq_task_epoch: u64,
+    /// Epoch that currently owns the provisioning single-flight latch.
+    ppq_provisioning_epoch: u64,
+    /// Cancellation token shared by every PPQ task spawned in the current
+    /// session epoch (review follow-up 1). `ppq_invalidate_tasks` cancels
+    /// and replaces it, so in-flight HTTP futures — including multistep
+    /// operations mid-chain — are cancelled at the await point, not just
+    /// ignored when their reply arrives late.
+    ppq_session_token: CancellationToken,
+    /// Identity of the account whose recovery export is awaiting the
+    /// user's "backup saved" confirmation (review follow-up 4).
+    /// Actor-internal (Zeroizing credit id, never AppState/FFI).
+    /// `ConfirmPpqBackupSaved` is honored only while this still matches the
+    /// current account; cleared on wipe/forget/restore. Deliberately NOT
+    /// cleared by plain lock (Android SAF pickers can pause the app
+    /// mid-save while the account itself is unchanged).
+    ppq_backup_export_credit: Option<Zeroizing<String>>,
+    /// True while a backup-saved confirmation arrived while locked (the
+    /// Android SAF save completed after the app paused). Actor-internal
+    /// only — nothing surfaces in AppState while locked; resolved at
+    /// same-account unlock, dropped if the account changed by then.
+    ppq_backup_save_pending_confirm: bool,
+    /// True while an interrupted credential replacement could not be
+    /// resolved (B's recovery journal is kept as the sole recoverable
+    /// copy): the mixed credentials must not be hydrated for chat nor
+    /// provisioned over — only explicit recovery may run.
+    ppq_recovery_required: bool,
     backends: Vec<llm::BackendConfig>,
     /// Latest attested TLS leaf public key fingerprint per backend.
     /// Used to opportunistically pin transport to the attested endpoint.
@@ -1966,6 +2030,65 @@ fn ppq_decoy_active(actor_state: &ActorState) -> bool {
         .unwrap_or(false)
 }
 
+/// Pretag A: duress decoy sessions must not MUTATE the preserved PPQ
+/// credentials either — every generic backend keychain write/delete that
+/// targets a PPQ slot becomes a successful no-op while the decoy flag is
+/// set. Covers `ppq-ai` (device key / BYOK); `credit-id-v1` and the
+/// recovery journal live under the `mango.ppq` service (never a backend
+/// id) but are listed for completeness. The acknowledged `.mppq` restore
+/// path (`PpqSecretStore::store_provisioned`) is the sanctioned exception.
+fn decoy_blocks_ppq_keychain_write(actor_state: &ActorState, backend_id: &str) -> bool {
+    (backend_id == ppq::secret_store::API_KEY_KEY
+        || backend_id == ppq::secret_store::CREDIT_ID_KEY
+        || backend_id == ppq::secret_store::JOURNAL_KEY)
+        && ppq_decoy_active(actor_state)
+}
+
+/// Apply the backup-saved marker (§4.4): shared by the live confirmation
+/// and the deferred while-locked confirmation resolved at unlock.
+fn apply_ppq_backup_saved_marker(actor_state: &mut ActorState) {
+    if let Some(db) = actor_state.db.as_ref() {
+        let _ = persistence::queries::set_setting(
+            db.conn(),
+            ppq::account::SETTING_BACKUP_AT,
+            &now_secs().to_string(),
+        );
+    }
+    actor_state.app_state.ppq.backup_confirmed = true;
+    actor_state.app_state.ppq.destructive_preflight = None;
+    if actor_state.app_state.ppq.setup_phase == PpqSetupPhase::NeedsBackup {
+        actor_state.app_state.ppq.setup_phase = PpqSetupPhase::NeedsFunds;
+    }
+}
+
+/// Resolve a backup-saved confirmation that arrived while the app was
+/// locked (Android SAF save completed during the pause). Called on
+/// startup/unlock once the account state is loaded: applied only when the
+/// pending scope still matches the CURRENT account; otherwise dropped.
+/// Never leaks anything while locked — the deferral flag is actor-internal.
+fn ppq_resolve_deferred_backup_confirm(actor_state: &mut ActorState) {
+    if !actor_state.ppq_backup_save_pending_confirm {
+        return;
+    }
+    actor_state.ppq_backup_save_pending_confirm = false;
+    if actor_state.db.is_none()
+        || ppq_decoy_active(actor_state)
+        || actor_state.ppq_recovery_required
+        || actor_state.app_state.ppq.mode != PpqAccountMode::Managed
+    {
+        actor_state.ppq_backup_export_credit = None;
+        return;
+    }
+    let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+    let current = store.load_credit_id().ok().flatten();
+    let scope = actor_state.ppq_backup_export_credit.take();
+    if let (Some(c), Some(s)) = (current, scope) {
+        if c.as_str() == s.as_str() {
+            apply_ppq_backup_saved_marker(actor_state);
+        }
+    }
+}
+
 fn ppq_setting(actor_state: &ActorState, key: &str) -> Option<String> {
     actor_state.db.as_ref().and_then(|db| {
         persistence::queries::get_setting(db.conn(), key)
@@ -1980,8 +2103,67 @@ fn ppq_set_setting(actor_state: &ActorState, key: &str, value: &str) {
     }
 }
 
+/// Invalidate every in-flight PPQ task result (finding 2): bump the session
+/// epoch so late replies are dropped by `handle_ppq_event`. Called on lock,
+/// wipe, duress, forget, restore/replacement, and invoice
+/// cancellation/replacement. The counter never resets, so a session can
+/// never get stuck on a stale epoch: every newly spawned task captures the
+/// current value and stays valid after lock/unlock.
+fn ppq_invalidate_tasks(actor_state: &mut ActorState) {
+    actor_state.ppq_task_epoch = actor_state.ppq_task_epoch.wrapping_add(1);
+    actor_state.ppq_provisioning = false;
+    actor_state.ppq_provisioning_epoch = 0;
+    // Review follow-up 1: cancellation, not just late-reply dropping. Every
+    // PPQ task of the old session selects on this token around its WHOLE
+    // future (multistep chains included), so no further HTTP request —
+    // e.g. a create_invoice after a hung payment_methods — can be issued
+    // with preserved credentials after duress/lock/forget/restore/cancel.
+    actor_state.ppq_session_token.cancel();
+    actor_state.ppq_session_token = CancellationToken::new();
+}
+
+/// Cancel an active chat stream running on the managed PPQ backend
+/// (finding 3). Credential lifecycle changes (forget, replacement restore)
+/// revoke or remove the device key mid-stream; cooperative cancellation
+/// through the existing stream token stops the request instead of letting
+/// it run (and fail, or worse, briefly succeed) on a dead key.
+fn cancel_ppq_backend_streams(actor_state: &mut ActorState) {
+    if actor_state.current_streaming_backend_id.as_deref() == Some(ppq::secret_store::API_KEY_KEY) {
+        if let Some(token) = actor_state.active_stream_token.take() {
+            token.cancel();
+        }
+    }
+}
+
+/// Load a backend API key from the platform keychain (finding 1). In a
+/// duress decoy session the preserved PPQ device key is suppressed — no
+/// keychain read, no cached copy, no transmission: the decoy backend list
+/// must show `has_api_key=false`. Every backend-key load (startup, reload,
+/// chat/agent stream fallbacks) goes through this choke point.
+fn load_backend_api_key(actor_state: &ActorState, backend_id: &str) -> Option<String> {
+    if backend_id == ppq::secret_store::API_KEY_KEY
+        && (ppq_decoy_active(actor_state) || actor_state.ppq_recovery_required)
+    {
+        // Same suppression for unresolved interrupted replacements (B
+        // integration): mixed credentials must not be hydrated for chat.
+        return None;
+    }
+    actor_state
+        .keychain
+        .load("mango".to_string(), backend_id.to_string())
+}
+
 fn handle_ppq_provision(actor_state: &mut ActorState, core_tx: &flume::Sender<CoreMsg>) {
-    if ppq_decoy_active(actor_state) || actor_state.ppq_provisioning {
+    // Review follow-up 1: no PPQ request may START while the DB is
+    // unavailable (locked) — mode summaries are hidden and single-flight
+    // flags die with the session.
+    if actor_state.db.is_none() || ppq_decoy_active(actor_state) || actor_state.ppq_provisioning {
+        return;
+    }
+    // B integration: never provision over unresolved mixed credentials —
+    // only explicit recovery may run.
+    if actor_state.ppq_recovery_required {
+        actor_state.app_state.ppq.error = Some("recovery_required".to_string());
         return;
     }
     if actor_state.app_state.ppq.mode == PpqAccountMode::Managed {
@@ -1996,35 +2178,54 @@ fn handle_ppq_provision(actor_state: &mut ActorState, core_tx: &flume::Sender<Co
         return;
     }
     actor_state.ppq_provisioning = true;
+    actor_state.ppq_provisioning_epoch = actor_state.ppq_task_epoch;
     actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Provisioning;
     actor_state.app_state.ppq.error = None;
     let tx = core_tx.clone();
+    let epoch = actor_state.ppq_task_epoch;
+    let cancel = actor_state.ppq_session_token.clone();
     actor_state.runtime.spawn(async move {
-        let ev = match ppq_production_client() {
-            Ok(client) => match client.create_account().await {
-                Ok(creds) => CoreMsg::PpqEvent(PpqTaskEvent::AccountCreated {
-                    credit_id: creds.credit_id,
-                    api_key: creds.api_key,
-                }),
-                Err(e) => {
-                    let uncertain = matches!(e, ppq::client::PpqError::Offline);
-                    CoreMsg::PpqEvent(PpqTaskEvent::ProvisionFailed {
-                        code: ppq_error_code(&e),
-                        uncertain,
-                    })
-                }
-            },
-            Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::ProvisionFailed {
-                code: ppq_error_code(&e),
+        // Follow-up 1: cancellation selects around the WHOLE future, so an
+        // invalidated session stops the request mid-flight (the stale
+        // ProvisionFailed reply is dropped by the epoch gate and merely
+        // releases the single-flight latch — provisioning never sticks).
+        let event = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => PpqTaskEvent::ProvisionFailed {
+                code: "cancelled",
                 uncertain: false,
-            }),
+            },
+            r = async {
+                match ppq_production_client() {
+                    Ok(client) => match client.create_account().await {
+                        Ok(creds) => PpqTaskEvent::AccountCreated {
+                            credit_id: creds.credit_id,
+                            api_key: creds.api_key,
+                        },
+                        Err(e) => {
+                            let uncertain = matches!(e, ppq::client::PpqError::Offline);
+                            PpqTaskEvent::ProvisionFailed {
+                                code: ppq_error_code(&e),
+                                uncertain,
+                            }
+                        }
+                    },
+                    Err(e) => PpqTaskEvent::ProvisionFailed {
+                        code: ppq_error_code(&e),
+                        uncertain: false,
+                    },
+                }
+            } => r,
         };
-        let _ = tx.send(ev);
+        let _ = tx.send(CoreMsg::PpqEvent(PpqTaskResult { epoch, event }));
     });
 }
 
 fn spawn_ppq_balance_refresh(actor_state: &mut ActorState, core_tx: &flume::Sender<CoreMsg>) {
-    if ppq_decoy_active(actor_state) || actor_state.app_state.ppq.mode != PpqAccountMode::Managed {
+    if ppq_decoy_active(actor_state)
+        || actor_state.ppq_recovery_required
+        || actor_state.app_state.ppq.mode != PpqAccountMode::Managed
+    {
         return;
     }
     let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
@@ -2033,21 +2234,31 @@ fn spawn_ppq_balance_refresh(actor_state: &mut ActorState, core_tx: &flume::Send
         _ => return,
     };
     let tx = core_tx.clone();
+    let epoch = actor_state.ppq_task_epoch;
+    let cancel = actor_state.ppq_session_token.clone();
     actor_state.runtime.spawn(async move {
-        let ev = match ppq_production_client() {
-            Ok(client) => match client.balance(&api_key).await {
-                Ok(balance) => CoreMsg::PpqEvent(PpqTaskEvent::BalanceRefreshed {
-                    balance: balance.as_str().to_string(),
-                }),
-                Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::BalanceFailed {
-                    code: ppq_error_code(&e),
-                }),
+        let event = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => PpqTaskEvent::BalanceFailed {
+                code: "cancelled",
             },
-            Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::BalanceFailed {
-                code: ppq_error_code(&e),
-            }),
+            r = async {
+                match ppq_production_client() {
+                    Ok(client) => match client.balance(&api_key).await {
+                        Ok(balance) => PpqTaskEvent::BalanceRefreshed {
+                            balance: balance.as_str().to_string(),
+                        },
+                        Err(e) => PpqTaskEvent::BalanceFailed {
+                            code: ppq_error_code(&e),
+                        },
+                    },
+                    Err(e) => PpqTaskEvent::BalanceFailed {
+                        code: ppq_error_code(&e),
+                    },
+                }
+            } => r,
         };
-        let _ = tx.send(ev);
+        let _ = tx.send(CoreMsg::PpqEvent(PpqTaskResult { epoch, event }));
     });
 }
 
@@ -2056,7 +2267,14 @@ fn handle_ppq_create_invoice(
     core_tx: &flume::Sender<CoreMsg>,
     amount_sats: u64,
 ) {
-    if ppq_decoy_active(actor_state) || actor_state.app_state.ppq.mode != PpqAccountMode::Managed {
+    if ppq_decoy_active(actor_state) || actor_state.ppq_recovery_required {
+        if actor_state.ppq_recovery_required {
+            actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Error;
+            actor_state.app_state.ppq.error = Some("recovery_required".to_string());
+        }
+        return;
+    }
+    if actor_state.app_state.ppq.mode != PpqAccountMode::Managed {
         return;
     }
     // One active invoice at a time (§6.9 step 3): an unexpired pending
@@ -2078,39 +2296,56 @@ fn handle_ppq_create_invoice(
     };
     actor_state.app_state.ppq.funding_phase = PpqFundingPhase::CreatingInvoice;
     actor_state.app_state.ppq.error = None;
+    // Invoice replacement invalidates any prior invoice/status tasks (finding 2):
+    // their replies must not resurrect the cancelled/expired invoice.
+    ppq_invalidate_tasks(actor_state);
     let tx = core_tx.clone();
+    let epoch = actor_state.ppq_task_epoch;
+    let cancel = actor_state.ppq_session_token.clone();
     actor_state.runtime.spawn(async move {
-        let ev = match ppq_production_client() {
-            Ok(client) => {
-                match ppq::account::validate_sats_against_limits(&client, amount_sats).await {
-                    Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
+        // Follow-up 1: the cancellation selects around the ENTIRE multistep
+        // chain (limits validation -> invoice creation). An invalidated
+        // session can never issue the second request after a hung first one.
+        let event = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => PpqTaskEvent::InvoiceFailed {
+                code: "cancelled",
+                uncertain: false,
+            },
+            r = async {
+                match ppq_production_client() {
+                    Ok(client) => {
+                        match ppq::account::validate_sats_against_limits(&client, amount_sats).await {
+                            Err(e) => PpqTaskEvent::InvoiceFailed {
+                                code: ppq_error_code(&e),
+                                uncertain: false,
+                            },
+                            Ok(_) => match client.create_lightning_invoice(&api_key, amount_sats).await {
+                                Ok(inv) => PpqTaskEvent::InvoiceCreated {
+                                    invoice_id: inv.invoice_id,
+                                    bolt11: inv.bolt11,
+                                    amount_sats: inv.amount_sats.0,
+                                    created_at: inv.created_at,
+                                    expires_at: inv.expires_at,
+                                },
+                                // A timeout after the request may have reached PPQ is
+                                // ambiguous: no idempotency key exists, so never
+                                // auto-retry creation (§6.9/§2).
+                                Err(e) => PpqTaskEvent::InvoiceFailed {
+                                    code: ppq_error_code(&e),
+                                    uncertain: matches!(e, ppq::client::PpqError::Offline),
+                                },
+                            },
+                        }
+                    }
+                    Err(e) => PpqTaskEvent::InvoiceFailed {
                         code: ppq_error_code(&e),
                         uncertain: false,
-                    }),
-                    Ok(_) => match client.create_lightning_invoice(&api_key, amount_sats).await {
-                        Ok(inv) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceCreated {
-                            invoice_id: inv.invoice_id,
-                            bolt11: inv.bolt11,
-                            amount_sats: inv.amount_sats.0,
-                            created_at: inv.created_at,
-                            expires_at: inv.expires_at,
-                        }),
-                        // A timeout after the request may have reached PPQ is
-                        // ambiguous: no idempotency key exists, so never
-                        // auto-retry creation (§6.9/§2).
-                        Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
-                            code: ppq_error_code(&e),
-                            uncertain: matches!(e, ppq::client::PpqError::Offline),
-                        }),
                     },
                 }
-            }
-            Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
-                code: ppq_error_code(&e),
-                uncertain: false,
-            }),
+            } => r,
         };
-        let _ = tx.send(ev);
+        let _ = tx.send(CoreMsg::PpqEvent(PpqTaskResult { epoch, event }));
     });
 }
 
@@ -2142,69 +2377,125 @@ fn handle_ppq_check_topup(actor_state: &mut ActorState, core_tx: &flume::Sender<
     };
     let invoice_id = pending.invoice_id.clone();
     let tx = core_tx.clone();
+    let epoch = actor_state.ppq_task_epoch;
+    let cancel = actor_state.ppq_session_token.clone();
     actor_state.runtime.spawn(async move {
-        let ev = match ppq_production_client() {
-            Ok(client) => match client.invoice_status(&api_key, &invoice_id).await {
-                Ok(status) => {
-                    let outcome = match ppq::account::outcome_for(&status.status) {
-                        ppq::account::FundingOutcome::Pending => "pending",
-                        ppq::account::FundingOutcome::Settled => "settled",
-                        ppq::account::FundingOutcome::Expired => "expired",
-                        ppq::account::FundingOutcome::Unknown => "unknown",
-                    };
-                    CoreMsg::PpqEvent(PpqTaskEvent::StatusChecked {
-                        outcome,
-                        next_poll_at: 0,
-                    })
-                }
-                // 404 after post-expiry GC: reconcile via balance (§2.1).
-                Err(ppq::client::PpqError::NotFound) => {
-                    CoreMsg::PpqEvent(PpqTaskEvent::StatusChecked {
-                        outcome: "unknown",
-                        next_poll_at: 0,
-                    })
-                }
-                Err(ppq::client::PpqError::RateLimited {
-                    retry_after_seconds,
-                }) => CoreMsg::PpqEvent(PpqTaskEvent::StatusChecked {
-                    outcome: "rate_limited",
-                    next_poll_at: retry_after_seconds.unwrap_or(30).max(1),
-                }),
-                Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
-                    code: ppq_error_code(&e),
-                    uncertain: false,
-                }),
-            },
-            Err(e) => CoreMsg::PpqEvent(PpqTaskEvent::InvoiceFailed {
-                code: ppq_error_code(&e),
+        let event = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => PpqTaskEvent::InvoiceFailed {
+                code: "cancelled",
                 uncertain: false,
-            }),
+            },
+            r = async {
+                match ppq_production_client() {
+                    Ok(client) => match client.invoice_status(&api_key, &invoice_id).await {
+                        Ok(status) => {
+                            let outcome = match ppq::account::outcome_for(&status.status) {
+                                ppq::account::FundingOutcome::Pending => "pending",
+                                ppq::account::FundingOutcome::Settled => "settled",
+                                ppq::account::FundingOutcome::Expired => "expired",
+                                ppq::account::FundingOutcome::Unknown => "unknown",
+                            };
+                            PpqTaskEvent::StatusChecked {
+                                invoice_id: invoice_id.clone(),
+                                outcome,
+                                next_poll_at: 0,
+                            }
+                        }
+                        // 404 after post-expiry GC: reconcile via balance (§2.1).
+                        Err(ppq::client::PpqError::NotFound) => PpqTaskEvent::StatusChecked {
+                            invoice_id: invoice_id.clone(),
+                            outcome: "unknown",
+                            next_poll_at: 0,
+                        },
+                        Err(ppq::client::PpqError::RateLimited {
+                            retry_after_seconds,
+                        }) => PpqTaskEvent::StatusChecked {
+                            invoice_id: invoice_id.clone(),
+                            outcome: "rate_limited",
+                            next_poll_at: retry_after_seconds.unwrap_or(30).max(1),
+                        },
+                        Err(e) => PpqTaskEvent::InvoiceFailed {
+                            code: ppq_error_code(&e),
+                            uncertain: false,
+                        },
+                    },
+                    Err(e) => PpqTaskEvent::InvoiceFailed {
+                        code: ppq_error_code(&e),
+                        uncertain: false,
+                    },
+                }
+            } => r,
         };
-        let _ = tx.send(ev);
+        let _ = tx.send(CoreMsg::PpqEvent(PpqTaskResult { epoch, event }));
     });
 }
 
 fn handle_ppq_event(
     actor_state: &mut ActorState,
     core_tx: &flume::Sender<CoreMsg>,
-    event: PpqTaskEvent,
+    result: PpqTaskResult,
 ) {
+    // Session-identity gate (finding 2): a task reply is only valid while
+    // the PPQ session that spawned it is still current. Anything that lands
+    // after lock (DB closed), a wipe, duress decoy activation, forget,
+    // restore/replacement, or invoice cancellation/replacement is dropped
+    // BEFORE touching account state — no balance display, no provisioning
+    // transitions, no invoice updates, no keychain writes.
+    if result.epoch != actor_state.ppq_task_epoch
+        || actor_state.db.is_none()
+        || ppq_decoy_active(actor_state)
+    {
+        // Never get stuck (finding 2): release the single-flight
+        // provisioning latch only for results from the owning session.
+        if actor_state.ppq_provisioning
+            && actor_state.ppq_provisioning_epoch == result.epoch
+            && matches!(
+                result.event,
+                PpqTaskEvent::AccountCreated { .. }
+                    | PpqTaskEvent::ProvisionFailed { .. }
+                    | PpqTaskEvent::BalanceRefreshed { .. }
+                    | PpqTaskEvent::BalanceFailed { .. }
+            )
+        {
+            actor_state.ppq_provisioning = false;
+            actor_state.ppq_provisioning_epoch = 0;
+        }
+        log::debug!("[ppq] dropped stale task result (session epoch changed)");
+        return;
+    }
+    let event = result.event;
     match event {
         PpqTaskEvent::StatusChecked {
+            invoice_id,
             outcome,
             next_poll_at,
         } => {
-            log::info!("[ppq-debug] StatusChecked outcome={outcome} next_poll_at={next_poll_at} pending={:?}", actor_state.ppq_pending.is_some());
+            // Invoice-identity gate (finding 2): a status reply may only
+            // mutate the invoice it was issued for. A reply for a cancelled
+            // or replaced invoice is dropped even when the epoch matches.
+            let current_invoice = actor_state
+                .ppq_pending
+                .as_ref()
+                .map(|p| p.invoice_id.clone());
+            if current_invoice.as_deref() != Some(invoice_id.as_str()) {
+                log::debug!("[ppq] dropped status reply for non-current invoice");
+                return;
+            }
+            log::info!("[ppq-debug] StatusChecked invoice_id={invoice_id} outcome={outcome} next_poll_at={next_poll_at}");
             handle_ppq_status_checked(actor_state, core_tx, outcome, next_poll_at);
         }
         PpqTaskEvent::AccountCreated { credit_id, api_key } => {
             let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
             if let Err(e) = store.store_provisioned(&credit_id, &api_key) {
                 actor_state.ppq_provisioning = false;
+                actor_state.ppq_provisioning_epoch = 0;
                 actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Error;
                 actor_state.app_state.ppq.error = Some(ppq_error_code(&e).to_string());
                 return;
             }
+            // B's write path resolved any interrupted replacement.
+            actor_state.ppq_recovery_required = false;
             // Nonsecret Managed marker LAST (§6.2 ordering).
             ppq_set_setting(actor_state, ppq::account::SETTING_MODE, "managed");
             ppq_set_setting(
@@ -2214,12 +2505,17 @@ fn handle_ppq_event(
             );
             actor_state.app_state.ppq.mode = PpqAccountMode::Managed;
             actor_state.app_state.ppq.backup_confirmed = false;
-            // Backend reload picks up mango::ppq-ai from the keychain via the
-            // existing preset convention; balance fetch completes provisioning.
+            // Finding 3: the fresh device key is in the keychain now —
+            // reload backend configs and summaries so chat immediately
+            // uses it (ppq-ai has_api_key flips true in the same emit).
+            reload_backends(actor_state);
+            refresh_backend_summaries(actor_state);
+            // Balance fetch completes provisioning.
             spawn_ppq_balance_refresh(actor_state, core_tx);
         }
         PpqTaskEvent::ProvisionFailed { code, uncertain } => {
             actor_state.ppq_provisioning = false;
+            actor_state.ppq_provisioning_epoch = 0;
             actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Error;
             actor_state.app_state.ppq.error = Some(if uncertain {
                 format!("{code}_uncertain")
@@ -2242,6 +2538,7 @@ fn handle_ppq_event(
             actor_state.app_state.ppq.error = None;
             if actor_state.ppq_provisioning {
                 actor_state.ppq_provisioning = false;
+                actor_state.ppq_provisioning_epoch = 0;
                 actor_state.app_state.ppq.setup_phase = PpqSetupPhase::NeedsBackup;
             } else if actor_state.app_state.ppq.funding_phase == PpqFundingPhase::UnknownAfterCreate
             {
@@ -2264,6 +2561,7 @@ fn handle_ppq_event(
         PpqTaskEvent::BalanceFailed { code } => {
             if actor_state.ppq_provisioning {
                 actor_state.ppq_provisioning = false;
+                actor_state.ppq_provisioning_epoch = 0;
                 actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Error;
                 actor_state.app_state.ppq.error = Some(code.to_string());
             } else {
@@ -2419,7 +2717,19 @@ fn handle_ppq_backup_export(
     if actor_state.app_state.ppq.mode != PpqAccountMode::Managed || ppq_decoy_active(actor_state) {
         return Err("no_managed_account".to_string());
     }
+    // Follow-up 1: sensitive PPQ operations require the unlocked session —
+    // never touch credentials or emit state while the DB is unavailable.
+    if actor_state.db.is_none() {
+        return Err("locked".to_string());
+    }
     let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+    // B integration: resolve any interrupted replacement before reading
+    // the pair for export — the document must describe canonical state.
+    if store.recover_interrupted().is_err() {
+        actor_state.ppq_recovery_required = true;
+        return Err("recovery_required".to_string());
+    }
+    actor_state.ppq_recovery_required = false;
     let (credit_id, api_key) = match (store.load_credit_id(), store.load_api_key()) {
         (Ok(Some(c)), Ok(Some(k))) => (c, k),
         _ => return Err("storage_failure".to_string()),
@@ -2431,7 +2741,7 @@ fn handle_ppq_backup_export(
             .map(|t| t.to_rfc3339())
     });
     let exported_at = chrono::Utc::now().to_rfc3339();
-    ppq::recovery::encrypt_recovery_document(
+    let bytes = ppq::recovery::encrypt_recovery_document(
         &credit_id,
         &api_key,
         created_at.as_deref(),
@@ -2444,7 +2754,12 @@ fn handle_ppq_backup_export(
         }
         ppq::recovery::RecoveryError::UnsupportedBackupVersion => "unsupported_version".to_string(),
         ppq::recovery::RecoveryError::InvalidFile => "invalid_file".to_string(),
-    })
+    })?;
+    // Follow-up 4: scope the pending "backup saved" confirmation to THIS
+    // account (actor-internal identity, never AppState/FFI). Cleared on
+    // wipe/forget/restore; plain lock keeps it (Android SAF pause case).
+    actor_state.ppq_backup_export_credit = Some(credit_id);
+    Ok(bytes)
 }
 
 fn handle_ppq_backup_restore(
@@ -2460,6 +2775,14 @@ fn handle_ppq_backup_restore(
             return Err(ppq_duress_response(actor_state, core_tx));
         }
         return Err(code.to_string());
+    }
+    // Follow-up 1: restoring touches credentials and account state — it
+    // must not run while the DB is unavailable (locked).
+    if actor_state.db.is_none() {
+        return Ok(PpqRecoveryResult {
+            success: false,
+            error_code: Some("locked".to_string()),
+        });
     }
     // §4.6 decoy reactivation (file-based only): restoring from a .mppq the
     // user POSSESSES leaks nothing about dormant credentials — an attacker
@@ -2495,9 +2818,67 @@ fn handle_ppq_backup_restore(
         }
     };
 
+    // Review follow-up 2 (threat fix): in decoy mode the generic
+    // replacement/re-attach consent is required UNCONDITIONALLY — and it is
+    // checked BEFORE any keychain inspection. A holder of a valid backup
+    // must not be able to probe whether a dormant account exists: with or
+    // without a preserved root, an unacknowledged restore returns exactly
+    // this code and nothing else. (The Android side asks the same generic
+    // consent for NONE-mode restores, so decoy and non-decoy UIs are
+    // indistinguishable.)
+    if ppq_decoy_active(actor_state) && !replace_acknowledged {
+        return Ok(PpqRecoveryResult {
+            success: false,
+            error_code: Some("replacement_confirmation_required".to_string()),
+        });
+    }
+
+    // Pretag D: probe the existing credentials BEFORE any remote validation
+    // so the replacement acknowledgement gates the device-key MINT, not
+    // just the local commit. BYOK counts as a replacement: an existing
+    // ppq-ai key without a credit id must never be silently overwritten.
+    //
+    // Same-credit_id restore keeps the backup marker; a replacement resets it.
+    // B integration: resolve any interrupted replacement BEFORE the
+    // same-vs-different decision (outside decoy mode — the journal stays
+    // untouched during duress); an unresolved journal means the restore
+    // must not run over mixed credentials.
+    let (existing_credit, existing_key) = {
+        if !ppq_decoy_active(actor_state) {
+            let probe = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+            if probe.recover_interrupted().is_err() {
+                actor_state.ppq_recovery_required = true;
+                return Ok(PpqRecoveryResult {
+                    success: false,
+                    error_code: Some("recovery_required".to_string()),
+                });
+            }
+            actor_state.ppq_recovery_required = false;
+        }
+        let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+        (
+            store.load_credit_id().ok().flatten(),
+            store.load_api_key().ok().flatten(),
+        )
+    };
+    let is_replacement = existing_credit
+        .as_ref()
+        .map(|c| c.as_str() != doc.credit_id.as_str())
+        .unwrap_or(existing_key.is_some());
+    // Threat review (high): replacing a different funded account — or a
+    // BYOK key — requires an explicit UI-confirmed acknowledgement, and
+    // (pretag D) it must be refused BEFORE a fresh device key is minted.
+    if is_replacement && !replace_acknowledged {
+        return Ok(PpqRecoveryResult {
+            success: false,
+            error_code: Some("replacement_confirmation_required".to_string()),
+        });
+    }
+
     // Remote validation before committing local credentials (§4.5 step 4):
     // reuse the stored key; if revoked, mint a fresh device key via the root
-    // credential (flow verified live, approval artifact §2.3).
+    // credential (flow verified live, approval artifact §2.3). Pretag D:
+    // mint names carry real Unix seconds so repeated mints are distinct.
     let client = match ppq_production_client() {
         Ok(c) => c,
         Err(_) => {
@@ -2514,7 +2895,7 @@ fn handle_ppq_backup_restore(
             Ok(_) => Ok(()),
             Err(ppq::client::PpqError::AuthenticationExpired) => {
                 match client
-                    .create_device_key(&doc.credit_id, "mango-device-1")
+                    .create_device_key(&doc.credit_id, &format!("mango-device-{}", ppq_now_secs()))
                     .await
                 {
                     Ok(created) => {
@@ -2534,24 +2915,6 @@ fn handle_ppq_backup_restore(
         });
     }
 
-    // Same-credit_id restore keeps the backup marker; a replacement resets it.
-    let existing_credit = {
-        let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
-        store.load_credit_id().ok().flatten()
-    };
-    let is_replacement = existing_credit
-        .as_ref()
-        .map(|c| c.as_str() != doc.credit_id.as_str())
-        .unwrap_or(false);
-    // Threat review (high): replacing a different funded account requires an
-    // explicit UI-confirmed acknowledgement — never silently overwrite.
-    if is_replacement && !replace_acknowledged {
-        return Ok(PpqRecoveryResult {
-            success: false,
-            error_code: Some("replacement_confirmation_required".to_string()),
-        });
-    }
-
     let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
     if let Err(e) = store.store_provisioned(&doc.credit_id, &final_key) {
         return Ok(PpqRecoveryResult {
@@ -2559,6 +2922,9 @@ fn handle_ppq_backup_restore(
             error_code: Some(ppq_error_code(&e).to_string()),
         });
     }
+    // store_provisioned succeeded: any interrupted replacement was
+    // resolved by B's write path.
+    actor_state.ppq_recovery_required = false;
     // Post-threat reactivation: leaving decoy mode ends the decoy session's
     // PPQ suppression now that the account is remotely validated (§4.6).
     if let Some(db) = actor_state.db.as_ref() {
@@ -2579,6 +2945,17 @@ fn handle_ppq_backup_restore(
         && ppq_setting(actor_state, ppq::account::SETTING_BACKUP_AT)
             .map(|v| !v.is_empty())
             .unwrap_or(false);
+    // Findings 2/3: the restored (or replacement) pair ends the previous
+    // PPQ session — invalidate every in-flight task result from the old
+    // account state, cancel chat streams keyed to the replaced device key,
+    // and reload backend credentials/summaries from the keychain so chat
+    // uses the current key immediately. A pending backup-export scope for
+    // the OLD account dies with it (follow-up 4).
+    ppq_invalidate_tasks(actor_state);
+    cancel_ppq_backend_streams(actor_state);
+    actor_state.ppq_backup_export_credit = None;
+    reload_backends(actor_state);
+    refresh_backend_summaries(actor_state);
     spawn_ppq_balance_refresh(actor_state, core_tx);
     Ok(PpqRecoveryResult {
         success: true,
@@ -2602,12 +2979,14 @@ fn handle_confirm_delete_all(
         return Err("acknowledgement_required".to_string());
     }
     // Offline-safe by design: keychain reads + local encryption only.
-    wipe_local_install(
-        actor_state,
-        core_tx.clone(),
-        WipeMode::UserRequestedFullReset,
-    )
-    .map(|_| ResetResult {
+    // Pretag A: a decoy session (which may have its own enrolled PIN)
+    // must still not verified-delete the preserved credentials.
+    let mode = if ppq_decoy_active(actor_state) {
+        WipeMode::DecoyDeleteAllPreservePpq
+    } else {
+        WipeMode::UserRequestedFullReset
+    };
+    wipe_local_install(actor_state, core_tx.clone(), mode).map(|_| ResetResult {
         success: true,
         error: None,
     })
@@ -2630,29 +3009,55 @@ fn handle_confirm_forget(
     if !backup_risk_acknowledged {
         return Err("acknowledgement_required".to_string());
     }
-    let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
-    store
-        .delete_all_verified()
-        .map(|_| {
-            for key in [
-                ppq::account::SETTING_MODE,
-                ppq::account::SETTING_BACKUP_AT,
-                ppq::account::SETTING_FIRST_FUNDING_REMIND,
-                ppq::account::SETTING_LAST_BALANCE,
-                ppq::account::SETTING_BALANCE_AT,
-                ppq::account::SETTING_PENDING_INVOICE,
-                ppq::account::SETTING_CREATED_AT,
-            ] {
-                ppq_set_setting(actor_state, key, "");
-            }
-            actor_state.ppq_pending = None;
-            actor_state.app_state.ppq = PpqAccountSummary::default();
-            ForgetResult {
-                success: true,
-                error: None,
-            }
-        })
-        .map_err(|_| "storage_failure".to_string())
+    // Follow-up 1: forget mutates credentials, settings, and backend state
+    // — it must not run half-applied while the DB is unavailable (locked).
+    if actor_state.db.is_none() {
+        return Err("locked".to_string());
+    }
+    // Pretag A: a decoy session has no visible managed account; a decoy
+    // user's own enrolled PIN must never verified-delete the preserved
+    // credentials. Same generic refusal as any account-less install.
+    if ppq_decoy_active(actor_state) {
+        return Err("no_managed_account".to_string());
+    }
+    let deleted = {
+        let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+        store.delete_all_verified()
+    };
+    if deleted.is_err() {
+        return Err("storage_failure".to_string());
+    }
+    for key in [
+        ppq::account::SETTING_MODE,
+        ppq::account::SETTING_BACKUP_AT,
+        ppq::account::SETTING_FIRST_FUNDING_REMIND,
+        ppq::account::SETTING_LAST_BALANCE,
+        ppq::account::SETTING_BALANCE_AT,
+        ppq::account::SETTING_PENDING_INVOICE,
+        ppq::account::SETTING_CREATED_AT,
+    ] {
+        ppq_set_setting(actor_state, key, "");
+    }
+    // Findings 2/3: forget ends the PPQ session — invalidate in-flight task
+    // results (a late AccountCreated/BalanceRefreshed must not resurrect
+    // the removed account), cancel chat streams running on the deleted
+    // device key, and reload backend configs so the cached chat key is
+    // dropped (ppq-ai has_api_key flips false in the same emit). Any
+    // pending backup-export scope dies with the account (follow-up 4).
+    ppq_invalidate_tasks(actor_state);
+    cancel_ppq_backend_streams(actor_state);
+    actor_state.ppq_backup_export_credit = None;
+    actor_state.ppq_backup_save_pending_confirm = false;
+    // Credentials are gone; so is any interrupted-replacement state.
+    actor_state.ppq_recovery_required = false;
+    reload_backends(actor_state);
+    refresh_backend_summaries(actor_state);
+    actor_state.ppq_pending = None;
+    actor_state.app_state.ppq = PpqAccountSummary::default();
+    Ok(ForgetResult {
+        success: true,
+        error: None,
+    })
 }
 
 /// Explicit wipe policy (plan §6.2 migration step 1). Duress deliberately
@@ -2661,6 +3066,11 @@ fn handle_confirm_forget(
 enum WipeMode {
     UserRequestedFullReset,
     DuressPreservePpq,
+    /// Pretag A: decoy-session "Delete All Data" — wipes like a normal
+    /// full reset (fresh DB, onboarding, no reseeded chats) except the
+    /// PPQ credentials are preserved dormant and the decoy flag is
+    /// re-armed on the new DB so suppression stays active.
+    DecoyDeleteAllPreservePpq,
 }
 
 fn wipe_local_install(
@@ -2668,6 +3078,10 @@ fn wipe_local_install(
     core_tx: flume::Sender<CoreMsg>,
     mode: WipeMode,
 ) -> Result<(), String> {
+    // Finding 2: the wiped session's PPQ tasks are dead — drop their late
+    // replies (balance/provision/invoice/status) before they can mutate
+    // the reset or decoy session.
+    ppq_invalidate_tasks(actor_state);
     if let Some(token) = actor_state.active_stream_token.take() {
         token.cancel();
     }
@@ -2676,7 +3090,10 @@ fn wipe_local_install(
     }
 
     let mut preserve_ppq_ids: Vec<String> = Vec::new();
-    if matches!(mode, WipeMode::DuressPreservePpq) {
+    if matches!(
+        mode,
+        WipeMode::DuressPreservePpq | WipeMode::DecoyDeleteAllPreservePpq
+    ) {
         // Preserve both PPQ credentials byte-for-byte (user override on the
         // Pi review): the device key is excluded from backend-key deletion
         // and the root credential is never touched. Both stay dormant until
@@ -2703,9 +3120,15 @@ fn wipe_local_install(
         }
     }
     // Both modes clear actor-memory PPQ state and pending invoice metadata
-    // (the latter dies with the DB wipe below).
+    // (the latter dies with the DB wipe below). A pending backup-export
+    // scope cannot outlive its account (follow-up 4), and the fresh
+    // install has no interrupted-replacement state.
     actor_state.ppq_pending = None;
     actor_state.ppq_provisioning = false;
+    actor_state.ppq_provisioning_epoch = 0;
+    actor_state.ppq_backup_export_credit = None;
+    actor_state.ppq_backup_save_pending_confirm = false;
+    actor_state.ppq_recovery_required = false;
 
     actor_state.db = None;
     actor_state.dek = None;
@@ -2770,6 +3193,14 @@ fn wipe_local_install(
     if matches!(mode, WipeMode::DuressPreservePpq) {
         if let Some(db) = actor_state.db.as_ref() {
             seed_duress_decoy_data(db.conn());
+        }
+    }
+    if matches!(mode, WipeMode::DecoyDeleteAllPreservePpq) {
+        // Pretag A: empty-looking install, decoy flag re-armed, NO decoy
+        // chat reseed (19 seeded chats would look like duress, not like a
+        // user-requested delete-all).
+        if let Some(db) = actor_state.db.as_ref() {
+            let _ = persistence::queries::set_setting(db.conn(), "duress_decoy_mode", "true");
         }
     }
 
@@ -3143,10 +3574,7 @@ fn reload_backends(actor_state: &mut ActorState) {
                 id: row.id.clone(),
                 name: row.name.clone(),
                 base_url: row.base_url.clone(),
-                api_key: actor_state
-                    .keychain
-                    .load("mango".to_string(), row.id.clone())
-                    .unwrap_or_default(),
+                api_key: load_backend_api_key(actor_state, &row.id).unwrap_or_default(),
                 models,
                 tee_type: parse_tee_type(&row.tee_type),
                 max_concurrent_requests: row.max_concurrent_requests.max(1) as u32,
@@ -3870,9 +4298,13 @@ fn remove_backend_row_and_reassign(actor_state: &mut ActorState, backend_id: &st
         actor_state.db.as_ref().expect("db unlocked").conn(),
         backend_id,
     );
-    actor_state
-        .keychain
-        .delete("mango".to_string(), backend_id.to_string());
+    // Pretag A: decoy-session RemoveBackend on ppq-ai must not delete the
+    // preserved device key — the delete is a successful no-op.
+    if !decoy_blocks_ppq_keychain_write(actor_state, backend_id) {
+        actor_state
+            .keychain
+            .delete("mango".to_string(), backend_id.to_string());
+    }
 
     let was_active = actor_state.app_state.active_backend_id.as_deref() == Some(backend_id);
     if was_active {
@@ -5600,10 +6032,7 @@ fn handle_launch_agent_session(
 
     // Load API key from keychain if not already set
     let api_key = if backend.api_key.is_empty() {
-        actor_state
-            .keychain
-            .load("mango".to_string(), backend.id.clone())
-            .unwrap_or_default()
+        load_backend_api_key(actor_state, &backend.id).unwrap_or_default()
     } else {
         backend.api_key.clone()
     };
@@ -5896,10 +6325,7 @@ fn handle_agent_step_complete(
                 }
             };
             let api_key = if backend.api_key.is_empty() {
-                actor_state
-                    .keychain
-                    .load("mango".to_string(), backend_id.clone())
-                    .unwrap_or_default()
+                load_backend_api_key(actor_state, &backend_id).unwrap_or_default()
             } else {
                 backend.api_key.clone()
             };
@@ -6318,10 +6744,7 @@ fn handle_resume_agent_session(
         None => return,
     };
     let api_key = if backend.api_key.is_empty() {
-        actor_state
-            .keychain
-            .load("mango".to_string(), backend.id.clone())
-            .unwrap_or_default()
+        load_backend_api_key(actor_state, &backend.id).unwrap_or_default()
     } else {
         backend.api_key.clone()
     };
@@ -7170,6 +7593,25 @@ fn load_post_unlock(
         .as_ref()
         .expect("db must be open before load_post_unlock");
 
+    // B integration (review resume): resolve any interrupted credential
+    // replacement BEFORE backend key hydration and classification. Never in
+    // duress decoy mode — the journal stays preserved, untouched, dormant.
+    // An unresolved journal forces recovery-required state: the mixed
+    // credentials are neither hydrated for chat nor provisioned over.
+    let duress_decoy_mode = persistence::queries::get_setting(db.conn(), "duress_decoy_mode")
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if duress_decoy_mode {
+        actor_state.ppq_recovery_required = false;
+        actor_state.ppq_backup_save_pending_confirm = false;
+        actor_state.ppq_backup_export_credit = None;
+    } else {
+        let recovery_store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+        actor_state.ppq_recovery_required = recovery_store.recover_interrupted().is_err();
+    }
+
     // Load backends (seeded in migration v1).
     let backend_rows = persistence::queries::list_backends(db.conn()).unwrap_or_default();
     let active_id = persistence::queries::get_active_backend_id(db.conn()).unwrap_or(None);
@@ -7177,10 +7619,10 @@ fn load_post_unlock(
     let backends: Vec<llm::BackendConfig> = backend_rows
         .iter()
         .map(|row| {
-            let api_key = actor_state
-                .keychain
-                .load("mango".to_string(), row.id.clone())
-                .unwrap_or_default();
+            // Finding 1: this runs BEFORE the duress-decoy classification
+            // below — the suppressed loader must keep the preserved PPQ
+            // device key out of the decoy session's backend cache.
+            let api_key = load_backend_api_key(actor_state, &row.id).unwrap_or_default();
             let raw_models: Vec<String> = serde_json::from_str(&row.model_list).unwrap_or_default();
             let models = filter_models_for_backend(&row.id, raw_models);
             llm::BackendConfig {
@@ -7441,11 +7883,6 @@ fn load_post_unlock(
         .flatten()
         .map(|v| v == "true")
         .unwrap_or(false);
-    let duress_decoy_mode = persistence::queries::get_setting(db.conn(), "duress_decoy_mode")
-        .ok()
-        .flatten()
-        .map(|v| v == "true")
-        .unwrap_or(false);
 
     // PPQ managed-account classification (plan §8). Duress decoy sessions
     // short-circuit BEFORE any keychain inspection: preserved credentials
@@ -7461,80 +7898,98 @@ fn load_post_unlock(
                 .filter(|v| !v.is_empty());
         let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
         let mut summary = PpqAccountSummary::default();
-        match ppq::account::classify_startup(&store, settings_mode.as_deref()) {
-            ppq::account::StartupMode::None => {}
-            ppq::account::StartupMode::ExternalKey => {
-                summary.mode = PpqAccountMode::ExternalKey;
-                summary.setup_phase = PpqSetupPhase::Ready;
+        if actor_state.ppq_recovery_required {
+            // B integration: an interrupted replacement could not be
+            // reconciled. The (possibly mixed) credentials exist but must
+            // never be used or auto-replaced — only explicit recovery.
+            summary.mode = PpqAccountMode::Managed;
+            summary.setup_phase = PpqSetupPhase::Error;
+            summary.error = Some("recovery_required".to_string());
+        } else {
+            match ppq::account::classify_startup(&store, settings_mode.as_deref()) {
+                ppq::account::StartupMode::None => {}
+                ppq::account::StartupMode::ExternalKey => {
+                    summary.mode = PpqAccountMode::ExternalKey;
+                    summary.setup_phase = PpqSetupPhase::Ready;
+                }
+                ppq::account::StartupMode::Managed => {
+                    summary.mode = PpqAccountMode::Managed;
+                    summary.setup_phase = PpqSetupPhase::Ready;
+                }
+                ppq::account::StartupMode::RecoverablePartialState => {
+                    summary.mode = PpqAccountMode::Managed;
+                    summary.setup_phase = PpqSetupPhase::RecoverablePartialState;
+                }
+                ppq::account::StartupMode::RecoveryRequired => {
+                    summary.mode = PpqAccountMode::Managed;
+                    summary.setup_phase = PpqSetupPhase::Error;
+                    summary.error = Some("recovery_required".to_string());
+                }
             }
-            ppq::account::StartupMode::Managed => {
-                summary.mode = PpqAccountMode::Managed;
-                summary.setup_phase = PpqSetupPhase::Ready;
-            }
-            ppq::account::StartupMode::RecoverablePartialState => {
-                summary.mode = PpqAccountMode::Managed;
-                summary.setup_phase = PpqSetupPhase::RecoverablePartialState;
-            }
-            ppq::account::StartupMode::RecoveryRequired => {
-                summary.mode = PpqAccountMode::Managed;
-                summary.setup_phase = PpqSetupPhase::Error;
-                summary.error = Some("recovery_required".to_string());
-            }
-        }
-        if summary.mode == PpqAccountMode::Managed {
-            summary.backup_confirmed =
-                persistence::queries::get_setting(db.conn(), ppq::account::SETTING_BACKUP_AT)
-                    .ok()
-                    .flatten()
-                    .map(|v| !v.is_empty())
-                    .unwrap_or(false);
-            summary.balance_display =
-                persistence::queries::get_setting(db.conn(), ppq::account::SETTING_LAST_BALANCE)
-                    .ok()
-                    .flatten()
-                    .filter(|v| !v.is_empty());
-            summary.balance_updated_at =
-                persistence::queries::get_setting(db.conn(), ppq::account::SETTING_BALANCE_AT)
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.parse::<i64>().ok());
-            summary.first_funding_reminder_shown = persistence::queries::get_setting(
-                db.conn(),
-                ppq::account::SETTING_FIRST_FUNDING_REMIND,
-            )
-            .ok()
-            .flatten()
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-            // Resume pending invoice after process death (§6.9 step 6).
-            if let Some(json) =
-                persistence::queries::get_setting(db.conn(), ppq::account::SETTING_PENDING_INVOICE)
-                    .ok()
-                    .flatten()
-                    .filter(|v| !v.is_empty())
-            {
-                if let Ok(p) = serde_json::from_str::<ppq::account::PendingInvoice>(&json) {
-                    if ppq_now_secs() < p.expires_at {
-                        summary.funding = Some(PpqFundingSummary {
-                            amount_sats: p.amount_sats,
-                            bolt11: p.bolt11.clone(),
-                            expires_at: p.expires_at,
-                            status: "New".to_string(),
-                        });
-                        summary.funding_phase = PpqFundingPhase::AwaitingPayment;
-                        actor_state.ppq_pending = Some(p);
-                    } else {
-                        let _ = persistence::queries::set_setting(
-                            db.conn(),
-                            ppq::account::SETTING_PENDING_INVOICE,
-                            "",
-                        );
+            if summary.mode == PpqAccountMode::Managed {
+                summary.backup_confirmed =
+                    persistence::queries::get_setting(db.conn(), ppq::account::SETTING_BACKUP_AT)
+                        .ok()
+                        .flatten()
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false);
+                summary.balance_display = persistence::queries::get_setting(
+                    db.conn(),
+                    ppq::account::SETTING_LAST_BALANCE,
+                )
+                .ok()
+                .flatten()
+                .filter(|v| !v.is_empty());
+                summary.balance_updated_at =
+                    persistence::queries::get_setting(db.conn(), ppq::account::SETTING_BALANCE_AT)
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.parse::<i64>().ok());
+                summary.first_funding_reminder_shown = persistence::queries::get_setting(
+                    db.conn(),
+                    ppq::account::SETTING_FIRST_FUNDING_REMIND,
+                )
+                .ok()
+                .flatten()
+                .map(|v| !v.is_empty())
+                .unwrap_or(false);
+                // Resume pending invoice after process death (§6.9 step 6).
+                if let Some(json) = persistence::queries::get_setting(
+                    db.conn(),
+                    ppq::account::SETTING_PENDING_INVOICE,
+                )
+                .ok()
+                .flatten()
+                .filter(|v| !v.is_empty())
+                {
+                    if let Ok(p) = serde_json::from_str::<ppq::account::PendingInvoice>(&json) {
+                        if ppq_now_secs() < p.expires_at {
+                            summary.funding = Some(PpqFundingSummary {
+                                amount_sats: p.amount_sats,
+                                bolt11: p.bolt11.clone(),
+                                expires_at: p.expires_at,
+                                status: "New".to_string(),
+                            });
+                            summary.funding_phase = PpqFundingPhase::AwaitingPayment;
+                            actor_state.ppq_pending = Some(p);
+                        } else {
+                            let _ = persistence::queries::set_setting(
+                                db.conn(),
+                                ppq::account::SETTING_PENDING_INVOICE,
+                                "",
+                            );
+                        }
                     }
                 }
             }
         }
         actor_state.app_state.ppq = summary;
     }
+
+    // Follow-up 4 (SAF deferral): apply or drop a backup-saved
+    // confirmation that arrived while the app was locked, now that the
+    // account state is loaded.
+    ppq_resolve_deferred_backup_confirm(actor_state);
 
     let pending_first_run = actor_state
         .bootstrap
@@ -8144,6 +8599,12 @@ impl FfiApp {
                 // table; this copy drives polling decisions on the actor.
                 ppq_pending: None,
                 ppq_provisioning: false,
+                ppq_provisioning_epoch: 0,
+                ppq_task_epoch: 0,
+                ppq_session_token: CancellationToken::new(),
+                ppq_backup_export_credit: None,
+                ppq_backup_save_pending_confirm: false,
+                ppq_recovery_required: false,
                 router: llm::FailoverRouter::new(),
                 current_streaming_backend_id: None,
                 current_streaming_model_id: None,
@@ -8596,7 +9057,29 @@ impl FfiApp {
                                 // present, the one-tap path is removed — surface
                                 // the backup-first preflight instead. Without a
                                 // managed account the old immediate reset stays.
-                                if actor_state.app_state.ppq.mode == PpqAccountMode::Managed {
+                                if ppq_decoy_active(&actor_state) {
+                                    // Pretag A: decoy "Delete All Data" must look
+                                    // like a normal full reset (empty install, no
+                                    // reseeded chats) while the preserved PPQ
+                                    // credentials stay dormant in the keychain.
+                                    // DB-flag check only — no keychain probe.
+                                    match wipe_local_install(
+                                        &mut actor_state,
+                                        core_tx_for_thread.clone(),
+                                        WipeMode::DecoyDeleteAllPreservePpq,
+                                    ) {
+                                        Ok(()) => {
+                                            actor_state.app_state.toast =
+                                                Some("All local app data was deleted.".to_string());
+                                        }
+                                        Err(e) => {
+                                            log::error!("[reset] decoy DeleteAllData failed: {e}");
+                                            actor_state.app_state.toast =
+                                                Some(format!("Delete all data failed: {}", e));
+                                        }
+                                    }
+                                } else if actor_state.app_state.ppq.mode == PpqAccountMode::Managed
+                                {
                                     actor_state.app_state.ppq.destructive_preflight =
                                         Some(PpqDestructivePreflight {
                                             kind: "delete_all_data".to_string(),
@@ -8655,6 +9138,10 @@ impl FfiApp {
                                 handle_ppq_check_topup(&mut actor_state, &core_tx_for_thread);
                             }
                             AppAction::CancelPpqTopup => {
+                                // Finding 2: cancelling the invoice also kills
+                                // its in-flight status checks and any live
+                                // creation attempt.
+                                ppq_invalidate_tasks(&mut actor_state);
                                 actor_state.ppq_pending = None;
                                 if let Some(db) = actor_state.db.as_ref() {
                                     let _ = persistence::queries::set_setting(
@@ -8667,23 +9154,51 @@ impl FfiApp {
                                 actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Idle;
                             }
                             AppAction::ConfirmPpqBackupSaved => {
+                                // Follow-up 4: the confirmation is scoped to the
+                                // account whose export is still pending. A stale
+                                // confirmation (different restored/wiped/provisioned
+                                // account) must not mark the current account as
+                                // backed up. Plain lock does NOT invalidate the
+                                // scope: Android SAF pickers can pause/lock the
+                                // app mid-save while the account is unchanged.
+                                if actor_state.db.is_none() {
+                                    // SAF save completed while locked: defer —
+                                    // actor-internal only, nothing surfaces in
+                                    // AppState while locked — and resolve at
+                                    // same-account unlock.
+                                    if actor_state.ppq_backup_export_credit.is_some() {
+                                        actor_state.ppq_backup_save_pending_confirm = true;
+                                    }
+                                    log::debug!(
+                                        "[ppq] deferring backup-saved confirmation until unlock"
+                                    );
+                                    continue;
+                                }
+                                actor_state.ppq_backup_save_pending_confirm = false;
+                                let scope_valid = if !ppq_decoy_active(&actor_state)
+                                    && !actor_state.ppq_recovery_required
+                                    && actor_state.app_state.ppq.mode == PpqAccountMode::Managed
+                                {
+                                    let store = ppq::secret_store::PpqSecretStore::new(
+                                        actor_state.keychain.as_ref(),
+                                    );
+                                    let current = store.load_credit_id().ok().flatten();
+                                    match (current, actor_state.ppq_backup_export_credit.as_ref()) {
+                                        (Some(c), Some(scope)) => c.as_str() == scope.as_str(),
+                                        _ => false,
+                                    }
+                                } else {
+                                    false
+                                };
+                                if !scope_valid {
+                                    actor_state.ppq_backup_export_credit = None;
+                                    log::debug!("[ppq] ignored unscoped backup-saved confirmation");
+                                    continue;
+                                }
+                                actor_state.ppq_backup_export_credit = None;
                                 // Marker is set ONLY after Android confirmed the
                                 // encrypted file was written and closed (§4.4).
-                                if let Some(db) = actor_state.db.as_ref() {
-                                    let _ = persistence::queries::set_setting(
-                                        db.conn(),
-                                        ppq::account::SETTING_BACKUP_AT,
-                                        &now_secs().to_string(),
-                                    );
-                                }
-                                actor_state.app_state.ppq.backup_confirmed = true;
-                                actor_state.app_state.ppq.destructive_preflight = None;
-                                if actor_state.app_state.ppq.setup_phase
-                                    == PpqSetupPhase::NeedsBackup
-                                {
-                                    actor_state.app_state.ppq.setup_phase =
-                                        PpqSetupPhase::NeedsFunds;
-                                }
+                                apply_ppq_backup_saved_marker(&mut actor_state);
                             }
                             AppAction::DeferPpqBackup => {
                                 if actor_state.app_state.ppq.setup_phase
@@ -9545,7 +10060,11 @@ impl FfiApp {
                             } => {
                                 // Persist the new API key to keychain and reload backends so
                                 // subsequent ValidateApiKey uses the updated key.
-                                if !api_key.is_empty() {
+                                if !api_key.is_empty()
+                                    && !decoy_blocks_ppq_keychain_write(&actor_state, &backend_id)
+                                {
+                                    // Pretag A: a decoy-session BYOK store on ppq-ai is a
+                                    // successful no-op — preserved bytes survive duress.
                                     actor_state.keychain.store(
                                         "mango".to_string(),
                                         backend_id.clone(),
@@ -9713,7 +10232,14 @@ impl FfiApp {
                                     // `if !already` guard silently discarded the user's key for
                                     // this backend, causing api_key = "" and "chat completion
                                     // request body is empty" errors at send time.
-                                    if !api_key.is_empty() {
+                                    if !api_key.is_empty()
+                                        && !decoy_blocks_ppq_keychain_write(
+                                            &actor_state,
+                                            &preset_id,
+                                        )
+                                    {
+                                        // Pretag A: decoy-session Enable/BYOK on ppq-ai is a
+                                        // successful no-op (preserved key survives duress).
                                         actor_state.keychain.store(
                                             "mango".to_string(),
                                             preset_id.clone(),
@@ -10542,13 +11068,10 @@ impl FfiApp {
                                         continue;
                                     }
 
-                                    if let Some(db) = actor_state.db.as_ref() {
-                                        let _ = persistence::queries::set_setting(
-                                            db.conn(),
-                                            "duress_decoy_mode",
-                                            "false",
-                                        );
-                                    }
+                                    // Pretag A: do NOT clear `duress_decoy_mode` here — a
+                                    // decoy user enrolling a PIN stays in the decoy session.
+                                    // Only an acknowledged `.mppq` restore success clears it
+                                    // (handle_ppq_backup_restore).
                                 }
 
                                 if actor_state.bootstrap.has_auth_params() && !is_resume {
@@ -11224,6 +11747,100 @@ impl FfiApp {
                                     });
                             }
 
+                            AppAction::ChangePin {
+                                current_pin,
+                                new_pin,
+                            } => {
+                                let fail = |actor_state: &mut ActorState, msg: &str| {
+                                    actor_state.app_state.toast = Some(msg.to_string());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                };
+                                // Step-up + preconditions: auth configured, session
+                                // unlocked with the live DEK.
+                                let params = match actor_state.bootstrap.read_auth_params() {
+                                    Ok(Some(p)) => p,
+                                    Ok(None) => {
+                                        fail(
+                                            &mut actor_state,
+                                            "Set a main PIN before changing it.",
+                                        );
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "[auth] ChangePin: read_auth_params failed: {e}"
+                                        );
+                                        fail(&mut actor_state, "Could not change PIN.");
+                                        continue;
+                                    }
+                                };
+                                let Some(dek) = actor_state.dek.as_ref() else {
+                                    fail(
+                                        &mut actor_state,
+                                        "Unlock the app before changing the PIN.",
+                                    );
+                                    continue;
+                                };
+                                // Verify the CURRENT main PIN by unwrapping against the live
+                                // DEK. A wrong PIN — and the duress PIN, which wraps nothing —
+                                // fails here as a plain "incorrect" (no duress wipe, no leak).
+                                if !pin_matches_primary_pin(&params, Some(dek), current_pin.trim())
+                                {
+                                    fail(&mut actor_state, "Current PIN is incorrect.");
+                                    continue;
+                                }
+                                let new_trimmed = new_pin.trim();
+                                if new_trimmed.chars().count() < 4 {
+                                    fail(
+                                        &mut actor_state,
+                                        "New PIN must be at least 4 characters.",
+                                    );
+                                    continue;
+                                }
+                                if new_trimmed == current_pin.trim() {
+                                    fail(
+                                        &mut actor_state,
+                                        "New PIN must be different from the current PIN.",
+                                    );
+                                    continue;
+                                }
+                                if let Some(ref duress_hash) = params.duress_hash {
+                                    if crypto::key_derivation::verify_pin_hash(
+                                        new_trimmed.as_bytes(),
+                                        duress_hash,
+                                    ) {
+                                        fail(
+                                            &mut actor_state,
+                                            "New PIN must be different from the emergency PIN.",
+                                        );
+                                        continue;
+                                    }
+                                }
+                                // Re-wrap the SAME DEK under a fresh salt + the new PIN's
+                                // KEK; the duress hash and KDF params carry over unchanged.
+                                let new_params = match crypto::key_derivation::rewrap_dek_with_pin(
+                                    dek,
+                                    new_trimmed,
+                                    params.duress_hash.as_deref(),
+                                ) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        log::error!("[auth] ChangePin: re-wrap failed: {e}");
+                                        fail(&mut actor_state, "Could not change PIN.");
+                                        continue;
+                                    }
+                                };
+                                if let Err(e) = actor_state.bootstrap.write_auth_params(&new_params)
+                                {
+                                    log::error!("[auth] ChangePin: write_auth_params failed: {e}");
+                                    fail(&mut actor_state, "Could not change PIN.");
+                                    continue;
+                                }
+                                log::info!(target: "auth", "[auth] main PIN changed (DEK re-wrapped, duress hash preserved)");
+                                actor_state.app_state.toast = Some("PIN changed.".to_string());
+                            }
+
                             AppAction::UnlockWithDek { dek_hex } => {
                                 // Open encrypted DB with the provided raw DEK hex (D-06).
                                 if actor_state.db_path == ":memory:" {
@@ -11444,6 +12061,15 @@ impl FfiApp {
                                 let current_screen =
                                     actor_state.app_state.router.current_screen.clone();
                                 actor_state.pre_lock_screen = Some(current_screen);
+                                // Finding 2: PPQ tasks die with the locked
+                                // session — their late replies are dropped,
+                                // and actor-internal invoice/provisioning
+                                // state stays hidden until re-unlock reloads
+                                // it from the encrypted DB.
+                                ppq_invalidate_tasks(&mut actor_state);
+                                actor_state.ppq_pending = None;
+                                actor_state.ppq_provisioning = false;
+                                actor_state.ppq_provisioning_epoch = 0;
                                 // Drop the DB handle — data is inaccessible until re-unlock.
                                 actor_state.db = None;
                                 actor_state.dek = None; // Phase 29 (D-02): Zeroizing zeros DEK bytes on drop
@@ -12075,6 +12701,49 @@ impl FfiApp {
                     }
 
                     CoreMsg::InternalEvent(event) => {
+                        // Pretag E: results from tasks spawned by a dead session
+                        // (locked, mid-wipe) must be dropped, not applied — every
+                        // arm below would `expect("db unlocked")` or write state
+                        // for a session that no longer exists. In a decoy session
+                        // (post-duress-wipe snapshot) health/attestation applies
+                        // are dropped as well, and stream chunks with no owning
+                        // conversation must not accumulate phantom streaming
+                        // text in the decoy state. One guard, no queue.
+                        let drop_late_result = match &*event {
+                            llm::InternalEvent::StreamChunk { .. }
+                            | llm::InternalEvent::StreamDone
+                            | llm::InternalEvent::MemoryExtractionComplete { .. }
+                            | llm::InternalEvent::ChatToolCallsReady { .. }
+                            | llm::InternalEvent::AgentStepComplete { .. }
+                            | llm::InternalEvent::HealthCheckResult { .. }
+                            | llm::InternalEvent::AttestationResult(_) => {
+                                actor_state.db.is_none()
+                                    || (ppq_decoy_active(&actor_state)
+                                        && match &*event {
+                                            llm::InternalEvent::HealthCheckResult { .. }
+                                            | llm::InternalEvent::AttestationResult(_) => true,
+                                            llm::InternalEvent::StreamChunk { .. }
+                                            | llm::InternalEvent::StreamDone => {
+                                                actor_state
+                                                    .current_streaming_conversation_id
+                                                    .is_none()
+                                                    && actor_state
+                                                        .app_state
+                                                        .current_conversation_id
+                                                        .is_none()
+                                            }
+                                            _ => false,
+                                        })
+                            }
+                            _ => false,
+                        };
+                        if drop_late_result {
+                            log::info!(
+                                target: "actor",
+                                "[actor] dropping late internal result (locked/wiped/decoy session)"
+                            );
+                            continue;
+                        }
                         match *event {
                             llm::InternalEvent::StreamChunk { token } => {
                                 if actor_state.current_streaming_conversation_id.is_some() {
@@ -13142,9 +13811,7 @@ impl FfiApp {
 
                                 // Resolve API key (keychain or inline).
                                 let api_key = if backend.api_key.is_empty() {
-                                    actor_state
-                                        .keychain
-                                        .load("mango".to_string(), backend_id.clone())
+                                    load_backend_api_key(&actor_state, &backend_id)
                                         .unwrap_or_default()
                                 } else {
                                     backend.api_key.clone()
@@ -13495,6 +14162,10 @@ impl FfiApp {
                                 .flatten()
                         });
                         let _ = reply.send(value);
+                    }
+                    #[cfg(test)]
+                    CoreMsg::GetPpqTaskEpoch { reply } => {
+                        let _ = reply.send(actor_state.ppq_task_epoch);
                     }
 
                     CoreMsg::PpqEvent(event) => {
@@ -13912,7 +14583,36 @@ impl FfiApp {
     }
 
     pub fn test_send_ppq_event(&self, event: PpqTaskEvent) {
-        let _ = self.core_tx.send(CoreMsg::PpqEvent(event));
+        // Attach the CURRENT session epoch so tests exercise the live-session
+        // path; use `test_send_ppq_event_at_epoch` for stale-reply regressions.
+        let (epoch_tx, epoch_rx) = flume::bounded(1);
+        let _ = self
+            .core_tx
+            .send(CoreMsg::GetPpqTaskEpoch { reply: epoch_tx });
+        let Ok(epoch) = epoch_rx.recv() else {
+            return;
+        };
+        let _ = self
+            .core_tx
+            .send(CoreMsg::PpqEvent(PpqTaskResult { epoch, event }));
+    }
+
+    /// Test-only: inject a PPQ task result carrying an EXPLICIT epoch, to
+    /// simulate a late reply from a superseded session (pre-lock, pre-wipe,
+    /// pre-forget, pre-restore) deterministically.
+    #[cfg(test)]
+    pub fn test_send_ppq_event_at_epoch(&self, epoch: u64, event: PpqTaskEvent) {
+        let _ = self
+            .core_tx
+            .send(CoreMsg::PpqEvent(PpqTaskResult { epoch, event }));
+    }
+
+    /// Test-only: read the actor's current PPQ task epoch.
+    #[cfg(test)]
+    pub fn test_ppq_task_epoch(&self) -> u64 {
+        let (tx, rx) = flume::bounded(1);
+        let _ = self.core_tx.send(CoreMsg::GetPpqTaskEpoch { reply: tx });
+        rx.recv().unwrap_or(0)
     }
 
     pub fn test_send_internal(&self, event: llm::InternalEvent) {
@@ -15771,6 +16471,12 @@ mod image_red_tests {
             app_state: AppState::default(),
             ppq_pending: None,
             ppq_provisioning: false,
+            ppq_provisioning_epoch: 0,
+            ppq_task_epoch: 0,
+            ppq_session_token: CancellationToken::new(),
+            ppq_backup_export_credit: None,
+            ppq_backup_save_pending_confirm: false,
+            ppq_recovery_required: false,
             backends: vec![],
             attested_tls_public_keys: HashMap::new(),
             attestation_expires_at: HashMap::new(),

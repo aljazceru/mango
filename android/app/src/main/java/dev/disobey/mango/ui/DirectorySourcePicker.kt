@@ -9,6 +9,7 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.compose.runtime.Composable
 import dev.disobey.mango.AppManager
 import dev.disobey.mango.rust.AppAction
@@ -52,7 +53,13 @@ internal const val PERSISTABLE_URI_FLAGS: Int =
  * See .planning/debug/resolved/android-saf-cant-use-folder-grapheneos.md for the full
  * root-cause trace. Reverting this to always return false is a regression — covered by
  * DirectorySourcePickerTest.
+ *
+ * `@ChecksSdkIntAtLeast` makes the SDK gate visible to Android lint: every production
+ * caller passes `Build.VERSION.SDK_INT`, so a true return implies API 29+ and lint
+ * accepts the `MediaStore.Downloads` access in `initialTreeUriForSdk` (previously
+ * NewApi: the plain Boolean helper was not recognized as an SDK-int guard).
  */
+@ChecksSdkIntAtLeast(api = Build.VERSION_CODES.Q)
 internal fun useDownloadsUriForSdk(sdkInt: Int): Boolean = sdkInt >= Build.VERSION_CODES.Q
 
 /**

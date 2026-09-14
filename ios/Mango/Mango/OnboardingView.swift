@@ -309,8 +309,7 @@ struct OnboardingView: View {
                     "Think of a Trusted Execution Environment like a sealed, tamper-proof vault " +
                     "inside the server. Your data goes in, the AI processes it, and the result " +
                     "comes out -- but nobody (not even the server operator) can see what's inside. " +
-                    "Attestation is the cryptographic proof that the vault is real and hasn't " +
-                    "been tampered with."
+                    "Attestation is the cryptographic proof that the vault is real."
                 )
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -333,8 +332,7 @@ struct OnboardingView: View {
                             Text(
                                 "Attestation is a cryptographic certificate from the hardware itself. It proves: " +
                                 "(1) the TEE is genuine hardware, not a simulation, " +
-                                "(2) the software running inside hasn't been tampered with, " +
-                                "(3) this app recently verified evidence for the backend. It does not prove every turn is processed remotely."
+                                "(2) this app recently verified evidence for the backend. It does not prove every turn is processed remotely."
                             )
                         }
                         Group {
@@ -342,8 +340,7 @@ struct OnboardingView: View {
                                 .fontWeight(.semibold)
                             Text(
                                 "Self-verified means this app checked the cryptographic proof directly. " +
-                                "Provider-verified means the backend's own attestation service confirmed the TEE. " +
-                                "Both guarantee your data is protected."
+                                "Provider-verified means the backend's own attestation service confirmed the TEE."
                             )
                         }
                     }

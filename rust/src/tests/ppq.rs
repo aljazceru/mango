@@ -532,32 +532,50 @@ fn provisioning_writes_credit_id_first_and_reads_back() {
 }
 
 #[test]
-fn failed_store_compensates_with_verified_deletion() {
+fn failed_fresh_provision_compensates_with_verified_deletion() {
     let kc = RecordingKeychain::default();
     let store = PpqSecretStore::new(&kc);
     let (cid, key) = creds();
-    // Pre-seed a stale credit_id so compensation has something to clear.
-    {
-        use crate::KeychainProvider;
-        let _ = kc.store(
-            CREDIT_ID_SERVICE.into(),
-            CREDIT_ID_KEY.into(),
-            "stale".into(),
-        );
-        kc.inner.lock().unwrap().ops.clear();
-        kc.inner.lock().unwrap().fail_stores = true;
-    }
+    // Empty snapshot (fresh install): nothing to preserve, so a failed
+    // store must leave both slots empty (coordinated contract with the
+    // secret-store owner: compensation-by-deletion applies to fresh
+    // provisioning ONLY — never to replacement of an existing pair).
+    kc.inner.lock().unwrap().fail_stores = true;
     assert!(matches!(
         store.store_provisioned(&cid, &key),
         Err(PpqError::StorageFailure)
     ));
-    assert!(!store.has_any(), "compensation must clear both secrets");
+    assert!(!store.has_any(), "fresh cleanup must clear both secrets");
     assert!(kc.inner.lock().unwrap().values.is_empty());
 }
 
 #[test]
-fn read_back_mismatch_is_storage_failure_and_compensates() {
-    // Store succeeds but load returns the wrong value (silent write loss).
+fn failed_replacement_preserves_previous_pair() {
+    let kc = RecordingKeychain::default();
+    let store = PpqSecretStore::new(&kc);
+    let (prior_cid, prior_key) = creds();
+    store.store_provisioned(&prior_cid, &prior_key).unwrap();
+    // Attempt to replace with a different valid pair, with failing writes.
+    let new_cid = Zeroizing::new("11111111-1111-4111-8111-111111111111".to_string());
+    let new_key = Zeroizing::new("sk-test-qrstuvwxyz123456".to_string());
+    kc.inner.lock().unwrap().fail_stores = true;
+    assert!(matches!(
+        store.store_provisioned(&new_cid, &new_key),
+        Err(PpqError::StorageFailure)
+    ));
+    // Finding 4 contract (secret-store owner): the previous credential
+    // pair must survive a failed replacement byte-for-byte — never deleted.
+    assert_eq!(
+        ppq_values(&kc),
+        (Some((*prior_cid).clone()), Some((*prior_key).clone()),),
+        "failed replacement must preserve the previous pair"
+    );
+}
+
+#[test]
+fn read_back_mismatch_is_storage_failure_and_never_stores_new_pair() {
+    // Store succeeds but load returns the wrong value (silent write loss):
+    // the attempt must fail and the NEW pair must never end up stored.
     struct LyingKeychain(RecordingKeychain);
     impl KeychainProvider for LyingKeychain {
         fn store(&self, s: String, k: String, v: String) -> bool {
@@ -577,7 +595,21 @@ fn read_back_mismatch_is_storage_failure_and_compensates() {
         store.store_provisioned(&cid, &key),
         Err(PpqError::StorageFailure)
     ));
-    assert!(lying.0.inner.lock().unwrap().values.is_empty());
+    // Under the replacement-preserving contract the lying keychain's
+    // snapshot is non-empty, so recovery converges to it; the essential
+    // invariant either way: neither attempted secret is readable back.
+    assert_eq!(
+        store.load_credit_id().unwrap().as_deref(),
+        Some(&"not-what-we-wrote".to_string())
+    );
+    assert_ne!(
+        store.load_credit_id().unwrap().as_deref(),
+        Some(&(*cid).clone())
+    );
+    assert_ne!(
+        store.load_api_key().unwrap().as_deref(),
+        Some(&(*key).clone())
+    );
 }
 
 #[test]
@@ -1097,7 +1129,7 @@ fn actor_decoy_reactivation_via_backup_file() {
             bytes,
             "correct-horse-battery".to_string(),
             crate::SensitiveActionAuth::Biometric,
-            false,
+            true, // decoy restores require explicit generic consent (follow-up 2)
         )
         .expect("ffi call succeeds");
     app.sync();
@@ -1118,4 +1150,1327 @@ fn actor_decoy_reactivation_via_backup_file() {
     );
 
     std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+}
+
+// ── Release remediation regressions: findings 1, 2, 3 + follow-ups ───────────
+
+fn ppq_backend_summary_has_key(app: &FfiApp) -> Option<bool> {
+    app.state()
+        .backends
+        .iter()
+        .find(|b| b.id == "ppq-ai")
+        .map(|b| b.has_api_key)
+}
+
+fn count_ppq_key_loads(kc: &RecordingKeychain) -> usize {
+    kc.inner
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .filter(|o| {
+            matches!(o, Op::Load { service, key }
+                if *service == API_KEY_SERVICE && *key == API_KEY_KEY)
+        })
+        .count()
+}
+
+fn ppq_temp_dir(tag: &str) -> String {
+    // The production wipe guard (`wipe_data_dir_allowed`) requires a path
+    // component literally named "mango" — mirror a real install layout
+    // instead of weakening the guard.
+    let dir =
+        std::env::temp_dir().join(format!("mango_ppq_release_{tag}_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("mango")).expect("create temp dir");
+    dir.join("mango").to_str().unwrap().to_string()
+}
+
+fn make_dir_actor_app(dir: &str, kc: RecordingKeychain) -> std::sync::Arc<FfiApp> {
+    let app = FfiApp::new(
+        dir.to_string(),
+        Box::new(kc),
+        Box::new(crate::NullEmbeddingProvider),
+        crate::EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
+        Box::new(TrueBiometric),
+    );
+    app.sync();
+    app
+}
+
+/// Finding 1, acceptance 1 (immediate wipe): after duress the preserved PPQ
+/// credentials are never read, cached, or exposed — the decoy session's
+/// ppq-ai backend reports `has_api_key=false`.
+#[test]
+fn duress_decoy_suppresses_preserved_ppq_backend_key() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: Some("9999".into()),
+        enable_biometric: false,
+    });
+    app.sync();
+    // Managed account visible before duress: the backend key is live.
+    assert_eq!(ppq_backend_summary_has_key(&app), Some(true));
+
+    let loads_before = count_ppq_key_loads(&kc);
+    let err = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::MainPin { pin: "9999".into() },
+        )
+        .expect_err("duress entry must fail generically");
+    let _ = err;
+    app.sync();
+
+    // Decoy session: the preserved device key was never READ from the
+    // keychain after wipe (no loads beyond the pre-duress baseline).
+    assert_eq!(
+        count_ppq_key_loads(&kc),
+        loads_before,
+        "decoy session must not read the preserved PPQ key"
+    );
+    assert_eq!(
+        ppq_backend_summary_has_key(&app),
+        Some(false),
+        "decoy ppq-ai backend must show has_api_key=false"
+    );
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+    assert!(app.state().ppq.balance_display.is_none());
+    assert!(app.state().ppq.funding.is_none());
+    // ...and both credentials are still preserved byte-for-byte.
+    assert_eq!(
+        ppq_values(&kc),
+        (
+            Some("00000000-0000-4000-8000-000000000000".into()),
+            Some("sk-test-abcdefghijklmnop".into())
+        )
+    );
+}
+
+/// Finding 1, acceptance 1 (restart): the decoy flag and key suppression
+/// survive a process restart over the same install.
+#[test]
+fn decoy_suppresses_preserved_key_across_restart() {
+    let dir = ppq_temp_dir("restart");
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_dir_actor_app(&dir, kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: Some("9999".into()),
+        enable_biometric: false,
+    });
+    app.sync();
+    let err = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::MainPin { pin: "9999".into() },
+        )
+        .expect_err("duress wipe");
+    let _ = err;
+    app.sync();
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+    assert_eq!(ppq_backend_summary_has_key(&app), Some(false));
+    drop(app);
+
+    // "Restart": a fresh app instance over the same data dir. The seeded
+    // decoy database keeps the suppression active.
+    let app2 = make_dir_actor_app(&dir, kc.clone());
+    assert_eq!(
+        app2.state().ppq.mode,
+        crate::PpqAccountMode::None,
+        "restart must not reclassify dormant credentials"
+    );
+    assert_eq!(
+        ppq_backend_summary_has_key(&app2),
+        Some(false),
+        "restart must keep the preserved key out of the backend cache"
+    );
+    assert_eq!(
+        app2.test_get_ppq_setting("duress_decoy_mode").as_deref(),
+        Some("true")
+    );
+    assert!(ppq_values(&kc).0.is_some(), "dormant root still preserved");
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&dir).parent().unwrap());
+}
+
+/// Finding 2 (lock/unlock): late replies from the pre-lock session are
+/// dropped — also after re-unlock — while fresh (current-epoch) replies
+/// still work: the control never gets stuck.
+#[test]
+fn late_ppq_replies_after_lock_unlock_are_dropped_and_session_recovers() {
+    let dir = ppq_temp_dir("lockunlock");
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_dir_actor_app(&dir, kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    app.sync();
+    assert!(app.state().auth_initialized);
+
+    let stale_epoch = app.test_ppq_task_epoch();
+    app.dispatch(AppAction::LockApp);
+    app.sync();
+    assert!(app.state().ppq.balance_display.is_none());
+    // Reply arrives while locked: dropped (DB unavailable, epoch stale) —
+    // the locked screen's state stays clean.
+    app.test_send_ppq_event_at_epoch(
+        stale_epoch,
+        crate::PpqTaskEvent::BalanceRefreshed {
+            balance: "7.7".into(),
+        },
+    );
+    app.sync();
+    assert!(app.state().ppq.balance_display.is_none());
+
+    app.dispatch(AppAction::UnlockWithPin { pin: "1234".into() });
+    app.sync();
+    // Same stale reply arrives AFTER unlock: still dropped (session epoch
+    // advanced at lock time).
+    app.test_send_ppq_event_at_epoch(
+        stale_epoch,
+        crate::PpqTaskEvent::BalanceRefreshed {
+            balance: "7.7".into(),
+        },
+    );
+    app.sync();
+    assert!(
+        app.state().ppq.balance_display.is_none(),
+        "stale balance reply must not mutate the re-unlocked session"
+    );
+    // A reply carrying the CURRENT epoch (as any task spawned now would)
+    // is applied: the session is fully usable after lock/unlock.
+    app.test_send_ppq_event(crate::PpqTaskEvent::BalanceRefreshed {
+        balance: "5.0".into(),
+    });
+    app.sync();
+    assert_eq!(app.state().ppq.balance_display.as_deref(), Some("5.0"));
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&dir).parent().unwrap());
+}
+
+/// Follow-up 1 (cancellation): an invoice task blocked on payment-methods is
+/// CANCELLED at lock — the follow-up create_lightning_invoice request is
+/// never issued — and fresh requests work again after unlock.
+#[test]
+fn inflight_multistep_ppq_request_is_cancelled_at_lock() {
+    let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use std::io::{Read, Write as IoWrite};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let req_log = requests.clone();
+    std::thread::spawn(move || {
+        let pm_body = concat!(
+            "{\"success\":true,\"supported_methods\":[{\"method\":\"btc-lightning\",",
+            "\"display_name\":\"Bitcoin Lightning\",\"supported_currencies\":[\"SATS\"],",
+            "\"limits\":{\"SATS\":{\"min\":100,\"max\":1000000}}}]}"
+        );
+        // Connection 1: payment-methods — hold the response until released.
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                match sock.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        if buf.contains(&b'\n') {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            req_log
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&buf).into_owned());
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            let _ = sock.write_all(
+                format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{pm_body}").as_bytes(),
+            );
+            let _ = sock.flush();
+        }
+        // Connection 2: post-unlock balance refresh.
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp);
+            req_log
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&tmp).into_owned());
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"balance\":1.0}",
+            );
+            let _ = sock.flush();
+        }
+        // Any further connection would prove the cancellation failed.
+        while let Ok((mut sock, _)) = listener.accept() {
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp);
+            req_log
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&tmp).into_owned());
+        }
+    });
+    std::env::set_var("MANGO_PPQ_TEST_BASE_URL", format!("http://{addr}"));
+
+    let dir = ppq_temp_dir("cancel");
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_dir_actor_app(&dir, kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    app.sync();
+
+    // Start a topup: the task blocks on payment-methods (connection 1).
+    app.dispatch(AppAction::CreatePpqLightningTopup { amount_sats: 100 });
+    let mut saw_first = false;
+    for _ in 0..50 {
+        app.sync();
+        if !requests.lock().unwrap().is_empty() {
+            saw_first = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(saw_first, "payment-methods request must have started");
+
+    // Lock: cancels the session token around the WHOLE multistep future.
+    app.dispatch(AppAction::LockApp);
+    app.sync();
+    std::thread::sleep(Duration::from_millis(150));
+    // Now release the held response: the cancelled client is gone and must
+    // NOT proceed to create_lightning_invoice.
+    let _ = release_tx.send(());
+    std::thread::sleep(Duration::from_millis(400));
+
+    let reqs = requests.lock().unwrap().clone();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "no further request may be issued, got {reqs:?}"
+    );
+    assert!(
+        reqs[0].contains("/topup/payment-methods"),
+        "first request must be payment-methods"
+    );
+    assert!(
+        !reqs.iter().any(|r| r.contains("invoice")),
+        "create_lightning_invoice must never be issued after cancellation"
+    );
+
+    // Fresh operations after unlock work (new session token/epoch).
+    app.dispatch(AppAction::UnlockWithPin { pin: "1234".into() });
+    app.sync();
+    app.dispatch(AppAction::RefreshPpqAccount);
+    let mut refreshed = false;
+    for _ in 0..50 {
+        app.sync();
+        if app.state().ppq.balance_display.is_some() {
+            refreshed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(refreshed, "post-unlock balance refresh must work");
+    assert_eq!(app.state().ppq.balance_display.as_deref(), Some("1.0"));
+    assert!(
+        !requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.contains("invoice")),
+        "still no invoice request after everything"
+    );
+
+    std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&dir).parent().unwrap());
+}
+
+/// Finding 2 (invoice identity): status replies are honored only for the
+/// invoice they were issued for — cancelled or replaced invoices cannot be
+/// mutated by late replies.
+#[test]
+fn status_reply_for_replaced_or_cancelled_invoice_is_ignored() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    let now = crate::ppq_now_secs();
+    app.test_send_ppq_event(crate::PpqTaskEvent::InvoiceCreated {
+        invoice_id: "invA".into(),
+        bolt11: Zeroizing::new("lnbc1u1SANITIZED".to_string()),
+        amount_sats: 100,
+        created_at: now,
+        expires_at: now + 600,
+    });
+    app.sync();
+    assert_eq!(
+        app.state().ppq.funding_phase,
+        crate::PpqFundingPhase::AwaitingPayment
+    );
+    assert!(app.state().ppq.funding.is_some());
+
+    // Same epoch, but the reply is for a DIFFERENT invoice: dropped.
+    app.test_send_ppq_event(crate::PpqTaskEvent::StatusChecked {
+        invoice_id: "invB".into(),
+        outcome: "settled",
+        next_poll_at: 0,
+    });
+    app.sync();
+    assert!(
+        app.state().ppq.funding.is_some(),
+        "foreign-invoice status must not clear funding"
+    );
+    assert_eq!(
+        app.state().ppq.funding_phase,
+        crate::PpqFundingPhase::AwaitingPayment
+    );
+
+    // Cancel the invoice, then replay a settled reply for it: dropped by
+    // both the epoch bump and the invoice-identity gate.
+    let pre_cancel = app.test_ppq_task_epoch();
+    app.dispatch(AppAction::CancelPpqTopup);
+    app.sync();
+    assert!(app.state().ppq.funding.is_none());
+    app.test_send_ppq_event_at_epoch(
+        pre_cancel,
+        crate::PpqTaskEvent::StatusChecked {
+            invoice_id: "invA".into(),
+            outcome: "settled",
+            next_poll_at: 0,
+        },
+    );
+    app.sync();
+    // And even a current-epoch reply for the no-longer-pending invoice:
+    app.test_send_ppq_event(crate::PpqTaskEvent::StatusChecked {
+        invoice_id: "invA".into(),
+        outcome: "settled",
+        next_poll_at: 0,
+    });
+    app.sync();
+    assert!(
+        app.state().ppq.funding.is_none(),
+        "cancelled invoice must stay cleared"
+    );
+    assert_eq!(app.state().ppq.funding_phase, crate::PpqFundingPhase::Idle);
+}
+
+/// Finding 3 (forget): removing the account clears the cached chat key
+/// (has_api_key=false) and late provisioning replies cannot resurrect it.
+#[test]
+fn forget_clears_cached_backend_key_and_ignores_late_replies() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    assert_eq!(ppq_backend_summary_has_key(&app), Some(true));
+
+    let stale_epoch = app.test_ppq_task_epoch();
+    let result = app.confirm_forget_managed_ppq(crate::SensitiveActionAuth::Biometric, true);
+    app.sync();
+    assert!(result.is_ok(), "authenticated forget must succeed");
+    assert_eq!(ppq_values(&kc), (None, None), "credentials deleted");
+    assert_eq!(
+        ppq_backend_summary_has_key(&app),
+        Some(false),
+        "cached chat key must be dropped with the credentials"
+    );
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+
+    // A late AccountCreated from the forgotten session: dropped, and the
+    // credentials it carries are NOT written to the keychain.
+    app.test_send_ppq_event_at_epoch(
+        stale_epoch,
+        crate::PpqTaskEvent::AccountCreated {
+            credit_id: Zeroizing::new("11111111-1111-4111-8111-111111111111".to_string()),
+            api_key: Zeroizing::new("sk-test-qrstuvwxyz123456".to_string()),
+        },
+    );
+    app.sync();
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+    assert_eq!(
+        ppq_values(&kc),
+        (None, None),
+        "stale provisioning reply must not resurrect credentials"
+    );
+}
+
+/// Finding 3 (provision): a successful provision immediately refreshes the
+/// backend chat-key cache (ppq-ai has_api_key=true).
+#[test]
+fn provision_success_refreshes_backend_chat_key() {
+    let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use std::io::{Read, Write as IoWrite};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let responses = [
+            // 1) account create
+            concat!(
+                "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"success":true,"credit_id":"11111111-1111-4111-8111-111111111111","api_key":"sk-test-qrstuvwxyz123456","balance":0}"#
+            ),
+            // 2) balance fetch completing provisioning
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"balance":0.08}"#
+            ),
+        ];
+        for resp in responses {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp);
+            let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.flush();
+        }
+    });
+    std::env::set_var("MANGO_PPQ_TEST_BASE_URL", format!("http://{addr}"));
+
+    let kc = RecordingKeychain::default();
+    let app = make_actor_app(kc.clone());
+    assert_eq!(ppq_backend_summary_has_key(&app), Some(false));
+
+    app.dispatch(AppAction::ProvisionManagedPpq);
+    let mut provisioned = false;
+    for _ in 0..50 {
+        app.sync();
+        if app.state().ppq.mode == crate::PpqAccountMode::Managed {
+            provisioned = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(provisioned, "provisioning must complete");
+    assert_eq!(
+        ppq_backend_summary_has_key(&app),
+        Some(true),
+        "fresh device key must be live in the backend cache immediately"
+    );
+    assert_eq!(
+        app.state().ppq.setup_phase,
+        crate::PpqSetupPhase::NeedsBackup
+    );
+    // Wait for the balance fetch so the test server thread can finish.
+    for _ in 0..50 {
+        app.sync();
+        if app.state().ppq.balance_display.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+}
+
+/// Finding 3 (replacement restore): restoring a different account swaps the
+/// backend chat key, and pre-restore session replies are dropped.
+#[test]
+fn replacement_restore_swaps_backend_key_and_drops_prior_epoch_events() {
+    let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use std::io::{Read, Write as IoWrite};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let responses = [
+            // 1) remote validation of the restored (replacement) key
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"balance":3.5}"#
+            ),
+            // 2) post-restore balance refresh
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"balance":3.5}"#
+            ),
+        ];
+        for resp in responses {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp);
+            let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.flush();
+        }
+    });
+    std::env::set_var("MANGO_PPQ_TEST_BASE_URL", format!("http://{addr}"));
+
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc); // account A
+    let app = make_actor_app(kc.clone());
+    assert_eq!(ppq_backend_summary_has_key(&app), Some(true));
+    let stale_epoch = app.test_ppq_task_epoch();
+
+    // Backup of a DIFFERENT account (B): a replacement restore.
+    let bytes = crate::ppq::recovery::encrypt_recovery_document(
+        "11111111-1111-4111-8111-111111111111",
+        "sk-test-qrstuvwxyz123456",
+        None,
+        "2026-09-03T00:00:00Z",
+        "correct-horse-battery",
+    )
+    .unwrap();
+    let result = app
+        .restore_ppq_recovery_backup(
+            bytes,
+            "correct-horse-battery".to_string(),
+            crate::SensitiveActionAuth::Biometric,
+            true,
+        )
+        .expect("ffi call succeeds");
+    app.sync();
+    assert!(result.success, "acknowledged replacement must succeed");
+    assert_eq!(
+        ppq_values(&kc),
+        (
+            Some("11111111-1111-4111-8111-111111111111".into()),
+            Some("sk-test-qrstuvwxyz123456".into())
+        ),
+        "replacement pair stored"
+    );
+    assert_eq!(
+        ppq_backend_summary_has_key(&app),
+        Some(true),
+        "backend cache must carry the restored key"
+    );
+
+    // Wait for the post-restore refresh (current epoch) to land.
+    let mut refreshed = false;
+    for _ in 0..50 {
+        app.sync();
+        if app.state().ppq.balance_display.as_deref() == Some("3.5") {
+            refreshed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(refreshed, "post-restore refresh must apply");
+
+    // A pre-restore session reply is dropped.
+    app.test_send_ppq_event_at_epoch(
+        stale_epoch,
+        crate::PpqTaskEvent::BalanceRefreshed {
+            balance: "9.9".into(),
+        },
+    );
+    app.sync();
+    assert_eq!(
+        app.state().ppq.balance_display.as_deref(),
+        Some("3.5"),
+        "stale pre-restore reply must not overwrite the new session"
+    );
+
+    std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+}
+
+/// Follow-up 2 (probe resistance): in decoy mode an UNACKNOWLEDGED valid
+/// restore behaves identically whether the dormant root is the same, a
+/// different one, or absent — no keychain inspection happens before the
+/// generic consent, so a backup cannot discover hidden accounts.
+#[test]
+fn decoy_restore_probe_is_uniform_without_acknowledgement() {
+    fn make_decoy(kc_seeded: bool) -> (std::sync::Arc<FfiApp>, RecordingKeychain) {
+        let kc = RecordingKeychain::default();
+        if kc_seeded {
+            seed_ppq_credentials(&kc);
+        }
+        let app = make_actor_app(kc.clone());
+        app.dispatch(AppAction::SetupPin {
+            pin: "1234".into(),
+            duress_pin: Some("9999".into()),
+            enable_biometric: false,
+        });
+        app.sync();
+        let err = app
+            .create_ppq_recovery_backup(
+                "correct-horse-battery".into(),
+                crate::SensitiveActionAuth::MainPin { pin: "9999".into() },
+            )
+            .expect_err("duress wipe");
+        let _ = err;
+        app.sync();
+        assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+        (app, kc)
+    }
+    fn backup_of(credit: &str) -> Vec<u8> {
+        crate::ppq::recovery::encrypt_recovery_document(
+            credit,
+            "sk-test-qrstuvwxyz123456",
+            None,
+            "2026-09-03T00:00:00Z",
+            "correct-horse-battery",
+        )
+        .unwrap()
+    }
+
+    for (seeded, credit) in [
+        (true, "00000000-0000-4000-8000-000000000000"), // SAME dormant root
+        (true, "11111111-1111-4111-8111-111111111111"), // DIFFERENT dormant root
+        (false, "11111111-1111-4111-8111-111111111111"), // NO dormant root
+    ] {
+        let (app, kc) = make_decoy(seeded);
+        let loads_before = count_ppq_key_loads(&kc);
+        let result = app
+            .restore_ppq_recovery_backup(
+                backup_of(credit),
+                "correct-horse-battery".to_string(),
+                crate::SensitiveActionAuth::Biometric,
+                false, // unacknowledged
+            )
+            .expect("ffi call succeeds");
+        app.sync();
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("replacement_confirmation_required"),
+            "seeded={seeded} credit={credit}: identical generic consent error"
+        );
+        assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+        assert_eq!(
+            count_ppq_key_loads(&kc),
+            loads_before,
+            "unacknowledged decoy restore must not inspect credentials"
+        );
+    }
+}
+
+/// Follow-up 4: ConfirmPpqBackupSaved is scoped to the account whose export
+/// is pending. A confirmation after the account changed (replacement,
+/// forget, wipe) must not mark the current account as backed up; a matching
+/// confirmation is honored.
+#[test]
+fn backup_saved_confirmation_is_scoped_to_exporting_account() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    let backup_at_set = |app: &FfiApp| {
+        app.test_get_ppq_setting(crate::ppq::account::SETTING_BACKUP_AT)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    };
+
+    // Export account A, then swap the keychain root to B: the pending
+    // confirmation is now for A but the current account is B — ignored.
+    let _bytes = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::Biometric,
+        )
+        .expect("export");
+    app.sync();
+    use crate::KeychainProvider;
+    assert!(kc.store(
+        CREDIT_ID_SERVICE.into(),
+        CREDIT_ID_KEY.into(),
+        "11111111-1111-4111-8111-111111111111".into()
+    ));
+    app.dispatch(AppAction::ConfirmPpqBackupSaved);
+    app.sync();
+    assert!(
+        !backup_at_set(&app),
+        "mismatched confirmation must not set the backup marker"
+    );
+    assert!(!app.state().ppq.backup_confirmed);
+
+    // Export the CURRENT account (B) and confirm: honored.
+    let _bytes = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::Biometric,
+        )
+        .expect("export");
+    app.sync();
+    app.dispatch(AppAction::ConfirmPpqBackupSaved);
+    app.sync();
+    assert!(backup_at_set(&app), "matching confirmation is honored");
+    assert!(app.state().ppq.backup_confirmed);
+
+    // Forget clears the scope: a replayed confirmation is ignored.
+    let result = app.confirm_forget_managed_ppq(crate::SensitiveActionAuth::Biometric, true);
+    app.sync();
+    assert!(result.is_ok());
+    assert!(!backup_at_set(&app), "forget clears the backup marker");
+    app.dispatch(AppAction::ConfirmPpqBackupSaved);
+    app.sync();
+    assert!(
+        !backup_at_set(&app),
+        "post-forget confirmation must not mark anything backed up"
+    );
+    assert!(!app.state().ppq.backup_confirmed);
+}
+
+/// Follow-up 4 (SAF deferral): a backup-saved confirmation that arrives
+/// while the app is LOCKED is deferred (nothing surfaces while locked) and
+/// applied at same-account unlock — not dropped forever.
+#[test]
+fn backup_confirmation_while_locked_defers_until_same_account_unlock() {
+    let dir = ppq_temp_dir("safdefer");
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_dir_actor_app(&dir, kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    app.sync();
+
+    let _bytes = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::Biometric,
+        )
+        .expect("export while unlocked");
+    app.sync();
+
+    app.dispatch(AppAction::LockApp);
+    app.sync();
+    // The SAF save completes while the app is paused/locked.
+    app.dispatch(AppAction::ConfirmPpqBackupSaved);
+    app.sync();
+    // Nothing surfaced while locked: state stays the clean locked default.
+    assert!(app.state().ppq.balance_display.is_none());
+    assert!(!app.state().ppq.backup_confirmed);
+    assert!(
+        app.test_get_ppq_setting(crate::ppq::account::SETTING_BACKUP_AT)
+            .map(|v| v.is_empty())
+            .unwrap_or(true),
+        "no marker write while locked"
+    );
+
+    // Same-account unlock: the deferred confirmation is applied.
+    app.dispatch(AppAction::UnlockWithPin { pin: "1234".into() });
+    app.sync();
+    assert!(
+        app.state().ppq.backup_confirmed,
+        "deferred confirmation must apply at same-account unlock"
+    );
+    assert!(
+        app.test_get_ppq_setting(crate::ppq::account::SETTING_BACKUP_AT)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false),
+        "marker persisted after unlock"
+    );
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&dir).parent().unwrap());
+}
+
+/// B integration: an unresolved interrupted replacement (recovery journal
+/// kept) forces recovery-required state — mixed credentials are neither
+/// hydrated for chat nor provisioned over.
+#[test]
+fn unresolved_recovery_journal_forces_recovery_required_state() {
+    use crate::ppq::secret_store::PpqSecretStore;
+    use crate::KeychainProvider;
+
+    /// Stores succeed but the journal slot can never be DELETED, so a
+    /// completed replacement leaves a stale journal that
+    /// `recover_interrupted` cannot clear -> Err (recovery required).
+    #[derive(Clone, Default)]
+    struct StickyJournalKeychain(RecordingKeychain);
+    impl KeychainProvider for StickyJournalKeychain {
+        fn store(&self, s: String, k: String, v: String) -> bool {
+            self.0.store(s, k, v)
+        }
+        fn load(&self, s: String, k: String) -> Option<String> {
+            self.0.load(s, k)
+        }
+        fn delete(&self, s: String, k: String) -> bool {
+            if s == crate::ppq::secret_store::JOURNAL_SERVICE
+                && k == crate::ppq::secret_store::JOURNAL_KEY
+            {
+                return false; // journal delete always fails
+            }
+            self.0.delete(s, k)
+        }
+    }
+
+    let kc = StickyJournalKeychain::default();
+    let store = PpqSecretStore::new(&kc);
+    let (cid, key) = creds();
+    // Two successful replacements leave a journal that names the current
+    // (target) pair but cannot be cleared.
+    store.store_provisioned(&cid, &key).unwrap();
+    let cid2 = Zeroizing::new("11111111-1111-4111-8111-111111111111".to_string());
+    let key2 = Zeroizing::new("sk-test-qrstuvwxyz123456".to_string());
+    store.store_provisioned(&cid2, &key2).unwrap();
+    assert!(
+        store.recover_interrupted().is_err(),
+        "sticky journal must be unrecoverable"
+    );
+
+    let app = FfiApp::new(
+        "".into(),
+        Box::new(kc.clone()),
+        Box::new(crate::NullEmbeddingProvider),
+        crate::EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
+        Box::new(TrueBiometric),
+    );
+    app.sync();
+    let st = app.state();
+    assert_eq!(st.ppq.mode, crate::PpqAccountMode::Managed);
+    assert_eq!(st.ppq.setup_phase, crate::PpqSetupPhase::Error);
+    assert_eq!(st.ppq.error.as_deref(), Some("recovery_required"));
+    // Mixed/ambiguous credentials are not hydrated for chat.
+    assert_eq!(
+        ppq_backend_summary_has_key(&app),
+        Some(false),
+        "recovery-required state must suppress the chat key"
+    );
+
+    // Provisioning over the mixed credentials is refused with the explicit
+    // recovery-required error (checked before the already-managed guard).
+    app.dispatch(AppAction::ProvisionManagedPpq);
+    app.sync();
+    assert_eq!(
+        app.state().ppq.error.as_deref(),
+        Some("recovery_required"),
+        "no auto-provisioning over unresolved credentials"
+    );
+}
+
+// ── Pretag plan wave 2 (docs/release/PRETAG_PLAN.md) ─────────────────────────
+
+/// Pretag A: decoy-session BYOK stores (UpdateBackendApiKey /
+/// AddBackendFromPreset) and RemoveBackend deletes on `ppq-ai` are
+/// successful no-ops — the preserved device-key bytes survive duress.
+#[test]
+fn decoy_byok_store_and_remove_leave_preserved_ppq_key() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: Some("9999".into()),
+        enable_biometric: false,
+    });
+    app.sync();
+    let _ = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::MainPin { pin: "9999".into() },
+        )
+        .expect_err("duress wipe");
+    app.sync();
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+
+    // BYOK store via the settings form.
+    app.dispatch(AppAction::UpdateBackendApiKey {
+        backend_id: "ppq-ai".into(),
+        api_key: "sk-attacker-overwrite-000000".into(),
+    });
+    app.sync();
+    // BYOK store via the onboarding preset path.
+    app.dispatch(AppAction::AddBackendFromPreset {
+        preset_id: "ppq-ai".into(),
+        api_key: "sk-attacker-preset-00000000".into(),
+    });
+    app.sync();
+    // Provider removal (delete path).
+    app.dispatch(AppAction::RemoveBackend {
+        backend_id: "ppq-ai".into(),
+    });
+    app.sync();
+
+    assert_eq!(
+        ppq_values(&kc),
+        (
+            Some("00000000-0000-4000-8000-000000000000".into()),
+            Some("sk-test-abcdefghijklmnop".into())
+        ),
+        "decoy BYOK store/Enable/Remove must leave prior ppq-ai bytes"
+    );
+}
+
+/// Pretag A: decoy "Delete All Data" wipes like a normal full reset
+/// (empty-looking install, no reseeded chats) while the PPQ credentials
+/// stay preserved in the keychain and the decoy flag is re-armed.
+#[test]
+fn decoy_delete_all_preserves_credentials_without_reseed() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: Some("9999".into()),
+        enable_biometric: false,
+    });
+    app.sync();
+    let _ = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::MainPin { pin: "9999".into() },
+        )
+        .expect_err("duress wipe");
+    app.sync();
+    // The duress-wiped install seeds the decoy transcript snapshot.
+    assert!(!app.state().conversations.is_empty());
+
+    app.dispatch(AppAction::DeleteAllData);
+    app.sync();
+
+    assert_eq!(
+        ppq_values(&kc),
+        (
+            Some("00000000-0000-4000-8000-000000000000".into()),
+            Some("sk-test-abcdefghijklmnop".into())
+        ),
+        "decoy delete-all must leave credit + device key in the keychain"
+    );
+    assert!(
+        app.state().conversations.is_empty(),
+        "decoy delete-all must not reseed the duress transcript snapshot"
+    );
+    assert_eq!(
+        app.test_get_ppq_setting("duress_decoy_mode").as_deref(),
+        Some("true"),
+        "decoy delete-all re-arms the decoy flag on the fresh DB"
+    );
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+    assert_eq!(
+        ppq_backend_summary_has_key(&app),
+        Some(false),
+        "loads stay suppressed after decoy delete-all"
+    );
+}
+
+/// Pretag A: a decoy user enrolling a fresh PIN must not clear the decoy
+/// flag — suppression stays active until an acknowledged .mppq restore.
+#[test]
+fn decoy_setup_pin_keeps_flag_and_suppression() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: Some("9999".into()),
+        enable_biometric: false,
+    });
+    app.sync();
+    let _ = app
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::MainPin { pin: "9999".into() },
+        )
+        .expect_err("duress wipe");
+    app.sync();
+
+    app.dispatch(AppAction::SetupPin {
+        pin: "4321".into(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    app.sync();
+
+    assert_eq!(
+        app.test_get_ppq_setting("duress_decoy_mode").as_deref(),
+        Some("true"),
+        "SetupPin in a decoy session must not clear the decoy flag"
+    );
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+    assert_eq!(
+        ppq_backend_summary_has_key(&app),
+        Some(false),
+        "has_api_key stays suppressed after decoy PIN enrollment"
+    );
+}
+
+/// Pretag D: an ExternalKey (BYOK ppq-ai key without a credit id) counts
+/// as a replacement — an unacknowledged restore is refused with
+/// `replacement_confirmation_required` BEFORE any remote validation or
+/// device-key mint, and the keychain is left unchanged. (Reaching the
+/// remote step would require network; the deterministic offline error
+/// code proves the gate precedes the mint.)
+#[test]
+fn byok_restore_requires_replacement_ack_before_mint() {
+    let kc = RecordingKeychain::default();
+    use crate::KeychainProvider;
+    assert!(kc.store(
+        API_KEY_SERVICE.into(),
+        API_KEY_KEY.into(),
+        "sk-byok-abcdefghijklmnop".into()
+    ));
+    let app = make_actor_app(kc.clone());
+    assert_eq!(
+        app.state().ppq.mode,
+        crate::PpqAccountMode::ExternalKey,
+        "BYOK key present without credit id"
+    );
+
+    let bytes = crate::ppq::recovery::encrypt_recovery_document(
+        "11111111-1111-4111-8111-111111111111",
+        "sk-test-qrstuvwxyz123456",
+        None,
+        "2026-09-03T00:00:00Z",
+        "correct-horse-battery",
+    )
+    .unwrap();
+    let result = app
+        .restore_ppq_recovery_backup(
+            bytes,
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::Biometric,
+            false, // unacknowledged
+        )
+        .expect("ffi call succeeds");
+    app.sync();
+    assert_eq!(
+        result.error_code.as_deref(),
+        Some("replacement_confirmation_required"),
+        "BYOK restore must demand replacement consent before minting"
+    );
+    assert_eq!(
+        ppq_values(&kc),
+        (None, Some("sk-byok-abcdefghijklmnop".into())),
+        "unacknowledged BYOK restore leaves the keychain unchanged"
+    );
+}
+
+/// Pretag E: queued health/attestation results delivered after lock are
+/// dropped — no `expect("db unlocked")` panic, no mutation of the locked
+/// state. A queued owner-less StreamChunk after a duress wipe must not
+/// accumulate phantom streaming text in the decoy snapshot.
+#[test]
+fn late_health_attestation_and_stream_results_after_lock_wipe_are_dropped() {
+    use crate::attestation::AttestationEvent;
+    use crate::llm::streaming::InternalEvent;
+
+    // ── Lock case ────────────────────────────────────────────────────
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    app.sync();
+    app.dispatch(AppAction::LockApp);
+    app.sync();
+
+    // These used to `expect("db unlocked")` (panic) or write state.
+    app.test_send_internal(InternalEvent::HealthCheckResult {
+        backend_id: "tinfoil".into(),
+        success: true,
+        models: vec!["some-model".into()],
+    });
+    app.sync();
+    app.test_send_internal(InternalEvent::AttestationResult(
+        AttestationEvent::Verified {
+            backend_id: "tinfoil".into(),
+            tee_type: "AmdSevSnp".into(),
+            report_blob: vec![1, 2, 3],
+            expires_at: crate::ppq_now_secs() as u64 + 3600,
+            tls_public_key_fp: None,
+            vcek_url: None,
+            vcek_der: None,
+            shape: None,
+            freshness: None,
+            orchestrated_components: None,
+        },
+    ));
+    app.sync();
+    let st = app.state();
+    assert!(
+        st.attestation_statuses.iter().all(|e| {
+            e.backend_id != "tinfoil"
+                || !matches!(e.status, crate::AttestationStatus::Verified { .. })
+        }),
+        "queued attestation result must not apply while locked"
+    );
+
+    // ── Wipe case ────────────────────────────────────────────────────
+    let kc2 = RecordingKeychain::default();
+    seed_ppq_credentials(&kc2);
+    let app2 = make_actor_app(kc2.clone());
+    app2.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: Some("9999".into()),
+        enable_biometric: false,
+    });
+    app2.sync();
+    let _ = app2
+        .create_ppq_recovery_backup(
+            "correct-horse-battery".into(),
+            crate::SensitiveActionAuth::MainPin { pin: "9999".into() },
+        )
+        .expect_err("duress wipe");
+    app2.sync();
+    let conv_count = app2.state().conversations.len();
+
+    app2.test_send_internal(InternalEvent::StreamChunk {
+        token: "phantom".into(),
+    });
+    app2.sync();
+    let st2 = app2.state();
+    assert!(
+        st2.streaming_text.is_none(),
+        "queued owner-less StreamChunk must not write the decoy snapshot"
+    );
+    assert_eq!(
+        st2.conversations.len(),
+        conv_count,
+        "decoy snapshot conversations unchanged"
+    );
+}
+
+// ── ChangePin (settings: main PIN change) ────────────────────────────────────
+
+fn is_locked(app: &FfiApp) -> bool {
+    matches!(app.state().router.current_screen, crate::Screen::Locked)
+}
+
+/// Changing the main PIN re-wraps the same DEK: the old PIN stops unlocking,
+/// the new one works, the duress PIN survives the re-wrap, and the step-up
+/// (current PIN) rejects wrong and duress entries alike as a plain
+/// "incorrect" — never triggering the duress wipe from settings.
+#[test]
+fn change_pin_rewraps_dek_and_preserves_duress() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: Some("9999".into()),
+        enable_biometric: false,
+    });
+    app.sync();
+    assert!(app.state().auth_initialized);
+
+    // Wrong current PIN -> refused, nothing changes.
+    app.dispatch(AppAction::ChangePin {
+        current_pin: "0000".into(),
+        new_pin: "5678".into(),
+    });
+    app.sync();
+    app.dispatch(AppAction::LockApp);
+    app.sync();
+    app.dispatch(AppAction::UnlockWithPin { pin: "1234".into() });
+    app.sync();
+    assert!(
+        !is_locked(&app),
+        "original PIN must still unlock after a refused change"
+    );
+    assert_eq!(
+        app.test_get_ppq_setting("duress_decoy_mode").as_deref(),
+        None,
+        "a refused ChangePin must not trigger any duress wipe"
+    );
+
+    // The duress PIN must NOT authenticate a change.
+    app.dispatch(AppAction::ChangePin {
+        current_pin: "9999".into(),
+        new_pin: "5678".into(),
+    });
+    app.sync();
+    assert_eq!(
+        app.state().toast.as_deref(),
+        Some("Current PIN is incorrect."),
+        "duress PIN must fail as a plain incorrect PIN"
+    );
+
+    // New PIN colliding with the duress PIN is refused.
+    app.dispatch(AppAction::ChangePin {
+        current_pin: "1234".into(),
+        new_pin: "9999".into(),
+    });
+    app.sync();
+    assert_eq!(
+        app.state().toast.as_deref(),
+        Some("New PIN must be different from the emergency PIN.")
+    );
+
+    // Successful change: same DEK, fresh wrap, credentials untouched.
+    app.dispatch(AppAction::ChangePin {
+        current_pin: "1234".into(),
+        new_pin: "5678".into(),
+    });
+    app.sync();
+    assert_eq!(app.state().toast.as_deref(), Some("PIN changed."));
+    assert_eq!(
+        ppq_values(&kc),
+        (
+            Some("00000000-0000-4000-8000-000000000000".into()),
+            Some("sk-test-abcdefghijklmnop".into())
+        ),
+        "PIN change must not touch PPQ credentials"
+    );
+
+    app.dispatch(AppAction::LockApp);
+    app.sync();
+    app.dispatch(AppAction::UnlockWithPin { pin: "1234".into() });
+    app.sync();
+    assert!(is_locked(&app), "old PIN must no longer unlock");
+
+    app.dispatch(AppAction::UnlockWithPin { pin: "5678".into() });
+    app.sync();
+    assert!(!is_locked(&app), "new PIN unlocks the same encrypted DB");
+
+    // Duress hash survived the re-wrap: the emergency PIN still activates the
+    // decoy session rather than a normal unlock.
+    app.dispatch(AppAction::LockApp);
+    app.sync();
+    app.dispatch(AppAction::UnlockWithPin { pin: "9999".into() });
+    app.sync();
+    assert!(!is_locked(&app), "duress unlock completes (decoy session)");
+    assert_eq!(
+        app.test_get_ppq_setting("duress_decoy_mode").as_deref(),
+        Some("true"),
+        "duress PIN must still be recognized after a main PIN change"
+    );
+}
+
+/// Too-short and identical new PINs are refused with the same validation
+/// messages as fresh enrollment.
+#[test]
+fn change_pin_validates_new_pin() {
+    let kc = RecordingKeychain::default();
+    let app = make_actor_app(kc);
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    app.sync();
+    // In-memory installs only hydrate the live DEK through an unlock cycle
+    // (file-backed installs get it straight from SetupPin).
+    app.dispatch(AppAction::LockApp);
+    app.sync();
+    app.dispatch(AppAction::UnlockWithPin { pin: "1234".into() });
+    app.sync();
+
+    app.dispatch(AppAction::ChangePin {
+        current_pin: "1234".into(),
+        new_pin: "12".into(),
+    });
+    app.sync();
+    assert_eq!(
+        app.state().toast.as_deref(),
+        Some("New PIN must be at least 4 characters.")
+    );
+
+    app.dispatch(AppAction::ChangePin {
+        current_pin: "1234".into(),
+        new_pin: "1234".into(),
+    });
+    app.sync();
+    assert_eq!(
+        app.state().toast.as_deref(),
+        Some("New PIN must be different from the current PIN.")
+    );
 }

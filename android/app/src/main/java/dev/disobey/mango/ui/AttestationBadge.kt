@@ -128,7 +128,10 @@ private fun AttestationDetailDialog(status: AttestationStatus, onDismiss: () -> 
 // MARK: - Status Helpers
 
 private fun badgeLabel(status: AttestationStatus): String = when (status) {
-    is AttestationStatus.Verified -> "Verified"
+    is AttestationStatus.Verified ->
+        // Pretag C: per-enclave freshness (Redpill/Chutes routes) must not
+        // read as a per-request verification — short honest pill.
+        if (status.freshness == "PerEnclave") "Enclave verified" else "Verified"
     is AttestationStatus.Unverified -> "Not Verified"
     is AttestationStatus.Expired -> "Expired"
     is AttestationStatus.Failed -> "Failed"
@@ -176,7 +179,14 @@ private fun badgeStroke(status: AttestationStatus): Color {
 
 private fun detailText(status: AttestationStatus): String = when (status) {
     is AttestationStatus.Verified ->
-        "This conversation is routed to a Trusted Execution Environment. This client verified recent cryptographic attestation evidence for the backend."
+        if (status.freshness == "PerEnclave") {
+            // Same wording as the Settings-style detail for Chutes rows.
+            "This conversation is routed to a Trusted Execution Environment. " +
+                "Verified for this enclave instance — evidence is bound to the " +
+                "enclave's lifetime, not to each request."
+        } else {
+            "This conversation is routed to a Trusted Execution Environment. This client verified recent cryptographic attestation evidence for the backend."
+        }
     is AttestationStatus.Unverified ->
         "Attestation has not been checked for this backend yet."
     is AttestationStatus.Expired ->

@@ -27,6 +27,7 @@ import dev.disobey.mango.ui.theme.AppTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.OutputStream
 
 internal fun shouldLockAfterBackground(backgroundedAt: Long, now: Long, timeoutSeconds: Long): Boolean {
     if (backgroundedAt <= 0 || timeoutSeconds < 0) {
@@ -36,14 +37,84 @@ internal fun shouldLockAfterBackground(backgroundedAt: Long, now: Long, timeoutS
     return elapsed >= timeoutSeconds * 1000L
 }
 
+/** How to react to a create-document result for a pending PPQ backup. Pure (unit-tested). */
+internal enum class PpqBackupSaveDecision {
+    /** Result arrived with no pending export — stale/duplicate result; do nothing. */
+    IGNORE,
+    /** User dismissed the picker without choosing a location; nothing was written. */
+    CANCELLED,
+    /** A location was chosen — attempt the write; saved/failed is decided by the write. */
+    WRITE,
+}
+
+/**
+ * Decide the reaction to a create-document result. Cancel never confirms the backup,
+ * and every terminal outcome clears the pending export bytes (done by the caller).
+ */
+internal fun decidePpqBackupSave(hasPendingBytes: Boolean, uriChosen: Boolean): PpqBackupSaveDecision = when {
+    !hasPendingBytes -> PpqBackupSaveDecision.IGNORE
+    !uriChosen -> PpqBackupSaveDecision.CANCELLED
+    else -> PpqBackupSaveDecision.WRITE
+}
+
+/** Result of attempting the backup write itself. Pure (unit-tested). */
+internal enum class PpqBackupWriteResult { SAVED, FAILED }
+
+/**
+ * Write the encrypted PPQ backup bytes through [openStream]. Returns [PpqBackupWriteResult.SAVED]
+ * only after a successful open, write, flush, AND close — a null stream, a failed write,
+ * or a failed close all yield FAILED so the backup is never marked saved without a real
+ * durable write. Pure JVM (no Android types) so failure modes are unit-testable.
+ */
+internal fun writePpqBackupBytes(bytes: ByteArray, openStream: () -> OutputStream?): PpqBackupWriteResult =
+    try {
+        val stream = openStream()
+        if (stream == null) {
+            PpqBackupWriteResult.FAILED
+        } else {
+            stream.use { out ->
+                out.write(bytes)
+                out.flush()
+            }
+            PpqBackupWriteResult.SAVED
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("MainActivity", "PPQ backup write failed: ${e.message}")
+        PpqBackupWriteResult.FAILED
+    }
+
+/** Terminal, user/app-visible outcome of a PPQ backup save flow. */
+internal enum class PpqBackupSaveOutcome { SAVED, CANCELLED, WRITE_FAILED }
+
+/**
+ * Apply a terminal backup-save outcome: notify Rust (ConfirmPpqBackupSaved) ONLY
+ * on a real successful write+close — the actor validates that the confirmation
+ * still matches the account whose export is pending (ppq_backup_export_credit
+ * scope), so a stale completion can never mark a different/restored/wiped account
+ * as backed up. Cancellation and failure are made observable to the user instead
+ * of failing silently. Pure (unit-tested).
+ */
+internal fun applyPpqBackupSaveOutcome(
+    outcome: PpqBackupSaveOutcome,
+    dispatch: (AppAction) -> Unit,
+    notifyUser: (String) -> Unit,
+) {
+    when (outcome) {
+        PpqBackupSaveOutcome.SAVED -> dispatch(AppAction.ConfirmPpqBackupSaved)
+        PpqBackupSaveOutcome.CANCELLED -> notifyUser("Backup cancelled — your PPQ backup was not saved")
+        PpqBackupSaveOutcome.WRITE_FAILED -> notifyUser("PPQ backup could not be saved — please try again")
+    }
+}
+
 class MainActivity : AppCompatActivity() {
     private lateinit var manager: AppManager
 
+    /** Identity of THIS activity instance for [PpqBackupCoordinator] hook ownership,
+     * so a stale activity's onDestroy can never detach a newer activity's hooks. */
+    private val safOwnerToken: Long = PpqBackupCoordinator.nextOwnerToken()
+
     /** Timestamp (millis) when the app last moved to background (D-10). 0 = not backgrounded. */
     private var backgroundedAt: Long = 0
-
-    /** Encrypted PPQ recovery backup bytes awaiting the SAF create-document result. */
-    private var pendingBackupBytes: ByteArray? = null
 
     /** Last resume-based PPQ invoice refresh; debounce at ~2s. */
     private var lastPpqResumeCheckAt: Long = 0
@@ -51,23 +122,7 @@ class MainActivity : AppCompatActivity() {
     private val createDocumentLauncher = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream"),
     ) { uri ->
-        val bytes = pendingBackupBytes ?: return@registerForActivityResult
-        uri ?: return@registerForActivityResult
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(bytes)
-                    out.flush()
-                }
-                withContext(Dispatchers.Main) {
-                    manager.dispatch(AppAction.ConfirmPpqBackupSaved)
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("MainActivity", "PPQ backup write failed: ${e.message}")
-            } finally {
-                pendingBackupBytes = null
-            }
-        }
+        handlePpqBackupSaveResult(uri)
     }
 
     private val openDocumentLauncher = registerForActivityResult(
@@ -96,10 +151,16 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 withContext(Dispatchers.Main) {
-                    if (bytes != null) {
-                        PpqBackupCoordinator.onPpqImportResult?.invoke(bytes)
-                    }
+                    val handler = PpqBackupCoordinator.onPpqImportResult
                     PpqBackupCoordinator.onPpqImportResult = null
+                    if (bytes != null && handler != null) {
+                        handler(bytes)
+                    } else if (bytes != null) {
+                        // The restore dialog died with a recreated composition — its
+                        // password capture is gone. Fail observably instead of silently
+                        // dropping the user's picked file.
+                        notifyPpqBackupUser("Restore cancelled — please try again")
+                    }
                 }
             } catch (e: Exception) {
                 PpqBackupCoordinator.onPpqImportResult = null
@@ -108,12 +169,51 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Finding 9 fix: a create-document result is consumed exactly once on every
+     * terminal outcome. The staged bytes are cleared immediately (they also survive
+     * activity recreation in [PpqBackupCoordinator]), Rust is notified of the save
+     * ONLY after a real successful write+flush+close (the actor-side pending-export
+     * scope decides whether the confirmation still applies to the current account),
+     * and cancellation, a null output stream, or a failed write are surfaced to the
+     * user instead of passing silently.
+     */
+    private fun handlePpqBackupSaveResult(uri: Uri?) {
+        val bytes = PpqBackupCoordinator.consumePendingExport()
+        when (decidePpqBackupSave(hasPendingBytes = bytes != null, uriChosen = uri != null)) {
+            PpqBackupSaveDecision.IGNORE -> {}
+            PpqBackupSaveDecision.CANCELLED ->
+                applyPpqBackupSaveOutcome(PpqBackupSaveOutcome.CANCELLED, manager::dispatch, ::notifyPpqBackupUser)
+            PpqBackupSaveDecision.WRITE -> lifecycleScope.launch(Dispatchers.IO) {
+                val write = writePpqBackupBytes(bytes!!) { contentResolver.openOutputStream(uri!!) }
+                val outcome = if (write == PpqBackupWriteResult.SAVED) {
+                    PpqBackupSaveOutcome.SAVED
+                } else {
+                    PpqBackupSaveOutcome.WRITE_FAILED
+                }
+                withContext(Dispatchers.Main) {
+                    applyPpqBackupSaveOutcome(outcome, manager::dispatch, ::notifyPpqBackupUser)
+                }
+            }
+        }
+    }
+
+    /** Surface a backup-save notice via app state so it is visible in the UI. */
+    private fun notifyPpqBackupUser(message: String) {
+        manager.dispatch(AppAction.ShowToast(message = message))
+    }
+
     override fun onPause() {
         super.onPause()
         backgroundedAt = System.currentTimeMillis()
     }
 
     override fun onDestroy() {
+        // Detach ONLY this instance's hooks (a stale activity destroyed after its
+        // replacement bound must not wipe the newer owner's hooks). The SAF launchers
+        // die with this activity. Pending export bytes survive a config change (the
+        // recreated activity completes the save) and are dropped only when finishing.
+        PpqBackupCoordinator.detachActivityHooks(safOwnerToken, clearPendingExport = isFinishing)
         manager?.biometricRebindable?.detach(this)
         super.onDestroy()
     }
@@ -178,14 +278,13 @@ class MainActivity : AppCompatActivity() {
         // §7.5: rebind the biometric bridge to THIS activity every recreation.
         manager.biometricRebindable?.attach(this)
 
-        // PPQ backup SAF launchers: registered before setContent; composables request via coordinator.
-        PpqBackupCoordinator.requestExport = { bytes ->
-            pendingBackupBytes = bytes
-            createDocumentLauncher.launch(ppqBackupFileName())
-        }
-        PpqBackupCoordinator.requestImport = {
-            openDocumentLauncher.launch(arrayOf("application/octet-stream", "*/*"))
-        }
+        // PPQ backup SAF launchers: registered before setContent under this
+        // activity's owner token; composables request via the coordinator.
+        PpqBackupCoordinator.bindActivityHooks(
+            owner = safOwnerToken,
+            requestExport = ::launchPpqBackupExport,
+            requestImport = ::launchPpqBackupImport,
+        )
 
         // Phase 32 Plan 06: enqueue the 15-minute periodic directory-sync worker
         // (D-23). KEEP policy means this is idempotent across config changes.
@@ -227,6 +326,17 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         }
+    }
+
+    /** Start the create-document flow for the staged encrypted bytes. */
+    private fun launchPpqBackupExport(bytes: ByteArray) {
+        PpqBackupCoordinator.stagePendingExport(bytes)
+        createDocumentLauncher.launch(ppqBackupFileName())
+    }
+
+    /** Start the open-document flow for restore. */
+    private fun launchPpqBackupImport() {
+        openDocumentLauncher.launch(arrayOf("application/octet-stream", "*/*"))
     }
 
     override fun onNewIntent(intent: Intent) {

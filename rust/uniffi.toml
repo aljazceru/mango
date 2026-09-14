@@ -1,3 +1,11 @@
 [bindings.kotlin]
 package_name = "dev.disobey.mango.rust"
 cdylib_name = "mango_core"
+# Generate the Android cleaner variant instead of the JVM one.
+# The JVM variant reaches java.lang.ref.Cleaner (API 33) behind a
+# Class.forName runtime probe that Android lint cannot recognize, which
+# fails :app:lintDebug with NewApi on minSdk 28. With android = true the
+# generator emits a Build.VERSION.SDK_INT >= UPSIDE_DOWN_CAKE guard plus
+# @RequiresApi annotations (ObjectCleanerHelperAndroid.kt template), which
+# lint understands, and keeps the JNA cleaner for API 28-33 devices.
+android = true

@@ -1,7 +1,7 @@
 /// Migration v1: creates all 6 tables and seeds initial backend rows.
 ///
 /// Tables: conversations, messages, backends, agent_sessions, agent_steps, attestation_cache.
-/// Seeded backends: Tinfoil (IntelTdx, active).
+/// Seeded backends: Tinfoil (AmdSevSnp, active).
 pub const MIGRATION_V1: &str = "
 CREATE TABLE IF NOT EXISTS conversations (
     id          TEXT PRIMARY KEY NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS attestation_cache (
 
 INSERT OR IGNORE INTO backends (id, name, base_url, model_list, tee_type, display_order, is_active, created_at)
 VALUES
-    ('tinfoil', 'Tinfoil', 'https://inference.tinfoil.sh/v1/', '[\"deepseek-v4-flash\",\"kimi-k3\",\"gemma4-31b\",\"llama3-3-70b\",\"gpt-oss-120b\",\"glm-5-2\"]', 'IntelTdx', 0, 1, strftime('%s','now'));
+    ('tinfoil', 'Tinfoil', 'https://inference.tinfoil.sh/v1/', '[\"deepseek-v4-flash\",\"kimi-k3\",\"gemma4-31b\",\"llama3-3-70b\",\"gpt-oss-120b\",\"glm-5-2\"]', 'AmdSevSnp', 0, 1, strftime('%s','now'));
 ";
 
 /// Migration v2: add index on agent_steps for ordered step retrieval per session.
@@ -454,6 +454,14 @@ SET model_list = '[\"deepseek-v4-flash\",\"kimi-k3\",\"gemma4-31b\",\"llama3-3-7
 WHERE id = 'tinfoil';
 ";
 
+/// Migration v26 (pretag C): correct the Tinfoil TEE label — the enclave
+/// substrate is AMD SEV-SNP, not Intel TDX. Existing installs get the
+/// corrected row so Settings labels (which come from the DB, not the
+/// preset) stop over-claiming.
+pub const MIGRATION_V26: &str = "
+UPDATE backends SET tee_type='AmdSevSnp' WHERE id='tinfoil';
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -481,6 +489,7 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V23,
     MIGRATION_V24,
     MIGRATION_V25,
+    MIGRATION_V26,
 ];
 
 #[cfg(test)]
@@ -592,6 +601,23 @@ mod tests {
         assert!(
             model_list.contains("kimi-k3"),
             "tinfoil seed must include a vision-capable model for hybrid image routing: {model_list}"
+        );
+    }
+
+    #[test]
+    fn test_migration_v26_labels_tinfoil_as_sev_snp() {
+        let db = Database::open(":memory:").expect("open in-memory db");
+        let tee: String = db
+            .conn()
+            .query_row(
+                "SELECT tee_type FROM backends WHERE id = 'tinfoil'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("seeded tinfoil backend");
+        assert_eq!(
+            tee, "AmdSevSnp",
+            "pretag C: Tinfoil seed + v26 migration must not claim Intel TDX"
         );
     }
 

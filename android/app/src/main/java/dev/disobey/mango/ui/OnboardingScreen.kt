@@ -70,9 +70,14 @@ import androidx.compose.runtime.LaunchedEffect
 import dev.disobey.mango.ui.ppq.PpqBackupNudge
 import dev.disobey.mango.ui.ppq.PpqFundingScreen
 import dev.disobey.mango.ui.ppq.PpqRestoreDialog
+import dev.disobey.mango.ui.ppq.PpqReplaceConfirmDialog
+import dev.disobey.mango.ui.ppq.PpqRestoreAttempt
+import dev.disobey.mango.ui.ppq.PpqRestoreFailureReaction
 import dev.disobey.mango.ui.ppq.PpqSetupChoice
 import dev.disobey.mango.ui.ppq.copyInvoiceToClipboard
 import dev.disobey.mango.ui.ppq.defaultOnOpenWallet
+import dev.disobey.mango.ui.ppq.ppqRestoreErrorMessage
+import dev.disobey.mango.ui.ppq.ppqRestoreFailureReaction
 import kotlinx.coroutines.launch
 
 /// Onboarding wizard screen: 4-step guided setup for Mango.
@@ -317,6 +322,9 @@ private fun BackendSetupStep(
     var ppqByok by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var showRestoreDialog by remember { mutableStateOf(false) }
+    // Non-null while the user must explicitly confirm replacing the on-device
+    // PPQ account after Rust answered `replacement_confirmation_required`.
+    var ppqReplaceAttempt by remember { mutableStateOf<PpqRestoreAttempt?>(null) }
     val ppqSummary = state.ppq
 
     LaunchedEffect(selectedPresetId) {
@@ -500,18 +508,54 @@ private fun BackendSetupStep(
     if (showRestoreDialog) {
         PpqRestoreDialog(
             biometricAvailable = state.biometricAvailable,
+            existingManaged = state.ppq.mode == PpqAccountMode.MANAGED,
             onRestore = { bytes, password, useBiometric, pin, replaceAcknowledged ->
+                showRestoreDialog = false
                 scope.launch {
-                    val success = AppManager.getInstance(context)
+                    val outcome = AppManager.getInstance(context)
                         .restorePpqRecoveryBackup(bytes, password, useBiometric, pin, replaceAcknowledged)
-                    if (!success) {
-                        Toast.makeText(context, "Restore failed", Toast.LENGTH_SHORT).show()
+                    when (val reaction = ppqRestoreFailureReaction(outcome.success, outcome.errorCode)) {
+                        PpqRestoreFailureReaction.None -> {}
+                        // Rust proved this backup replaces a stored account the UI
+                        // could not know about (e.g. mode "None" with a dormant
+                        // preserved account) — ask for explicit consent, then retry.
+                        PpqRestoreFailureReaction.OfferReplacementConfirmation ->
+                            ppqReplaceAttempt = PpqRestoreAttempt(bytes, password, useBiometric, pin)
+                        is PpqRestoreFailureReaction.ShowError -> Toast.makeText(
+                            context,
+                            reaction.message,
+                            Toast.LENGTH_LONG,
+                        ).show()
                     }
                 }
-                showRestoreDialog = false
             },
             filePicker = { PpqBackupCoordinator.requestImport?.invoke() },
             onDismiss = { showRestoreDialog = false },
+        )
+    }
+
+    ppqReplaceAttempt?.let { attempt ->
+        PpqReplaceConfirmDialog(
+            onConfirmReplace = {
+                ppqReplaceAttempt = null
+                scope.launch {
+                    val outcome = AppManager.getInstance(context).restorePpqRecoveryBackup(
+                        attempt.bytes,
+                        attempt.backupPassword,
+                        attempt.useBiometric,
+                        attempt.pin,
+                        replaceAcknowledged = true,
+                    )
+                    if (!outcome.success) {
+                        Toast.makeText(
+                            context,
+                            ppqRestoreErrorMessage(outcome.errorCode),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            },
+            onDismiss = { ppqReplaceAttempt = null },
         )
     }
 }
@@ -612,8 +656,7 @@ private fun AttestationResultArea(
                     text = "Think of a Trusted Execution Environment like a sealed, tamper-proof vault " +
                            "inside the server. Your data goes in, the AI processes it, and the result " +
                            "comes out -- but nobody (not even the server operator) can see what's inside. " +
-                           "Attestation is the cryptographic proof that the vault is real and hasn't " +
-                           "been tampered with.",
+                           "Attestation is the cryptographic proof that the vault is real.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -657,8 +700,7 @@ private fun AttestationResultArea(
                         Text(
                             text = "Attestation is a cryptographic certificate from the hardware itself. It proves: " +
                                    "(1) the TEE is genuine hardware, not a simulation, " +
-                                   "(2) the software running inside hasn't been tampered with, " +
-                                   "(3) this app recently verified evidence for the backend. It does not prove every turn is processed remotely.",
+                                   "(2) this app recently verified evidence for the backend. It does not prove every turn is processed remotely.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -669,8 +711,7 @@ private fun AttestationResultArea(
                         )
                         Text(
                             text = "Self-verified means this app checked the cryptographic proof directly. " +
-                                   "Provider-verified means the backend's own attestation service confirmed the TEE. " +
-                                   "Both guarantee your data is protected.",
+                                   "Provider-verified means the backend's own attestation service confirmed the TEE.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

@@ -9,9 +9,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -25,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -185,6 +188,17 @@ fun PpqBackupDialog(
  * Collects the backup password, step-up auth, and requests a file pick. The caller's
  * [filePicker] is responsible for launching the OpenDocument flow and eventually invoking
  * [onRestore] with the selected bytes.
+ *
+ * Threat review (high): restoring over an existing managed account is a
+ * replacement. EXPLICIT CONSENT IS REQUIRED FOR EVERY restore. When
+ * [existingManaged] is true the dialog names the visible account; otherwise the
+ * consent text is generic and identical whether or not any credentials are
+ * present on the device — a decoy session must not learn that a dormant account
+ * exists, and no text claims the backup or a server response proves anything
+ * about device credentials. [onRestore]'s `replaceAcknowledged` is true only
+ * after that visible consent. If Rust nevertheless answers
+ * `replacement_confirmation_required`, the caller shows [PpqReplaceConfirmDialog]
+ * (also generic) and retries with consent.
  */
 @Composable
 fun PpqRestoreDialog(
@@ -192,15 +206,13 @@ fun PpqRestoreDialog(
     onRestore: (bytes: ByteArray, backupPassword: String, useBiometric: Boolean, pin: String?, replaceAcknowledged: Boolean) -> Unit,
     filePicker: () -> Unit,
     onDismiss: () -> Unit,
-    // Threat review (high): restoring over an existing managed account is a
-    // replacement — require an explicit second confirmation.
     existingManaged: Boolean = false,
 ) {
-    var confirmReplace by remember { mutableStateOf(!existingManaged) }
     var backupPassword by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var useBiometric by remember { mutableStateOf(biometricAvailable) }
     var pin by remember { mutableStateOf("") }
+    var replaceAcknowledged by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -210,7 +222,11 @@ fun PpqRestoreDialog(
     }
 
     val authReady = useBiometric || pin.isNotBlank()
-    val canPick = backupPassword.isNotBlank() && authReady
+    val canPick = ppqRestoreSubmitAllowed(
+        backupPasswordPresent = backupPassword.isNotBlank(),
+        authReady = authReady,
+        replaceAcknowledged = replaceAcknowledged,
+    )
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -274,24 +290,95 @@ fun PpqRestoreDialog(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
+
+                if (existingManaged) {
+                    Text(
+                        text = ppqRestoreConsentBody(existingManaged = true),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                } else {
+                    Text(
+                        text = ppqRestoreConsentBody(existingManaged = false),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = replaceAcknowledged,
+                            onValueChange = { replaceAcknowledged = it },
+                            role = Role.Checkbox,
+                        ),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Checkbox(
+                        checked = replaceAcknowledged,
+                        onCheckedChange = null,
+                    )
+                    Text(
+                        text = ppqRestoreConsentLabel(existingManaged = existingManaged),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    if (!confirmReplace) {
-                        confirmReplace = true
-                        return@Button
-                    }
                     PpqBackupCoordinator.onPpqImportResult = { bytes ->
                         PpqBackupCoordinator.onPpqImportResult = null
-                        onRestore(bytes, backupPassword, useBiometric, pin, existingManaged)
+                        onRestore(
+                            bytes,
+                            backupPassword,
+                            useBiometric,
+                            if (useBiometric) null else pin,
+                            replaceAcknowledged,
+                        )
                     }
                     filePicker()
                 },
                 enabled = canPick,
             ) {
                 Text("Select backup file")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
+}
+
+/**
+ * Generic re-confirmation shown if Rust answered `replacement_confirmation_required`
+ * despite the preflight consent (defensive; e.g. Rust semantics evolve). The copy
+ * is IDENTICAL whether or not any credentials exist on the device — it never
+ * asserts a stored/different/hidden account exists and never claims the backup
+ * file or a server response proves anything. Only the user's confirmation here
+ * authorizes the retry with `replaceAcknowledged = true`.
+ */
+@Composable
+fun PpqReplaceConfirmDialog(
+    onConfirmReplace: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Restore and replace?") },
+        text = {
+            Text(
+                text = ppqReplaceConfirmBody(),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        },
+        confirmButton = {
+            Button(onClick = onConfirmReplace) {
+                Text("Replace account")
             }
         },
         dismissButton = {

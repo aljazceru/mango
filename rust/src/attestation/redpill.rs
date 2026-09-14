@@ -294,6 +294,9 @@ pub struct RedpillFlatResponse {
 pub struct RedpillGatewayAttestation {
     pub signing_address: String,
     pub intel_quote: String,
+    /// Untrusted echo of the quote's REPORTDATA (pretag B): parsed for
+    /// tolerance, NEVER used for binding — a present quote is always
+    /// verified and `report_data` without a quote fails closed.
     #[serde(default)]
     pub report_data: Option<String>,
 }
@@ -301,6 +304,8 @@ pub struct RedpillGatewayAttestation {
 #[derive(Debug, Deserialize)]
 pub struct RedpillComposeManagerAttestation {
     pub actions_hash: String,
+    /// Untrusted echo of the quote's REPORTDATA (pretag B) — never used
+    /// for binding; `quote` is the only accepted evidence source.
     #[serde(default)]
     pub report_data: Option<String>,
     #[serde(default)]
@@ -452,6 +457,24 @@ pub async fn fetch_and_verify_redpill_attestation(
     }
 }
 
+/// Decode one component's quote bytes to verify + bind REPORTDATA from
+/// (pretag B). Fails closed when the quote is missing/blank/garbage/too
+/// short: the plain `report_data` field is server-controlled and must
+/// NEVER substitute for quote verification — an attacker could forge it
+/// and bypass the signature/nonce/debug gates entirely.
+pub(crate) fn component_quote_bytes(
+    quote: Option<&str>,
+    component: &'static str,
+) -> Result<Vec<u8>, RedpillError> {
+    let raw = quote.unwrap_or("").trim();
+    let bytes = quote_bytes(raw)
+        .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: component })?;
+    if bytes.len() < REPORTDATA_OFFSET + REPORTDATA_LEN {
+        return Err(RedpillError::OrchestratedComponentFailed { failed: component });
+    }
+    Ok(bytes)
+}
+
 /// Shape A — Flat (Phala-pure). Single TDX quote + single NRAS.
 async fn verify_flat(
     backend: &BackendConfig,
@@ -561,37 +584,23 @@ async fn verify_orchestrated(
     // ── Gateway component ───────────────────────────────────────────────
     let gw_addr_hex = resp.gateway_attestation.signing_address.clone();
     {
-        let rd: [u8; 64] = if let Some(ref rd_hex) = resp.gateway_attestation.report_data {
-            let bytes = hex::decode(rd_hex).map_err(|e| RedpillError::ReportDataMismatch {
-                component: "gateway",
-                detail: format!("report_data hex decode: {e}"),
-            })?;
-            if bytes.len() < 64 {
-                return Err(RedpillError::ReportDataMismatch {
-                    component: "gateway",
-                    detail: format!("report_data too short: {}", bytes.len()),
-                });
-            }
-            let mut out = [0u8; 64];
-            out.copy_from_slice(&bytes[..64]);
-            out
-        } else {
-            let q = quote_bytes(&resp.gateway_attestation.intel_quote)?;
-            super::tdx::verify_tdx_quote(
-                &q,
-                nonce,
-                &backend.id,
-                super::tdx::ReportDataLayout::VeniceAddrPadNonce,
-            )
-            .await
-            .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "gateway" })?;
-            if !debug_mode_disabled(&q) {
-                return Err(RedpillError::DebugMode);
-            }
-            let mut out = [0u8; 64];
-            out.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
-            out
-        };
+        // Pretag B: the quote is ALWAYS verified (signature + nonce echo +
+        // debug gate) and the binding comes from the QUOTE's REPORTDATA.
+        // `report_data` present without a usable quote fails closed.
+        let q = component_quote_bytes(Some(&resp.gateway_attestation.intel_quote), "gateway")?;
+        super::tdx::verify_tdx_quote(
+            &q,
+            nonce,
+            &backend.id,
+            super::tdx::ReportDataLayout::VeniceAddrPadNonce,
+        )
+        .await
+        .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "gateway" })?;
+        if !debug_mode_disabled(&q) {
+            return Err(RedpillError::DebugMode);
+        }
+        let mut rd = [0u8; 64];
+        rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
         verify_redpill_gateway_reportdata(&rd, &gw_addr_hex, nonce)
             .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "gateway" })?;
     }
@@ -652,42 +661,25 @@ async fn verify_orchestrated(
         })?;
     let cm_actions_hash_hex = cm.actions_hash.clone();
     {
-        let rd: [u8; 64] = if let Some(ref rd_hex) = cm.report_data {
-            let bytes = hex::decode(rd_hex).map_err(|e| RedpillError::ReportDataMismatch {
-                component: "compose_manager",
-                detail: format!("report_data hex decode: {e}"),
-            })?;
-            if bytes.len() < 64 {
-                return Err(RedpillError::OrchestratedComponentFailed {
-                    failed: "compose_manager",
-                });
-            }
-            let mut out = [0u8; 64];
-            out.copy_from_slice(&bytes[..64]);
-            out
-        } else if let Some(ref qstr) = cm.quote {
-            let q = quote_bytes(qstr)?;
-            super::tdx::verify_tdx_quote(
-                &q,
-                nonce,
-                &backend.id,
-                super::tdx::ReportDataLayout::VeniceAddrPadNonce,
-            )
-            .await
-            .map_err(|_| RedpillError::OrchestratedComponentFailed {
-                failed: "compose_manager",
-            })?;
-            if !debug_mode_disabled(&q) {
-                return Err(RedpillError::DebugMode);
-            }
-            let mut out = [0u8; 64];
-            out.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
-            out
-        } else {
-            return Err(RedpillError::OrchestratedComponentFailed {
-                failed: "compose_manager",
-            });
-        };
+        // Pretag B: same fail-closed rule as the gateway — the quote is the
+        // only trusted REPORTDATA source; a bare `report_data` field
+        // without a quote is rejected.
+        let q = component_quote_bytes(cm.quote.as_deref(), "compose_manager")?;
+        super::tdx::verify_tdx_quote(
+            &q,
+            nonce,
+            &backend.id,
+            super::tdx::ReportDataLayout::VeniceAddrPadNonce,
+        )
+        .await
+        .map_err(|_| RedpillError::OrchestratedComponentFailed {
+            failed: "compose_manager",
+        })?;
+        if !debug_mode_disabled(&q) {
+            return Err(RedpillError::DebugMode);
+        }
+        let mut rd = [0u8; 64];
+        rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
         verify_redpill_compose_manager_reportdata(&rd, &cm.actions_hash, nonce).map_err(|_| {
             RedpillError::OrchestratedComponentFailed {
                 failed: "compose_manager",

@@ -30,6 +30,8 @@ import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.ConcurrentHashMap
+import android.os.Build
+import androidx.annotation.RequiresApi
 import java.util.concurrent.atomic.AtomicBoolean
 
 // This is a helper for safely working with byte buffers returned from the Rust code.
@@ -1410,28 +1412,28 @@ private class UniffiJnaCleanable(
 // using Android or not.
 // There are further runtime checks to chose the correct implementation
 // of the cleaner.
+
+
 private fun UniffiCleaner.Companion.create(): UniffiCleaner =
-    try {
-        // For safety's sake: if the library hasn't been run in android_cleaner = true
-        // mode, but is being run on Android, then we still need to think about
-        // Android API versions.
-        // So we check if java.lang.ref.Cleaner is there, and use that…
-        java.lang.Class.forName("java.lang.ref.Cleaner")
-        JavaLangRefCleaner()
-    } catch (e: ClassNotFoundException) {
-        // … otherwise, fallback to the JNA cleaner.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        AndroidSystemCleaner()
+    } else {
         UniffiJnaCleaner()
     }
 
-private class JavaLangRefCleaner : UniffiCleaner {
-    val cleaner = java.lang.ref.Cleaner.create()
+// The SystemCleaner, available from API Level 33.
+// Some API Level 33 OSes do not support using it, so we require API Level 34.
+@RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+private class AndroidSystemCleaner : UniffiCleaner {
+    val cleaner = android.system.SystemCleaner.cleaner()
 
     override fun register(value: Any, cleanUpTask: Runnable): UniffiCleaner.Cleanable =
-        JavaLangRefCleanable(cleaner.register(value, cleanUpTask))
+        AndroidSystemCleanable(cleaner.register(value, cleanUpTask))
 }
 
-private class JavaLangRefCleanable(
-    val cleanable: java.lang.ref.Cleaner.Cleanable
+@RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+private class AndroidSystemCleanable(
+    private val cleanable: java.lang.ref.Cleaner.Cleanable,
 ) : UniffiCleaner.Cleanable {
     override fun clean() = cleanable.clean()
 }
@@ -6486,6 +6488,23 @@ sealed class AppAction {
     }
     
     /**
+     * Change the main PIN while the app is unlocked. Requires the current
+     * PIN (the duress PIN is rejected as simply incorrect — it must never
+     * re-wrap credentials), re-wraps the SAME DEK under a fresh salt with
+     * the new PIN's KEK, and preserves the duress hash. Biometric login
+     * keeps working: it wraps the same unchanged DEK.
+     */
+    data class ChangePin(
+        val `currentPin`: kotlin.String, 
+        val `newPin`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
      * Unlock with an already-unwrapped DEK (hex string). Used internally after biometric unlock
      * when the keychain provides the raw DEK (D-06).
      */
@@ -6922,61 +6941,65 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             75 -> AppAction.SetDuressPin(
                 FfiConverterOptionalString.read(buf),
                 )
-            76 -> AppAction.UnlockWithDek(
+            76 -> AppAction.ChangePin(
+                FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            77 -> AppAction.UnlockWithPin(
+            77 -> AppAction.UnlockWithDek(
                 FfiConverterString.read(buf),
                 )
-            78 -> AppAction.LockApp
-            79 -> AppAction.AttemptBiometricUnlock
-            80 -> AppAction.SetBiometricLoginEnabled(
+            78 -> AppAction.UnlockWithPin(
+                FfiConverterString.read(buf),
+                )
+            79 -> AppAction.LockApp
+            80 -> AppAction.AttemptBiometricUnlock
+            81 -> AppAction.SetBiometricLoginEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            81 -> AppAction.SetLockTimeout(
+            82 -> AppAction.SetLockTimeout(
                 FfiConverterLong.read(buf),
                 )
-            82 -> AppAction.AddDirectorySource(
+            83 -> AppAction.AddDirectorySource(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalByteArray.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            83 -> AppAction.SyncDirectoryFiles(
+            84 -> AppAction.SyncDirectoryFiles(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceTypeDirectoryFileEntry.read(buf),
                 FfiConverterSequenceString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            84 -> AppAction.RemoveDirectorySource(
+            85 -> AppAction.RemoveDirectorySource(
                 FfiConverterString.read(buf),
                 )
-            85 -> AppAction.SetDirectoryExclusions(
+            86 -> AppAction.SetDirectoryExclusions(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            86 -> AppAction.TriggerDirectorySync(
+            87 -> AppAction.TriggerDirectorySync(
                 FfiConverterString.read(buf),
                 )
-            87 -> AppAction.UpdateDirectorySourceBookmark(
+            88 -> AppAction.UpdateDirectorySourceBookmark(
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            88 -> AppAction.DiscoverContextvmTools
-            89 -> AppAction.SetContextvmToolEnabled(
+            89 -> AppAction.DiscoverContextvmTools
+            90 -> AppAction.SetContextvmToolEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            90 -> AppAction.SetAutoDiscoverTools(
+            91 -> AppAction.SetAutoDiscoverTools(
                 FfiConverterBoolean.read(buf),
                 )
-            91 -> AppAction.RetryContextvmDiscovery
-            92 -> AppAction.AddTrustedProvider(
+            92 -> AppAction.RetryContextvmDiscovery
+            93 -> AppAction.AddTrustedProvider(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            93 -> AppAction.RemoveTrustedProvider(
+            94 -> AppAction.RemoveTrustedProvider(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -7505,6 +7528,14 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterOptionalString.allocationSize(value.`pin`)
             )
         }
+        is AppAction.ChangePin -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`currentPin`)
+                + FfiConverterString.allocationSize(value.`newPin`)
+            )
+        }
         is AppAction.UnlockWithDek -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -8013,36 +8044,42 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterOptionalString.write(value.`pin`, buf)
                 Unit
             }
-            is AppAction.UnlockWithDek -> {
+            is AppAction.ChangePin -> {
                 buf.putInt(76)
+                FfiConverterString.write(value.`currentPin`, buf)
+                FfiConverterString.write(value.`newPin`, buf)
+                Unit
+            }
+            is AppAction.UnlockWithDek -> {
+                buf.putInt(77)
                 FfiConverterString.write(value.`dekHex`, buf)
                 Unit
             }
             is AppAction.UnlockWithPin -> {
-                buf.putInt(77)
+                buf.putInt(78)
                 FfiConverterString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.LockApp -> {
-                buf.putInt(78)
-                Unit
-            }
-            is AppAction.AttemptBiometricUnlock -> {
                 buf.putInt(79)
                 Unit
             }
-            is AppAction.SetBiometricLoginEnabled -> {
+            is AppAction.AttemptBiometricUnlock -> {
                 buf.putInt(80)
+                Unit
+            }
+            is AppAction.SetBiometricLoginEnabled -> {
+                buf.putInt(81)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetLockTimeout -> {
-                buf.putInt(81)
+                buf.putInt(82)
                 FfiConverterLong.write(value.`seconds`, buf)
                 Unit
             }
             is AppAction.AddDirectorySource -> {
-                buf.putInt(82)
+                buf.putInt(83)
                 FfiConverterString.write(value.`displayName`, buf)
                 FfiConverterOptionalString.write(value.`path`, buf)
                 FfiConverterOptionalByteArray.write(value.`bookmarkData`, buf)
@@ -8051,7 +8088,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.SyncDirectoryFiles -> {
-                buf.putInt(83)
+                buf.putInt(84)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceTypeDirectoryFileEntry.write(value.`files`, buf)
                 FfiConverterSequenceString.write(value.`removedPaths`, buf)
@@ -8059,54 +8096,54 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.RemoveDirectorySource -> {
-                buf.putInt(84)
+                buf.putInt(85)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.SetDirectoryExclusions -> {
-                buf.putInt(85)
+                buf.putInt(86)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceString.write(value.`globs`, buf)
                 Unit
             }
             is AppAction.TriggerDirectorySync -> {
-                buf.putInt(86)
+                buf.putInt(87)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.UpdateDirectorySourceBookmark -> {
-                buf.putInt(87)
+                buf.putInt(88)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterByteArray.write(value.`bookmarkData`, buf)
                 Unit
             }
             is AppAction.DiscoverContextvmTools -> {
-                buf.putInt(88)
+                buf.putInt(89)
                 Unit
             }
             is AppAction.SetContextvmToolEnabled -> {
-                buf.putInt(89)
+                buf.putInt(90)
                 FfiConverterString.write(value.`toolId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetAutoDiscoverTools -> {
-                buf.putInt(90)
+                buf.putInt(91)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.RetryContextvmDiscovery -> {
-                buf.putInt(91)
+                buf.putInt(92)
                 Unit
             }
             is AppAction.AddTrustedProvider -> {
-                buf.putInt(92)
+                buf.putInt(93)
                 FfiConverterString.write(value.`pubkey`, buf)
                 FfiConverterOptionalString.write(value.`label`, buf)
                 Unit
             }
             is AppAction.RemoveTrustedProvider -> {
-                buf.putInt(93)
+                buf.putInt(94)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }

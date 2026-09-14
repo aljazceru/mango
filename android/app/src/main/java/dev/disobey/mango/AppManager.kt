@@ -253,7 +253,18 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
     }
 
     /**
-     * Restore a PPQ account from an encrypted recovery backup. Returns true on success.
+     * Result of a PPQ recovery restore attempt. [errorCode] is Rust's
+     * PpqRecoveryResult.errorCode (e.g. `replacement_confirmation_required`) so the
+     * UI can offer an explicit replacement confirmation and retry. Secret-free.
+     */
+    data class PpqRestoreOutcome(
+        val success: Boolean,
+        val errorCode: String? = null,
+    )
+
+    /**
+     * Restore a PPQ account from an encrypted recovery backup. Returns a
+     * [PpqRestoreOutcome]; `success` is true only when Rust committed the restore.
      * Never logs secrets.
      */
     suspend fun restorePpqRecoveryBackup(
@@ -262,20 +273,21 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         useBiometric: Boolean,
         pin: String?,
         replaceAcknowledged: Boolean = false,
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): PpqRestoreOutcome = withContext(Dispatchers.IO) {
         val auth = when {
             useBiometric -> SensitiveActionAuth.Biometric
             pin != null -> SensitiveActionAuth.MainPin(pin = pin)
             else -> {
                 android.util.Log.e("AppManager", "restorePpqRecoveryBackup: no auth available")
-                return@withContext false
+                return@withContext PpqRestoreOutcome(success = false)
             }
         }
         try {
-            ffiApp.restorePpqRecoveryBackup(bytes, backupPassword, auth, replaceAcknowledged).success
+            val result = ffiApp.restorePpqRecoveryBackup(bytes, backupPassword, auth, replaceAcknowledged)
+            PpqRestoreOutcome(success = result.success, errorCode = result.errorCode)
         } catch (e: Exception) {
             android.util.Log.e("AppManager", "restorePpqRecoveryBackup failed", e)
-            false
+            PpqRestoreOutcome(success = false)
         }
     }
 

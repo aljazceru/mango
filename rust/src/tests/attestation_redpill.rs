@@ -375,3 +375,40 @@ fn chutes_parse_tolerates_incomplete_entries() {
     assert!(resp.all_attestations[0].e2e_pubkey.is_none());
     assert!(resp.all_attestations[1].e2e_pubkey.is_some());
 }
+
+// ----- Pretag B (docs/release/PRETAG_PLAN.md): orchestrated components
+// bind from the QUOTE only — a `report_data` field can never substitute
+// for quote verification. -----
+
+#[test]
+fn shape_b_components_require_quote_and_fixture_quotes_decode() {
+    use crate::attestation::redpill::component_quote_bytes;
+
+    let v = shape_b_value();
+    let gw = &v["gateway_attestation"];
+    let cm = &v["model_attestations"][0]["compose_manager_attestation"];
+
+    // Captured shape-B fixture carries gateway `intel_quote` and compose
+    // `quote`; both decode and are long enough (existing fixtures pass).
+    assert!(component_quote_bytes(Some(gw["intel_quote"].as_str().unwrap()), "gateway").is_ok());
+    assert!(component_quote_bytes(Some(cm["quote"].as_str().unwrap()), "compose_manager").is_ok());
+
+    // Forged gateway `report_data` with a MISSING quote fails closed: the
+    // untrusted echo field is never accepted as binding evidence.
+    assert!(matches!(
+        component_quote_bytes(None, "gateway"),
+        Err(RedpillError::OrchestratedComponentFailed { failed: "gateway" })
+    ));
+    // Blank quote string: same refusal.
+    assert!(matches!(
+        component_quote_bytes(Some("   "), "compose_manager"),
+        Err(RedpillError::OrchestratedComponentFailed {
+            failed: "compose_manager"
+        })
+    ));
+    // Unrelated/short quote: refused, not silently trusted.
+    assert!(matches!(
+        component_quote_bytes(Some("deadbeef"), "gateway"),
+        Err(RedpillError::OrchestratedComponentFailed { failed: "gateway" })
+    ));
+}

@@ -8,7 +8,8 @@ fn test_tinfoil_config() {
     assert_eq!(b.id, "tinfoil");
     assert_eq!(b.name, "Tinfoil");
     assert_eq!(b.base_url, "https://inference.tinfoil.sh/v1/");
-    assert_eq!(b.tee_type, TeeType::IntelTdx);
+    // Pretag C: Tinfoil's enclave substrate is AMD SEV-SNP (was IntelTdx).
+    assert_eq!(b.tee_type, TeeType::AmdSevSnp);
     assert!(!b.models.is_empty());
 }
 

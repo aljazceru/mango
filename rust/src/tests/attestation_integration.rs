@@ -506,5 +506,8 @@ fn test_provider_fallback() {
             panic!("Expected InternalEvent, got ExportConversationMarkdown")
         }
         crate::CoreMsg::Sync { .. } => panic!("Expected InternalEvent, got Sync"),
+        crate::CoreMsg::GetPpqTaskEpoch { .. } => {
+            panic!("Expected InternalEvent, got GetPpqTaskEpoch")
+        }
     }
 }

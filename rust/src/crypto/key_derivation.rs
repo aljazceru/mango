@@ -184,6 +184,37 @@ pub fn setup_pin_auth(
     Ok(())
 }
 
+/// High-level helper: re-wrap an EXISTING DEK under a new PIN.
+///
+/// Used by PIN change (settings): the caller has already verified the current
+/// PIN and holds the live DEK. A fresh salt is generated so the old KEK is
+/// useless even if the new PIN equals a previously used one; the duress hash
+/// is carried over unchanged. The DEK itself never changes — encrypted data
+/// and biometric login (which wraps the same DEK) keep working.
+pub fn rewrap_dek_with_pin(
+    dek: &[u8; 32],
+    new_pin: &str,
+    duress_hash: Option<&str>,
+) -> Result<super::bootstrap_db::AuthParams, anyhow::Error> {
+    let salt = generate_salt();
+    let kek: Zeroizing<[u8; 32]> = derive_kek(
+        new_pin.as_bytes(),
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )?;
+    let wrapped_dek = wrap_dek(&kek, dek);
+    Ok(super::bootstrap_db::AuthParams {
+        salt: salt.to_vec(),
+        wrapped_dek,
+        duress_hash: duress_hash.map(|h| h.to_string()),
+        kdf_memory_kib: DEFAULT_MEMORY_KIB,
+        kdf_iterations: DEFAULT_ITERATIONS,
+        kdf_parallelism: DEFAULT_PARALLELISM,
+    })
+}
+
 /// High-level helper: verify PIN against stored auth params.
 ///
 /// Returns `PinVerifyResult` on success. Checks duress PIN FIRST (T-28-11:

@@ -52,6 +52,10 @@ fun SettingsSecurityScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var duressPin by remember { mutableStateOf("") }
     var confirmPin by remember { mutableStateOf("") }
+    var currentPin by remember { mutableStateOf("") }
+    var newPin by remember { mutableStateOf("") }
+    var confirmNewPin by remember { mutableStateOf("") }
+    var pinMessage by remember { mutableStateOf<String?>(null) }
     var lockExpanded by remember { mutableStateOf(false) }
     var showDeleteChatsConfirm by remember { mutableStateOf(false) }
     var showDeleteDataConfirm by remember { mutableStateOf(false) }
@@ -195,6 +199,71 @@ fun SettingsSecurityScreen(
                             },
                             enabled = appState.biometricAvailable,
                         )
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Change PIN", fontWeight = FontWeight.Medium)
+                        Text(
+                            "Changing your PIN re-wraps your encryption key; your data, biometric " +
+                                "unlock, and emergency PIN are unaffected.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedTextField(
+                            value = currentPin,
+                            onValueChange = { currentPin = it },
+                            label = { Text("Current PIN") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = newPin,
+                            onValueChange = { newPin = it },
+                            label = { Text("New PIN (min 4 characters)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = confirmNewPin,
+                            onValueChange = { confirmNewPin = it },
+                            label = { Text("Confirm new PIN") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        pinMessage?.let { note ->
+                            Text(
+                                note,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                val cur = currentPin.trim()
+                                val nw = newPin.trim()
+                                when {
+                                    cur.isEmpty() || nw.isEmpty() -> pinMessage = "Fill in all PIN fields."
+                                    nw.length < 4 -> pinMessage = "New PIN must be at least 4 characters."
+                                    nw != confirmNewPin.trim() -> pinMessage = "New PIN confirmation does not match."
+                                    nw == cur -> pinMessage = "New PIN must be different from the current PIN."
+                                    else -> {
+                                        pinMessage = null
+                                        onDispatch(AppAction.ChangePin(currentPin = cur, newPin = nw))
+                                        currentPin = ""
+                                        newPin = ""
+                                        confirmNewPin = ""
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Change PIN")
+                        }
                     }
 
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))

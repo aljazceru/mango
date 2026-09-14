@@ -126,7 +126,7 @@ pub fn tinfoil_backend() -> BackendConfig {
             "gpt-oss-120b".into(),
             "glm-5-2".into(),
         ],
-        tee_type: TeeType::IntelTdx,
+        tee_type: TeeType::AmdSevSnp,
         max_concurrent_requests: 5,
         supports_tool_use: true,
     }
@@ -157,8 +157,11 @@ pub fn known_provider_presets() -> Vec<ProviderPreset> {
             id: "tinfoil".into(),
             name: "Tinfoil".into(),
             base_url: "https://inference.tinfoil.sh/v1/".into(),
-            tee_type: TeeType::IntelTdx,
-            description: "Intel TDX + NVIDIA H100 CC".into(),
+            // Pretag C: stop over-claiming — Tinfoil's enclave substrate is
+            // AMD SEV-SNP (the seeded DB row is migrated to match; UI labels
+            // come from the DB row, not just this preset).
+            tee_type: TeeType::AmdSevSnp,
+            description: "AMD SEV-SNP \u{00b7} Confidential enclave models".into(),
         },
         ProviderPreset {
             id: "ppq-ai".into(),
@@ -179,9 +182,7 @@ pub fn known_provider_presets() -> Vec<ProviderPreset> {
             name: "Redpill".into(),
             base_url: "https://api.redpill.ai/v1/".into(),
             tee_type: TeeType::IntelTdx,
-            description:
-                "Intel TDX aggregator (Phala / NearAI / Chutes) \u{2014} multi-quote attestation"
-                    .into(),
+            description: "Intel TDX aggregator (Phala / NearAI / Chutes) \u{2014} multi-quote attestation. Chat is sent over TLS to the Redpill aggregator, which forwards to attested enclaves.".into(),
         },
         ProviderPreset {
             id: "qvac-local".into(),
