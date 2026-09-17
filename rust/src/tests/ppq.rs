@@ -2044,7 +2044,7 @@ fn unresolved_recovery_journal_forces_recovery_required_state() {
     );
 }
 
-// ── Pretag plan wave 2 (docs/release/PRETAG_PLAN.md) ─────────────────────────
+// ── Pretag plan wave 2 ───────────────────────────────────────────────────────
 
 /// Pretag A: decoy-session BYOK stores (UpdateBackendApiKey /
 /// AddBackendFromPreset) and RemoveBackend deletes on `ppq-ai` are

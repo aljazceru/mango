@@ -1,4 +1,4 @@
-//! Explicit inference-routing model (INFERENCE_ROUTING_PLAN.md).
+//! Explicit inference-routing model.
 //!
 //! This module is the canonical route planner for the four user-facing
 //! inference modes:

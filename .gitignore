@@ -72,3 +72,21 @@ macpass.txt
 *.db
 *.sqlite
 *.log
+
+# GSD/agent state
+.gsd/
+
+# Local development reports/plans -- kept on disk, not published
+/ANDROID_REMEDIATION_IMPLEMENTATION_PLAN.md
+/APP_REVIEW_*.md
+/BUILD_ISSUES_IOS_MAC.md
+/INFERENCE_ROUTING_PLAN.md
+/MOBILE_REMEDIATION_PLAN_JUNIOR_DEVS.md
+/NDK_COMPATIBILITY_*.md
+/PRE_RELEASE_FINDINGS.md
+/UX_EVALUATION.md
+/RELEASE_NOTES_PPQ.md
+/docs/RELEASE_REMEDIATION_PLAN.md
+/docs/release/
+/docs/security/ppq-threat-review.md
+/docs/testing/api28-report.md

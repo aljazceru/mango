@@ -376,7 +376,7 @@ fn chutes_parse_tolerates_incomplete_entries() {
     assert!(resp.all_attestations[1].e2e_pubkey.is_some());
 }
 
-// ----- Pretag B (docs/release/PRETAG_PLAN.md): orchestrated components
+// ----- Pretag B: orchestrated components
 // bind from the QUOTE only — a `report_data` field can never substitute
 // for quote verification. -----
 

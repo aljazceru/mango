@@ -34,10 +34,6 @@ Top-ups use Bitcoin Lightning in the range PPQ currently advertises (100–1,000
 - Per-conversation instructions and tool-use controls
 - Local document library with PDF/text ingestion
 
-## Design Plans
-- [Inference routing improvement plan](INFERENCE_ROUTING_PLAN.md)
-- [Android remediation implementation plan](ANDROID_REMEDIATION_IMPLEMENTATION_PLAN.md)
-
 ## Security & Privacy
 - App lock with PIN and biometric unlock
 - Duress PIN support to erase local data
