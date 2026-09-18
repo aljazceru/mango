@@ -57,7 +57,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import dev.disobey.mango.AppManager
-import dev.disobey.mango.FeatureFlags
 import dev.disobey.mango.PpqBackupCoordinator
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
@@ -194,7 +193,7 @@ fun SettingsProvidersScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
 
-                                if (preset.id == "ppq-ai" && FeatureFlags.MANAGED_PPQ_ENABLED) {
+                                if (preset.id == "ppq-ai") {
                                     if (isEnabled && backend != null) {
                                         PpqProviderPanel(
                                             summary = appState.ppq,
@@ -210,10 +209,8 @@ fun SettingsProvidersScreen(
                                             },
                                         )
 
-        if (FeatureFlags.MANAGED_PPQ_ENABLED) {
-            TextButton(onClick = { showPpqRestoreDialog = true }) {
-                Text("Restore PPQ backup")
-            }
+        TextButton(onClick = { showPpqRestoreDialog = true }) {
+            Text("Restore PPQ backup")
         }
 
                                     } else {

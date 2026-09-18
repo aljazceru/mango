@@ -57,7 +57,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.window.Dialog
 import dev.disobey.mango.AppManager
-import dev.disobey.mango.FeatureFlags
 import dev.disobey.mango.PpqBackupCoordinator
 import dev.disobey.mango.rust.PpqAccountMode
 import dev.disobey.mango.rust.PpqAccountSummary
@@ -318,7 +317,7 @@ private fun BackendSetupStep(
     val keyOptional = selectedPreset?.let { presetKeyOptional(it.id, it.teeType) } == true
     val trimmedKey = apiKeyText.trim()
     val canContinue = selectedPresetId.isNotEmpty() && (keyOptional || trimmedKey.isNotEmpty())
-    val ppqManaged = FeatureFlags.MANAGED_PPQ_ENABLED && selectedPresetId == "ppq-ai"
+    val ppqManaged = selectedPresetId == "ppq-ai"
     var ppqByok by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var showRestoreDialog by remember { mutableStateOf(false) }

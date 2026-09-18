@@ -32,8 +32,6 @@ android {
         versionCode = 3
         versionName = "0.3.0"
 
-        buildConfigField("boolean", "MANAGED_PPQ_ENABLED", "true")
-
         externalNativeBuild {
             cmake {
                 arguments += listOf("-DLLAMA_CPP_DIR=$llamaCppDir")
@@ -79,7 +77,6 @@ android {
     }
 
     buildFeatures {
-        buildConfig = true
         compose = true
     }
 
