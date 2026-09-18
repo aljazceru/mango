@@ -1621,15 +1621,6 @@ pub fn list_all_contextvm_tools(
     Ok(rows?)
 }
 
-/// Bulk delete — used when the user toggles a tool off and we want to
-/// keep the table compact. Optional in v1; included for cleanup paths.
-#[allow(dead_code)]
-pub fn delete_contextvm_tool(conn: &Connection, id: &str) -> Result<(), PersistenceError> {
-    conn.prepare_cached("DELETE FROM contextvm_tools WHERE id = ?1")?
-        .execute(rusqlite::params![id])?;
-    Ok(())
-}
-
 // ── Phase 38 — trusted_providers queries ──────────────────────────────────────
 
 /// One row from the `trusted_providers` table.
