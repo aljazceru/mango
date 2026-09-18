@@ -28,80 +28,11 @@ pub enum OverallResult {
 /// Other fields in the JWT are permitted but not validated here.
 #[derive(Debug, serde::Deserialize)]
 pub struct NvidiaAttestationClaims {
-    /// Issuer -- must be "https://nras.attestation.nvidia.com"
-    #[allow(dead_code)]
-    pub iss: String,
     /// Challenge nonce (hex-encoded) -- must match the nonce sent with the request.
     pub eat_nonce: String,
     /// Overall attestation result from NVIDIA (`true` when the GPU set is trusted).
     #[serde(rename = "x-nvidia-overall-att-result")]
     pub nvidia_overall_att_result: OverallResult,
-}
-
-/// Verify an NVIDIA NRAS JWT token using a JWK from the NRAS JWKS endpoint.
-///
-/// Validates:
-/// 1. Signature using the JWK's algorithm (NRAS uses ES384 in v3; falls back
-///    to whatever the JWT header declares — never `none`)
-/// 2. Issuer must be `https://nras.attestation.nvidia.com`
-/// 3. `eat_nonce` must match `expected_nonce_hex`
-/// 4. `x-nvidia-overall-att-result` must be `true` (or `"true"`)
-///
-/// Per Pitfall 3 from RESEARCH.md: never use `Validation::default()` and never
-/// trust algorithm `none`.
-#[allow(dead_code)]
-pub fn verify_nvidia_jwt(
-    jwt_token: &str,
-    expected_nonce_hex: &str,
-    jwk: &serde_json::Value,
-) -> Result<NvidiaAttestationClaims, AttestationError> {
-    let header =
-        jsonwebtoken::decode_header(jwt_token).map_err(|e| AttestationError::JwtVerification {
-            reason: format!("JWT header decode: {}", e),
-        })?;
-
-    let parsed: jsonwebtoken::jwk::Jwk =
-        serde_json::from_value(jwk.clone()).map_err(|e| AttestationError::JwtVerification {
-            reason: format!("Invalid JWK format: {}", e),
-        })?;
-    let decoding_key =
-        DecodingKey::from_jwk(&parsed).map_err(|e| AttestationError::JwtVerification {
-            reason: format!("Failed to build decoding key from JWK: {}", e),
-        })?;
-
-    let mut validation = Validation::new(header.alg);
-    validation.set_issuer(&[NRAS_ISSUER]);
-
-    let token_data =
-        jsonwebtoken::decode::<NvidiaAttestationClaims>(jwt_token, &decoding_key, &validation)
-            .map_err(|e| AttestationError::JwtVerification {
-                reason: format!("JWT decode failed: {}", e),
-            })?;
-
-    let claims = token_data.claims;
-
-    if claims.eat_nonce != expected_nonce_hex {
-        return Err(AttestationError::NonceMismatch {
-            expected: expected_nonce_hex.to_string(),
-            actual: claims.eat_nonce.clone(),
-        });
-    }
-
-    let ok = match &claims.nvidia_overall_att_result {
-        OverallResult::Bool(true) => true,
-        OverallResult::Str(s) if s == "true" => true,
-        _ => false,
-    };
-    if !ok {
-        return Err(AttestationError::JwtVerification {
-            reason: format!(
-                "NVIDIA overall attestation result is not true: {:?}",
-                claims.nvidia_overall_att_result
-            ),
-        });
-    }
-
-    Ok(claims)
 }
 
 /// Fetch attestation evidence from a provider, POST to NRAS, verify the JWT.
