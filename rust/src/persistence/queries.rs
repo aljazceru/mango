@@ -1227,10 +1227,6 @@ pub struct DirectorySourceRow {
 /// without rehashing contents.
 #[derive(Debug, Clone)]
 pub struct DirectoryFileRow {
-    #[allow(dead_code)]
-    pub id: i64,
-    #[allow(dead_code)]
-    pub source_id: String,
     pub file_path: String,
     pub mtime_secs: i64,
     pub size_bytes: i64,
@@ -1402,18 +1398,16 @@ pub fn list_directory_files_by_source(
     source_id: &str,
 ) -> Result<Vec<DirectoryFileRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, source_id, file_path, mtime_secs, size_bytes, document_id
+        "SELECT file_path, mtime_secs, size_bytes, document_id
          FROM directory_files WHERE source_id = ?1 ORDER BY file_path ASC",
     )?;
     let rows = stmt
         .query_map(rusqlite::params![source_id], |row| {
             Ok(DirectoryFileRow {
-                id: row.get(0)?,
-                source_id: row.get(1)?,
-                file_path: row.get(2)?,
-                mtime_secs: row.get(3)?,
-                size_bytes: row.get(4)?,
-                document_id: row.get(5)?,
+                file_path: row.get(0)?,
+                mtime_secs: row.get(1)?,
+                size_bytes: row.get(2)?,
+                document_id: row.get(3)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
