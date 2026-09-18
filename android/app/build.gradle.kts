@@ -32,7 +32,7 @@ android {
         versionCode = 3
         versionName = "0.3.0"
 
-        buildConfigField("boolean", "MANAGED_PPQ_ENABLED", providers.gradleProperty("MANAGED_PPQ_ENABLED").orElse("true").get())
+        buildConfigField("boolean", "MANAGED_PPQ_ENABLED", "true")
 
         externalNativeBuild {
             cmake {
