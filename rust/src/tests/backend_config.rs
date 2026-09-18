@@ -1,21 +1,31 @@
-use crate::llm::backend::{
-    known_provider_presets, tinfoil_backend, BackendConfig, HealthStatus, TeeType,
-};
+use crate::llm::backend::{known_provider_presets, BackendConfig, HealthStatus, TeeType};
 
 #[test]
-fn test_tinfoil_config() {
-    let b = tinfoil_backend();
-    assert_eq!(b.id, "tinfoil");
-    assert_eq!(b.name, "Tinfoil");
-    assert_eq!(b.base_url, "https://inference.tinfoil.sh/v1/");
+fn test_tinfoil_preset() {
+    let presets = known_provider_presets();
+    let t = presets
+        .iter()
+        .find(|p| p.id == "tinfoil")
+        .expect("tinfoil preset not found in known_provider_presets()");
+    assert_eq!(t.name, "Tinfoil");
+    assert_eq!(t.base_url, "https://inference.tinfoil.sh/v1/");
     // Pretag C: Tinfoil's enclave substrate is AMD SEV-SNP (was IntelTdx).
-    assert_eq!(b.tee_type, TeeType::AmdSevSnp);
-    assert!(!b.models.is_empty());
+    assert_eq!(t.tee_type, TeeType::AmdSevSnp);
+    assert!(!t.description.is_empty());
 }
 
 #[test]
 fn test_backend_summary_hides_api_key() {
-    let b = tinfoil_backend();
+    let b = BackendConfig {
+        id: "tinfoil".into(),
+        name: "Tinfoil".into(),
+        base_url: "https://inference.tinfoil.sh/v1/".into(),
+        api_key: "sk-test".into(),
+        models: vec!["deepseek-v4-flash".into()],
+        tee_type: TeeType::AmdSevSnp,
+        max_concurrent_requests: 5,
+        supports_tool_use: true,
+    };
     let summary = b.to_summary(true, HealthStatus::Unknown);
     assert_eq!(summary.id, "tinfoil");
     assert_eq!(summary.name, "Tinfoil");
@@ -27,7 +37,16 @@ fn test_backend_summary_hides_api_key() {
 
 #[test]
 fn test_backend_summary_inactive() {
-    let b = tinfoil_backend();
+    let b = BackendConfig {
+        id: "tinfoil".into(),
+        name: "Tinfoil".into(),
+        base_url: "https://inference.tinfoil.sh/v1/".into(),
+        api_key: "sk-test".into(),
+        models: vec![],
+        tee_type: TeeType::AmdSevSnp,
+        max_concurrent_requests: 5,
+        supports_tool_use: true,
+    };
     let summary = b.to_summary(false, HealthStatus::Unknown);
     assert!(!summary.is_active);
 }

@@ -109,29 +109,6 @@ impl BackendConfig {
     }
 }
 
-/// Hardcoded Tinfoil backend for Phase 2 (Phase 4 will load from SQLite).
-/// Base URL verified: https://docs.tinfoil.sh/tutorials/cline (2026-03-23)
-#[allow(dead_code)]
-pub fn tinfoil_backend() -> BackendConfig {
-    BackendConfig {
-        id: "tinfoil".into(),
-        name: "Tinfoil".into(),
-        base_url: "https://inference.tinfoil.sh/v1/".into(),
-        api_key: std::env::var("TINFOIL_API_KEY").unwrap_or_default(),
-        models: vec![
-            "deepseek-v4-flash".into(),
-            "kimi-k3".into(),
-            "gemma4-31b".into(),
-            "llama3-3-70b".into(),
-            "gpt-oss-120b".into(),
-            "glm-5-2".into(),
-        ],
-        tee_type: TeeType::AmdSevSnp,
-        max_concurrent_requests: 5,
-        supports_tool_use: true,
-    }
-}
-
 /// A known provider preset for the Add Backend form.
 /// UniFFI-exported so all platforms share the same preset data.
 #[derive(uniffi::Record, Clone, Debug)]
