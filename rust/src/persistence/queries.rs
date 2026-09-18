@@ -289,19 +289,6 @@ pub fn update_agent_session_status(
     Ok(())
 }
 
-/// Update the status and result of an agent step.
-#[allow(dead_code)]
-pub fn update_agent_step_status(
-    conn: &Connection,
-    step_id: &str,
-    status: &str,
-    result: Option<&str>,
-) -> Result<(), PersistenceError> {
-    conn.prepare_cached("UPDATE agent_steps SET status = ?1, result = ?2 WHERE id = ?3")?
-        .execute(rusqlite::params![status, result, step_id])?;
-    Ok(())
-}
-
 /// Count the number of steps for an agent session.
 pub fn count_agent_steps(conn: &Connection, session_id: &str) -> Result<i64, PersistenceError> {
     let count: i64 = conn

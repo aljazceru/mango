@@ -14,7 +14,7 @@ use async_openai::types::chat::{ChatCompletionMessageToolCall, FunctionCall};
 use crate::agent::{build_agent_tools, dispatch_tools};
 use crate::persistence::queries::{
     count_agent_steps, insert_agent_session, insert_agent_step, list_agent_sessions,
-    list_agent_steps, update_agent_session_status, update_agent_step_status, AgentSessionRow,
+    list_agent_steps, update_agent_session_status, AgentSessionRow,
     AgentStepRow,
 };
 use crate::persistence::Database;
@@ -179,43 +179,6 @@ fn test_count_agent_steps() {
 
     let count_after = count_agent_steps(conn, "sess-count").unwrap();
     assert_eq!(count_after, 3, "Count should be 3 after inserting 3 steps");
-}
-
-/// Verify update_agent_step_status updates correctly.
-#[test]
-fn test_update_agent_step_status() {
-    let db = Database::open(":memory:").unwrap();
-    let conn = db.conn();
-
-    insert_agent_session(conn, &make_session("sess-step-status", "running")).unwrap();
-    insert_agent_step(
-        conn,
-        &make_step("step-to-update", "sess-step-status", 1, "tool_call"),
-    )
-    .unwrap();
-
-    // Update status and add result
-    update_agent_step_status(
-        conn,
-        "step-to-update",
-        "completed",
-        Some("tool result text"),
-    )
-    .unwrap();
-
-    let steps = list_agent_steps(conn, "sess-step-status").unwrap();
-    assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0].status, "completed");
-    assert_eq!(steps[0].result.as_deref(), Some("tool result text"));
-
-    // Update to failed with no result
-    update_agent_step_status(conn, "step-to-update", "failed", None).unwrap();
-    let steps = list_agent_steps(conn, "sess-step-status").unwrap();
-    assert_eq!(steps[0].status, "failed");
-    assert!(
-        steps[0].result.is_none(),
-        "Result should be None after clearing"
-    );
 }
 
 // ── Tool schema tests ─────────────────────────────────────────────────────────
