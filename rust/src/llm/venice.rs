@@ -50,7 +50,6 @@ use crate::attestation::{AttestationError, AttestationEvent};
 
 // ── Wire-format constants ────────────────────────────────────────────────────
 
-const ATTESTATION_PATH: &str = "/api/v1/tee/attestation";
 const CHAT_COMPLETIONS_PATH: &str = "/api/v1/chat/completions";
 
 const X_VENICE_TEE_CLIENT_PUB_KEY: &str = "x-venice-tee-client-pub-key";
@@ -92,19 +91,6 @@ pub fn build_http_client(timeout: Duration) -> Result<reqwest::Client, LlmError>
         .map_err(|error| LlmError::NetworkError {
             reason: error.to_string(),
         })
-}
-
-/// Format the public attestation URL (VEN-02). The endpoint is unauthenticated;
-/// per-request 32-byte nonce is hex-encoded into the query string.
-pub fn format_attestation_url(model: &str, nonce_hex: &str, base_url: &str) -> String {
-    let root = base_url.trim_end_matches('/').trim_end_matches("/api/v1");
-    format!(
-        "{}{}?model={}&nonce={}",
-        root,
-        ATTESTATION_PATH,
-        urlencoding::encode(model),
-        nonce_hex,
-    )
 }
 
 /// Trigger an attestation handshake (and populate the in-memory cache) for
@@ -231,7 +217,7 @@ pub fn open_envelope(envelope_hex: &str, aes_key: &[u8; 32]) -> Result<Vec<u8>, 
 /// Multipart `Array` content (vision parts) is rejected — D9 deferred to a
 /// later phase. All other top-level fields (`model`, `temperature`, `tools`,
 /// `max_tokens`, …) are preserved unchanged.
-fn build_venice_chat_body(
+pub(crate) fn build_venice_chat_body(
     request: &CreateChatCompletionRequest,
     aes_key: &[u8; 32],
     eph_pub_uncompressed: &[u8; 65],
@@ -279,17 +265,6 @@ fn build_venice_chat_body(
     serde_json::to_vec(&value).map_err(|e| LlmError::NetworkError {
         reason: format!("serialize body: {e}"),
     })
-}
-
-/// Test-only re-export. The body builder is module-private otherwise — only
-/// `request_body_shape` in `tests/venice.rs` reaches in.
-#[doc(hidden)]
-pub fn build_venice_chat_body_for_test(
-    request: &CreateChatCompletionRequest,
-    aes_key: &[u8; 32],
-    eph_pub_uncompressed: &[u8; 65],
-) -> Result<Vec<u8>, LlmError> {
-    build_venice_chat_body(request, aes_key, eph_pub_uncompressed)
 }
 
 // ── Header construction + send ───────────────────────────────────────────────

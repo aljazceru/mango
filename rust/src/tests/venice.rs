@@ -20,31 +20,6 @@ fn venice_preset_present() {
 }
 
 #[test]
-fn attestation_url_format() {
-    use crate::llm::venice::format_attestation_url;
-    let url = format_attestation_url(
-        "e2ee-venice-uncensored-24b-p",
-        "abc123",
-        "https://api.venice.ai",
-    );
-    assert!(
-        url.ends_with("/api/v1/tee/attestation?model=e2ee-venice-uncensored-24b-p&nonce=abc123"),
-        "unexpected URL: {url}"
-    );
-    assert!(url.starts_with("https://api.venice.ai"));
-
-    // Also accepts a base_url that already includes /api/v1.
-    let url2 = format_attestation_url(
-        "e2ee-venice-uncensored-24b-p",
-        "abc123",
-        "https://api.venice.ai/api/v1/",
-    );
-    assert!(
-        url2.ends_with("/api/v1/tee/attestation?model=e2ee-venice-uncensored-24b-p&nonce=abc123")
-    );
-}
-
-#[test]
 fn nvidia_payload_double_parse() {
     // Pitfall 2 mitigation: Venice's `nvidia_payload` is a JSON-encoded String
     // containing JSON, not a nested object. Our VeniceAttestationResponse types
@@ -146,7 +121,7 @@ fn envelope_round_trip() {
 
 #[test]
 fn request_body_shape() {
-    use crate::llm::venice::build_venice_chat_body_for_test;
+    use crate::llm::venice::build_venice_chat_body;
     use async_openai::types::chat::{
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
         ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
@@ -173,7 +148,7 @@ fn request_body_shape() {
     let aes_key = [0x42u8; 32];
     let mut eph_pub = [0u8; 65];
     eph_pub[0] = 0x04;
-    let body = build_venice_chat_body_for_test(&req, &aes_key, &eph_pub).unwrap();
+    let body = build_venice_chat_body(&req, &aes_key, &eph_pub).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(v["enable_e2ee"], serde_json::Value::Bool(true));
