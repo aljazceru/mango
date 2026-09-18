@@ -535,10 +535,14 @@ private fun ChatTopBar(
         ?.takeIf { it.startsWith("hybrid:") }
         ?.removePrefix("hybrid:")
         ?.let { profileId -> state.hybridProfiles.firstOrNull { it.id == profileId } }
-    // Aggregate models from ALL healthy (or degraded) backends so the picker
-    // shows every TEE-capable model across providers, not just the active one.
+    // Aggregate models from ALL healthy (or degraded) *configured* providers
+    // (API key stored, or local on-device backends that need none) so the picker
+    // shows every available model across providers, not just the active one.
     val availableModelEntries: List<Pair<String, String>> = state.backends
-        .filter { it.healthStatus != HealthStatus.FAILED && it.models.isNotEmpty() }
+        .filter {
+            it.healthStatus != HealthStatus.FAILED && it.models.isNotEmpty()
+                && (it.hasApiKey || it.id.startsWith("local-") || it.id == "qvac-local")
+        }
         .flatMap { backend -> backend.models.map { modelId -> Pair(modelId, backend.name) } }
     var showModelMenu by remember { mutableStateOf(false) }
     val attestationBackendId = activeHybridProfile?.remoteBackendId ?: state.activeBackendId

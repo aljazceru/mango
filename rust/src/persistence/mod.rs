@@ -86,6 +86,10 @@ impl Database {
     pub fn open(path: &str) -> Result<Self, PersistenceError> {
         let conn = rusqlite::Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // NORMAL + WAL is the standard pairing: commits no longer fsync the WAL
+        // on every write (big latency win on mobile flash); the durability
+        // tradeoff is limited to the last commits on power loss.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let mut db = Self { conn };
         db.run_migrations()?;
@@ -149,6 +153,7 @@ impl Database {
                 message: format!("wrong key or corrupted database: {}", e),
             })?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let mut db = Self { conn };
         db.run_migrations()?;

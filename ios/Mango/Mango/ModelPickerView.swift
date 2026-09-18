@@ -80,13 +80,22 @@ struct ModelPickerView: View {
     }
 
     private var availableModels: [ModelInfo] {
-        guard let backendId = activeBackendId,
-              let backend = backends.first(where: { $0.id == backendId }) else {
-            return []
+        // Models available from configured providers only (API key stored,
+        // or local on-device backends that need none), active provider's
+        // models first so the default selection comes from it. Seeded-but-
+        // unconfigured backends are excluded.
+        var configured = backends.filter {
+            $0.hasApiKey || $0.id.hasPrefix("local-") || $0.id == "qvac-local"
         }
-        return backend.models.map { modelId in
-            ModelInfo(id: modelId, displayName: shortModelName(modelId))
+        if let activeId = activeBackendId,
+           let idx = configured.firstIndex(where: { $0.id == activeId }) {
+            configured.insert(configured.remove(at: idx), at: 0)
         }
+        var seen = Set<String>()
+        return configured
+            .flatMap { $0.models }
+            .filter { seen.insert($0).inserted }
+            .map { ModelInfo(id: $0, displayName: shortModelName($0)) }
     }
 
     private var currentModelName: String {

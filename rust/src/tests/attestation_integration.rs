@@ -463,6 +463,8 @@ fn test_provider_fallback() {
     let msg = result.expect("Attestation task did not produce a result within 10 seconds");
 
     match msg {
+        // Auth continuation events are irrelevant to this test.
+        crate::CoreMsg::PinUnlockContinued { .. } => panic!("unexpected"),
         crate::CoreMsg::InternalEvent(event) => match *event {
             InternalEvent::AttestationResult(AttestationEvent::Failed {
                 backend_id,

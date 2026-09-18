@@ -29,6 +29,7 @@ mod live_venice;
 mod local_models;
 mod memory;
 mod onboarding;
+mod perf_streaming_e2e;
 mod onboarding_mandatory;
 mod persistence;
 mod persistence_encrypted;

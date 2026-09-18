@@ -1,6 +1,51 @@
 use super::error::LlmError;
 use tokio_util::sync::CancellationToken;
 
+/// Cache of per-backend chat clients. A fresh reqwest/async-openai client per
+/// turn meant a new TCP+TLS handshake and connection pool on every message
+/// (100-400 ms on mobile). Keyed by everything that defines the client
+/// (backend id, base URL, API key, pinned TLS fingerprint) so config changes
+/// naturally miss and rebuild.
+type ChatClientCache = std::sync::Mutex<
+    std::collections::HashMap<
+        (String, String, String, Option<String>),
+        async_openai::Client<async_openai::config::OpenAIConfig>,
+    >,
+>;
+static CHAT_CLIENT_CACHE: once_cell::sync::Lazy<ChatClientCache> =
+    once_cell::sync::Lazy::new(|| ChatClientCache::default());
+
+fn cached_chat_client(
+    backend: &super::backend::BackendConfig,
+    transport: super::transport::ProviderTransportKind,
+    pinned_tls_public_key_fp: Option<&str>,
+) -> Result<async_openai::Client<async_openai::config::OpenAIConfig>, LlmError> {
+    let key = (
+        backend.id.clone(),
+        backend.base_url.clone(),
+        backend.api_key.clone(),
+        pinned_tls_public_key_fp.map(str::to_string),
+    );
+    let mut cache = CHAT_CLIENT_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(client) = cache.get(&key) {
+        return Ok(client.clone());
+    }
+    let (client, _used_pin) = transport.build_openai_client(
+        backend,
+        pinned_tls_public_key_fp,
+        std::time::Duration::from_secs(60),
+    )?;
+    // ponytail: unbounded in theory — bounded by backend-config combinations;
+    // cleared wholesale if it ever exceeds 64 entries
+    if cache.len() >= 64 {
+        cache.clear();
+    }
+    cache.insert(key, client.clone());
+    Ok(client)
+}
+
 /// Simple message role for passing conversation context to the streaming task.
 #[derive(Clone, Debug)]
 pub enum ChatRole {
@@ -410,10 +455,8 @@ async fn run_streaming_with_api_messages(
 
     let base_url = backend.base_url.trim_end_matches('/').to_string();
 
-    let make_client = |pin: Option<&str>| {
-        transport.build_openai_client(&backend, pin, std::time::Duration::from_secs(60))
-    };
-    let (client, used_pin) = match make_client(pinned_tls_public_key_fp.as_deref()) {
+    let client = match cached_chat_client(&backend, transport, pinned_tls_public_key_fp.as_deref())
+    {
         Ok(client) => client,
         Err(error) => {
             let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
@@ -451,7 +494,7 @@ async fn run_streaming_with_api_messages(
                 "[streaming] failed to open stream base_url={} model={} pinned={} error={}",
                 base_url,
                 model,
-                used_pin,
+                pinned_tls_public_key_fp.is_some(),
                 mapped
             );
             let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(

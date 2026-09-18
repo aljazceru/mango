@@ -182,7 +182,7 @@ fn root_cert_store() -> RootCertStore {
 fn attested_rustls_client_config() -> Result<ClientConfig, TlsPinError> {
     ensure_default_crypto_provider();
     let provider = attested_transport_provider();
-    log::info!(
+    log::debug!(
         "[tls] building attested reqwest client with {}",
         crypto_provider_summary(&provider)
     );

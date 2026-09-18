@@ -1478,12 +1478,32 @@ pub fn format_conversation_as_markdown(title: &str, messages: &[ExportMessage]) 
 
 // ── Internal messages ────────────────────────────────────────────────────────
 
+/// Result of the off-actor PIN unlock work (see `CoreMsg::PinUnlockContinued`).
+pub enum PinUnlockOutcome {
+    /// The duress PIN was entered — actor must run the duress wipe flow.
+    Duress,
+    /// Wrong PIN (AES-GCM tag mismatch on DEK unwrap).
+    WrongPin,
+    /// Any other failure (KDF error, DB open error, index error).
+    Failed(String),
+    /// Verified and opened; install into ActorState and hydrate.
+    Ready {
+        dek: Zeroizing<[u8; 32]>,
+        db: persistence::Database,
+        vector_index: rag::VectorIndex,
+    },
+}
+
 /// Internal actor messages -- not UniFFI-exported
 pub enum CoreMsg {
     /// Wraps user-dispatched actions
     Action(AppAction),
     /// Delivers async LLM streaming events into the synchronous actor loop
     InternalEvent(Box<llm::InternalEvent>),
+    /// Event-driven PIN unlock continuation (#5): Argon2 KEK derivation, DEK
+    /// unwrap, encrypted DB open, and VectorIndex load run on a blocking thread
+    /// so the actor (and its emits) stay responsive during the KDF.
+    PinUnlockContinued { outcome: PinUnlockOutcome },
     /// Decrypt the encrypted image for `message_id` and return raw JPEG bytes.
     ///
     /// The actor looks up the message row, reads the MGO1 file, decrypts with the DEK,
@@ -1711,6 +1731,15 @@ struct ActorState {
     /// map so stale in-memory attestations are not accepted after their TTL.
     attestation_expires_at: HashMap<String, u64>,
     active_stream_token: Option<CancellationToken>,
+    /// Last time a streaming-chunk state emit went out. Token emissions are
+    /// coalesced (~30 ms) so the full-AppState clone + FFI conversion does not
+    /// run per token; StreamDone always flushes the final text.
+    last_stream_emit: Option<std::time::Instant>,
+    /// In-flight off-actor continuations (event-driven PIN unlock). While > 0,
+    /// Sync replies are deferred so the FIFO barrier also covers work running
+    /// on blocking threads (tests + FFI sync-after-dispatch stay correct).
+    off_actor_work_pending: usize,
+    sync_waiters: Vec<flume::Sender<()>>,
     runtime: tokio::runtime::Runtime,
     /// Unified application database -- None until unlock, Some after successful DEK delivery (Phase 28, D-12).
     /// In backward-compat auto-open mode (plaintext existing DB or in-memory), set to Some at startup.
@@ -3073,6 +3102,61 @@ enum WipeMode {
     DecoyDeleteAllPreservePpq,
 }
 
+/// Off-actor PIN unlock work (#5): duress check, Argon2 KEK derivation, DEK
+/// unwrap, encrypted DB open, and VectorIndex load. Runs via `spawn_blocking`
+/// so the actor thread never freezes behind the memory-hard KDF.
+fn run_pin_unlock_work(
+    db_path: &str,
+    data_dir: &str,
+    pin: &Zeroizing<String>,
+    params: &crypto::bootstrap_db::AuthParams,
+) -> PinUnlockOutcome {
+    // T-28-11: duress check BEFORE attempting DEK unwrap.
+    if let Some(ref duress_hash) = params.duress_hash {
+        if crypto::key_derivation::verify_pin_hash(pin.as_bytes(), duress_hash) {
+            return PinUnlockOutcome::Duress;
+        }
+    }
+    // CR-03: kek is Zeroizing<[u8; 32]>.
+    let kek: Zeroizing<[u8; 32]> =
+        match crypto::key_derivation::derive_kek(
+            pin.as_bytes(),
+            &params.salt,
+            params.kdf_memory_kib,
+            params.kdf_iterations,
+            params.kdf_parallelism,
+        ) {
+            Ok(k) => k,
+            Err(e) => return PinUnlockOutcome::Failed(format!("KEK derivation failed: {e}")),
+        };
+    // CR-03: wrap in Zeroizing so raw bytes are zeroed on drop.
+    let dek: Zeroizing<[u8; 32]> = match crypto::key_derivation::unwrap_dek(
+        &kek,
+        &params.wrapped_dek,
+    ) {
+        Ok(d) => Zeroizing::new(d),
+        Err(_) => return PinUnlockOutcome::WrongPin, // AES-GCM tag mismatch
+    };
+    let dek_hex: Zeroizing<String> =
+        Zeroizing::new(dek.iter().map(|b| format!("{:02x}", b)).collect());
+    let db = match persistence::Database::open_encrypted(db_path, &dek_hex) {
+        Ok(db) => db,
+        Err(e) => return PinUnlockOutcome::Failed(format!("open_encrypted failed: {e}")),
+    };
+    // Phase 29 (D-01, D-04): open the VectorIndex with the DEK; fall back to an
+    // empty in-memory index exactly like the old inline path did.
+    let dek_ref: &[u8; 32] = &dek;
+    let vector_index = rag::VectorIndex::new(data_dir, Some(dek_ref)).unwrap_or_else(|e| {
+        log::warn!("[auth] PIN unlock: VectorIndex open with DEK failed: {e}");
+        rag::VectorIndex::new("", None).expect("empty fallback")
+    });
+    PinUnlockOutcome::Ready {
+        dek,
+        db,
+        vector_index,
+    }
+}
+
 fn wipe_local_install(
     actor_state: &mut ActorState,
     core_tx: flume::Sender<CoreMsg>,
@@ -3628,6 +3712,46 @@ fn default_model_for_preferred(
         .iter()
         .find(|b| b.id == preferred_id)
         .and_then(|b| b.models.first().cloned())
+}
+
+/// Resolve the (backend_id, model_id) pair a new conversation should start with.
+/// Picks one model from the active/default provider; if it offers none (not
+/// configured, or /v1/models not fetched yet), falls back to the first
+/// configured provider that has models so new chats always start usable.
+fn default_backend_and_model(actor_state: &ActorState) -> (String, String) {
+    let db = match actor_state.db.as_ref() {
+        Some(db) => db.conn(),
+        None => return (String::new(), String::new()),
+    };
+    // Prefer default_backend_id from settings, fall back to active
+    let preferred_backend = persistence::queries::get_setting(db, "default_backend_id")
+        .ok()
+        .flatten()
+        .or(actor_state.app_state.active_backend_id.clone())
+        .unwrap_or_default();
+    let default_model_setting = persistence::queries::get_setting(db, "default_model_id")
+        .ok()
+        .flatten()
+        .filter(|m| !m.is_empty());
+    let preferred_model = default_model_for_preferred(
+        actor_state,
+        Some(preferred_backend.as_str()),
+    )
+    .filter(|m| !m.is_empty());
+    match default_model_setting.or(preferred_model) {
+        Some(model) => (preferred_backend, model),
+        None => actor_state
+            .backends
+            .iter()
+            .find(|b| {
+                !b.models.is_empty()
+                    && (!b.api_key.is_empty()
+                        || is_local_on_device_backend(b)
+                        || b.id == "qvac-local")
+            })
+            .map(|b| (b.id.clone(), b.models[0].clone()))
+            .unwrap_or((preferred_backend, String::new())),
+    }
 }
 
 /// Returns true when a first-time (or legacy) enrollment is still pending and
@@ -4838,12 +4962,55 @@ fn update_hybrid_route_summary_for_retry(
 /// Spawn a background health-check probe for a backend.
 ///
 /// Sends a GET /models request and delivers HealthCheckResult back to the actor loop.
+/// `skip_auth_probe`: the 1-token auth completion is skipped when this exact API
+/// key was already verified in a previous run (persisted fingerprint) — saves a
+/// paid inference round per configured provider per app launch.
+/// Settings key under which the sha256 fingerprint of the last API key that
+/// passed the health-check auth probe is stored, per backend.
+fn verified_key_fp_setting(backend_id: &str) -> String {
+    format!("verified_key_fp::{}", backend_id)
+}
+
+fn key_fingerprint(api_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(api_key.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// True when this exact API key already passed an auth probe in a previous run.
+fn verified_key_fp_matches(
+    db: Option<&persistence::Database>,
+    backend_id: &str,
+    api_key: &str,
+) -> bool {
+    if api_key.is_empty() {
+        return false;
+    }
+    let Some(db) = db else { return false };
+    persistence::queries::get_setting(db.conn(), &verified_key_fp_setting(backend_id))
+        .ok()
+        .flatten()
+        .is_some_and(|stored| stored == key_fingerprint(api_key))
+}
+
+fn record_verified_key_fp(db: &persistence::Database, backend_id: &str, api_key: &str) {
+    if api_key.is_empty() {
+        return;
+    }
+    let _ = persistence::queries::set_setting(
+        db.conn(),
+        &verified_key_fp_setting(backend_id),
+        &key_fingerprint(api_key),
+    );
+}
+
 fn spawn_health_check(
     runtime: &tokio::runtime::Runtime,
     backend_id: String,
     base_url: String,
     api_key: String,
     pinned_tls_public_key_fp: Option<String>,
+    skip_auth_probe: bool,
     core_tx: flume::Sender<CoreMsg>,
 ) {
     runtime.spawn(async move {
@@ -4937,8 +5104,9 @@ fn spawn_health_check(
 
                 // /v1/models is unauthenticated on most providers, so a 200 here
                 // doesn't prove the API key is valid.  When a key was provided,
-                // send a minimal chat completion (max_tokens=1) to verify auth.
-                if !backend.api_key.is_empty() {
+                // send a minimal chat completion (max_tokens=1) to verify auth —
+                // unless this exact key was verified before (persisted fp).
+                if !backend.api_key.is_empty() && !skip_auth_probe {
                     if let Some(probe_model) = models.first() {
                         let completions_url = format!(
                             "{}/chat/completions",
@@ -5408,6 +5576,7 @@ fn do_send_message(
     actor_state.current_streaming_model_id = Some(model.clone());
     actor_state.current_streaming_conversation_id = Some(conv_id.clone());
     actor_state.current_streaming_text.clear();
+    actor_state.last_stream_emit = None;
     actor_state.current_streaming_has_image_attachment = has_image_attachment;
     actor_state.failover_exclude = vec![];
 
@@ -8254,6 +8423,26 @@ fn load_post_unlock(
         spawn_attestation_for_preferred(actor_state, active_id, core_tx.clone());
     }
 
+    // Refresh provider model lists at startup so the picker reflects each
+    // provider's current /v1/models — seeded SQLite lists drift as providers
+    // add/remove models. Cheap GET per backend (5s timeout); on failure the
+    // handler keeps the persisted list.
+    for backend in actor_state
+        .backends
+        .iter()
+        .filter(|b| !is_local_on_device_backend(b))
+    {
+        spawn_health_check(
+            &actor_state.runtime,
+            backend.id.clone(),
+            backend.base_url.clone(),
+            backend.api_key.clone(),
+            pinned_tls_public_key_fp_for_backend(&actor_state, &backend.id),
+            verified_key_fp_matches(actor_state.db.as_ref(), &backend.id, &backend.api_key),
+            core_tx.clone(),
+        );
+    }
+
     // Start (or restart) the periodic attestation timer.
     if let Some(token) = actor_state.attestation_timer_token.take() {
         token.cancel();
@@ -8588,6 +8777,9 @@ impl FfiApp {
                 attested_tls_public_keys: HashMap::new(),
                 attestation_expires_at: HashMap::new(),
                 active_stream_token: None,
+                last_stream_emit: None,
+                off_actor_work_pending: 0,
+                sync_waiters: Vec::new(),
                 runtime,
                 db: db_opt,
                 keychain,
@@ -8869,28 +9061,8 @@ impl FfiApp {
                                 }
                                 let conv_id = new_uuid();
                                 let now = now_secs();
-                                // Prefer default_backend_id from settings, fall back to active
-                                let default_backend = persistence::queries::get_setting(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                    "default_backend_id",
-                                )
-                                .ok()
-                                .flatten()
-                                .or(actor_state.app_state.active_backend_id.clone())
-                                .unwrap_or_default();
-                                let default_model = persistence::queries::get_setting(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                    "default_model_id",
-                                )
-                                .ok()
-                                .flatten()
-                                .or_else(|| {
-                                    default_model_for_preferred(
-                                        &actor_state,
-                                        Some(default_backend.as_str()),
-                                    )
-                                })
-                                .unwrap_or_default();
+                                let (default_backend, default_model) =
+                                    default_backend_and_model(&actor_state);
                                 let row = persistence::ConversationRow {
                                     id: conv_id.clone(),
                                     title: "New Conversation".to_string(),
@@ -8933,15 +9105,15 @@ impl FfiApp {
                                     .unwrap_or_default();
                                 actor_state.app_state.current_conversation_attached_docs =
                                     attached_docs;
-                                // Phase 27: load tools_enabled for this conversation.
+                                // Phase 27: load tools_enabled for this conversation
+                                // (single-row lookup, not a full list scan).
                                 actor_state.current_conv_tools_enabled =
-                                    persistence::queries::list_conversations(
+                                    persistence::queries::get_conversation_tools_enabled(
                                         actor_state.db.as_ref().expect("db unlocked").conn(),
+                                        &conversation_id,
                                     )
-                                    .unwrap_or_default()
-                                    .iter()
-                                    .find(|r| r.id == conversation_id)
-                                    .map(|r| r.tools_enabled)
+                                    .ok()
+                                    .flatten()
                                     .unwrap_or(false);
                                 push_nav_history(&mut actor_state.app_state.router);
                                 actor_state.app_state.router.current_screen =
@@ -9654,6 +9826,7 @@ impl FfiApp {
                                         b.base_url.clone(),
                                         b.api_key.clone(),
                                         pinned_tls_public_key_fp_for_backend(&actor_state, &b.id),
+                                        false,
                                         core_tx_for_thread.clone(),
                                     );
                                     let backend = b.clone();
@@ -10092,6 +10265,7 @@ impl FfiApp {
                                         b.base_url.clone(),
                                         b.api_key.clone(),
                                         pinned_tls_public_key_fp_for_backend(&actor_state, &b.id),
+                                        false,
                                         core_tx_for_thread.clone(),
                                     );
                                 }
@@ -10137,27 +10311,8 @@ impl FfiApp {
                                 // Create a new conversation (same logic as NewConversation)
                                 let conv_id = new_uuid();
                                 let now = now_secs();
-                                let default_backend = persistence::queries::get_setting(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                    "default_backend_id",
-                                )
-                                .ok()
-                                .flatten()
-                                .or(actor_state.app_state.active_backend_id.clone())
-                                .unwrap_or_default();
-                                let default_model = persistence::queries::get_setting(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                    "default_model_id",
-                                )
-                                .ok()
-                                .flatten()
-                                .or_else(|| {
-                                    default_model_for_preferred(
-                                        &actor_state,
-                                        Some(default_backend.as_str()),
-                                    )
-                                })
-                                .unwrap_or_default();
+                                let (default_backend, default_model) =
+                                    default_backend_and_model(&actor_state);
                                 let row = persistence::ConversationRow {
                                     id: conv_id.clone(),
                                     title: "New Conversation".to_string(),
@@ -10301,6 +10456,8 @@ impl FfiApp {
                                                 &actor_state,
                                                 &b.id,
                                             ),
+                                            // New key just entered during onboarding — verify it.
+                                            false,
                                             core_tx_for_thread.clone(),
                                         );
                                         let backend = b.clone();
@@ -11892,6 +12049,12 @@ impl FfiApp {
                                     core_tx_for_thread.clone(),
                                     true,
                                 );
+                                // load_post_unlock cannot emit (no emit handle);
+                                // without this the lock screen only clears when
+                                // some later event (attestation/health result)
+                                // happens to emit — minutes late or never.
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
                             AppAction::UnlockWithPin { pin } => {
@@ -11923,127 +12086,26 @@ impl FfiApp {
                                     }
                                 };
 
-                                // T-28-11: Check duress PIN BEFORE attempting DEK unwrap.
-                                if let Some(ref duress_hash) = params.duress_hash {
-                                    if crypto::key_derivation::verify_pin_hash(
-                                        pin.as_bytes(),
-                                        duress_hash,
-                                    ) {
-                                        // Duress PIN entered: wipe Mango data but
-                                        // PRESERVE both PPQ credentials (user
-                                        // override on the Pi review; plan §6.2).
-                                        log::warn!("[auth] Duress PIN detected — wiping Mango data, preserving dormant PPQ credentials");
-                                        if let Err(e) = wipe_local_install(
-                                            &mut actor_state,
-                                            core_tx_for_thread.clone(),
-                                            WipeMode::DuressPreservePpq,
-                                        ) {
-                                            log::error!(
-                                                "[auth] Duress wipe: failed to reset install: {e}"
-                                            );
-                                            actor_state.app_state.toast = Some(
-                                                "All data erased, but setup could not restart."
-                                                    .to_string(),
-                                            );
-                                            actor_state.app_state.rev += 1;
-                                            emit(
-                                                &actor_state.app_state,
-                                                &shared_for_core,
-                                                &update_tx,
-                                            );
-                                            continue;
-                                        }
-                                        actor_state.app_state.rev += 1;
-                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                                        continue;
-                                    }
-                                }
+                                // T-28-11 + #5: duress check, Argon2 KEK derivation,
+                                // DEK unwrap, encrypted DB open, and VectorIndex load
+                                // run on a blocking thread — the actor stays responsive
+                                // (emits keep flowing). Continuation arrives as
+                                // CoreMsg::PinUnlockContinued.
+                                actor_state.app_state.toast = Some("Unlocking...".to_string());
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
 
-                                // Derive KEK from the PIN. CR-03: kek is Zeroizing<[u8; 32]>.
-                                let kek: Zeroizing<[u8; 32]> =
-                                    match crypto::key_derivation::derive_kek(
-                                        pin.as_bytes(),
-                                        &params.salt,
-                                        params.kdf_memory_kib,
-                                        params.kdf_iterations,
-                                        params.kdf_parallelism,
-                                    ) {
-                                        Ok(k) => k,
-                                        Err(e) => {
-                                            log::error!(
-                                                "[auth] UnlockWithPin KEK derivation failed: {e}"
-                                            );
-                                            actor_state.app_state.toast = Some(
-                                                "Unlock failed: key derivation error".to_string(),
-                                            );
-                                            actor_state.app_state.rev += 1;
-                                            emit(
-                                                &actor_state.app_state,
-                                                &shared_for_core,
-                                                &update_tx,
-                                            );
-                                            continue;
-                                        }
-                                    };
-
-                                // Unwrap DEK. CR-03: wrap in Zeroizing so raw bytes are zeroed on drop.
-                                let dek: Zeroizing<[u8; 32]> =
-                                    match crypto::key_derivation::unwrap_dek(
-                                        &kek,
-                                        &params.wrapped_dek,
-                                    ) {
-                                        Ok(d) => Zeroizing::new(d),
-                                        Err(_) => {
-                                            // Wrong PIN (AES-GCM tag mismatch).
-                                            actor_state.app_state.toast = Some(
-                                                "Incorrect PIN. Please try again.".to_string(),
-                                            );
-                                            actor_state.app_state.rev += 1;
-                                            emit(
-                                                &actor_state.app_state,
-                                                &shared_for_core,
-                                                &update_tx,
-                                            );
-                                            continue;
-                                        }
-                                    };
-                                let dek_hex: Zeroizing<String> = Zeroizing::new(
-                                    dek.iter().map(|b| format!("{:02x}", b)).collect(),
-                                );
-
-                                // Open encrypted DB.
-                                match persistence::Database::open_encrypted(
-                                    &actor_state.db_path,
-                                    &dek_hex,
-                                ) {
-                                    Ok(db) => {
-                                        actor_state.db = Some(db);
-                                    }
-                                    Err(e) => {
-                                        log::error!(
-                                            "[auth] UnlockWithPin open_encrypted failed: {e}"
-                                        );
-                                        actor_state.app_state.toast =
-                                            Some("Unlock failed: database error".to_string());
-                                        actor_state.app_state.rev += 1;
-                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                                        continue;
-                                    }
-                                }
-                                // Phase 29 (D-01, D-04): Store DEK and open VectorIndex with encryption key.
-                                actor_state.dek = Some(dek.clone());
-                                let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_deref();
-                                actor_state.vector_index = rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
-                                    .unwrap_or_else(|e| {
-                                        log::warn!("[auth] UnlockWithPin: VectorIndex open with DEK failed: {e}");
-                                        rag::VectorIndex::new("", None).expect("empty fallback")
-                                    });
-                                actor_state.app_state.encryption_enabled = true;
-                                load_post_unlock(
-                                    &mut actor_state,
-                                    core_tx_for_thread.clone(),
-                                    true,
-                                );
+                                let runtime = &actor_state.runtime;
+                                let tx = core_tx_for_thread.clone();
+                                let db_path = actor_state.db_path.clone();
+                                let data_dir = actor_state.data_dir.clone();
+                                let pin = Zeroizing::new(pin);
+                                actor_state.off_actor_work_pending += 1;
+                                runtime.spawn_blocking(move || {
+                                    let outcome =
+                                        run_pin_unlock_work(&db_path, &data_dir, &pin, &params);
+                                    let _ = tx.send(CoreMsg::PinUnlockContinued { outcome });
+                                });
                             }
 
                             AppAction::LockApp => {
@@ -12746,9 +12808,18 @@ impl FfiApp {
                         }
                         match *event {
                             llm::InternalEvent::StreamChunk { token } => {
+                                let now = std::time::Instant::now();
+                                // Coalesce token emissions (~30 ms): each FullState send
+                                // clones the AppState and crosses FFI on mobile. Tokens are
+                                // still appended to the buffer; StreamDone flushes the rest.
+                                let emit_due = actor_state
+                                    .last_stream_emit
+                                    .map_or(true, |t| now.duration_since(t).as_millis() >= 30);
                                 if actor_state.current_streaming_conversation_id.is_some() {
                                     actor_state.current_streaming_text.push_str(&token);
-                                    sync_visible_streaming_text(&mut actor_state);
+                                    if emit_due {
+                                        sync_visible_streaming_text(&mut actor_state);
+                                    }
                                 } else {
                                     // Tests and legacy internal producers can inject stream
                                     // events without first registering an owning conversation.
@@ -12758,12 +12829,31 @@ impl FfiApp {
                                         .get_or_insert_with(String::new);
                                     text.push_str(&token);
                                 }
-                                actor_state.app_state.rev += 1;
-                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                if emit_due {
+                                    actor_state.last_stream_emit = Some(now);
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                } else {
+                                    // Keep the shared snapshot fresh (desktop reads it via
+                                    // state()) without paying the per-token FullState send
+                                    // + FFI conversion on mobile.
+                                    if actor_state.current_streaming_conversation_id.is_some() {
+                                        sync_visible_streaming_text(&mut actor_state);
+                                    }
+                                    let snapshot = actor_state.app_state.clone();
+                                    match shared_for_core.write() {
+                                        Ok(mut g) => *g = snapshot,
+                                        Err(p) => {
+                                            let mut g = p.into_inner();
+                                            *g = snapshot;
+                                        }
+                                    }
+                                }
                             }
                             llm::InternalEvent::StreamDone => {
                                 // Stream completed: persist the assistant message,
                                 // update AppState.messages, clear streaming_text.
+                                actor_state.last_stream_emit = None;
                                 let stream_conv_id =
                                     actor_state.current_streaming_conversation_id.take();
                                 let content = if stream_conv_id.is_some() {
@@ -12780,6 +12870,22 @@ impl FfiApp {
                                     actor_state.app_state.current_conversation_id.clone()
                                 });
                                 let completed_conv_id = target_conv_id.clone();
+
+                                // A cleanly finished stream IS the inline-attestation proof
+                                // for Tinfoil/PPQ/Venice/Redpill remote turns. Flip the
+                                // summary BEFORE route metadata stamps the message — doing
+                                // it after persistence (old order) stamped every clean
+                                // turn "TEE unverified" under the reply while the header
+                                // badge showed the cached backend attestation as Verified.
+                                if let Some(streaming_backend_id) =
+                                    actor_state.current_streaming_backend_id.clone()
+                                {
+                                    set_inline_secure_turn_verified(
+                                        &mut actor_state,
+                                        &streaming_backend_id,
+                                        true,
+                                    );
+                                }
 
                                 if let Some(conv_id) = target_conv_id {
                                     let now = now_secs();
@@ -12898,11 +13004,6 @@ impl FfiApp {
                                     actor_state.current_streaming_backend_id.take()
                                 {
                                     actor_state.router.mark_success(&backend_id);
-                                    set_inline_secure_turn_verified(
-                                        &mut actor_state,
-                                        &backend_id,
-                                        true,
-                                    );
                                     let _ = persistence::queries::upsert_backend_health(
                                         actor_state.db.as_ref().expect("db unlocked").conn(),
                                         &persistence::BackendHealthRow {
@@ -13089,6 +13190,14 @@ impl FfiApp {
                                                     pinned_tls_public_key_fp_for_backend(
                                                         &actor_state,
                                                         &b.id,
+                                                    ),
+                                                    // Failover probe: /v1/models still refreshes the
+                                                    // model list; skip the paid auth completion
+                                                    // when this key already verified before.
+                                                    verified_key_fp_matches(
+                                                        actor_state.db.as_ref(),
+                                                        &b.id,
+                                                        &b.api_key,
                                                     ),
                                                     core_tx_for_thread.clone(),
                                                 );
@@ -13500,7 +13609,25 @@ impl FfiApp {
                                 // Non-wizard health check logic runs unconditionally
                                 if success {
                                     log::info!(target: "health_check", "[health_check] backend={} success model_count={}", backend_id, models.len());
-                                    // Persist discovered models if the probe returned any
+                                    // Remember the API key that just passed the auth probe so
+                                    // future launches/failover probes can skip the paid check.
+                                    if let Some(api_key) = actor_state
+                                        .backends
+                                        .iter()
+                                        .find(|b| b.id == backend_id)
+                                        .map(|b| b.api_key.clone())
+                                        .filter(|k| !k.is_empty())
+                                    {
+                                        if let Some(db) = actor_state.db.as_ref() {
+                                            record_verified_key_fp(db, &backend_id, &api_key);
+                                        }
+                                    }
+                                    // Persist discovered models if the probe returned any.
+                                    // Update models in place — do NOT reload_backends here:
+                                    // that re-reads every API key from the keychain, and
+                                    // health results arrive at async times (startup sweep,
+                                    // failover probes) where extra key reads violate the
+                                    // PPQ decoy "never read the preserved key" invariant.
                                     if !models.is_empty() {
                                         let model_list = serde_json::to_string(&models)
                                             .unwrap_or_else(|_| "[]".to_string());
@@ -13509,7 +13636,14 @@ impl FfiApp {
                                             &backend_id,
                                             &model_list,
                                         );
-                                        reload_backends(&mut actor_state);
+                                        if let Some(backend) = actor_state
+                                            .backends
+                                            .iter_mut()
+                                            .find(|b| b.id == backend_id)
+                                        {
+                                            backend.models =
+                                                filter_models_for_backend(&backend_id, models);
+                                        }
                                     }
                                     actor_state
                                         .router
@@ -13969,7 +14103,12 @@ impl FfiApp {
                                             core_tx_for_thread.clone(),
                                             true,
                                         );
-                                        // load_post_unlock already calls emit, so skip the emit below.
+                                        // load_post_unlock cannot emit (no emit
+                                        // handle) — emit here or the UI stays on the
+                                        // "Unlocking..." lock screen until some
+                                        // unrelated event emits.
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
                                     } else {
                                         // No DEK in keychain (biometric was not enabled during setup,
@@ -14142,8 +14281,15 @@ impl FfiApp {
 
                     CoreMsg::Sync { reply } => {
                         // FIFO barrier: everything enqueued before this Sync has
-                        // been processed by the time the reply arrives.
-                        let _ = reply.send(());
+                        // been processed by the time the reply arrives. If
+                        // off-actor continuations (event-driven unlock) are still
+                        // running, defer the reply until they land so sync()
+                        // means "quiescent", not just "queue drained".
+                        if actor_state.off_actor_work_pending > 0 {
+                            actor_state.sync_waiters.push(reply);
+                        } else {
+                            let _ = reply.send(());
+                        }
                     }
 
                     #[cfg(test)]
@@ -14240,6 +14386,69 @@ impl FfiApp {
                         let _ = reply.send(result);
                         actor_state.app_state.rev += 1;
                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                    }
+
+                    CoreMsg::PinUnlockContinued { outcome } => {
+                        actor_state.off_actor_work_pending =
+                            actor_state.off_actor_work_pending.saturating_sub(1);
+                        match outcome {
+                            PinUnlockOutcome::Duress => {
+                                // Duress PIN entered: wipe Mango data but
+                                // PRESERVE both PPQ credentials (user
+                                // override on the Pi review; plan §6.2).
+                                log::warn!("[auth] Duress PIN detected — wiping Mango data, preserving dormant PPQ credentials");
+                                if let Err(e) = wipe_local_install(
+                                    &mut actor_state,
+                                    core_tx_for_thread.clone(),
+                                    WipeMode::DuressPreservePpq,
+                                ) {
+                                    log::error!(
+                                        "[auth] Duress wipe: failed to reset install: {e}"
+                                    );
+                                    actor_state.app_state.toast = Some(
+                                        "All data erased, but setup could not restart.".to_string(),
+                                    );
+                                }
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+                            PinUnlockOutcome::WrongPin => {
+                                actor_state.app_state.toast =
+                                    Some("Incorrect PIN. Please try again.".to_string());
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+                            PinUnlockOutcome::Failed(e) => {
+                                log::error!("[auth] PIN unlock failed: {e}");
+                                actor_state.app_state.toast =
+                                    Some("Unlock failed. Please try again.".to_string());
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+                            PinUnlockOutcome::Ready { dek, db, vector_index } => {
+                                actor_state.db = Some(db);
+                                actor_state.dek = Some(dek);
+                                actor_state.vector_index = vector_index;
+                                actor_state.app_state.encryption_enabled = true;
+                                load_post_unlock(
+                                    &mut actor_state,
+                                    core_tx_for_thread.clone(),
+                                    true,
+                                );
+                                // load_post_unlock cannot emit (no emit handle) —
+                                // without this the lock screen only clears when some
+                                // later event happens to emit.
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+                        }
+                        // Off-actor work settled — release any Sync barriers that
+                        // were deferred while the continuation was in flight.
+                        if actor_state.off_actor_work_pending == 0 {
+                            for waiter in actor_state.sync_waiters.drain(..) {
+                                let _ = waiter.send(());
+                            }
+                        }
                     }
 
                     CoreMsg::ReadEncryptedImage { message_id, reply } => {
@@ -15684,6 +15893,48 @@ mod image_red_tests {
     }
 
     #[test]
+    fn stream_done_stamps_inline_secure_turn_verified_on_message() {
+        // Regression: StreamDone must flip the inline-secure turn proof BEFORE
+        // route_metadata_for_completed_message stamps the message. The old order
+        // (flip after persistence) stamped every clean Tinfoil/PPQ/Venice/Redpill
+        // remote turn "TEE unverified" under the reply while the header badge
+        // showed the cached backend attestation as Verified.
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![llm::BackendConfig {
+            id: "tinfoil".to_string(),
+            name: "Tinfoil".to_string(),
+            base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec!["kimi-k3".to_string()],
+            tee_type: llm::TeeType::AmdSevSnp,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        }];
+        actor_state.current_streaming_backend_id = Some("tinfoil".to_string());
+        actor_state.current_streaming_conversation_id = Some("conv-1".to_string());
+        // Stream start: inline-secure remote turn starts unverified.
+        actor_state.app_state.last_turn_routing = Some(routing::TurnRoutingSummary {
+            conversation_id: Some("conv-1".to_string()),
+            profile_id: Some("default_hybrid".to_string()),
+            backend_id: "tinfoil".to_string(),
+            model_id: "kimi-k3".to_string(),
+            decision: BackendRole::Remote,
+            reason: "attachment present".to_string(),
+            provider_name: "Tinfoil".to_string(),
+            tee_label: "AMD SEV-SNP".to_string(),
+            tee_verified: false,
+        });
+        // StreamDone order: flip the proof first, then stamp the message.
+        set_inline_secure_turn_verified(&mut actor_state, "tinfoil", true);
+        let metadata = route_metadata_for_completed_message(&actor_state, "conv-1");
+        assert_eq!(
+            metadata.tee_verified,
+            Some(true),
+            "clean stream must stamp the reply as TEE-verified"
+        );
+    }
+
+    #[test]
     fn hybrid_virtual_backend_resolves_remote_for_attestation_warmup() {
         let mut actor_state = test_build_actor_state_for_image_tests();
         actor_state.backends = vec![
@@ -16481,6 +16732,9 @@ mod image_red_tests {
             attested_tls_public_keys: HashMap::new(),
             attestation_expires_at: HashMap::new(),
             active_stream_token: None,
+            last_stream_emit: None,
+            off_actor_work_pending: 0,
+            sync_waiters: Vec::new(),
             runtime,
             db: Some(db),
             keychain: Box::new(NullKeychainProvider),

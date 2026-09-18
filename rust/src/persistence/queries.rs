@@ -144,6 +144,26 @@ pub fn list_conversations(conn: &Connection) -> Result<Vec<ConversationRow>, Per
     Ok(rows)
 }
 
+/// Single-row `tools_enabled` lookup — avoids a full `list_conversations`
+/// scan (which the actor used to run just to read this one flag per
+/// conversation open).
+pub fn get_conversation_tools_enabled(
+    conn: &Connection,
+    conversation_id: &str,
+) -> Result<Option<bool>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT tools_enabled FROM conversations WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query_map([conversation_id], |row| {
+        row.get::<_, i64>(0).map(|v| v != 0)
+    })?;
+    match rows.next() {
+        Some(Ok(v)) => Ok(Some(v)),
+        Some(Err(e)) => Err(e.into()),
+        None => Ok(None),
+    }
+}
+
 /// Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
 ///
 /// Updates the `tools_enabled` column and refreshes `updated_at`. Used by the

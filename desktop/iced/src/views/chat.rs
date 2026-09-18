@@ -111,14 +111,26 @@ pub fn chat_view<'a>(
         text(conv_title).size(20).into()
     };
 
-    // Model picker: collect available models from active backend.
-    // Show a small colored dot before the pick_list to indicate attestation status.
-    let available_models: Vec<String> = state
-        .active_backend_id
-        .as_deref()
-        .and_then(|bid| state.backends.iter().find(|b| b.id == bid))
-        .map(|b| b.models.clone())
-        .unwrap_or_default();
+    // Model picker: aggregate models available from configured providers
+    // (API key stored, or local on-device backends that need none), active
+    // provider's models first so the default selection comes from it.
+    // SelectModel re-points the conversation to whichever provider offers
+    // the chosen model. Seeded-but-unconfigured backends are excluded.
+    let is_configured = |b: &mango_core::BackendSummary| {
+        b.has_api_key || b.id.starts_with("local-") || b.id == "qvac-local"
+    };
+    let mut configured_backends: Vec<&mango_core::BackendSummary> =
+        state.backends.iter().filter(|b| is_configured(b)).collect();
+    // ponytail: O(n²) contains-dedup, model lists are tiny (<100 per provider)
+    configured_backends.sort_by_key(|b| state.active_backend_id.as_deref() != Some(b.id.as_str()));
+    let mut available_models: Vec<String> = Vec::new();
+    for backend in &configured_backends {
+        for model in &backend.models {
+            if !available_models.contains(model) {
+                available_models.push(model.clone());
+            }
+        }
+    }
 
     let current_model = state
         .current_conversation_id

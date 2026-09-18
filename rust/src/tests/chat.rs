@@ -54,6 +54,46 @@ fn test_new_conversation_creates_and_navigates() {
 }
 
 #[test]
+fn test_new_conversation_picks_model_from_configured_provider() {
+    let app = make_app();
+    // Remove the seeded (keyless) tinfoil backend; only keyless ppq-ai with
+    // seeded models remains, which must NOT count as available.
+    app.dispatch(AppAction::RemoveBackend {
+        backend_id: "tinfoil".into(),
+    });
+    wait(&app);
+    app.dispatch(AppAction::AddBackend {
+        name: "Test".into(),
+        base_url: "https://example.com/v1/".into(),
+        api_key: "key".into(),
+        tee_type: crate::llm::TeeType::AmdSevSnp,
+        models: vec!["m1".to_string(), "m2".to_string()],
+    });
+    wait(&app);
+    app.dispatch(AppAction::NewConversation);
+    wait(&app);
+    let state = app.state();
+    let conv = state
+        .conversations
+        .iter()
+        .find(|c| Some(&c.id) == state.current_conversation_id.as_ref())
+        .expect("current conversation should exist");
+    assert_eq!(
+        conv.model_id, "m1",
+        "new chat must pick one model from the configured provider, not seeded keyless backends"
+    );
+    let added = state
+        .backends
+        .iter()
+        .find(|b| b.models.iter().any(|m| m == "m1"))
+        .expect("configured backend should exist");
+    assert_eq!(
+        conv.backend_id, added.id,
+        "new chat backend should point at the configured provider"
+    );
+}
+
+#[test]
 fn test_new_conversation_title_is_placeholder() {
     let app = make_app();
     app.dispatch(AppAction::NewConversation);
