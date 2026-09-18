@@ -18,7 +18,6 @@ use async_openai::types::chat::{
 };
 use futures::StreamExt;
 use reqwest::{redirect::Policy, Url};
-use scraper::{Html, Selector};
 use serde_json::json;
 
 use crate::embedding::EmbeddingProvider;
@@ -545,21 +544,12 @@ pub(crate) fn dispatch_fetch_url(args_str: &str, runtime: &tokio::runtime::Runti
         Err(e) => return e,
     };
 
-    // Parse HTML and extract text from body
-    let document = Html::parse_document(&html);
-    let text = if let Ok(body_sel) = Selector::parse("body") {
-        if let Some(body) = document.select(&body_sel).next() {
-            body.text().collect::<Vec<_>>().join(" ")
-        } else {
-            // Fallback: extract text from root
-            document.root_element().text().collect::<Vec<_>>().join(" ")
-        }
-    } else {
-        document.root_element().text().collect::<Vec<_>>().join(" ")
-    };
+    // Parse HTML and extract text (html2text drops <script>/<style> content)
+    let extracted = html2text::from_read(html.as_bytes(), 80)
+        .unwrap_or_else(|_| String::from_utf8_lossy(html.as_bytes()).into_owned());
 
     // Normalize whitespace
-    let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text: String = extracted.split_whitespace().collect::<Vec<_>>().join(" ");
 
     const MAX_CHARS: usize = 8000;
     if text.len() > MAX_CHARS {
