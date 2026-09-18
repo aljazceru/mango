@@ -17,50 +17,14 @@ const MIN_QUOTE_LEN: usize = 48;
 /// Decode a TDX DCAP quote from either hex or base64 encoding.
 ///
 /// Some providers send the intel_quote as a hex string; others use base64.
-/// Per Pitfall 4 from RESEARCH.md: try hex first, then base64.
-///
-/// Returns `AttestationError::QuoteVerification` if neither encoding is valid
-/// or if the decoded bytes are shorter than the minimum TDX quote header size.
-#[allow(dead_code)]
-pub fn decode_quote(s: &str) -> Result<Vec<u8>, AttestationError> {
-    // Try hex first, then fall back to base64
-    let decoded = if let Ok(bytes) = hex::decode(s) {
-        bytes
-    } else {
-        // Fall back to base64
-        use base64::engine::general_purpose::STANDARD;
-        use base64::Engine;
-        STANDARD
-            .decode(s)
-            .map_err(|_| AttestationError::QuoteVerification {
-                reason: "Failed to decode quote: neither valid hex nor base64".to_string(),
-            })?
-    };
-
-    if decoded.len() < MIN_QUOTE_LEN {
-        return Err(AttestationError::QuoteVerification {
-            reason: format!(
-                "Quote too short: {} bytes (minimum {} required for TDX quote header)",
-                decoded.len(),
-                MIN_QUOTE_LEN
-            ),
-        });
-    }
-
-    Ok(decoded)
-}
-
 /// Where the per-request nonce lives inside the 64-byte TDX REPORTDATA.
 ///
 /// Different TEE substrates use different conventions:
-/// - `NonceFirst32`: existing project pattern (Tinfoil, custom backends) — nonce occupies `report_data[..32]`.
 /// - `VeniceAddrPadNonce`: Venice / Phala dstack — `[20B keccak-addr][12B zero pad][32B raw nonce]`.
 ///   Address + padding are checked separately in `attestation/venice.rs`; this enum only tells the
 ///   nonce comparison where to look.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportDataLayout {
-    #[allow(dead_code)]
-    NonceFirst32,
     VeniceAddrPadNonce,
 }
 
@@ -129,7 +93,6 @@ pub async fn verify_tdx_quote(
     };
 
     let nonce_in_report: &[u8] = match layout {
-        ReportDataLayout::NonceFirst32 => &report_data[..32.min(report_data.len())],
         ReportDataLayout::VeniceAddrPadNonce => {
             if report_data.len() < 64 {
                 return Err(AttestationError::QuoteVerification {

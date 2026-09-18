@@ -17,8 +17,6 @@
 //! (Plan 02) supplies the verified peer pubkey and the cache-eviction hook used
 //! on stale-key 422 retries.
 
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use aes_gcm::aead::{Aead, KeyInit};
@@ -49,8 +47,6 @@ use crate::attestation::venice::{
 use crate::attestation::{AttestationError, AttestationEvent};
 
 // ── Wire-format constants ────────────────────────────────────────────────────
-
-const CHAT_COMPLETIONS_PATH: &str = "/api/v1/chat/completions";
 
 const X_VENICE_TEE_CLIENT_PUB_KEY: &str = "x-venice-tee-client-pub-key";
 const X_VENICE_TEE_MODEL_PUB_KEY: &str = "x-venice-tee-model-pub-key";

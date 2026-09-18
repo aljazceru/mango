@@ -16,8 +16,6 @@
 //! - `check_model_routable` (Task 2) refuses Tinfoil-routed models with `RedpillError::TinfoilUnsupported`
 //!   BEFORE any attestation fetch (T-34-08).
 
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use async_openai::config::OpenAIConfig;
@@ -39,8 +37,6 @@ use crate::attestation::AttestationEvent;
 
 // ── Wire-format constants ────────────────────────────────────────────────────
 
-pub(crate) const ATTESTATION_PATH: &str = "/v1/attestation/report";
-pub(crate) const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
 pub(crate) const MODELS_PATH: &str = "/v1/models";
 const HTTP_TIMEOUT_SECS: u64 = 60;
 const MODELS_LIST_TIMEOUT_SECS: u64 = 30;
@@ -68,23 +64,6 @@ pub fn model_list_url(backend: &BackendConfig) -> Result<String, LlmError> {
         .trim_end_matches('/')
         .trim_end_matches("/v1");
     Ok(format!("{}{}", root, MODELS_PATH))
-}
-
-/// Format the public attestation URL (RED-02). The endpoint is unauthenticated;
-/// per-request 32-byte client nonce is hex-encoded into the query string.
-///
-/// Examples:
-///   `format_redpill_attestation_url("openai/gpt-oss-20b", "abc123", "https://api.redpill.ai/v1")`
-///   → `https://api.redpill.ai/v1/attestation/report?model=openai%2Fgpt-oss-20b&nonce=abc123`
-pub fn format_redpill_attestation_url(model: &str, nonce_hex: &str, base_url: &str) -> String {
-    let root = base_url.trim_end_matches('/').trim_end_matches("/v1");
-    format!(
-        "{}{}?model={}&nonce={}",
-        root,
-        ATTESTATION_PATH,
-        urlencoding::encode(model),
-        nonce_hex,
-    )
 }
 
 /// Trigger an attestation handshake (and populate the in-memory cache) for `backend`.
@@ -505,37 +484,5 @@ mod tests {
         // Non-Tinfoil errors are forwarded with a 'Redpill:' prefix so the
         // user can tell which provider failed.
         assert!(msg.starts_with("Redpill:"), "missing prefix: {msg}");
-    }
-
-    #[test]
-    fn format_attestation_url_urlencodes_model_id() {
-        let url = format_redpill_attestation_url(
-            "openai/gpt-oss-20b",
-            "deadbeef",
-            "https://api.redpill.ai/v1",
-        );
-        assert!(url.contains("model=openai%2Fgpt-oss-20b"));
-        assert!(url.ends_with("&nonce=deadbeef"));
-        assert!(url.contains("/v1/attestation/report?"));
-    }
-
-    #[test]
-    fn format_attestation_url_does_not_double_v1() {
-        // Production BackendConfig stores base_url with a trailing `/v1/` (the
-        // OpenAI-compatible root). The fetch path must NOT produce
-        // `…/v1/v1/attestation/report`. Regression for the live test failure
-        // observed against api.redpill.ai (HTTP 400 "endpoint is not supported").
-        for base in [
-            "https://api.redpill.ai/v1",
-            "https://api.redpill.ai/v1/",
-            "https://api.redpill.ai",
-        ] {
-            let url = format_redpill_attestation_url("m", "n", base);
-            assert!(
-                !url.contains("/v1/v1/"),
-                "double /v1/ in {url} (from base {base})"
-            );
-            assert!(url.contains("/v1/attestation/report?"));
-        }
     }
 }

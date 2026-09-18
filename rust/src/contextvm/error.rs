@@ -8,7 +8,6 @@
 use std::fmt;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ContextvmError {
     /// Transport-level failure: relay WebSocket can't connect, DNS fails,
     /// TLS handshake fails. Covers the entire "no relay reachable" class.
@@ -20,8 +19,6 @@ pub enum ContextvmError {
     /// `tokio::time::timeout` elapsed before the proxy delivered a
     /// response on its `UnboundedReceiver<JsonRpcMessage>`.
     Timeout { tool_name: String, secs: u64 },
-    /// Provider returned a JSON-RPC `error` envelope.
-    JsonRpc { code: i64, message: String },
     /// Anything else — preserves the underlying error message verbatim
     /// for debugging.
     Other { detail: String },
@@ -38,9 +35,6 @@ impl fmt::Display for ContextvmError {
             }
             ContextvmError::Timeout { tool_name, secs } => {
                 write!(f, "Error: tool '{}' timed out ({}s)", tool_name, secs)
-            }
-            ContextvmError::JsonRpc { code, message } => {
-                write!(f, "Error: {}: {}", code, message)
             }
             ContextvmError::Other { detail } => write!(f, "Error: {}", detail),
         }

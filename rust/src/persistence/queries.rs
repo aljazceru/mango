@@ -841,6 +841,8 @@ pub struct DocumentRow {
 /// as the usearch vector key so there is a 1:1 mapping between SQLite chunk rows
 /// and HNSW index entries.
 #[derive(Debug, Clone)]
+// ponytail: id/chunk_index/char_offset are read only by the rag ordering tests
+// that pin the row contract; prod reads only `text`.
 #[allow(dead_code)]
 pub struct ChunkRow {
     /// SQLite rowid -- also the usearch vector key.
@@ -1415,7 +1417,6 @@ pub fn list_directory_files_by_source(
 }
 
 /// Delete a single file fingerprint (source_id, file_path) pair.
-#[allow(dead_code)]
 pub fn delete_directory_file(
     conn: &Connection,
     source_id: &str,

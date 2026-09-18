@@ -22,8 +22,6 @@ pub struct DiscoveredServer {
 /// Nostr profile metadata (kind 0) for a provider.
 #[derive(Debug, Clone)]
 pub struct ProviderProfile {
-    #[allow(dead_code)]
-    pubkey_hex: String,
     pub name: Option<String>,
     pub about: Option<String>,
     pub picture: Option<String>,
@@ -320,7 +318,6 @@ pub async fn fetch_provider_profiles_batch(
             result.insert(
                 pubkey_hex.clone(),
                 ProviderProfile {
-                    pubkey_hex,
                     name,
                     about,
                     picture,

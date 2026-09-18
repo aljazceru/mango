@@ -28,7 +28,6 @@ pub struct AttestationCache<'a> {
     conn: &'a Connection,
 }
 
-#[allow(dead_code)]
 impl<'a> AttestationCache<'a> {
     /// Create an AttestationCache that borrows a Connection from Database.
     ///
@@ -36,86 +35,6 @@ impl<'a> AttestationCache<'a> {
     /// This constructor is infallible -- no I/O occurs at creation time.
     pub fn new(conn: &'a Connection) -> Self {
         Self { conn }
-    }
-
-    /// Read a cached attestation record for `(backend_id, tee_type)`.
-    ///
-    /// Returns `None` if:
-    /// - No entry exists for this key, or
-    /// - The cached entry has expired (`expires_at <= now`)
-    ///
-    /// Per D-09: only the non-expired entry is returned.
-    pub fn get(
-        &self,
-        backend_id: &str,
-        tee_type: &str,
-    ) -> Result<Option<AttestationRecord>, AttestationError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let mut stmt = self
-            .conn
-            .prepare_cached(
-                "SELECT status, report_blob, verified_at, expires_at,
-                        shape, freshness, orchestrated_components
-                 FROM attestation_cache
-                 WHERE backend_id = ?1 AND tee_type = ?2 AND expires_at > ?3",
-            )
-            .map_err(|e| AttestationError::CacheFailed {
-                reason: e.to_string(),
-            })?;
-
-        let result = stmt.query_row(rusqlite::params![backend_id, tee_type, now as i64], |row| {
-            let status_str: String = row.get(0)?;
-            let report_blob: Vec<u8> = row.get(1)?;
-            let verified_at: i64 = row.get(2)?;
-            let expires_at: i64 = row.get(3)?;
-            let shape: Option<String> = row.get(4)?;
-            let freshness: Option<String> = row.get(5)?;
-            let components_json: Option<String> = row.get(6)?;
-            let orchestrated_components: Option<Vec<(String, String)>> = components_json
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok());
-
-            let status = if status_str == "verified" || status_str == "provider_verified" {
-                AttestationStatus::Verified {
-                    shape: shape.clone(),
-                    freshness: freshness.clone(),
-                    orchestrated_components: orchestrated_components.as_ref().map(|v| {
-                        v.iter()
-                            .map(|(label, value)| OrchestratedComponent {
-                                label: label.clone(),
-                                value: value.clone(),
-                            })
-                            .collect()
-                    }),
-                }
-            } else {
-                deserialize_status(&status_str)
-            };
-
-            Ok(AttestationRecord {
-                backend_id: backend_id.to_string(),
-                tee_type: tee_type.to_string(),
-                status,
-                report_blob,
-                verified_at: verified_at as u64,
-                expires_at: expires_at as u64,
-                shape,
-                freshness,
-                orchestrated_components,
-            })
-        });
-
-        match result {
-            Ok(record) => Ok(Some(record)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(AttestationError::CacheFailed {
-                reason: e.to_string(),
-            }),
-        }
     }
 
     /// Read the most recent non-expired cached record for a backend, regardless of tee_type.
@@ -230,37 +149,6 @@ impl<'a> AttestationCache<'a> {
             })?;
         Ok(())
     }
-
-    /// Retrieve the raw attestation report blob for a given backend and TEE type.
-    ///
-    /// Per D-12: raw report is stored in SQLite and exposed via a dedicated FFI
-    /// method -- not in AppState. Returns `None` if no cached entry exists
-    /// (regardless of TTL -- the raw report may be useful even after expiry).
-    pub fn get_raw_report(
-        &self,
-        backend_id: &str,
-        tee_type: &str,
-    ) -> Result<Option<Vec<u8>>, AttestationError> {
-        let mut stmt = self
-            .conn
-            .prepare_cached(
-                "SELECT report_blob FROM attestation_cache
-                 WHERE backend_id = ?1 AND tee_type = ?2",
-            )
-            .map_err(|e| AttestationError::CacheFailed {
-                reason: e.to_string(),
-            })?;
-
-        let result = stmt.query_row(rusqlite::params![backend_id, tee_type], |row| row.get(0));
-
-        match result {
-            Ok(blob) => Ok(Some(blob)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(AttestationError::CacheFailed {
-                reason: e.to_string(),
-            }),
-        }
-    }
 }
 
 // ── Status serialization helpers ─────────────────────────────────────────────
@@ -283,7 +171,6 @@ fn serialize_status(s: &AttestationStatus) -> String {
 /// Non-row-mapper fallback: returns Verified with None subfields. Row-mapper
 /// paths in get/get_latest_for_backend construct Verified directly from columns
 /// (shape, freshness, orchestrated_components) so the fields survive round-trip.
-#[allow(dead_code)]
 fn deserialize_status(s: &str) -> AttestationStatus {
     match s {
         // Note: callers reconstructing from a SQLite row should populate these fields directly

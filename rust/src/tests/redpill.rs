@@ -27,27 +27,6 @@ fn redpill_preset_present() {
 }
 
 #[test]
-fn attestation_url_format() {
-    use crate::llm::redpill::format_redpill_attestation_url;
-    let url =
-        format_redpill_attestation_url("openai/gpt-oss-20b", "abc123", "https://api.redpill.ai/v1");
-    assert!(
-        url.ends_with("/v1/attestation/report?model=openai%2Fgpt-oss-20b&nonce=abc123"),
-        "unexpected URL: {url}"
-    );
-    // Trailing slash variant
-    let url2 = format_redpill_attestation_url(
-        "openai/gpt-oss-20b",
-        "abc123",
-        "https://api.redpill.ai/v1/",
-    );
-    assert!(
-        url2.ends_with("/v1/attestation/report?model=openai%2Fgpt-oss-20b&nonce=abc123"),
-        "unexpected URL (trailing-slash): {url2}"
-    );
-}
-
-#[test]
 fn tinfoil_route_refused_with_typed_error() {
     use crate::attestation::redpill::RedpillError;
     use crate::tests::common::redpill_fixtures::SHAPE_D_TINFOIL_REFUSAL_JSON;

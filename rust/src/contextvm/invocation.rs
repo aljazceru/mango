@@ -63,7 +63,6 @@ pub fn truncate_result(s: String) -> String {
 }
 
 /// Format a JSON-RPC error envelope as a tool-call result string.
-/// Locked copy: matches `ContextvmError::JsonRpc` Display.
 pub fn format_jsonrpc_error(code: i64, message: &str) -> String {
     format!("Error: {}: {}", code, message)
 }

@@ -1660,8 +1660,6 @@ struct PendingAttachment {
 struct PendingImageAttachment {
     filename: String,
     file_path: String, // absolute path in app sandbox
-    #[allow(dead_code)]
-    mime_type: String, // "image/jpeg" | "image/png"
 }
 
 #[derive(Clone, Debug)]
@@ -3386,7 +3384,6 @@ fn rehydrate_retry_image_attachment(
     Ok(Some(PendingImageAttachment {
         filename: retry_image_filename(&message.content),
         file_path: retry_path,
-        mime_type: "image/jpeg".to_string(),
     }))
 }
 
@@ -9684,7 +9681,6 @@ impl FfiApp {
                                             Some(PendingImageAttachment {
                                                 filename: filename.clone(),
                                                 file_path,
-                                                mime_type,
                                             });
                                         actor_state.app_state.pending_attachment =
                                             Some(AttachmentInfo {
@@ -14955,7 +14951,6 @@ mod image_red_tests {
         actor_state.pending_image_attachment = Some(PendingImageAttachment {
             filename: "x.jpg".to_string(),
             file_path: tmp.to_str().unwrap().to_string(),
-            mime_type: "image/jpeg".to_string(),
         });
 
         // NOTE: `build_user_message_with_image` does not exist yet -- RED.
@@ -15004,7 +14999,6 @@ mod image_red_tests {
         actor_state.pending_image_attachment = Some(PendingImageAttachment {
             filename: filename.to_string(),
             file_path: tmp.to_str().unwrap().to_string(),
-            mime_type: "image/jpeg".to_string(),
         });
 
         // Simulate what `do_send_message` now does: pass the RAW user text.
@@ -16685,7 +16679,6 @@ mod image_red_tests {
             .expect("rehydrate succeeds")
             .expect("image attachment");
         assert_eq!(attachment.filename, "photo.jpg");
-        assert_eq!(attachment.mime_type, "image/jpeg");
         assert_eq!(std::fs::read(&attachment.file_path).unwrap(), plaintext);
 
         let _ = std::fs::remove_dir_all(temp_dir);
@@ -16805,7 +16798,6 @@ mod image_red_tests {
                 actor_state.pending_image_attachment = Some(PendingImageAttachment {
                     filename: filename.clone(),
                     file_path,
-                    mime_type,
                 });
                 actor_state.app_state.pending_attachment = Some(AttachmentInfo {
                     filename,

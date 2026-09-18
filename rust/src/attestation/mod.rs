@@ -9,7 +9,6 @@
 pub mod cache;
 pub mod endpoint;
 pub mod error;
-pub mod nonce;
 pub mod nvidia;
 pub mod policy;
 pub mod redpill;

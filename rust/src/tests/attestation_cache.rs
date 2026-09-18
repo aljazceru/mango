@@ -52,7 +52,7 @@ fn test_cache_write_and_read() {
     cache.put(&record).expect("put should succeed");
 
     let retrieved = cache
-        .get("tinfoil", "IntelTdx")
+        .get_latest_for_backend("tinfoil")
         .expect("get should not error")
         .expect("record should be present before TTL");
 
@@ -83,7 +83,7 @@ fn test_cache_expiry() {
     cache.put(&record).expect("put should succeed");
 
     let result = cache
-        .get("test-backend", "IntelTdx")
+        .get_latest_for_backend("test-backend")
         .expect("get should not error");
 
     assert!(
@@ -121,7 +121,7 @@ fn test_cache_upsert() {
     cache.put(&updated).expect("upsert should succeed");
 
     let retrieved = cache
-        .get("tinfoil", "IntelTdx")
+        .get_latest_for_backend("tinfoil")
         .expect("get should not error")
         .expect("upserted record should be present");
 
@@ -135,44 +135,8 @@ fn test_cache_upsert() {
     assert_eq!(retrieved.verified_at, 1_700_001_000);
 }
 
-#[test]
-fn test_get_raw_report() {
-    let db = Database::open(":memory:").unwrap();
-    let cache = AttestationCache::new(db.conn());
-    let now = now_secs();
-    let report_blob = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03];
-
-    let record = AttestationRecord {
-        backend_id: "tinfoil".to_string(),
-        tee_type: "IntelTdx".to_string(),
-        status: AttestationStatus::Verified {
-            shape: None,
-            freshness: None,
-            orchestrated_components: None,
-        },
-        report_blob: report_blob.clone(),
-        verified_at: 1_700_000_000,
-        expires_at: now + 3600,
-        shape: None,
-        freshness: None,
-        orchestrated_components: None,
-    };
-    cache.put(&record).expect("put should succeed");
-
-    let raw = cache
-        .get_raw_report("tinfoil", "IntelTdx")
-        .expect("get_raw_report should not error")
-        .expect("raw report should be present");
-
-    assert_eq!(
-        raw, report_blob,
-        "raw report bytes should match what was stored"
-    );
-}
-
-// --- TTL expiry and bypass tests (TEST-03) ---
-// These verify get_latest_for_backend rejects expired entries while
-// get_raw_report bypasses TTL by design (per D-06, D-07).
+// --- TTL expiry tests (TEST-03) ---
+// These verify get_latest_for_backend rejects expired entries.
 
 #[test]
 fn test_get_latest_for_backend_expiry() {
@@ -305,27 +269,4 @@ fn cache_pre_v19_row_returns_none_subfields() {
             orchestrated_components: None
         }
     ));
-}
-
-#[test]
-fn test_get_raw_report_bypasses_ttl() {
-    // get_raw_report omits the TTL filter -- returns blob even when expired (by design).
-    let db = Database::open(":memory:").unwrap();
-    let cache = AttestationCache::new(db.conn());
-    let expired_at = now_secs() - 1; // 1 second in the past
-    cache
-        .put(&make_record("tinfoil", "AmdSevSnp", expired_at))
-        .expect("put should succeed");
-    let raw = cache
-        .get_raw_report("tinfoil", "AmdSevSnp")
-        .expect("get_raw_report should not error");
-    assert!(
-        raw.is_some(),
-        "get_raw_report must return blob even when TTL is expired (by design)"
-    );
-    assert_eq!(
-        raw.unwrap(),
-        vec![0xCA, 0xFE, 0xBA, 0xBE],
-        "raw report bytes must match stored value"
-    );
 }
