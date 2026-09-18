@@ -280,46 +280,28 @@ jobs:
         working-directory: android
         run: ./gradlew assembleRelease
 
-      # Preserve the default artifact BEFORE the flag-off rebuild can overwrite
-      # app-release.apk, into a dedicated distribution directory that contains
-      # exactly the two APKs we intend to publish.
-      - name: Preserve default APK and verify managed-PPQ presence
+      # Managed PPQ ships in every build — verify the bytes, then stage the
+      # single published APK under an unambiguous name.
+      - name: Verify managed-PPQ presence and stage release APK
         working-directory: android
         run: |
           set -euo pipefail
           src="app/build/outputs/apk/release/app-release.apk"
           dist="app/build/outputs/apk/dist"
-          [[ -f "$src" ]] || { echo "::error::default release APK missing: $src"; exit 1; }
+          [[ -f "$src" ]] || { echo "::error::release APK missing: $src"; exit 1; }
           mkdir -p "$dist"
-          cp "$src" "$dist/mango-default-release.apk"
-          ../scripts/check_ppq_packaging.sh present "$dist/mango-default-release.apk"
+          ../scripts/check_ppq_packaging.sh present "$src"
+          cp "$src" "$dist/mango-release.apk"
 
-      # Emergency-rollback comparison build: same pipeline with the managed-PPQ
-      # UI compiled out. The default APK is already safe in dist/.
-      - name: Build flag-off comparison APK (managed PPQ disabled)
-        working-directory: android
-        run: |
-          set -euo pipefail
-          ./gradlew assembleRelease -PMANAGED_PPQ_ENABLED=false
-          src="app/build/outputs/apk/release/app-release.apk"
-          dist="app/build/outputs/apk/dist"
-          [[ -f "$src" ]] || { echo "::error::flag-off release APK missing: $src"; exit 1; }
-          mv "$src" "$dist/mango-flag-off-release.apk"
-          ../scripts/check_ppq_packaging.sh absent "$dist/mango-flag-off-release.apk"
-
-      - name: Upload release APKs
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
           name: mango-android-release-${{ github.sha }}
-          path: |
-            android/app/build/outputs/apk/dist/mango-default-release.apk
-            android/app/build/outputs/apk/dist/mango-flag-off-release.apk
+          path: android/app/build/outputs/apk/dist/mango-release.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Attach APKs to release
+      - name: Attach APK to release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            android/app/build/outputs/apk/dist/mango-default-release.apk
-            android/app/build/outputs/apk/dist/mango-flag-off-release.apk
+          files: android/app/build/outputs/apk/dist/mango-release.apk
