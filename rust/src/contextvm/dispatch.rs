@@ -145,32 +145,3 @@ pub fn descriptors_to_chat_tools(
         .collect()
 }
 
-/// Hydrate the in-memory descriptor list from the database. Reads all
-/// currently-enabled `contextvm_tools` rows, parses them into
-/// descriptors, and runs them through `finalise_for_turn` so the actor
-/// gets a ready-to-use, filtered, capped, sorted slice.
-///
-/// Rows whose `schema_json` fails to parse are silently dropped (logged
-/// via `log::warn!`). Plan 35-05 calls this once at conversation
-/// start.
-#[allow(dead_code)]
-pub fn hydrate_from_db(conn: &rusqlite::Connection) -> Vec<ContextvmToolDescriptor> {
-    let rows = match crate::persistence::queries::list_enabled_contextvm_tools(conn) {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!("hydrate_from_db: list_enabled failed: {}", e);
-            return Vec::new();
-        }
-    };
-    let descriptors: Vec<_> = rows
-        .iter()
-        .filter_map(|r| match ContextvmToolDescriptor::from_row(r) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                log::warn!("hydrate_from_db: skipping row '{}': {}", r.tool_name, e);
-                None
-            }
-        })
-        .collect();
-    finalise_for_turn(descriptors)
-}

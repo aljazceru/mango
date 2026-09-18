@@ -58,6 +58,6 @@ case "$MODE" in
     # the relevant functions / error strings.
     adb logcat -v time \
       | grep --line-buffered -iE \
-          "contextvm_sdk|invoke_tool|dispatch_tools|secret.key|relay.*unreachable|tools/call|timed out \(15s\)|NostrMCPProxy|contextvm_secret_key|hydrate_from_db|finalise_for_turn|remote tool|reserved.name|provider_pubkey"
+          "contextvm_sdk|invoke_tool|dispatch_tools|secret.key|relay.*unreachable|tools/call|timed out \(15s\)|NostrMCPProxy|contextvm_secret_key|finalise_for_turn|remote tool|reserved.name|provider_pubkey"
     ;;
 esac
