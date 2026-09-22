@@ -565,8 +565,7 @@ class Runner:
             self.wait_for_foreground(step["wait_for_foreground"], tries=step.get("tries", 20))
             return current
         if "maybe" in step:
-            if current is None:
-                current = self.dump_ui("maybe")
+            current = self.dump_ui("maybe")
             spec = step["maybe"]
             when_text = spec.get("when_text")
             when_desc = spec.get("when_desc")
