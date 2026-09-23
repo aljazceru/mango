@@ -2287,7 +2287,7 @@ fn spawn_directory_sync_workers(
             loop {
                 // Apply any newly-registered paths.
                 if let Ok(guard) = watched_paths.lock() {
-                    for (_sid, p) in guard.iter() {
+                    for p in guard.values() {
                         if registered_paths.contains(p) {
                             continue;
                         }

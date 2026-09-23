@@ -7957,11 +7957,11 @@ fn load_post_unlock(
     let global_system_prompt = persistence::queries::get_setting(db.conn(), "global_system_prompt")
         .ok()
         .flatten()
-        .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
+        .filter(|v| !v.trim().is_empty());
     let default_model_id = persistence::queries::get_setting(db.conn(), "default_model_id")
         .ok()
         .flatten()
-        .and_then(|v| if v.trim().is_empty() { None } else { Some(v) });
+        .filter(|v| !v.trim().is_empty());
     let memory_count: u64 = db
         .conn()
         .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0))
