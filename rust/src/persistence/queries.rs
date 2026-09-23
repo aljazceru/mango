@@ -151,9 +151,7 @@ pub fn get_conversation_tools_enabled(
     conn: &Connection,
     conversation_id: &str,
 ) -> Result<Option<bool>, PersistenceError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT tools_enabled FROM conversations WHERE id = ?1",
-    )?;
+    let mut stmt = conn.prepare_cached("SELECT tools_enabled FROM conversations WHERE id = ?1")?;
     let mut rows = stmt.query_map([conversation_id], |row| {
         row.get::<_, i64>(0).map(|v| v != 0)
     })?;

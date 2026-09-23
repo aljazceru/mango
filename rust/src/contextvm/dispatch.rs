@@ -144,4 +144,3 @@ pub fn descriptors_to_chat_tools(
         })
         .collect()
 }
-

@@ -13,7 +13,7 @@ type ChatClientCache = std::sync::Mutex<
     >,
 >;
 static CHAT_CLIENT_CACHE: once_cell::sync::Lazy<ChatClientCache> =
-    once_cell::sync::Lazy::new(|| ChatClientCache::default());
+    once_cell::sync::Lazy::new(ChatClientCache::default);
 
 fn cached_chat_client(
     backend: &super::backend::BackendConfig,

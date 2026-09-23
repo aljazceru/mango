@@ -14,8 +14,7 @@ use async_openai::types::chat::{ChatCompletionMessageToolCall, FunctionCall};
 use crate::agent::{build_agent_tools, dispatch_tools};
 use crate::persistence::queries::{
     count_agent_steps, insert_agent_session, insert_agent_step, list_agent_sessions,
-    list_agent_steps, update_agent_session_status, AgentSessionRow,
-    AgentStepRow,
+    list_agent_steps, update_agent_session_status, AgentSessionRow, AgentStepRow,
 };
 use crate::persistence::Database;
 use crate::rag::VectorIndex;

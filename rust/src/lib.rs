@@ -3116,25 +3116,22 @@ fn run_pin_unlock_work(
         }
     }
     // CR-03: kek is Zeroizing<[u8; 32]>.
-    let kek: Zeroizing<[u8; 32]> =
-        match crypto::key_derivation::derive_kek(
-            pin.as_bytes(),
-            &params.salt,
-            params.kdf_memory_kib,
-            params.kdf_iterations,
-            params.kdf_parallelism,
-        ) {
-            Ok(k) => k,
-            Err(e) => return PinUnlockOutcome::Failed(format!("KEK derivation failed: {e}")),
-        };
-    // CR-03: wrap in Zeroizing so raw bytes are zeroed on drop.
-    let dek: Zeroizing<[u8; 32]> = match crypto::key_derivation::unwrap_dek(
-        &kek,
-        &params.wrapped_dek,
+    let kek: Zeroizing<[u8; 32]> = match crypto::key_derivation::derive_kek(
+        pin.as_bytes(),
+        &params.salt,
+        params.kdf_memory_kib,
+        params.kdf_iterations,
+        params.kdf_parallelism,
     ) {
-        Ok(d) => Zeroizing::new(d),
-        Err(_) => return PinUnlockOutcome::WrongPin, // AES-GCM tag mismatch
+        Ok(k) => k,
+        Err(e) => return PinUnlockOutcome::Failed(format!("KEK derivation failed: {e}")),
     };
+    // CR-03: wrap in Zeroizing so raw bytes are zeroed on drop.
+    let dek: Zeroizing<[u8; 32]> =
+        match crypto::key_derivation::unwrap_dek(&kek, &params.wrapped_dek) {
+            Ok(d) => Zeroizing::new(d),
+            Err(_) => return PinUnlockOutcome::WrongPin, // AES-GCM tag mismatch
+        };
     let dek_hex: Zeroizing<String> =
         Zeroizing::new(dek.iter().map(|b| format!("{:02x}", b)).collect());
     let db = match persistence::Database::open_encrypted(db_path, &dek_hex) {
@@ -3730,11 +3727,9 @@ fn default_backend_and_model(actor_state: &ActorState) -> (String, String) {
         .ok()
         .flatten()
         .filter(|m| !m.is_empty());
-    let preferred_model = default_model_for_preferred(
-        actor_state,
-        Some(preferred_backend.as_str()),
-    )
-    .filter(|m| !m.is_empty());
+    let preferred_model =
+        default_model_for_preferred(actor_state, Some(preferred_backend.as_str()))
+            .filter(|m| !m.is_empty());
     match default_model_setting.or(preferred_model) {
         Some(model) => (preferred_backend, model),
         None => actor_state
@@ -8434,7 +8429,7 @@ fn load_post_unlock(
             backend.id.clone(),
             backend.base_url.clone(),
             backend.api_key.clone(),
-            pinned_tls_public_key_fp_for_backend(&actor_state, &backend.id),
+            pinned_tls_public_key_fp_for_backend(actor_state, &backend.id),
             verified_key_fp_matches(actor_state.db.as_ref(), &backend.id, &backend.api_key),
             core_tx.clone(),
         );
@@ -12810,7 +12805,7 @@ impl FfiApp {
                                 // still appended to the buffer; StreamDone flushes the rest.
                                 let emit_due = actor_state
                                     .last_stream_emit
-                                    .map_or(true, |t| now.duration_since(t).as_millis() >= 30);
+                                    .is_none_or(|t| now.duration_since(t).as_millis() >= 30);
                                 if actor_state.current_streaming_conversation_id.is_some() {
                                     actor_state.current_streaming_text.push_str(&token);
                                     if emit_due {
@@ -14398,9 +14393,7 @@ impl FfiApp {
                                     core_tx_for_thread.clone(),
                                     WipeMode::DuressPreservePpq,
                                 ) {
-                                    log::error!(
-                                        "[auth] Duress wipe: failed to reset install: {e}"
-                                    );
+                                    log::error!("[auth] Duress wipe: failed to reset install: {e}");
                                     actor_state.app_state.toast = Some(
                                         "All data erased, but setup could not restart.".to_string(),
                                     );
@@ -14421,7 +14414,11 @@ impl FfiApp {
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
-                            PinUnlockOutcome::Ready { dek, db, vector_index } => {
+                            PinUnlockOutcome::Ready {
+                                dek,
+                                db,
+                                vector_index,
+                            } => {
                                 actor_state.db = Some(db);
                                 actor_state.dek = Some(dek);
                                 actor_state.vector_index = vector_index;

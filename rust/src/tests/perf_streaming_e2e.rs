@@ -59,7 +59,7 @@ impl FakeServer {
                             if stream.write_all(resp).is_err() {
                                 return;
                             }
-                            let mut chunk_write = |data: &[u8], stream: &mut std::net::TcpStream| {
+                            let chunk_write = |data: &[u8], stream: &mut std::net::TcpStream| {
                                 let framed = format!("{:x}\r\n", data.len());
                                 stream.write_all(framed.as_bytes()).is_ok()
                                     && stream.write_all(data).is_ok()
@@ -83,9 +83,7 @@ impl FakeServer {
                             let _ = stream.write_all(b"0\r\n\r\n");
                             let _ = stream.flush();
                         } else {
-                            let body = format!(
-                                "{{\"object\":\"list\",\"data\":[{{\"id\":\"echo-mini\",\"object\":\"model\"}}]}}"
-                            );
+                            let body = "{\"object\":\"list\",\"data\":[{\"id\":\"echo-mini\",\"object\":\"model\"}]}".to_string();
                             let resp = format!(
                                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                                 body.len(),
