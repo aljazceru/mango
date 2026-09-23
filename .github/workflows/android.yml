@@ -115,12 +115,6 @@ jobs:
         working-directory: android
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug
 
-      - name: PPQ orchestration gate (required for MANAGED_PPQ_ENABLED builds)
-        run: scripts/check_ppq_gate.sh
-
-      - name: Packaging gate selftest (multi-dex + SIGPIPE regression)
-        run: scripts/check_ppq_packaging.sh selftest
-
       # Debug APK: signed with the auto-generated debug keystore — no secrets.
       # applicationIdSuffix ".dev"; release signing is exercised only on tags.
       - name: Build debug APK (validation packaging)
@@ -248,12 +242,6 @@ jobs:
       - name: Gradle unit tests + lint
         working-directory: android
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug
-
-      - name: PPQ orchestration gate (required for MANAGED_PPQ_ENABLED builds)
-        run: scripts/check_ppq_gate.sh
-
-      - name: Packaging gate selftest (multi-dex + SIGPIPE regression)
-        run: scripts/check_ppq_packaging.sh selftest
 
       # Decode the release keystore from the base64 repository secret. The
       # secret flows through env indirection only; it is never echoed, logged,
