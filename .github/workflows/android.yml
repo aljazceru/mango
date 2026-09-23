@@ -19,139 +19,46 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
-  # PR validation: builds, tests, lint, gates and a debug APK. Requires NO
-  # signing secrets — release signing is a tag-only concern (release job).
+  # Host-side Rust gates: fmt + clippy + full test suite. Runs in PARALLEL with
+  # the android job so the release critical path is max(checks, build), not the
+  # sum. Tag pushes gate the release attach on this job.
   # ─────────────────────────────────────────────────────────────────────────────
-  validate:
-    name: Validate (no signing secrets)
-    if: github.event_name == 'pull_request'
+  checks:
+    name: Rust checks (fmt/clippy/tests)
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: "21"
-          distribution: "temurin"
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          components: clippy, rustfmt
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
 
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
-
-      - name: Build host Rust (for uniffi-bindgen)
-        run: cargo build -p mango_core --release
-
-      # Crate-level rust/uniffi.toml supplies package_name/cdylib_name and
-      # `android = true` (Android-cleaner variant — lint-clean on minSdk 28).
-      # No --config override: uniffi-bindgen 0.32 ignores old-style flat files.
-      - name: Generate Kotlin bindings
-        run: |
-          cargo run -p uniffi-bindgen -- generate \
-            --library target/release/libmango_core.so \
-            --language kotlin \
-            --out-dir android/app/src/main/java \
-            --no-format
-
-      - name: Cross-compile Rust for Android (arm64)
-        run: |
-          cargo ndk -o android/app/src/main/jniLibs -P 28 \
-            -t arm64-v8a \
-            build -p mango_core --release
-
-      - name: Bundle libc++_shared.so (required by ONNX Runtime)
-        run: |
-          NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
-          cp "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
-            android/app/src/main/jniLibs/arm64-v8a/
-
-      - name: Build and bundle llama.cpp Android libraries
-        run: |
-          source android/llama.cpp.version
-          LLAMA_CPP_DIR="$GITHUB_WORKSPACE/../llama.cpp"
-          if [[ -d "$LLAMA_CPP_DIR/.git" ]]; then
-            git -C "$LLAMA_CPP_DIR" fetch --tags "$LLAMA_CPP_REPO" "$LLAMA_CPP_TAG"
-            git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
-          else
-            git clone --branch "$LLAMA_CPP_TAG" "$LLAMA_CPP_REPO" "$LLAMA_CPP_DIR"
-            git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
-          fi
-          NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
-          cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build-android-arm64" \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-28 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=ON \
-            -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DLLAMA_BUILD_SERVER=OFF \
-            -DLLAMA_BUILD_TESTS=OFF
-          cmake --build "$LLAMA_CPP_DIR/build-android-arm64" --config Release --parallel \
-            --target ggml-base ggml-cpu ggml llama llama-common
-          for lib in libggml-base.so libggml-cpu.so libggml.so libllama.so libllama-common.so; do
-            cp "$LLAMA_CPP_DIR/build-android-arm64/bin/$lib" android/app/src/main/jniLibs/arm64-v8a/
-          done
-          scripts/check_llama_versions.sh
-
-      - name: Set up Gradle cache
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Rust fmt/clippy/tests (release gate prerequisites)
+      - name: Rust fmt/clippy/tests
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo test --workspace
 
-      - name: Gradle unit tests + lint
-        working-directory: android
-        run: ./gradlew :app:testDebugUnitTest :app:lintDebug
-
-      # Debug APK: signed with the auto-generated debug keystore — no secrets.
-      # applicationIdSuffix ".dev"; release signing is exercised only on tags.
-      - name: Build debug APK (validation packaging)
-        working-directory: android
-        run: ./gradlew assembleDebug
-
-      - name: Managed-PPQ presence check (debug APK ships the feature)
-        run: |
-          scripts/check_ppq_packaging.sh present \
-            android/app/build/outputs/apk/debug/app-debug.apk
-
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: mango-android-debug-${{ github.sha }}
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 14
-
   # ─────────────────────────────────────────────────────────────────────────────
-  # Signed release: runs ONLY on v* tags. Consumes the repository secrets
-  # documented in docs/release/android-signing.md; secret values are never
-  # printed. Gradle's requireReleaseSigning guard stays authoritative — if any
-  # signing variable is missing the build fails, there is no unsigned fallback.
+  # Android artifact build: bindings + arm64 cross-compile + llama.cpp + Gradle.
+  # PRs produce a debug APK (no secrets); tags produce the signed release APK.
   # ─────────────────────────────────────────────────────────────────────────────
-  release:
-    name: Signed release (tags only)
-    if: startsWith(github.ref, 'refs/tags/')
+  android:
+    name: Android build
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # attach APKs to the tag release
     env:
-      # Mapped from the repository secrets documented in
-      # docs/release/android-signing.md. Secret values are never printed;
-      # Gradle's requireReleaseSigning guard fails the build if any is blank.
-      # (KEYSTORE_PATH is exported by the provisioning step below via
-      # $GITHUB_ENV because the runner context is not available here.)
+      # Tag-only release signing (see docs/release/android-signing.md). Secret
+      # values are never printed; Gradle's requireReleaseSigning guard fails
+      # the build if any is blank. KEYSTORE_PATH is exported by the
+      # provisioning step below via $GITHUB_ENV.
       KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -173,19 +80,26 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+          # Keep cargo-ndk installed across runs (cargo install skips the
+          # rebuild when the cached binary matches the resolved version).
+          cache-directories: ~/.cargo/bin
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
+      # Debug host build: uniffi-bindgen only reads the FFI checksums from the
+      # dylib, and the generated bindings are byte-identical to a release-built
+      # library at a fraction of the compile time.
       - name: Build host Rust (for uniffi-bindgen)
-        run: cargo build -p mango_core --release
+        run: cargo build -p mango_core
 
-      # See validate job: crate-level rust/uniffi.toml drives generation
-      # (package name + android = true cleaner variant).
+      # Crate-level rust/uniffi.toml supplies package_name/cdylib_name and
+      # `android = true` (Android-cleaner variant — lint-clean on minSdk 28).
+      # No --config override: uniffi-bindgen 0.32 ignores old-style flat files.
       - name: Generate Kotlin bindings
         run: |
           cargo run -p uniffi-bindgen -- generate \
-            --library target/release/libmango_core.so \
+            --library target/debug/libmango_core.so \
             --language kotlin \
             --out-dir android/app/src/main/java \
             --no-format
@@ -202,52 +116,88 @@ jobs:
           cp "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
             android/app/src/main/jniLibs/arm64-v8a/
 
+      # llama.cpp is pinned by android/llama.cpp.version — the compiled libs
+      # only change when that file (or the NDK) does, so cache them instead of
+      # rebuilding ~4 minutes of cmake on every run.
+      - name: Restore llama.cpp Android libraries
+        id: llama-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/llama-android-arm64
+          key: llama-android-arm64-${{ env.NDK_VERSION }}-${{ hashFiles('android/llama.cpp.version') }}
+
       - name: Build and bundle llama.cpp Android libraries
         run: |
-          source android/llama.cpp.version
-          LLAMA_CPP_DIR="$GITHUB_WORKSPACE/../llama.cpp"
-          if [[ -d "$LLAMA_CPP_DIR/.git" ]]; then
-            git -C "$LLAMA_CPP_DIR" fetch --tags "$LLAMA_CPP_REPO" "$LLAMA_CPP_TAG"
-            git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
+          mkdir -p "$HOME/llama-android-arm64"
+          if [[ -f "$HOME/llama-android-arm64/libggml.so" ]]; then
+            echo "llama.cpp libs restored from cache"
           else
-            git clone --branch "$LLAMA_CPP_TAG" "$LLAMA_CPP_REPO" "$LLAMA_CPP_DIR"
-            git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
+            source android/llama.cpp.version
+            LLAMA_CPP_DIR="$GITHUB_WORKSPACE/../llama.cpp"
+            if [[ -d "$LLAMA_CPP_DIR/.git" ]]; then
+              git -C "$LLAMA_CPP_DIR" fetch --tags "$LLAMA_CPP_REPO" "$LLAMA_CPP_TAG"
+              git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
+            else
+              git clone --branch "$LLAMA_CPP_TAG" "$LLAMA_CPP_REPO" "$LLAMA_CPP_DIR"
+              git -C "$LLAMA_CPP_DIR" checkout "$LLAMA_CPP_COMMIT"
+            fi
+            NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+            cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build-android-arm64" \
+              -DCMAKE_TOOLCHAIN_FILE="$NDK_HOME/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=arm64-v8a \
+              -DANDROID_PLATFORM=android-28 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=ON \
+              -DLLAMA_BUILD_EXAMPLES=OFF \
+              -DLLAMA_BUILD_SERVER=OFF \
+              -DLLAMA_BUILD_TESTS=OFF
+            cmake --build "$LLAMA_CPP_DIR/build-android-arm64" --config Release --parallel \
+              --target ggml-base ggml-cpu ggml llama llama-common
+            cp "$LLAMA_CPP_DIR"/build-android-arm64/bin/libggml-base.so \
+               "$LLAMA_CPP_DIR"/build-android-arm64/bin/libggml-cpu.so \
+               "$LLAMA_CPP_DIR"/build-android-arm64/bin/libggml.so \
+               "$LLAMA_CPP_DIR"/build-android-arm64/bin/libllama.so \
+               "$LLAMA_CPP_DIR"/build-android-arm64/bin/libllama-common.so \
+               "$HOME/llama-android-arm64/"
           fi
-          NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
-          cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build-android-arm64" \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-28 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=ON \
-            -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DLLAMA_BUILD_SERVER=OFF \
-            -DLLAMA_BUILD_TESTS=OFF
-          cmake --build "$LLAMA_CPP_DIR/build-android-arm64" --config Release --parallel \
-            --target ggml-base ggml-cpu ggml llama llama-common
-          for lib in libggml-base.so libggml-cpu.so libggml.so libllama.so libllama-common.so; do
-            cp "$LLAMA_CPP_DIR/build-android-arm64/bin/$lib" android/app/src/main/jniLibs/arm64-v8a/
-          done
+          cp "$HOME"/llama-android-arm64/*.so android/app/src/main/jniLibs/arm64-v8a/
           scripts/check_llama_versions.sh
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Rust fmt/clippy/tests (release gate prerequisites)
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets --all-features -- -D warnings
-          cargo test --workspace
-
       - name: Gradle unit tests + lint
         working-directory: android
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug
 
+      # ── PR path: debug APK, no signing secrets ──────────────────────────────
+      - name: Build debug APK (validation packaging)
+        if: github.event_name == 'pull_request'
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - name: Managed-PPQ presence check (debug APK ships the feature)
+        if: github.event_name == 'pull_request'
+        run: |
+          scripts/check_ppq_packaging.sh present \
+            android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload debug APK
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mango-android-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      # ── Tag path: signed release APK ────────────────────────────────────────
       # Decode the release keystore from the base64 repository secret. The
       # secret flows through env indirection only; it is never echoed, logged,
       # or included in artifacts. Gradle reads the keystore via KEYSTORE_PATH
       # (exported here, pointing outside the checkout workspace).
       - name: Provision release signing material (from repository secrets)
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
@@ -264,13 +214,15 @@ jobs:
           fi
           echo "KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
 
-      - name: Build default release APK (managed PPQ enabled)
+      - name: Build signed release APK
+        if: startsWith(github.ref, 'refs/tags/')
         working-directory: android
         run: ./gradlew assembleRelease
 
       # Managed PPQ ships in every build — verify the bytes, then stage the
       # single published APK under an unambiguous name.
       - name: Verify managed-PPQ presence and stage release APK
+        if: startsWith(github.ref, 'refs/tags/')
         working-directory: android
         run: |
           set -euo pipefail
@@ -282,6 +234,7 @@ jobs:
           cp "$src" "$dist/mango-release.apk"
 
       - name: Upload release APK
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
           name: mango-android-release-${{ github.sha }}
@@ -289,7 +242,25 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Attach the signed APK to the tag's GitHub release. The ONLY job with
+  # contents:write — gated on both the Rust gates and the signed build.
+  # ─────────────────────────────────────────────────────────────────────────────
+  attach-release:
+    name: Attach APK to release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [checks, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: mango-android-release-${{ github.sha }}
+          path: apk
+
       - name: Attach APK to release
         uses: softprops/action-gh-release@v2
         with:
-          files: android/app/build/outputs/apk/dist/mango-release.apk
+          files: apk/mango-release.apk

@@ -220,9 +220,36 @@ fn streaming_turns_complete_and_reuse_http_connection() {
         ports.len() >= 2,
         "expected at least two chat completions requests, got {ports:?}"
     );
-    let turn_ports = &ports[ports.len() - 2..];
+    let mut turn_ports = ports[ports.len() - 2..].to_vec();
+    if turn_ports[0] != turn_ports[1] {
+        // The global client cache is cleared wholesale at its 64-entry ceiling
+        // (see cached_chat_client). Parallel tests can push it past that
+        // between our turns, rebuilding the client exactly once. A genuine
+        // per-message rebuild bug rebuilds EVERY turn — so send one more turn
+        // and require reuse there.
+        app.dispatch(AppAction::SendMessage {
+            text: "once more".into(),
+            force_role: None,
+        });
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            wait(&app);
+            let state = app.state();
+            if state
+                .messages
+                .iter()
+                .filter(|m| m.role == "assistant")
+                .count()
+                >= 3
+            {
+                break;
+            }
+        }
+        let ports = server.ports.lock().unwrap().clone();
+        turn_ports = ports[ports.len() - 2..].to_vec();
+    }
     assert_eq!(
         turn_ports[0], turn_ports[1],
-        "second turn must reuse the HTTP connection (per-backend client cache)"
+        "consecutive turns must reuse the HTTP connection (per-backend client cache)"
     );
 }
