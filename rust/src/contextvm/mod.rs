@@ -8,7 +8,7 @@
 //! Per RESEARCH §A, contextvm-sdk does NOT export a default relay list, so
 //! we hardcode one here. CTX-07 is interpreted as: "contextvm-sdk-style
 //! defaults (i.e., a curated list of well-known Nostr relays) plus
-//! `wss://relay.nostr.net`".
+//! `wss://relay.primal.net` (relay.nostr.net died 2026-09-24: HTTP 500 on websocket upgrade).".
 
 pub mod discovery;
 pub mod dispatch;
@@ -29,7 +29,7 @@ pub use invocation::invoke_tool;
 pub const DEFAULT_CONTEXTVM_RELAYS: &[&str] = &[
     "wss://relay.damus.io",
     "wss://nos.lol",
-    "wss://relay.nostr.net",
+    "wss://relay.primal.net",
 ];
 
 /// Materialise the const slice into the `Vec<String>` shape the
