@@ -464,7 +464,7 @@ async fn send_private_request(
     );
     headers.insert(
         HeaderName::from_static(X_PRIVATE_MODEL),
-        HeaderValue::from_str(resolve_private_model(model)?.0).map_err(|error| {
+        HeaderValue::from_str(&resolve_private_model(model)?.0).map_err(|error| {
             LlmError::NetworkError {
                 reason: error.to_string(),
             }
@@ -817,19 +817,21 @@ fn build_private_chat_body(
     })
 }
 
-fn resolve_private_model(model: &str) -> Result<(&'static str, &'static str), LlmError> {
-    match model {
-        "private/kimi-k2-5" | "kimi-k2-5" => Ok(("private/kimi-k2-5", "kimi-k2-5")),
-        "private/deepseek-r1-0528" | "deepseek-r1-0528" => {
-            Ok(("private/deepseek-r1-0528", "deepseek-r1-0528"))
-        }
-        "private/gpt-oss-120b" | "gpt-oss-120b" => Ok(("private/gpt-oss-120b", "gpt-oss-120b")),
-        "private/llama3-3-70b" | "llama3-3-70b" => Ok(("private/llama3-3-70b", "llama3-3-70b")),
-        "private/qwen3-vl-30b" | "qwen3-vl-30b" => Ok(("private/qwen3-vl-30b", "qwen3-vl-30b")),
-        _ => Err(LlmError::ModelNotFound {
+fn resolve_private_model(model: &str) -> Result<(String, String), LlmError> {
+    // PPQ's sealed catalog takes BARE model ids, in both the X-Private-Model
+    // header and the sealed body (verified live 2026-09-24: bare -> 200,
+    // private/-prefixed -> 404 model_not_found). The app stores the
+    // private/-prefixed ids from /v1/models; strip the prefix for the wire.
+    // No local allowlist: the server catalog changes independently (it moved
+    // twice since the hardcoded list was written) and 404s carry a clear
+    // server-side message.
+    let bare = model.strip_prefix("private/").unwrap_or(model);
+    if bare.is_empty() {
+        return Err(LlmError::ModelNotFound {
             model_id: model.to_string(),
-        }),
+        });
     }
+    Ok((bare.to_string(), bare.to_string()))
 }
 
 async fn ensure_verified_attestation(
