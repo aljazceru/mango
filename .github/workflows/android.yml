@@ -3,8 +3,14 @@ name: Android
 on:
   push:
     tags: ["v*"]
+    # Pin bumps only: gives tag/PR runs a default-branch-scoped cache to
+    # restore (caches are branch-scoped — tag-only runs save caches nobody
+    # can read back, rebuilding llama.cpp + rust from scratch every release).
+    branches: [main]
+    paths: ["android/llama.cpp.version"]
   pull_request:
     branches: [main]
+  workflow_dispatch: # manual cache seed on main
 
 concurrency:
   group: android-${{ github.ref }}
@@ -25,7 +31,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   checks:
     name: Rust checks (fmt/clippy/tests)
-    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/')
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +58,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   android:
     name: Android build
-    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/')
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       # Tag-only release signing (see docs/release/android-signing.md). Secret
