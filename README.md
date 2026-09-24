@@ -32,6 +32,13 @@ Mango can set up a PPQ account automatically inside the app, so you do not need 
 - BYOK and custom providers still supported
 
 
+## Screenshots 
+<img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/2666953a-0299-4ae9-84db-e23a6ef1d265" />
+<img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/b3647fe2-99e4-4b1d-913c-7f315be5826b" />
+<img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/c508c743-fe7c-4ea7-aaee-9283d9f1369f" />
+<img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/7349dc58-d93b-449e-9f47-0b056c70fb2e" />
+
+
 ## Features
 
 ### Chat
