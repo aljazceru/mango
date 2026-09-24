@@ -928,11 +928,11 @@ fn test_migration_v11_seeds_ppq_ai_private_transport() {
 
     // Verify all 5 private/ model IDs are in the model_list JSON
     let expected_models = [
-        "private/kimi-k2-5",
-        "private/deepseek-r1-0528",
         "private/gpt-oss-120b",
         "private/llama3-3-70b",
-        "private/qwen3-vl-30b",
+        "private/glm-5-3",
+        "private/kimi-k3",
+        "private/deepseek-v4-1-flash",
     ];
     for model in &expected_models {
         assert!(

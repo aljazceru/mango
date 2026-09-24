@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS attestation_cache (
 
 INSERT OR IGNORE INTO backends (id, name, base_url, model_list, tee_type, display_order, is_active, created_at)
 VALUES
-    ('tinfoil', 'Tinfoil', 'https://inference.tinfoil.sh/v1/', '[\"deepseek-v4-flash\",\"kimi-k3\",\"gemma4-31b\",\"llama3-3-70b\",\"gpt-oss-120b\",\"glm-5-2\"]', 'AmdSevSnp', 0, 1, strftime('%s','now'));
+    ('tinfoil', 'Tinfoil', 'https://inference.tinfoil.sh/v1/', '[\"deepseek-v4-1-flash\",\"glm-5-3\",\"glm-5-3-flash\",\"kimi-k3\",\"llama3-3-70b\",\"gemma4-31b\",\"gpt-oss-120b\"]', 'AmdSevSnp', 0, 1, strftime('%s','now'));
 ";
 
 /// Migration v2: add index on agent_steps for ordered step retrieval per session.
@@ -206,7 +206,7 @@ VALUES (
     'ppq-ai',
     'PPQ.AI',
     'https://api.ppq.ai/private/v1/',
-    '[\"private/kimi-k2-5\",\"private/deepseek-r1-0528\",\"private/gpt-oss-120b\",\"private/llama3-3-70b\",\"private/qwen3-vl-30b\"]',
+    '[\"private/gpt-oss-120b\",\"private/llama3-3-70b\",\"private/glm-5-3\",\"private/glm-5-3-flash\",\"private/gemma4-31b\",\"private/kimi-k3\",\"private/deepseek-v4-flash\",\"private/deepseek-v4-1-flash\"]',
     'AmdSevSnp',
     1,
     0,
