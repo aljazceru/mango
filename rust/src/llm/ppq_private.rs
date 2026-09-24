@@ -1353,6 +1353,98 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
 
+    // Live diagnostic: real sealed handshake against production. Ignored by
+    // default; run with PPQ_LIVE_KEY=<account api key> to inspect the raw
+    // sealed-path exchange (status/headers/error body).
+    #[tokio::test]
+    #[ignore]
+    async fn live_sealed_handshake_diagnostic() {
+        let key = std::env::var("PPQ_LIVE_KEY").expect("PPQ_LIVE_KEY");
+        let backend = BackendConfig {
+            id: "ppq-ai".into(),
+            name: "PPQ.AI".into(),
+            base_url: "https://api.ppq.ai/private/v1/".into(),
+            api_key: key.clone(),
+            models: vec!["PPQ_MODEL_PLACEHOLDER".into()],
+            tee_type: crate::TeeType::AmdSevSnp,
+            max_concurrent_requests: 5,
+            supports_tool_use: true,
+        };
+        let verified =
+            ensure_verified_attestation(&backend, &crate::attestation::SnpPolicy::default())
+                .await
+                .expect("attestation");
+        println!("enclave_url={}", verified.enclave_url);
+        let model =
+            std::env::var("PPQ_LIVE_MODEL").unwrap_or("private/deepseek-v4-1-flash".to_string());
+        let body = serde_json::json!({"model": model, "max_tokens": 8, "stream": false, "messages": [{"role": "user", "content": "Say OK"}]}).to_string().into_bytes();
+        let encrypted = encrypt_request_body(&verified.hpke_public_key, &body).expect("seal");
+        let client = build_http_client(Duration::from_secs(30)).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {key}")).unwrap(),
+        );
+        headers.insert(
+            HeaderName::from_static(X_PRIVATE_MODEL),
+            HeaderValue::from_str(&model).unwrap(),
+        );
+        headers.insert(
+            HeaderName::from_static(X_QUERY_SOURCE),
+            HeaderValue::from_static("api"),
+        );
+        headers.insert(
+            HeaderName::from_static(X_TINFOIL_ENCLAVE_URL),
+            HeaderValue::from_str(&format!("https://{}", verified.enclave_url)).unwrap(),
+        );
+        headers.insert(
+            HeaderName::from_static(EHBP_ENCAPSULATED_KEY),
+            HeaderValue::from_str(&hex::encode(encrypted.request_enc)).unwrap(),
+        );
+        let resp = client
+            .post(format!(
+                "{}/chat/completions",
+                backend.base_url.trim_end_matches('/')
+            ))
+            .headers(headers)
+            .body(encrypted.encrypted_body.clone())
+            .send()
+            .await
+            .expect("send");
+        let status = resp.status();
+        let hdrs = resp.headers().clone();
+        let bytes = resp.bytes().await.unwrap_or_default();
+        println!("status={status}");
+        for (k, v) in hdrs.iter() {
+            if k.as_str().starts_with("ehbp") || k.as_str().starts_with("x-") {
+                println!("hdr {k}={}", v.to_str().unwrap_or("?"));
+            }
+        }
+        println!(
+            "body_len={} body_prefix={}",
+            bytes.len(),
+            String::from_utf8_lossy(&bytes[..bytes.len().min(300)])
+        );
+        // Try decrypting as a sealed error body too.
+        let km = derive_response_key_material(
+            &encrypted.exported_secret,
+            &encrypted.request_enc,
+            &hex::decode(
+                hdrs.get(EHBP_RESPONSE_NONCE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or(""),
+            )
+            .unwrap_or_default(),
+        )
+        .ok();
+        if let Some(km) = km {
+            if let Ok(pt) = decrypt_framed_body(&km, &bytes) {
+                println!("decrypted_error={}", String::from_utf8_lossy(&pt));
+            }
+        }
+    }
+
     #[test]
     fn binary_error_body_is_not_rendered_lossy() {
         let body_text = displayable_error_body(&[0xe7, 0x4c, 0x05, 0x71, 0x9b, 0x3e]);
