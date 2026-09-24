@@ -143,6 +143,45 @@ pub fn local_model_catalog() -> Vec<LocalModelPreset> {
             min_ram_bytes: EIGHT_GB_CLASS_REPORTED_RAM_FLOOR,
             chat_template: "phi3".to_string(),
         },
+        LocalModelPreset {
+            id: "qwen3-1_7b-q4_k_m".to_string(),
+            name: "Qwen3 1.7B".to_string(),
+            description: "Successor to the Qwen2.5 default; better chat quality at the same size."
+                .to_string(),
+            filename: "Qwen3-1.7B-Q4_K_M.gguf".to_string(),
+            url: "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf?download=true".to_string(),
+            sha256: "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897".to_string(),
+            size_bytes: 1_107_409_472,
+            quantization: "Q4_K_M".to_string(),
+            min_ram_bytes: 4_294_967_296,
+            chat_template: "chatml".to_string(),
+        },
+        LocalModelPreset {
+            id: "qwen3-4b-instruct-2507-q4_k_m".to_string(),
+            name: "Qwen3 4B Instruct (2507)".to_string(),
+            description: "Current-generation 4B instruct; the strongest local chat for 8 GB phones."
+                .to_string(),
+            filename: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf".to_string(),
+            url: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true".to_string(),
+            sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597".to_string(),
+            size_bytes: 2_497_281_120,
+            quantization: "Q4_K_M".to_string(),
+            min_ram_bytes: EIGHT_GB_CLASS_REPORTED_RAM_FLOOR,
+            chat_template: "chatml".to_string(),
+        },
+        LocalModelPreset {
+            id: "gemma4-e4b-it-qat-q4_k_xl".to_string(),
+            name: "Gemma 4 E4B Instruct (QAT)".to_string(),
+            description: "Google's phone-class Gemma 4 (quantization-aware trained); flagship 12 GB devices."
+                .to_string(),
+            filename: "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf".to_string(),
+            url: "https://huggingface.co/unsloth/gemma-4-E4B-it-qat-GGUF/resolve/main/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf?download=true".to_string(),
+            sha256: "df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3".to_string(),
+            size_bytes: 4_215_695_776,
+            quantization: "Q4_K_XL (QAT)".to_string(),
+            min_ram_bytes: 11_000_000_000, // 12 GB class: such devices report ~11.3 GB
+            chat_template: "gemma".to_string(),
+        },
     ]
 }
 
