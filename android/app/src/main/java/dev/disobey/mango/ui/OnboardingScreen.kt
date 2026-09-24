@@ -217,6 +217,7 @@ private fun PpqBackendSetupBody(
     summary: PpqAccountSummary,
     onAutomatic: () -> Unit,
     onBackup: () -> Unit,
+    onExistingKey: () -> Unit,
     onDeferBackup: () -> Unit,
     onCreateInvoice: (ULong) -> Unit,
     onCheckStatus: () -> Unit,
@@ -227,7 +228,7 @@ private fun PpqBackendSetupBody(
     onRestore: () -> Unit,
 ) {
     when (summary.mode) {
-        PpqAccountMode.NONE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onBackup, onRestore = onRestore)
+        PpqAccountMode.NONE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onExistingKey, onRestore = onRestore)
         PpqAccountMode.EXTERNAL_KEY -> {
             Button(
                 onClick = onContinue,
@@ -237,7 +238,7 @@ private fun PpqBackendSetupBody(
             }
         }
         PpqAccountMode.MANAGED -> when (summary.setupPhase) {
-            PpqSetupPhase.IDLE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onBackup, onRestore = onRestore)
+            PpqSetupPhase.IDLE -> PpqSetupChoice(onAutomatic = onAutomatic, onExistingKey = onExistingKey, onRestore = onRestore)
             PpqSetupPhase.PROVISIONING -> {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -431,6 +432,7 @@ private fun BackendSetupStep(
                 summary = ppqSummary,
                 onAutomatic = { onDispatch(AppAction.ProvisionManagedPpq) },
                 onBackup = { showBackupDialog = true },
+                onExistingKey = { ppqByok = true },
                 onDeferBackup = { onDispatch(AppAction.DeferPpqBackup) },
                 onCreateInvoice = { amountSats ->
                     onDispatch(AppAction.CreatePpqLightningTopup(amountSats = amountSats))
