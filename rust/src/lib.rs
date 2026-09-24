@@ -3986,7 +3986,7 @@ fn route_metadata_for_completed_message(
         .as_ref()
         .filter(|summary| summary.conversation_id.as_deref() == Some(conversation_id))
     {
-        return MessageRouteMetadata {
+        let mut metadata = MessageRouteMetadata {
             backend_id: Some(summary.backend_id.clone()),
             model_id: Some(summary.model_id.clone()),
             decision: Some(backend_role_label(&summary.decision)),
@@ -3995,6 +3995,23 @@ fn route_metadata_for_completed_message(
             tee_label: Some(summary.tee_label.clone()),
             tee_verified: Some(summary.tee_verified),
         };
+        // Defensive: this runs only on successful completion, where the
+        // inline-secure handshake held — if the StreamDone flip was missed
+        // (e.g. streaming ids cleared early), fall back to the actor's
+        // attestation state instead of persisting "unverified".
+        if !metadata.tee_verified.unwrap_or(false) {
+            if let Some(backend) = actor_state
+                .backends
+                .iter()
+                .find(|b| Some(b.id.as_str()) == metadata.backend_id.as_deref())
+            {
+                metadata.tee_verified = Some(
+                    !backend_requires_attestation(backend)
+                        || backend_attestation_verified(actor_state, &backend.id),
+                );
+            }
+        }
+        return metadata;
     }
 
     let backend_id = actor_state.current_streaming_backend_id.clone();
