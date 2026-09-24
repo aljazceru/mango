@@ -10,6 +10,7 @@
 !android/app/src/main/res/mipmap-xxhdpi/*.png
 !android/app/src/main/res/mipmap-xxxhdpi/*.png
 !ios/Mango/Mango/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+!fastlane/metadata/android/en-US/images/phoneScreenshots/*.png
 # Editor swap files
 *.swp
 *.swo
