@@ -262,6 +262,56 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         val errorCode: String? = null,
     )
 
+    data class PpqDestructiveOutcome(
+        val success: Boolean,
+        val error: String? = null,
+    )
+
+    private fun sensitiveAuth(useBiometric: Boolean, pin: String?): dev.disobey.mango.rust.SensitiveActionAuth? =
+        when {
+            useBiometric -> dev.disobey.mango.rust.SensitiveActionAuth.Biometric
+            !pin.isNullOrBlank() -> dev.disobey.mango.rust.SensitiveActionAuth.MainPin(pin = pin)
+            else -> null
+        }
+
+    /** Remove the managed PPQ account from this device (preflight-confirmed). */
+    suspend fun forgetManagedPpq(
+        useBiometric: Boolean,
+        pin: String?,
+        backupRiskAcknowledged: Boolean,
+    ): PpqDestructiveOutcome = withContext(Dispatchers.IO) {
+        val auth = sensitiveAuth(useBiometric, pin) ?: run {
+            android.util.Log.e("AppManager", "forgetManagedPpq: no auth available")
+            return@withContext PpqDestructiveOutcome(success = false)
+        }
+        try {
+            val result = ffiApp.confirmForgetManagedPpq(auth, backupRiskAcknowledged)
+            PpqDestructiveOutcome(result.success, result.error)
+        } catch (e: Exception) {
+            android.util.Log.e("AppManager", "forgetManagedPpq failed", e)
+            PpqDestructiveOutcome(success = false, error = e.message)
+        }
+    }
+
+    /** Delete all app data (preflight-confirmed). */
+    suspend fun deleteAllData(
+        useBiometric: Boolean,
+        pin: String?,
+        backupRiskAcknowledged: Boolean,
+    ): PpqDestructiveOutcome = withContext(Dispatchers.IO) {
+        val auth = sensitiveAuth(useBiometric, pin) ?: run {
+            android.util.Log.e("AppManager", "deleteAllData: no auth available")
+            return@withContext PpqDestructiveOutcome(success = false)
+        }
+        try {
+            val result = ffiApp.confirmDeleteAllData(auth, backupRiskAcknowledged)
+            PpqDestructiveOutcome(result.success, result.error)
+        } catch (e: Exception) {
+            android.util.Log.e("AppManager", "deleteAllData failed", e)
+            PpqDestructiveOutcome(success = false, error = e.message)
+        }
+    }
+
     /**
      * Restore a PPQ account from an encrypted recovery backup. Returns a
      * [PpqRestoreOutcome]; `success` is true only when Rust committed the restore.

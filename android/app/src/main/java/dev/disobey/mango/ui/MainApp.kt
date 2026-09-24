@@ -16,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -23,8 +24,10 @@ import androidx.compose.ui.unit.dp
 import dev.disobey.mango.AppManager
 import dev.disobey.mango.FeatureFlags
 import dev.disobey.mango.rust.AppAction
+import dev.disobey.mango.ui.ppq.PpqDestructivePreflightDialog
 import dev.disobey.mango.rust.Screen
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 
 /// Root composable: routes to Settings, Chat, or Home based on router state.
 @Composable
@@ -305,6 +308,34 @@ fun MainApp(
                     onDispatchAction = { action -> manager.dispatch(action) }
                 )
             }
+        }
+
+        // Global destructive-action confirmation (Rust-owned preflight state;
+        // triggered from Providers "Remove from this device" and Security
+        // "Delete all data"). Without a host these buttons were dead ends.
+        state.ppq.destructivePreflight?.let { preflight ->
+            val scope = rememberCoroutineScope()
+            PpqDestructivePreflightDialog(
+                preflight = preflight,
+                biometricAvailable = state.biometricAvailable,
+                onConfirm = { useBiometric, pin, acknowledged ->
+                    scope.launch {
+                        val outcome = if (preflight.kind == "forget_managed") {
+                            manager.forgetManagedPpq(useBiometric, pin, acknowledged)
+                        } else {
+                            manager.deleteAllData(useBiometric, pin, acknowledged)
+                        }
+                        if (!outcome.success) {
+                            Toast.makeText(
+                                context,
+                                outcome.error?.let { "Failed: $it" } ?: "Action failed",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                },
+                onDismiss = { manager.dispatch(AppAction.CancelDestructivePreflight) },
+            )
         }
         SnackbarHost(
             hostState = snackbarHostState,
