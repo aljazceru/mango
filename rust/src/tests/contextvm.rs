@@ -558,11 +558,11 @@ async fn live_discover_echo_tools_from_env_pubkey() {
 }
 
 #[test]
-fn ctx_07_default_relay_set_includes_curated_relays() {
+fn ctx_07_default_relay_set_includes_relay_nostr_net() {
     let relays = crate::contextvm::DEFAULT_CONTEXTVM_RELAYS;
     assert!(
-        relays.contains(&"wss://relay.primal.net"),
-        "DEFAULT_CONTEXTVM_RELAYS missing relay.primal.net: {:?}",
+        relays.contains(&"wss://relay.nostr.net"),
+        "DEFAULT_CONTEXTVM_RELAYS missing relay.nostr.net: {:?}",
         relays
     );
     assert!(
