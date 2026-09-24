@@ -6686,7 +6686,7 @@ fn resolve_turn_backend_and_model(
         if !backend
             .models
             .iter()
-            .any(|candidate| candidate == &route.model_id)
+            .any(|candidate| llm::BackendConfig::same_model_id(candidate, &route.model_id))
         {
             return Err(TurnResolutionError::UserFacing(format!(
                 "Hybrid route model is missing: {}/{}",

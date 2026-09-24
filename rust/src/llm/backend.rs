@@ -98,6 +98,17 @@ impl BackendConfig {
         super::transport::ProviderTransportKind::for_backend(self)
     }
 
+    /// True when two model ids name the same model, ignoring PPQ's
+    /// `private/` catalog prefix — the same model is listed bare by most
+    /// providers and prefixed by PPQ, and profiles/settings may store either
+    /// form depending on which backend was active when they were written.
+    pub fn same_model_id(a: &str, b: &str) -> bool {
+        fn strip(m: &str) -> &str {
+            m.strip_prefix("private/").unwrap_or(m)
+        }
+        strip(a) == strip(b)
+    }
+
     pub fn provider_kind(&self) -> ProviderKind {
         match self.id.as_str() {
             "tinfoil" => ProviderKind::Tinfoil,

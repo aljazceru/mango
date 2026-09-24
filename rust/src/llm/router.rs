@@ -98,7 +98,11 @@ impl FailoverRouter {
             if exclude_ids.contains(&backend.id.as_str()) {
                 return false;
             }
-            if !backend.models.iter().any(|m| m == model_id) {
+            if !backend
+                .models
+                .iter()
+                .any(|m| super::backend::BackendConfig::same_model_id(m, model_id))
+            {
                 return false;
             }
             // Check health state
