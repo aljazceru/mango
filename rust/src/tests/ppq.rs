@@ -20,10 +20,7 @@ use crate::ppq::secret_store::{
 use crate::{KeychainProvider, NullKeychainProvider};
 use zeroize::Zeroizing;
 
-const FIX: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/tests/ppq-fixtures/"
-);
+const FIX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/tests/ppq-fixtures/");
 
 /// Raw JSON text of a fixture's `response` member. Parsing from text (not a
 /// re-serialized `Value`) preserves number formatting: `serde_json::Value`
