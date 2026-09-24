@@ -5017,6 +5017,12 @@ fn spawn_health_check(
             supports_tool_use: true,
         };
         let transport = backend.transport_kind();
+        // The sealed PPQ endpoint rejects plain (unsealed) bodies with 400 by
+        // design, so the 1-token auth completion probe can never succeed
+        // there — it would permanently mark the backend unhealthy. Model-list
+        // GET (unauthenticated) remains the health signal.
+        let skip_auth_probe =
+            skip_auth_probe || transport == llm::ProviderTransportKind::PpqPrivateE2ee;
         let url = match transport.model_list_url(&backend) {
             Ok(url) => url,
             Err(error) => {
