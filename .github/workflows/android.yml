@@ -131,6 +131,9 @@ jobs:
           mkdir -p "$HOME/llama-android-arm64"
           if [[ -f "$HOME/llama-android-arm64/libggml.so" ]]; then
             echo "llama.cpp libs restored from cache"
+            # The cache key is hashFiles(android/llama.cpp.version) + NDK —
+            # a hit already proves the pin. check_llama_versions.sh needs the
+            # git checkout, which the build branch below creates.
           else
             source android/llama.cpp.version
             LLAMA_CPP_DIR="$GITHUB_WORKSPACE/../llama.cpp"
@@ -161,7 +164,6 @@ jobs:
                "$HOME/llama-android-arm64/"
           fi
           cp "$HOME"/llama-android-arm64/*.so android/app/src/main/jniLibs/arm64-v8a/
-          scripts/check_llama_versions.sh
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4

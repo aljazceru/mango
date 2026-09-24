@@ -6,14 +6,16 @@ use tokio_util::sync::CancellationToken;
 /// (100-400 ms on mobile). Keyed by everything that defines the client
 /// (backend id, base URL, API key, pinned TLS fingerprint) so config changes
 /// naturally miss and rebuild.
-type ChatClientCache = std::sync::Mutex<
+type ChatClientCache = std::sync::Mutex<(
     std::collections::HashMap<
         (String, String, String, Option<String>),
         async_openai::Client<async_openai::config::OpenAIConfig>,
     >,
->;
+    // FIFO eviction order for the 64-entry ceiling.
+    std::collections::VecDeque<(String, String, String, Option<String>)>,
+)>;
 static CHAT_CLIENT_CACHE: once_cell::sync::Lazy<ChatClientCache> =
-    once_cell::sync::Lazy::new(ChatClientCache::default);
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new((Default::default(), Default::default())));
 
 fn cached_chat_client(
     backend: &super::backend::BackendConfig,
@@ -29,20 +31,37 @@ fn cached_chat_client(
     let mut cache = CHAT_CLIENT_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(client) = cache.get(&key) {
-        return Ok(client.clone());
+    if let Some(client) = cache.0.get(&key).cloned() {
+        // LRU: refresh eviction position on hit so an actively-used client
+        // (e.g. consecutive chat turns) is never the eviction victim.
+        if let Some(pos) = cache.1.iter().position(|k| k == &key) {
+            cache.1.remove(pos);
+            cache.1.push_back(key.clone());
+        }
+        return Ok(client);
     }
     let (client, _used_pin) = transport.build_openai_client(
         backend,
         pinned_tls_public_key_fp,
         std::time::Duration::from_secs(60),
     )?;
-    // ponytail: unbounded in theory — bounded by backend-config combinations;
-    // cleared wholesale if it ever exceeds 64 entries
-    if cache.len() >= 64 {
-        cache.clear();
+    // ponytail: 512-entry LRU ceiling — evicts least-recently-used keys only.
+    // The old 64-entry wholesale clear repeatedly nuked live entries under
+    // parallel test load (CI flake in perf_streaming_e2e: dozens of distinct
+    // fake-backend keys churn per second). Production never approaches the
+    // ceiling (bounded by real backend configs); if 512 idle reqwest pools
+    // ever matter, drop it to per-backend weak handles.
+    if cache.0.len() >= 512 {
+        while let Some(evict) = cache.1.pop_front() {
+            if cache.0.remove(&evict).is_some() {
+                break;
+            }
+        }
     }
-    cache.insert(key, client.clone());
+    if !cache.1.contains(&key) {
+        cache.1.push_back(key.clone());
+    }
+    cache.0.insert(key, client.clone());
     Ok(client)
 }
 
