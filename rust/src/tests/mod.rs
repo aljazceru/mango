@@ -39,6 +39,7 @@ mod redpill;
 mod routing;
 mod security_regressions;
 mod settings;
+mod retention;
 mod streaming;
 mod tee_policy;
 mod transport;

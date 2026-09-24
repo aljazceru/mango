@@ -511,6 +511,16 @@ pub struct AppState {
     pub auth_initialized: bool,
     /// True when the main DB was opened with SQLCipher encryption (D-01).
     pub encryption_enabled: bool,
+    // Quick/261018-conv-retention additions:
+    /// Auto-archive/delete mode for conversations older than N days. Off by default.
+    /// Persisted via settings table key "conversation_retention_mode".
+    pub conversation_retention_mode: ConversationRetentionMode,
+    /// Age threshold (days) for the conversation retention sweep. Default 30.
+    /// Persisted via settings table key "conversation_retention_days".
+    pub conversation_retention_days: u32,
+    /// Archived conversation summaries, loaded alongside the sidebar list so the
+    /// Settings archived section can offer unarchive. Empty while nothing is archived.
+    pub archived_conversations: Vec<ConversationSummary>,
     // Phase 32 additions:
     /// Directory-source summaries loaded from SQLite on startup / after mutations
     /// (DIR-04). Populated by `load_directory_sources_summary`; never includes
@@ -592,6 +602,9 @@ impl Default for AppState {
             lock_timeout_seconds: 300,
             auth_initialized: false,
             encryption_enabled: false,
+            conversation_retention_mode: ConversationRetentionMode::Off,
+            conversation_retention_days: 30,
+            archived_conversations: vec![],
             directory_sources: vec![],
             contextvm_tools: vec![],
             auto_discover_tools_enabled: false,
@@ -697,6 +710,33 @@ pub enum Screen {
     Locked,
     /// PIN/password setup screen -- shown on first launch after onboarding (Phase 28, D-14).
     PinSetup,
+}
+
+/// Conversation auto-retention mode (quick/261018-conv-retention).
+/// Off by default. Archive hides old conversations from the sidebar (recoverable
+/// in Settings); Delete permanently removes them and their messages.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq)]
+pub enum ConversationRetentionMode {
+    Off,
+    Archive,
+    Delete,
+}
+
+impl ConversationRetentionMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ConversationRetentionMode::Off => "off",
+            ConversationRetentionMode::Archive => "archive",
+            ConversationRetentionMode::Delete => "delete",
+        }
+    }
+    fn from_setting(v: &str) -> Self {
+        match v {
+            "archive" => ConversationRetentionMode::Archive,
+            "delete" => ConversationRetentionMode::Delete,
+            _ => ConversationRetentionMode::Off,
+        }
+    }
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
@@ -995,6 +1035,16 @@ pub enum AppAction {
     /// Persisted as "1"/"0" in the settings table under key "memories_enabled".
     SetMemoriesEnabled {
         enabled: bool,
+    },
+    /// Configure automatic conversation retention (quick/261018-conv-retention).
+    /// Persists mode + days to the settings table and runs the sweep immediately.
+    SetConversationRetention {
+        mode: ConversationRetentionMode,
+        days: u32,
+    },
+    /// Restore an archived conversation to the active sidebar list.
+    UnarchiveConversation {
+        id: String,
     },
     /// Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
     /// Persisted in conversations.tools_enabled column via update_conversation_tools_enabled.
@@ -3508,7 +3558,7 @@ fn refresh_conversations(actor_state: &mut ActorState) {
         log::debug!("[state] refresh_conversations skipped while DB is locked");
         return;
     };
-    let rows = persistence::queries::list_conversations(db.conn()).unwrap_or_default();
+    let rows = persistence::queries::list_active_conversations(db.conn()).unwrap_or_default();
     actor_state.app_state.conversations = rows
         .iter()
         .map(|row| ConversationSummary {
@@ -3521,6 +3571,60 @@ fn refresh_conversations(actor_state: &mut ActorState) {
             tools_enabled: row.tools_enabled,
         })
         .collect();
+    let archived = persistence::queries::list_archived_conversations(db.conn()).unwrap_or_default();
+    actor_state.app_state.archived_conversations = archived
+        .iter()
+        .map(|row| ConversationSummary {
+            id: row.id.clone(),
+            title: row.title.clone(),
+            model_id: row.model_id.clone(),
+            backend_id: row.backend_id.clone(),
+            updated_at: row.updated_at,
+            system_prompt: row.system_prompt.clone(),
+            tools_enabled: row.tools_enabled,
+        })
+        .collect();
+}
+
+/// Run the conversation retention sweep according to the configured mode
+/// (quick/261018-conv-retention). Archive mode sets `archived_at` on stale
+/// active conversations; Delete mode permanently removes stale conversations
+/// and their messages. No-op while mode is Off or days is 0. Called from
+/// load_post_unlock (startup/unlock) and the SetConversationRetention handler
+/// so a settings change takes effect immediately.
+fn apply_conversation_retention(actor_state: &ActorState) {
+    let mode = actor_state.app_state.conversation_retention_mode;
+    if mode == ConversationRetentionMode::Off || actor_state.app_state.conversation_retention_days == 0 {
+        return;
+    }
+    let Some(db) = actor_state.db.as_ref() else {
+        return;
+    };
+    let now = chrono::Utc::now().timestamp();
+    let cutoff = now - (actor_state.app_state.conversation_retention_days as i64) * 86_400;
+    let result = match mode {
+        ConversationRetentionMode::Archive => {
+            persistence::queries::archive_conversations_older_than(db.conn(), cutoff, now)
+        }
+        ConversationRetentionMode::Delete => {
+            persistence::queries::delete_conversations_older_than(db.conn(), cutoff)
+        }
+        ConversationRetentionMode::Off => return,
+    };
+    match result {
+        Ok(n) if n > 0 => log::info!(
+            "[retention] {} conversation(s) {} (cutoff {})",
+            n,
+            if mode == ConversationRetentionMode::Archive {
+                "archived"
+            } else {
+                "deleted"
+            },
+            cutoff
+        ),
+        Ok(_) => {}
+        Err(e) => log::warn!("[retention] sweep failed: {}", e),
+    }
 }
 
 /// Refresh app_state.messages from the DB for the given conversation_id.
@@ -7873,9 +7977,27 @@ fn load_post_unlock(
         })
         .collect();
 
+    // Load retention settings and run the sweep BEFORE loading conversations so
+    // stale rows never flash into the sidebar (quick/261018-conv-retention).
+    actor_state.app_state.conversation_retention_mode =
+        persistence::queries::get_setting(db.conn(), "conversation_retention_mode")
+            .ok()
+            .flatten()
+            .map(|v| ConversationRetentionMode::from_setting(&v))
+            .unwrap_or(ConversationRetentionMode::Off);
+    actor_state.app_state.conversation_retention_days =
+        persistence::queries::get_setting(db.conn(), "conversation_retention_days")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|d| *d > 0)
+            .unwrap_or(30);
+    apply_conversation_retention(actor_state);
+
     // Load conversations (mutable because the pending-first-run continuation may
     // append the freshly created first conversation).
-    let conversation_rows = persistence::queries::list_conversations(db.conn()).unwrap_or_default();
+    let conversation_rows =
+        persistence::queries::list_active_conversations(db.conn()).unwrap_or_default();
     let mut conversations: Vec<ConversationSummary> = conversation_rows
         .iter()
         .map(|row| ConversationSummary {
@@ -7888,7 +8010,21 @@ fn load_post_unlock(
             tools_enabled: row.tools_enabled,
         })
         .collect();
-
+    // Archived conversations for the Settings archived section (retention).
+    let archived_conversations: Vec<ConversationSummary> =
+        persistence::queries::list_archived_conversations(db.conn())
+            .unwrap_or_default()
+            .iter()
+            .map(|row| ConversationSummary {
+                id: row.id.clone(),
+                title: row.title.clone(),
+                model_id: row.model_id.clone(),
+                backend_id: row.backend_id.clone(),
+                updated_at: row.updated_at,
+                system_prompt: row.system_prompt.clone(),
+                tools_enabled: row.tools_enabled,
+            })
+            .collect();
     // Load agent sessions only when the product surface is enabled. Existing
     // rows remain in SQLite, but release builds do not surface them to users.
     let agent_sessions: Vec<AgentSessionSummary> = if features::AGENTS_ENABLED {
@@ -8441,6 +8577,8 @@ fn load_post_unlock(
     actor_state.app_state.brave_api_key_set = brave_api_key_set;
     actor_state.app_state.memories_enabled = memories_enabled;
     actor_state.app_state.local_inference_enabled = local_inference_enabled;
+    // Retention: archived list snapshot (mode/days already set + swept above).
+    actor_state.app_state.archived_conversations = archived_conversations;
     // Phase 35: contextvm AppState hydration.
     actor_state.app_state.auto_discover_tools_enabled = auto_discover_tools_enabled;
     actor_state.app_state.contextvm_tools = contextvm_tools_for_state;
@@ -11006,6 +11144,35 @@ impl FfiApp {
                                     if enabled { "1" } else { "0" },
                                 );
                                 actor_state.app_state.memories_enabled = enabled;
+                            }
+
+                            AppAction::SetConversationRetention { mode, days } => {
+                                let db = actor_state.db.as_ref().expect("db unlocked");
+                                let days = days.clamp(1, 3650);
+                                let _ = persistence::queries::set_setting(
+                                    db.conn(),
+                                    "conversation_retention_mode",
+                                    mode.as_str(),
+                                );
+                                let _ = persistence::queries::set_setting(
+                                    db.conn(),
+                                    "conversation_retention_days",
+                                    &days.to_string(),
+                                );
+                                actor_state.app_state.conversation_retention_mode = mode;
+                                actor_state.app_state.conversation_retention_days = days;
+                                apply_conversation_retention(&actor_state);
+                                refresh_conversations(&mut actor_state);
+                            }
+
+                            AppAction::UnarchiveConversation { id } => {
+                                let _ = persistence::queries::set_conversation_archived(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                    &id,
+                                    false,
+                                    chrono::Utc::now().timestamp(),
+                                );
+                                refresh_conversations(&mut actor_state);
                             }
 
                             // ── Phase 35: contextvm-sdk Nostr-based tool discovery ───

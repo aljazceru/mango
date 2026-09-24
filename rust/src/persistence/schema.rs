@@ -462,6 +462,15 @@ pub const MIGRATION_V26: &str = "
 UPDATE backends SET tee_type='AmdSevSnp' WHERE id='tinfoil';
 ";
 
+/// Migration v27 (quick/261018-conv-retention): add archived_at to conversations.
+///
+/// NULL = active (default). NOT NULL (unix seconds) = archived by the
+/// conversation retention sweep (Settings → auto-archive). Archived rows are
+/// excluded from the sidebar list but remain fully recoverable via unarchive.
+pub const MIGRATION_V27: &str = "
+ALTER TABLE conversations ADD COLUMN archived_at INTEGER;
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -490,6 +499,7 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V24,
     MIGRATION_V25,
     MIGRATION_V26,
+    MIGRATION_V27,
 ];
 
 #[cfg(test)]

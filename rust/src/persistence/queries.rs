@@ -443,6 +443,116 @@ pub fn delete_conversation(
     Ok(())
 }
 
+/// Archived conversation row for the retention UI (quick/261018-conv-retention).
+/// Lighter than ConversationRow: only what the Settings archived-list renders.
+#[derive(Debug, Clone)]
+pub struct ArchivedConversationRow {
+    pub id: String,
+    pub title: String,
+    pub model_id: String,
+    pub backend_id: String,
+    pub system_prompt: Option<String>,
+    pub updated_at: i64,
+    pub tools_enabled: bool,
+}
+
+/// Active (non-archived) conversations, `updated_at DESC` — sidebar list source.
+pub fn list_active_conversations(conn: &Connection) -> Result<Vec<ConversationRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, title, model_id, backend_id, system_prompt, created_at, updated_at, tools_enabled
+         FROM conversations WHERE archived_at IS NULL ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ConversationRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                model_id: row.get(2)?,
+                backend_id: row.get(3)?,
+                system_prompt: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                tools_enabled: row.get::<_, i64>(7)? != 0,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Archived conversations, most recently archived first — Settings archived list source.
+pub fn list_archived_conversations(
+    conn: &Connection,
+) -> Result<Vec<ArchivedConversationRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, title, model_id, backend_id, system_prompt, updated_at, tools_enabled
+         FROM conversations WHERE archived_at IS NOT NULL ORDER BY archived_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ArchivedConversationRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                model_id: row.get(2)?,
+                backend_id: row.get(3)?,
+                system_prompt: row.get(4)?,
+                updated_at: row.get(5)?,
+                tools_enabled: row.get::<_, i64>(6)? != 0,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Retention sweep, archive mode: archive active conversations whose
+/// `updated_at` is older than `cutoff`. Already-archived rows are left as-is
+/// (their archived_at timestamp is preserved). Returns the number archived.
+pub fn archive_conversations_older_than(
+    conn: &Connection,
+    cutoff: i64,
+    now: i64,
+) -> Result<u64, PersistenceError> {
+    let n = conn
+        .prepare_cached(
+            "UPDATE conversations SET archived_at = ?2
+             WHERE archived_at IS NULL AND updated_at < ?1",
+        )?
+        .execute(rusqlite::params![cutoff, now])?;
+    Ok(n as u64)
+}
+
+/// Retention sweep, delete mode: permanently delete conversations whose
+/// `updated_at` is older than `cutoff` (archived rows included — delete means
+/// delete). Messages go first; the FK has no CASCADE. Returns conversations removed.
+pub fn delete_conversations_older_than(
+    conn: &Connection,
+    cutoff: i64,
+) -> Result<u64, PersistenceError> {
+    conn.prepare_cached(
+        "DELETE FROM messages WHERE conversation_id IN
+             (SELECT id FROM conversations WHERE updated_at < ?1)",
+    )?
+    .execute(rusqlite::params![cutoff])?;
+    let n = conn
+        .prepare_cached("DELETE FROM conversations WHERE updated_at < ?1")?
+        .execute(rusqlite::params![cutoff])?;
+    Ok(n as u64)
+}
+
+/// Archive (`archived = true`) or restore (`false`) a single conversation.
+pub fn set_conversation_archived(
+    conn: &Connection,
+    conversation_id: &str,
+    archived: bool,
+    now: i64,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached("UPDATE conversations SET archived_at = ?2 WHERE id = ?1")?
+        .execute(rusqlite::params![
+            conversation_id,
+            if archived { Some(now) } else { None }
+        ])?;
+    Ok(())
+}
+
 /// Rename a conversation, updating `updated_at`.
 pub fn rename_conversation(
     conn: &Connection,
