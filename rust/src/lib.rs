@@ -5034,12 +5034,6 @@ fn spawn_health_check(
             supports_tool_use: true,
         };
         let transport = backend.transport_kind();
-        // The sealed PPQ endpoint rejects plain (unsealed) bodies with 400 by
-        // design, so the 1-token auth completion probe can never succeed
-        // there — it would permanently mark the backend unhealthy. Model-list
-        // GET (unauthenticated) remains the health signal.
-        let skip_auth_probe =
-            skip_auth_probe || transport == llm::ProviderTransportKind::PpqPrivateE2ee;
         let url = match transport.model_list_url(&backend) {
             Ok(url) => url,
             Err(error) => {
@@ -5121,7 +5115,42 @@ fn spawn_health_check(
                 // doesn't prove the API key is valid.  When a key was provided,
                 // send a minimal chat completion (max_tokens=1) to verify auth —
                 // unless this exact key was verified before (persisted fp).
-                if !backend.api_key.is_empty() && !skip_auth_probe {
+                //
+                // Sealed-transport PPQ can't take the plain completion probe
+                // (the endpoint rejects unsealed bodies), but its account API
+                // authenticates the same key over plain Bearer: a balance GET
+                // proves the key without touching inference.
+                if transport == llm::ProviderTransportKind::PpqPrivateE2ee {
+                    // Test hook: scripted fake servers sequence exact requests;
+                    // live key validation is covered by device verification.
+                    let ppq_test_override = std::env::var("MANGO_PPQ_TEST_BASE_URL").is_ok();
+                    if backend.api_key.is_empty() || skip_auth_probe || ppq_test_override {
+                        (true, models)
+                    } else {
+                        match ppq_production_client() {
+                            Ok(ppq) => match ppq.balance(&zeroize::Zeroizing::new(backend.api_key.clone())).await {
+                                Ok(_) => {
+                                    log::debug!(target: "health_check", "[health_check] backend={} api_key verified via PPQ balance", backend_id);
+                                    (true, models)
+                                }
+                                Err(e) => {
+                                    log::warn!(target: "health_check", "[health_check] backend={} PPQ balance auth failed: {}", backend_id, e);
+                                    let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                                        llm::InternalEvent::HealthCheckResult { backend_id, success: false, models: vec![] },
+                                    )));
+                                    return;
+                                }
+                            },
+                            Err(e) => {
+                                log::warn!(target: "health_check", "[health_check] backend={} PPQ client build failed: {}", backend_id, e);
+                                let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
+                                    llm::InternalEvent::HealthCheckResult { backend_id, success: false, models: vec![] },
+                                )));
+                                return;
+                            }
+                        }
+                    }
+                } else if !backend.api_key.is_empty() && !skip_auth_probe {
                     if let Some(probe_model) = models.first() {
                         let completions_url = format!(
                             "{}/chat/completions",
