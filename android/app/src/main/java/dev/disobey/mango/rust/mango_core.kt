@@ -3217,6 +3217,24 @@ data class AppState (
     var `encryptionEnabled`: kotlin.Boolean
     , 
     /**
+     * Auto-archive/delete mode for conversations older than N days. Off by default.
+     * Persisted via settings table key "conversation_retention_mode".
+     */
+    var `conversationRetentionMode`: ConversationRetentionMode
+    , 
+    /**
+     * Age threshold (days) for the conversation retention sweep. Default 30.
+     * Persisted via settings table key "conversation_retention_days".
+     */
+    var `conversationRetentionDays`: kotlin.UInt
+    , 
+    /**
+     * Archived conversation summaries, loaded alongside the sidebar list so the
+     * Settings archived section can offer unarchive. Empty while nothing is archived.
+     */
+    var `archivedConversations`: List<ConversationSummary>
+    , 
+    /**
      * Directory-source summaries loaded from SQLite on startup / after mutations
      * (DIR-04). Populated by `load_directory_sources_summary`; never includes
      * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
@@ -3326,6 +3344,9 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterLong.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterTypeConversationRetentionMode.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterSequenceTypeConversationSummary.read(buf),
             FfiConverterSequenceTypeDirectorySourceSummary.read(buf),
             FfiConverterSequenceTypeDiscoverableTool.read(buf),
             FfiConverterBoolean.read(buf),
@@ -3380,6 +3401,9 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterLong.allocationSize(value.`lockTimeoutSeconds`) +
             FfiConverterBoolean.allocationSize(value.`authInitialized`) +
             FfiConverterBoolean.allocationSize(value.`encryptionEnabled`) +
+            FfiConverterTypeConversationRetentionMode.allocationSize(value.`conversationRetentionMode`) +
+            FfiConverterUInt.allocationSize(value.`conversationRetentionDays`) +
+            FfiConverterSequenceTypeConversationSummary.allocationSize(value.`archivedConversations`) +
             FfiConverterSequenceTypeDirectorySourceSummary.allocationSize(value.`directorySources`) +
             FfiConverterSequenceTypeDiscoverableTool.allocationSize(value.`contextvmTools`) +
             FfiConverterBoolean.allocationSize(value.`autoDiscoverToolsEnabled`) +
@@ -3433,6 +3457,9 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterLong.write(value.`lockTimeoutSeconds`, buf)
             FfiConverterBoolean.write(value.`authInitialized`, buf)
             FfiConverterBoolean.write(value.`encryptionEnabled`, buf)
+            FfiConverterTypeConversationRetentionMode.write(value.`conversationRetentionMode`, buf)
+            FfiConverterUInt.write(value.`conversationRetentionDays`, buf)
+            FfiConverterSequenceTypeConversationSummary.write(value.`archivedConversations`, buf)
             FfiConverterSequenceTypeDirectorySourceSummary.write(value.`directorySources`, buf)
             FfiConverterSequenceTypeDiscoverableTool.write(value.`contextvmTools`, buf)
             FfiConverterBoolean.write(value.`autoDiscoverToolsEnabled`, buf)
@@ -6446,6 +6473,32 @@ sealed class AppAction {
     }
     
     /**
+     * Configure automatic conversation retention (quick/261018-conv-retention).
+     * Persists mode + days to the settings table and runs the sweep immediately.
+     */
+    data class SetConversationRetention(
+        val `mode`: dev.disobey.mango.rust.ConversationRetentionMode, 
+        val `days`: kotlin.UInt) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * Restore an archived conversation to the active sidebar list.
+     */
+    data class UnarchiveConversation(
+        val `id`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
      * Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
      * Persisted in conversations.tools_enabled column via update_conversation_tools_enabled.
      */
@@ -6929,77 +6982,84 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             72 -> AppAction.SetMemoriesEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            73 -> AppAction.SetConversationToolsEnabled(
+            73 -> AppAction.SetConversationRetention(
+                FfiConverterTypeConversationRetentionMode.read(buf),
+                FfiConverterUInt.read(buf),
+                )
+            74 -> AppAction.UnarchiveConversation(
+                FfiConverterString.read(buf),
+                )
+            75 -> AppAction.SetConversationToolsEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            74 -> AppAction.SetupPin(
+            76 -> AppAction.SetupPin(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            75 -> AppAction.SetDuressPin(
+            77 -> AppAction.SetDuressPin(
                 FfiConverterOptionalString.read(buf),
                 )
-            76 -> AppAction.ChangePin(
+            78 -> AppAction.ChangePin(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            77 -> AppAction.UnlockWithDek(
+            79 -> AppAction.UnlockWithDek(
                 FfiConverterString.read(buf),
                 )
-            78 -> AppAction.UnlockWithPin(
+            80 -> AppAction.UnlockWithPin(
                 FfiConverterString.read(buf),
                 )
-            79 -> AppAction.LockApp
-            80 -> AppAction.AttemptBiometricUnlock
-            81 -> AppAction.SetBiometricLoginEnabled(
+            81 -> AppAction.LockApp
+            82 -> AppAction.AttemptBiometricUnlock
+            83 -> AppAction.SetBiometricLoginEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            82 -> AppAction.SetLockTimeout(
+            84 -> AppAction.SetLockTimeout(
                 FfiConverterLong.read(buf),
                 )
-            83 -> AppAction.AddDirectorySource(
+            85 -> AppAction.AddDirectorySource(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalByteArray.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            84 -> AppAction.SyncDirectoryFiles(
+            86 -> AppAction.SyncDirectoryFiles(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceTypeDirectoryFileEntry.read(buf),
                 FfiConverterSequenceString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            85 -> AppAction.RemoveDirectorySource(
+            87 -> AppAction.RemoveDirectorySource(
                 FfiConverterString.read(buf),
                 )
-            86 -> AppAction.SetDirectoryExclusions(
+            88 -> AppAction.SetDirectoryExclusions(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            87 -> AppAction.TriggerDirectorySync(
+            89 -> AppAction.TriggerDirectorySync(
                 FfiConverterString.read(buf),
                 )
-            88 -> AppAction.UpdateDirectorySourceBookmark(
+            90 -> AppAction.UpdateDirectorySourceBookmark(
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            89 -> AppAction.DiscoverContextvmTools
-            90 -> AppAction.SetContextvmToolEnabled(
+            91 -> AppAction.DiscoverContextvmTools
+            92 -> AppAction.SetContextvmToolEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            91 -> AppAction.SetAutoDiscoverTools(
+            93 -> AppAction.SetAutoDiscoverTools(
                 FfiConverterBoolean.read(buf),
                 )
-            92 -> AppAction.RetryContextvmDiscovery
-            93 -> AppAction.AddTrustedProvider(
+            94 -> AppAction.RetryContextvmDiscovery
+            95 -> AppAction.AddTrustedProvider(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            94 -> AppAction.RemoveTrustedProvider(
+            96 -> AppAction.RemoveTrustedProvider(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -7502,6 +7562,21 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             (
                 4UL
                 + FfiConverterBoolean.allocationSize(value.`enabled`)
+            )
+        }
+        is AppAction.SetConversationRetention -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeConversationRetentionMode.allocationSize(value.`mode`)
+                + FfiConverterUInt.allocationSize(value.`days`)
+            )
+        }
+        is AppAction.UnarchiveConversation -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`id`)
             )
         }
         is AppAction.SetConversationToolsEnabled -> {
@@ -8026,60 +8101,71 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
-            is AppAction.SetConversationToolsEnabled -> {
+            is AppAction.SetConversationRetention -> {
                 buf.putInt(73)
+                FfiConverterTypeConversationRetentionMode.write(value.`mode`, buf)
+                FfiConverterUInt.write(value.`days`, buf)
+                Unit
+            }
+            is AppAction.UnarchiveConversation -> {
+                buf.putInt(74)
+                FfiConverterString.write(value.`id`, buf)
+                Unit
+            }
+            is AppAction.SetConversationToolsEnabled -> {
+                buf.putInt(75)
                 FfiConverterString.write(value.`conversationId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetupPin -> {
-                buf.putInt(74)
+                buf.putInt(76)
                 FfiConverterString.write(value.`pin`, buf)
                 FfiConverterOptionalString.write(value.`duressPin`, buf)
                 FfiConverterBoolean.write(value.`enableBiometric`, buf)
                 Unit
             }
             is AppAction.SetDuressPin -> {
-                buf.putInt(75)
+                buf.putInt(77)
                 FfiConverterOptionalString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.ChangePin -> {
-                buf.putInt(76)
+                buf.putInt(78)
                 FfiConverterString.write(value.`currentPin`, buf)
                 FfiConverterString.write(value.`newPin`, buf)
                 Unit
             }
             is AppAction.UnlockWithDek -> {
-                buf.putInt(77)
+                buf.putInt(79)
                 FfiConverterString.write(value.`dekHex`, buf)
                 Unit
             }
             is AppAction.UnlockWithPin -> {
-                buf.putInt(78)
+                buf.putInt(80)
                 FfiConverterString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.LockApp -> {
-                buf.putInt(79)
+                buf.putInt(81)
                 Unit
             }
             is AppAction.AttemptBiometricUnlock -> {
-                buf.putInt(80)
+                buf.putInt(82)
                 Unit
             }
             is AppAction.SetBiometricLoginEnabled -> {
-                buf.putInt(81)
+                buf.putInt(83)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetLockTimeout -> {
-                buf.putInt(82)
+                buf.putInt(84)
                 FfiConverterLong.write(value.`seconds`, buf)
                 Unit
             }
             is AppAction.AddDirectorySource -> {
-                buf.putInt(83)
+                buf.putInt(85)
                 FfiConverterString.write(value.`displayName`, buf)
                 FfiConverterOptionalString.write(value.`path`, buf)
                 FfiConverterOptionalByteArray.write(value.`bookmarkData`, buf)
@@ -8088,7 +8174,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.SyncDirectoryFiles -> {
-                buf.putInt(84)
+                buf.putInt(86)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceTypeDirectoryFileEntry.write(value.`files`, buf)
                 FfiConverterSequenceString.write(value.`removedPaths`, buf)
@@ -8096,54 +8182,54 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.RemoveDirectorySource -> {
-                buf.putInt(85)
+                buf.putInt(87)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.SetDirectoryExclusions -> {
-                buf.putInt(86)
+                buf.putInt(88)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceString.write(value.`globs`, buf)
                 Unit
             }
             is AppAction.TriggerDirectorySync -> {
-                buf.putInt(87)
+                buf.putInt(89)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.UpdateDirectorySourceBookmark -> {
-                buf.putInt(88)
+                buf.putInt(90)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterByteArray.write(value.`bookmarkData`, buf)
                 Unit
             }
             is AppAction.DiscoverContextvmTools -> {
-                buf.putInt(89)
+                buf.putInt(91)
                 Unit
             }
             is AppAction.SetContextvmToolEnabled -> {
-                buf.putInt(90)
+                buf.putInt(92)
                 FfiConverterString.write(value.`toolId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetAutoDiscoverTools -> {
-                buf.putInt(91)
+                buf.putInt(93)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.RetryContextvmDiscovery -> {
-                buf.putInt(92)
+                buf.putInt(94)
                 Unit
             }
             is AppAction.AddTrustedProvider -> {
-                buf.putInt(93)
+                buf.putInt(95)
                 FfiConverterString.write(value.`pubkey`, buf)
                 FfiConverterOptionalString.write(value.`label`, buf)
                 Unit
             }
             is AppAction.RemoveTrustedProvider -> {
-                buf.putInt(94)
+                buf.putInt(96)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
@@ -8842,6 +8928,46 @@ public object FfiConverterTypeContextvmDiscoveryState : FfiConverterRustBuffer<C
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * Conversation auto-retention mode (quick/261018-conv-retention).
+ * Off by default. Archive hides old conversations from the sidebar (recoverable
+ * in Settings); Delete permanently removes them and their messages.
+ */
+
+enum class ConversationRetentionMode {
+    
+    OFF,
+    ARCHIVE,
+    DELETE;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeConversationRetentionMode: FfiConverterRustBuffer<ConversationRetentionMode> {
+    override fun read(buf: ByteBuffer) = try {
+        ConversationRetentionMode.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: ConversationRetentionMode) = 4UL
+
+    override fun write(value: ConversationRetentionMode, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
     }
 }
 

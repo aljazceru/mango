@@ -8,6 +8,7 @@ struct SettingsSecurityView: View {
     @State private var message: String? = nil
     @State private var showDeleteChatsConfirmation = false
     @State private var showDeleteDataConfirmation = false
+    @State private var retentionDaysText: String = ""
 
     private let lockTimeoutOptions: [(String, Int64)] = [
         ("Immediately", 0),
@@ -25,6 +26,7 @@ struct SettingsSecurityView: View {
                 lockSection
                 biometricSection
                 duressSection
+                retentionSection
                 deleteChatsSection
                 deleteDataSection
             }
@@ -149,6 +151,70 @@ struct SettingsSecurityView: View {
                 }
             }
             .padding(.vertical, 4)
+        }
+    }
+
+    private var retentionSection: some View {
+        Section("Conversation Retention") {
+            Picker("Mode", selection: Binding(
+                get: { appState.conversationRetentionMode },
+                set: { mode in
+                    appManager.dispatch(.setConversationRetention(
+                        mode: mode,
+                        days: appState.conversationRetentionDays
+                    ))
+                }
+            )) {
+                Text("Off").tag(ConversationRetentionMode.off)
+                Text("Archive").tag(ConversationRetentionMode.archive)
+                Text("Delete").tag(ConversationRetentionMode.delete)
+            }
+
+            HStack {
+                TextField(
+                    "days",
+                    text: Binding(
+                        get: { retentionDaysText.isEmpty ? String(appState.conversationRetentionDays) : retentionDaysText },
+                        set: { retentionDaysText = $0.filter { $0.isNumber } }
+                    )
+                )
+                .keyboardType(.numberPad)
+                .textFieldStyle(.roundedBorder)
+                Button("Apply") {
+                    if let days = UInt32(retentionDaysText), days > 0 {
+                        appManager.dispatch(.setConversationRetention(
+                            mode: appState.conversationRetentionMode,
+                            days: days
+                        ))
+                    }
+                    retentionDaysText = ""
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Text("Automatically archive or delete conversations older than the given number of days. Archived conversations are hidden from the chat list and can be restored below. Off by default.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if appState.conversationRetentionMode == .delete {
+                Text("Delete permanently removes conversations and their messages once they pass the threshold. This cannot be undone.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            if !appState.archivedConversations.isEmpty {
+                ForEach(appState.archivedConversations, id: \.id) { conv in
+                    HStack {
+                        Text(conv.title)
+                            .lineLimit(1)
+                        Spacer()
+                        Button("Unarchive") {
+                            appManager.dispatch(.unarchiveConversation(id: conv.id))
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+            }
         }
     }
 

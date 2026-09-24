@@ -1722,6 +1722,21 @@ public struct AppState: Equatable, Hashable {
      */
     public var encryptionEnabled: Bool
     /**
+     * Auto-archive/delete mode for conversations older than N days. Off by default.
+     * Persisted via settings table key "conversation_retention_mode".
+     */
+    public var conversationRetentionMode: ConversationRetentionMode
+    /**
+     * Age threshold (days) for the conversation retention sweep. Default 30.
+     * Persisted via settings table key "conversation_retention_days".
+     */
+    public var conversationRetentionDays: UInt32
+    /**
+     * Archived conversation summaries, loaded alongside the sidebar list so the
+     * Settings archived section can offer unarchive. Empty while nothing is archived.
+     */
+    public var archivedConversations: [ConversationSummary]
+    /**
      * Directory-source summaries loaded from SQLite on startup / after mutations
      * (DIR-04). Populated by `load_directory_sources_summary`; never includes
      * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
@@ -1915,6 +1930,18 @@ public struct AppState: Equatable, Hashable {
          * True when the main DB was opened with SQLCipher encryption (D-01).
          */encryptionEnabled: Bool, 
         /**
+         * Auto-archive/delete mode for conversations older than N days. Off by default.
+         * Persisted via settings table key "conversation_retention_mode".
+         */conversationRetentionMode: ConversationRetentionMode, 
+        /**
+         * Age threshold (days) for the conversation retention sweep. Default 30.
+         * Persisted via settings table key "conversation_retention_days".
+         */conversationRetentionDays: UInt32, 
+        /**
+         * Archived conversation summaries, loaded alongside the sidebar list so the
+         * Settings archived section can offer unarchive. Empty while nothing is archived.
+         */archivedConversations: [ConversationSummary], 
+        /**
          * Directory-source summaries loaded from SQLite on startup / after mutations
          * (DIR-04). Populated by `load_directory_sources_summary`; never includes
          * opaque platform handles (bookmark_data / tree_uri) per T-32-I2.
@@ -1993,6 +2020,9 @@ public struct AppState: Equatable, Hashable {
         self.lockTimeoutSeconds = lockTimeoutSeconds
         self.authInitialized = authInitialized
         self.encryptionEnabled = encryptionEnabled
+        self.conversationRetentionMode = conversationRetentionMode
+        self.conversationRetentionDays = conversationRetentionDays
+        self.archivedConversations = archivedConversations
         self.directorySources = directorySources
         self.contextvmTools = contextvmTools
         self.autoDiscoverToolsEnabled = autoDiscoverToolsEnabled
@@ -2061,6 +2091,9 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 lockTimeoutSeconds: FfiConverterInt64.read(from: &buf), 
                 authInitialized: FfiConverterBool.read(from: &buf), 
                 encryptionEnabled: FfiConverterBool.read(from: &buf), 
+                conversationRetentionMode: FfiConverterTypeConversationRetentionMode.read(from: &buf), 
+                conversationRetentionDays: FfiConverterUInt32.read(from: &buf), 
+                archivedConversations: FfiConverterSequenceTypeConversationSummary.read(from: &buf), 
                 directorySources: FfiConverterSequenceTypeDirectorySourceSummary.read(from: &buf), 
                 contextvmTools: FfiConverterSequenceTypeDiscoverableTool.read(from: &buf), 
                 autoDiscoverToolsEnabled: FfiConverterBool.read(from: &buf), 
@@ -2115,6 +2148,9 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterInt64.write(value.lockTimeoutSeconds, into: &buf)
         FfiConverterBool.write(value.authInitialized, into: &buf)
         FfiConverterBool.write(value.encryptionEnabled, into: &buf)
+        FfiConverterTypeConversationRetentionMode.write(value.conversationRetentionMode, into: &buf)
+        FfiConverterUInt32.write(value.conversationRetentionDays, into: &buf)
+        FfiConverterSequenceTypeConversationSummary.write(value.archivedConversations, into: &buf)
         FfiConverterSequenceTypeDirectorySourceSummary.write(value.directorySources, into: &buf)
         FfiConverterSequenceTypeDiscoverableTool.write(value.contextvmTools, into: &buf)
         FfiConverterBool.write(value.autoDiscoverToolsEnabled, into: &buf)
@@ -5395,6 +5431,17 @@ public enum AppAction: Equatable, Hashable {
     case setMemoriesEnabled(enabled: Bool
     )
     /**
+     * Configure automatic conversation retention (quick/261018-conv-retention).
+     * Persists mode + days to the settings table and runs the sweep immediately.
+     */
+    case setConversationRetention(mode: ConversationRetentionMode, days: UInt32
+    )
+    /**
+     * Restore an archived conversation to the active sidebar list.
+     */
+    case unarchiveConversation(id: String
+    )
+    /**
      * Enable or disable tool use for a specific conversation (Phase 27, CHAT-TOOL-02).
      * Persisted in conversations.tools_enabled column via update_conversation_tools_enabled.
      */
@@ -5411,6 +5458,15 @@ public enum AppAction: Equatable, Hashable {
      * Update or clear the duress PIN while the app is unlocked.
      */
     case setDuressPin(pin: String?
+    )
+    /**
+     * Change the main PIN while the app is unlocked. Requires the current
+     * PIN (the duress PIN is rejected as simply incorrect — it must never
+     * re-wrap credentials), re-wraps the SAME DEK under a fresh salt with
+     * the new PIN's KEK, and preserves the duress hash. Biometric login
+     * keeps working: it wraps the same unchanged DEK.
+     */
+    case changePin(currentPin: String, newPin: String
     )
     /**
      * Unlock with an already-unwrapped DEK (hex string). Used internally after biometric unlock
@@ -5732,63 +5788,72 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 72: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 73: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 73: return .setConversationRetention(mode: try FfiConverterTypeConversationRetentionMode.read(from: &buf), days: try FfiConverterUInt32.read(from: &buf)
         )
         
-        case 74: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
+        case 74: return .unarchiveConversation(id: try FfiConverterString.read(from: &buf)
         )
         
-        case 75: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
+        case 75: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 76: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
+        case 76: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
         )
         
-        case 77: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
+        case 77: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 78: return .lockApp
-        
-        case 79: return .attemptBiometricUnlock
-        
-        case 80: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 78: return .changePin(currentPin: try FfiConverterString.read(from: &buf), newPin: try FfiConverterString.read(from: &buf)
         )
         
-        case 81: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
+        case 79: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
         )
         
-        case 82: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
+        case 80: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
         )
         
-        case 83: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
+        case 81: return .lockApp
+        
+        case 82: return .attemptBiometricUnlock
+        
+        case 83: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 84: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
+        case 84: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
         )
         
-        case 85: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
+        case 85: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 86: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
+        case 86: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
         )
         
-        case 87: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
+        case 87: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
         )
         
-        case 88: return .discoverContextvmTools
-        
-        case 89: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 88: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 90: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
+        case 89: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
         )
         
-        case 91: return .retryContextvmDiscovery
-        
-        case 92: return .addTrustedProvider(pubkey: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        case 90: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
         )
         
-        case 93: return .removeTrustedProvider(pubkey: try FfiConverterString.read(from: &buf)
+        case 91: return .discoverContextvmTools
+        
+        case 92: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 93: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 94: return .retryContextvmDiscovery
+        
+        case 95: return .addTrustedProvider(pubkey: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 96: return .removeTrustedProvider(pubkey: try FfiConverterString.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -6152,54 +6217,71 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterBool.write(enabled, into: &buf)
             
         
-        case let .setConversationToolsEnabled(conversationId,enabled):
+        case let .setConversationRetention(mode,days):
             writeInt(&buf, Int32(73))
+            FfiConverterTypeConversationRetentionMode.write(mode, into: &buf)
+            FfiConverterUInt32.write(days, into: &buf)
+            
+        
+        case let .unarchiveConversation(id):
+            writeInt(&buf, Int32(74))
+            FfiConverterString.write(id, into: &buf)
+            
+        
+        case let .setConversationToolsEnabled(conversationId,enabled):
+            writeInt(&buf, Int32(75))
             FfiConverterString.write(conversationId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setupPin(pin,duressPin,enableBiometric):
-            writeInt(&buf, Int32(74))
+            writeInt(&buf, Int32(76))
             FfiConverterString.write(pin, into: &buf)
             FfiConverterOptionString.write(duressPin, into: &buf)
             FfiConverterBool.write(enableBiometric, into: &buf)
             
         
         case let .setDuressPin(pin):
-            writeInt(&buf, Int32(75))
+            writeInt(&buf, Int32(77))
             FfiConverterOptionString.write(pin, into: &buf)
             
         
+        case let .changePin(currentPin,newPin):
+            writeInt(&buf, Int32(78))
+            FfiConverterString.write(currentPin, into: &buf)
+            FfiConverterString.write(newPin, into: &buf)
+            
+        
         case let .unlockWithDek(dekHex):
-            writeInt(&buf, Int32(76))
+            writeInt(&buf, Int32(79))
             FfiConverterString.write(dekHex, into: &buf)
             
         
         case let .unlockWithPin(pin):
-            writeInt(&buf, Int32(77))
+            writeInt(&buf, Int32(80))
             FfiConverterString.write(pin, into: &buf)
             
         
         case .lockApp:
-            writeInt(&buf, Int32(78))
+            writeInt(&buf, Int32(81))
         
         
         case .attemptBiometricUnlock:
-            writeInt(&buf, Int32(79))
+            writeInt(&buf, Int32(82))
         
         
         case let .setBiometricLoginEnabled(enabled):
-            writeInt(&buf, Int32(80))
+            writeInt(&buf, Int32(83))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setLockTimeout(seconds):
-            writeInt(&buf, Int32(81))
+            writeInt(&buf, Int32(84))
             FfiConverterInt64.write(seconds, into: &buf)
             
         
         case let .addDirectorySource(displayName,path,bookmarkData,treeUri,exclusionGlobs):
-            writeInt(&buf, Int32(82))
+            writeInt(&buf, Int32(85))
             FfiConverterString.write(displayName, into: &buf)
             FfiConverterOptionString.write(path, into: &buf)
             FfiConverterOptionData.write(bookmarkData, into: &buf)
@@ -6208,7 +6290,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .syncDirectoryFiles(sourceId,files,removedPaths,isFinalBatch):
-            writeInt(&buf, Int32(83))
+            writeInt(&buf, Int32(86))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceTypeDirectoryFileEntry.write(files, into: &buf)
             FfiConverterSequenceString.write(removedPaths, into: &buf)
@@ -6216,54 +6298,54 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .removeDirectorySource(sourceId):
-            writeInt(&buf, Int32(84))
+            writeInt(&buf, Int32(87))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .setDirectoryExclusions(sourceId,globs):
-            writeInt(&buf, Int32(85))
+            writeInt(&buf, Int32(88))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceString.write(globs, into: &buf)
             
         
         case let .triggerDirectorySync(sourceId):
-            writeInt(&buf, Int32(86))
+            writeInt(&buf, Int32(89))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .updateDirectorySourceBookmark(sourceId,bookmarkData):
-            writeInt(&buf, Int32(87))
+            writeInt(&buf, Int32(90))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterData.write(bookmarkData, into: &buf)
             
         
         case .discoverContextvmTools:
-            writeInt(&buf, Int32(88))
+            writeInt(&buf, Int32(91))
         
         
         case let .setContextvmToolEnabled(toolId,enabled):
-            writeInt(&buf, Int32(89))
+            writeInt(&buf, Int32(92))
             FfiConverterString.write(toolId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setAutoDiscoverTools(enabled):
-            writeInt(&buf, Int32(90))
+            writeInt(&buf, Int32(93))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case .retryContextvmDiscovery:
-            writeInt(&buf, Int32(91))
+            writeInt(&buf, Int32(94))
         
         
         case let .addTrustedProvider(pubkey,label):
-            writeInt(&buf, Int32(92))
+            writeInt(&buf, Int32(95))
             FfiConverterString.write(pubkey, into: &buf)
             FfiConverterOptionString.write(label, into: &buf)
             
         
         case let .removeTrustedProvider(pubkey):
-            writeInt(&buf, Int32(93))
+            writeInt(&buf, Int32(96))
             FfiConverterString.write(pubkey, into: &buf)
             
         }
@@ -6871,6 +6953,84 @@ public func FfiConverterTypeContextvmDiscoveryState_lift(_ buf: RustBuffer) thro
 #endif
 public func FfiConverterTypeContextvmDiscoveryState_lower(_ value: ContextvmDiscoveryState) -> RustBuffer {
     return FfiConverterTypeContextvmDiscoveryState.lower(value)
+}
+
+
+
+/**
+ * Conversation auto-retention mode (quick/261018-conv-retention).
+ * Off by default. Archive hides old conversations from the sidebar (recoverable
+ * in Settings); Delete permanently removes them and their messages.
+ */
+
+public enum ConversationRetentionMode: Equatable, Hashable {
+    
+    case off
+    case archive
+    case delete
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ConversationRetentionMode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConversationRetentionMode: FfiConverterRustBuffer {
+    typealias SwiftType = ConversationRetentionMode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConversationRetentionMode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .off
+        
+        case 2: return .archive
+        
+        case 3: return .delete
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ConversationRetentionMode, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .off:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .archive:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .delete:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConversationRetentionMode_lift(_ buf: RustBuffer) throws -> ConversationRetentionMode {
+    return try FfiConverterTypeConversationRetentionMode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConversationRetentionMode_lower(_ value: ConversationRetentionMode) -> RustBuffer {
+    return FfiConverterTypeConversationRetentionMode.lower(value)
 }
 
 

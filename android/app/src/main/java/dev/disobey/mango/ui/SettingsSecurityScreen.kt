@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
@@ -41,6 +42,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
+import dev.disobey.mango.rust.ConversationRetentionMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,6 +59,8 @@ fun SettingsSecurityScreen(
     var confirmNewPin by remember { mutableStateOf("") }
     var pinMessage by remember { mutableStateOf<String?>(null) }
     var lockExpanded by remember { mutableStateOf(false) }
+    var retentionExpanded by remember { mutableStateOf(false) }
+    var retentionDaysText by remember { mutableStateOf("") }
     var showDeleteChatsConfirm by remember { mutableStateOf(false) }
     var showDeleteDataConfirm by remember { mutableStateOf(false) }
 
@@ -335,6 +339,111 @@ fun SettingsSecurityScreen(
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Text("Remove Duress PIN")
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Conversation retention", fontWeight = FontWeight.Medium)
+                        Text(
+                            "Automatically archive or delete conversations older than the given number of days. Archived conversations are hidden from the chat list and can be restored below. Off by default.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        val retentionOptions = listOf(
+                            "Off" to ConversationRetentionMode.OFF,
+                            "Archive" to ConversationRetentionMode.ARCHIVE,
+                            "Delete" to ConversationRetentionMode.DELETE,
+                        )
+                        val retentionLabel = retentionOptions
+                            .firstOrNull { it.second == appState.conversationRetentionMode }?.first ?: "Off"
+                        ExposedDropdownMenuBox(
+                            expanded = retentionExpanded,
+                            onExpandedChange = { retentionExpanded = it },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            OutlinedTextField(
+                                value = retentionLabel,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Mode") },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = retentionExpanded) },
+                                modifier = Modifier.menuAnchor().fillMaxWidth()
+                            )
+                            DropdownMenu(
+                                expanded = retentionExpanded,
+                                onDismissRequest = { retentionExpanded = false }
+                            ) {
+                                retentionOptions.forEach { (label, mode) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label) },
+                                        onClick = {
+                                            onDispatch(AppAction.SetConversationRetention(
+                                                mode = mode,
+                                                days = appState.conversationRetentionDays,
+                                            ))
+                                            retentionExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = retentionDaysText.ifEmpty { appState.conversationRetentionDays.toString() },
+                                onValueChange = { retentionDaysText = it.filter { c -> c.isDigit() } },
+                                label = { Text("Days") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    retentionDaysText.toUIntOrNull()?.let { days ->
+                                        if (days > 0u) {
+                                            onDispatch(AppAction.SetConversationRetention(
+                                                mode = appState.conversationRetentionMode,
+                                                days = days,
+                                            ))
+                                        }
+                                    }
+                                    retentionDaysText = ""
+                                },
+                                modifier = Modifier.padding(start = 8.dp),
+                            ) {
+                                Text("Apply")
+                            }
+                        }
+
+                        if (appState.conversationRetentionMode == ConversationRetentionMode.DELETE) {
+                            Text(
+                                "Delete permanently removes conversations and their messages once they pass the threshold. This cannot be undone.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+
+                        if (appState.archivedConversations.isNotEmpty()) {
+                            Text(
+                                "Archived conversations",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            appState.archivedConversations.forEach { conv ->
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    Text(
+                                        conv.title,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                    )
+                                    TextButton(onClick = { onDispatch(AppAction.UnarchiveConversation(id = conv.id)) }) {
+                                        Text("Unarchive")
+                                    }
+                                }
                             }
                         }
                     }

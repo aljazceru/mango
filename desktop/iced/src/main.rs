@@ -347,6 +347,8 @@ enum App {
         settings_show_advanced: bool,
         // Re-attestation interval input (local form state before dispatch)
         settings_attestation_interval: String,
+        // Conversation retention days input (local form state before dispatch)
+        settings_retention_days: String,
         // Default instructions text (local form state before dispatch)
         settings_default_instructions: String,
         // Whether settings_default_instructions has been initialized from AppState
@@ -481,6 +483,10 @@ enum Message {
     SettingsAttestationIntervalChanged(String),
     // Apply the re-attestation interval from the input field
     SettingsApplyAttestationInterval,
+    // Conversation retention days field changed
+    SettingsRetentionDaysChanged(String),
+    // Apply the retention days from the input field (mode stays as-is)
+    SettingsApplyRetentionDays,
     // Default instructions field changed
     SettingsDefaultInstructionsChanged(String),
     // Save the default instructions to the Rust core
@@ -640,6 +646,7 @@ impl App {
                     settings_preset_keys: std::collections::HashMap::new(),
                     settings_show_advanced: false,
                     settings_attestation_interval: String::new(),
+                    settings_retention_days: String::new(),
                     settings_default_instructions: String::new(),
                     settings_default_instructions_initialized: false,
                     onboarding_selected_backend: String::new(),
@@ -760,6 +767,7 @@ impl App {
                 settings_preset_keys,
                 settings_show_advanced,
                 settings_attestation_interval,
+                settings_retention_days,
                 settings_default_instructions,
                 settings_default_instructions_initialized,
                 onboarding_selected_backend,
@@ -1227,6 +1235,19 @@ impl App {
 
                     Message::SettingsAttestationIntervalChanged(val) => {
                         *settings_attestation_interval = val;
+                    }
+
+                    Message::SettingsRetentionDaysChanged(val) => {
+                        *settings_retention_days = val;
+                    }
+
+                    Message::SettingsApplyRetentionDays => {
+                        if let Ok(days) = settings_retention_days.trim().parse::<u32>() {
+                            manager.dispatch(AppAction::SetConversationRetention {
+                                mode: state.conversation_retention_mode,
+                                days,
+                            });
+                        }
                     }
 
                     Message::SettingsApplyAttestationInterval => {
@@ -1956,6 +1977,7 @@ impl App {
                 settings_preset_keys,
                 settings_show_advanced,
                 settings_attestation_interval,
+                settings_retention_days,
                 settings_default_instructions,
                 onboarding_selected_backend,
                 onboarding_api_key,
@@ -2024,6 +2046,7 @@ impl App {
                         *is_dark,
                         *settings_show_advanced,
                         settings_attestation_interval,
+                        settings_retention_days,
                         settings_brave_api_key,
                         settings_brave_api_key_message.as_deref(),
                         *theme_override,

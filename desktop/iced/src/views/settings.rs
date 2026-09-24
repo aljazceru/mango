@@ -5,8 +5,8 @@ use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shado
 use std::fmt;
 
 use mango_core::{
-    AppAction, AppState, BackendSummary, HealthStatus, HybridProfile, LocalPreprocessing,
-    RoutingPolicy, Screen, TeeType,
+    AppAction, AppState, BackendSummary, ConversationRetentionMode, HealthStatus, HybridProfile,
+    LocalPreprocessing, RoutingPolicy, Screen, TeeType,
 };
 
 use crate::Message;
@@ -601,6 +601,7 @@ pub fn view<'a>(
     is_dark: bool,
     show_advanced: bool,
     attestation_interval_input: &'a str,
+    retention_days_input: &'a str,
     brave_api_key_input: &'a str,
     brave_api_key_message: Option<&'a str>,
     theme_override: crate::ThemeOverride,
@@ -1170,6 +1171,150 @@ pub fn view<'a>(
         .padding(Padding::from([0u16, 16]))
         .width(Length::Fill);
 
+    // ── Data Retention Section (quick/261018-conv-retention) ────────────────────
+    const RETENTION_MODES: [(&str, ConversationRetentionMode); 3] = [
+        ("Off", ConversationRetentionMode::Off),
+        ("Archive", ConversationRetentionMode::Archive),
+        ("Delete", ConversationRetentionMode::Delete),
+    ];
+    let retention_label = RETENTION_MODES
+        .iter()
+        .find(|(_, m)| *m == state.conversation_retention_mode)
+        .map(|(l, _)| *l)
+        .unwrap_or("Off");
+    let retention_picker = pick_list(
+        RETENTION_MODES.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+        Some(retention_label),
+        move |selected: &str| {
+            let mode = RETENTION_MODES
+                .iter()
+                .find(|(l, _)| *l == selected)
+                .map(|(_, m)| *m)
+                .unwrap_or(ConversationRetentionMode::Off);
+            Message::DispatchAction(AppAction::SetConversationRetention {
+                mode,
+                days: state.conversation_retention_days,
+            })
+        },
+    )
+    .text_size(13)
+    .padding(Padding::from([7u16, 10]));
+
+    let retention_days_display = if retention_days_input.is_empty() {
+        state.conversation_retention_days.to_string()
+    } else {
+        retention_days_input.to_string()
+    };
+    let retention_days_field = text_input("days", &retention_days_display)
+        .on_input(Message::SettingsRetentionDaysChanged)
+        .size(13)
+        .padding(Padding::from([7u16, 10]));
+    let retention_apply_btn = button(text("Apply").size(12).color(vc.accent))
+        .on_press(Message::SettingsApplyRetentionDays)
+        .padding(Padding::from([7u16, 14]))
+        .style(move |_, _| button::Style {
+            background: Some(Background::Color(Color {
+                r: vc.accent.r,
+                g: vc.accent.g,
+                b: vc.accent.b,
+                a: 0.12,
+            })),
+            border: Border {
+                radius: 6.0.into(),
+                color: vc.accent_dim,
+                width: 1.0,
+            },
+            ..Default::default()
+        });
+
+    let retention_warning: Element<'_, Message> =
+        if state.conversation_retention_mode == ConversationRetentionMode::Delete {
+            text("Delete permanently removes conversations and their messages once older than the threshold. This cannot be undone.")
+                .size(11)
+                .color(vc.muted)
+                .into()
+        } else {
+            iced::widget::Space::new().height(0).into()
+        };
+
+    let archived_rows: Vec<Element<'_, Message>> = state
+        .archived_conversations
+        .iter()
+        .map(|c| {
+            container(
+                row![
+                    text(c.title.clone()).size(12).color(vc.text),
+                    iced::widget::Space::new().width(Length::Fill),
+                    button(text("Unarchive").size(11).color(vc.accent))
+                        .on_press(Message::DispatchAction(AppAction::UnarchiveConversation {
+                            id: c.id.clone(),
+                        }))
+                        .padding(Padding::from([4u16, 10]))
+                        .style(move |_, _| button::Style {
+                            background: Some(Background::Color(vc.ghost_overlay)),
+                            border: Border {
+                                radius: 5.0.into(),
+                                color: vc.border,
+                                width: 1.0,
+                            },
+                            ..Default::default()
+                        }),
+                ]
+                .align_y(Alignment::Center)
+                .spacing(8),
+            )
+            .padding(Padding::from([4u16, 0]))
+            .into()
+        })
+        .collect();
+    let archived_list: Element<'_, Message> = if archived_rows.is_empty() {
+        iced::widget::Space::new().height(0).into()
+    } else {
+        container(
+            column![]
+                .push(text("Archived conversations").size(12).color(vc.text_dim))
+                .extend(archived_rows)
+                .spacing(4),
+        )
+        .padding(Padding::from([6u16, 0]))
+        .into()
+    };
+
+    let retention_body = container(
+        column![
+            row![
+                text("Conversation Retention").size(13).color(vc.text),
+                iced::widget::Space::new().width(Length::Fill),
+                retention_picker,
+            ]
+            .align_y(Alignment::Center),
+            text("Automatically archive or delete conversations older than the threshold. Off by default.")
+                .size(11)
+                .color(vc.muted),
+            row![retention_days_field, retention_apply_btn]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            retention_warning,
+            archived_list,
+        ]
+        .spacing(6),
+    )
+    .padding(Padding::from([10u16, 16]))
+    .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(vc.card)),
+        border: Border {
+            radius: 8.0.into(),
+            color: vc.border,
+            width: 1.0,
+        },
+        ..Default::default()
+    });
+
+    let retention_row = container(retention_body)
+        .padding(Padding::from([0u16, 16]))
+        .width(Length::Fill);
+
     // ── Compose ───────────────────────────────────────────────────────────────
     let content = column![
         section_header("PROVIDERS", vc.muted),
@@ -1185,6 +1330,8 @@ pub fn view<'a>(
         memory_row,
         section_header("SECURITY", vc.muted),
         security_row,
+        section_header("DATA RETENTION", vc.muted),
+        retention_row,
         section_header("TOOLS", vc.muted),
         tools_body,
         iced::widget::Space::new().height(8),
