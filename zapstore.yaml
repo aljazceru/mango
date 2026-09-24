@@ -13,11 +13,14 @@ license: GPL-3.0
 website: https://github.com/aljazceru/mango
 icon: https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/mango-icon.png
 images:
-    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/artifacts/android-screenshots/light/settings_security.png
-    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/artifacts/android-screenshots/dark/home.png
-    - https://github.com/aljazceru/mango/blob/main/artifacts/android-screenshots/dark/chat.png
-    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/artifacts/android-screenshots/light/home.png
-    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/artifacts/android-screenshots/dark/chat.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/1_chat.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/2_home.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/3_providers.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/4_library.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/5_memories.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/6_security.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/7_settings.png
+    - https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/8_defaults.png
 metadata_sources:
     - github
 pubkey: npub1aljazgxlpnpfp7n5sunlk3dvfp72456x6nezjw4sd850q879rxqsthg9jp
