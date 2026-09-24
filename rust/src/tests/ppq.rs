@@ -1,7 +1,7 @@
 //! Wave 1 tests for the PPQ account module (plan §10.1/§10.2).
 //!
 //! Wire types are compile-frozen against the sanitized fixtures captured in
-//! Wave 0 (`docs/integrations/ppq-fixtures/`). Any PPQ schema drift that
+//! Wave 0 (`src/tests/ppq-fixtures/`). Any PPQ schema drift that
 //! breaks a fixture breaks this file — which is the point.
 
 use std::io::{Read, Write};
@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 
 const FIX: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../docs/integrations/ppq-fixtures/"
+    "/src/tests/ppq-fixtures/"
 );
 
 /// Raw JSON text of a fixture's `response` member. Parsing from text (not a

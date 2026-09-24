@@ -1,5 +1,5 @@
 //! PPQ wire-only serde models, frozen against the Wave 0 sanitized fixtures
-//! in `docs/integrations/ppq-fixtures/`.
+//! in `src/tests/ppq-fixtures/`.
 //!
 //! Money rules (plan §6.3): PPQ sends balances and limits as bare JSON
 //! numbers. They are captured as raw JSON text via `serde_json`'s

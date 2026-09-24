@@ -8,7 +8,7 @@
 //! - `credit_id` and API keys are `Zeroizing` everywhere and never enter
 //!   `AppState`, logs, or error strings.
 //! - Wire types in [`contracts`] are frozen against the sanitized fixtures in
-//!   `docs/integrations/ppq-fixtures/` (Wave 0 evidence). Unknown invoice
+//!   `src/tests/ppq-fixtures/` (Wave 0 evidence). Unknown invoice
 //!   status values are handled conservatively, never guessed.
 
 pub mod account;

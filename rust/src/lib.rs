@@ -6738,7 +6738,11 @@ fn resolve_turn_backend_and_model(
             }
         }
 
-        return Ok((backend.clone(), route.model_id.clone(), route));
+        return Ok((
+            hydrate_backend_api_key(actor_state, backend),
+            route.model_id.clone(),
+            route,
+        ));
     }
 
     let Some(backend) =
@@ -6773,10 +6777,28 @@ fn resolve_turn_backend_and_model(
     }
 
     Ok((
-        backend.clone(),
+        hydrate_backend_api_key(actor_state, backend),
         model.to_string(),
         routing::single_backend_routing(backend.id.clone(), model.to_string()),
     ))
+}
+
+/// Backends held in actor memory carry `api_key` only if it was present at
+/// load time; keychain-only keys (managed PPQ, restored or provisioned after
+/// the list was loaded) must be hydrated before a turn uses the config —
+/// otherwise the request ships with an empty key and the provider 401s.
+fn hydrate_backend_api_key(
+    actor_state: &ActorState,
+    backend: &llm::BackendConfig,
+) -> llm::BackendConfig {
+    if backend.api_key.is_empty() {
+        let api_key = load_backend_api_key(actor_state, &backend.id).unwrap_or_default();
+        return llm::BackendConfig {
+            api_key,
+            ..backend.clone()
+        };
+    }
+    backend.clone()
 }
 
 /// Pause an active agent session.
