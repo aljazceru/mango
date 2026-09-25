@@ -55,14 +55,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import dev.disobey.mango.AppManager
 import dev.disobey.mango.PpqBackupCoordinator
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.AttestationStatus
-import dev.disobey.mango.rust.AttestationStatusEntry
-import dev.disobey.mango.rust.BackendSummary
 import dev.disobey.mango.rust.HealthStatus
 import dev.disobey.mango.rust.PpqAccountMode
 import dev.disobey.mango.rust.TeeType
@@ -169,12 +169,6 @@ fun SettingsProvidersScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                                 modifier = Modifier.weight(1f)
-                            )
-                            ProviderStatusPill(
-                                isEnabled = isEnabled,
-                                backend = backend,
-                                att = att,
-                                isDark = isDark
                             )
                             Spacer(Modifier.width(6.dp))
                             Icon(
@@ -544,13 +538,19 @@ fun SettingsProvidersScreen(
         }
 
         if (showPpqTopUpDialog) {
-            Dialog(onDismissRequest = { showPpqTopUpDialog = false }) {
+            Dialog(
+                onDismissRequest = { showPpqTopUpDialog = false },
+                // Let the dialog resize for the IME so the balance row stays visible
+                // above the keyboard instead of being panned off-screen.
+                properties = DialogProperties(decorFitsSystemWindows = false),
+            ) {
                 Surface(
                     shape = MaterialTheme.shapes.large,
                     tonalElevation = 6.dp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
+                        .padding(16.dp)
+                        .imePadding(),
                 ) {
                     PpqFundingScreen(
                         summary = appState.ppq,
@@ -681,46 +681,4 @@ private fun parseTeeTypeProviders(value: String): TeeType = when (value) {
     "AmdSevSnp" -> TeeType.AMD_SEV_SNP
     "Unknown" -> TeeType.UNKNOWN
     else -> TeeType.INTEL_TDX
-}
-
-@Composable
-private fun ProviderStatusPill(
-    isEnabled: Boolean,
-    backend: BackendSummary?,
-    att: AttestationStatusEntry?,
-    isDark: Boolean,
-) {
-    if (!isEnabled || backend == null) {
-        Text(
-            "Disabled",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        return
-    }
-    val (label, color) = when {
-        att?.status is AttestationStatus.Failed ->
-            "Attest Failed" to (if (isDark) DarkFailed else LightFailed)
-        att?.status is AttestationStatus.Expired ->
-            "Attest Expired" to (if (isDark) DarkDegraded else LightDegraded)
-        backend.healthStatus == HealthStatus.FAILED ->
-            "Failed" to (if (isDark) DarkFailed else LightFailed)
-        backend.healthStatus == HealthStatus.DEGRADED ->
-            "Degraded" to (if (isDark) DarkDegraded else LightDegraded)
-        att?.status is AttestationStatus.Verified ->
-            "Attested" to (if (isDark) DarkHealthy else LightHealthy)
-        backend.healthStatus == HealthStatus.HEALTHY ->
-            "Healthy" to (if (isDark) DarkHealthy else LightHealthy)
-        else ->
-            "Enabled" to (if (isDark) DarkHealthUnknown else LightHealthUnknown)
-    }
-    Surface(color = color.copy(alpha = 0.12f), shape = RoundedCornerShape(20.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-            color = color,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-        )
-    }
 }

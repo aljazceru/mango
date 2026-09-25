@@ -21,6 +21,7 @@ import dev.disobey.mango.rust.AppUpdate
 import dev.disobey.mango.rust.BiometricProvider
 import dev.disobey.mango.rust.BusyState
 import dev.disobey.mango.rust.ContextvmDiscoveryState
+import dev.disobey.mango.rust.ConversationRetentionMode
 import dev.disobey.mango.rust.DeviceCapability
 import dev.disobey.mango.rust.DirectoryFingerprint
 import dev.disobey.mango.rust.EmbeddingProvider
@@ -127,6 +128,9 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             lastTurnRouting = null,
             trustedProviders = emptyList(),
             enrollmentResumePending = false,
+            conversationRetentionMode = ConversationRetentionMode.OFF,
+            conversationRetentionDays = 30u,
+            archivedConversations = emptyList(),
             ppq = PpqAccountSummary(
                 mode = PpqAccountMode.NONE,
                 setupPhase = PpqSetupPhase.IDLE,
