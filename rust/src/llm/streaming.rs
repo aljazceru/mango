@@ -144,6 +144,20 @@ pub enum InternalEvent {
         /// Each string is one extracted memory fact. Empty vec means nothing to store.
         memories: Vec<String>,
     },
+    /// Chat compaction completed.
+    ///
+    /// Delivered from the compaction task back to the actor loop. The actor
+    /// persists the summary + covered ordinal and, when `retry_after` is set,
+    /// re-sends the pending turn with the compacted prompt.
+    ConversationCompactionComplete {
+        conversation_id: String,
+        /// Message count the summary covers (in `list_messages` order).
+        covered_count: u64,
+        /// Re-send the pending turn after persisting the summary.
+        retry_after: bool,
+        /// Summary text on success; human-readable reason on failure.
+        result: Result<String, String>,
+    },
     /// Non-streaming tool round returned tool calls (Phase 27, CHAT-TOOL-04).
     /// Actor thread dispatches tools and spawns streaming follow-up.
     /// CRITICAL: Tool dispatch MUST happen on actor thread, NOT inside async task

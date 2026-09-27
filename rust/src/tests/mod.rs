@@ -10,6 +10,7 @@ mod attestation_venice;
 mod backend_config;
 mod chat;
 mod chat_tools;
+mod compaction;
 pub mod common;
 mod contextvm;
 mod crypto;

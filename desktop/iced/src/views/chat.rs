@@ -563,6 +563,40 @@ pub fn chat_view<'a>(
                 ..Default::default()
             });
 
+        // ── Compact chat button — summarizes older turns for the model ──
+        let compact_msg = state
+            .current_conversation_id
+            .clone()
+            .map(|conversation_id| {
+                Message::DispatchAction(AppAction::CompactConversation {
+                    conversation_id,
+                    retry_after: false,
+                })
+            });
+        let compact_enabled = compact_msg.is_some() && !state.messages.is_empty();
+        let compact_bg = vc.surface;
+        let compact_text_color = if compact_enabled {
+            vc.text_dim
+        } else {
+            vc.muted
+        };
+        let compact_btn = button(text("Compact chat").size(13).color(compact_text_color))
+            .on_press_maybe(if compact_enabled {
+                compact_msg
+            } else {
+                None
+            })
+            .padding(Padding::from([4u16, 8]))
+            .style(move |_theme, _status| button::Style {
+                background: Some(Background::Color(compact_bg)),
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                text_color: compact_text_color,
+                ..Default::default()
+            });
+
         let secondary_surface = vc.secondary_surface;
         let accent = vc.accent;
         let menu_row = container(
@@ -571,6 +605,7 @@ pub fn chat_view<'a>(
                 tools_btn,
                 fork_btn,
                 export_btn,
+                compact_btn,
                 instructions_section_inner
             ]
             .spacing(12)
@@ -627,6 +662,21 @@ pub fn chat_view<'a>(
 
     // If actively streaming with content not yet in messages list, append streaming bubble
     let mut all_widgets: Vec<Element<'_, Message>> = message_widgets;
+
+    // Compacted-conversation caption at the top of the message list.
+    if let Some(compaction) = &state.compaction {
+        let caption = container(
+            text(format!(
+                "Compacted · {} of {} messages summarized",
+                compaction.covered_message_count, compaction.total_message_count
+            ))
+            .size(11)
+            .color(vc.muted),
+        )
+        .width(Length::Fill)
+        .center_x(Length::Fill);
+        all_widgets.insert(0, caption.into());
+    }
     if is_streaming && !streaming_content.items().is_empty() {
         all_widgets.push(render_streaming_bubble(streaming_content, theme, vc));
     }
@@ -677,7 +727,12 @@ pub fn chat_view<'a>(
 
     // Error bubble inline if last_error is set
     let thread_with_error: Element<'_, Message> = if let Some(err) = &state.last_error {
-        let error_bubble = build_error_bubble(err, vc);
+        let error_bubble = build_error_bubble(
+            err,
+            vc,
+            state.compaction_offered,
+            state.current_conversation_id.as_deref(),
+        );
         column![msg_column, error_bubble].spacing(4).into()
     } else {
         msg_column
@@ -1102,7 +1157,12 @@ fn render_edit_mode<'a>(edit_text: &'a str, vc: crate::theme::ViewColors) -> Ele
         .into()
 }
 
-fn build_error_bubble<'a>(error: &'a str, vc: crate::theme::ViewColors) -> Element<'a, Message> {
+fn build_error_bubble<'a>(
+    error: &'a str,
+    vc: crate::theme::ViewColors,
+    compaction_offered: bool,
+    current_conversation_id: Option<&'a str>,
+) -> Element<'a, Message> {
     let destructive = vc.destructive;
     let error_bg = Color {
         r: destructive.r,
@@ -1110,14 +1170,32 @@ fn build_error_bubble<'a>(error: &'a str, vc: crate::theme::ViewColors) -> Eleme
         b: destructive.b,
         a: 0.15,
     };
-    container(
-        row![
-            text("!").size(14).color(destructive),
-            text(error).size(14).color(destructive),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
+    let mut error_row = row![
+        text("!").size(14).color(destructive),
+        text(error).size(14).color(destructive),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    // Context-overflow offer: compact older turns then resend the failed turn.
+    if compaction_offered {
+        if let Some(cid) = current_conversation_id {
+            let accent = vc.accent;
+            let retry_compact = button(text("Compact & retry").size(12).color(Color::WHITE))
+                .on_press(Message::DispatchAction(AppAction::CompactConversation {
+                    conversation_id: cid.to_string(),
+                    retry_after: true,
+                }))
+                .padding(Padding::from([2u16, 6]))
+                .style(move |theme, status| {
+                    action_btn_style(theme, status, accent, Color::WHITE)
+                });
+            error_row = error_row.push(iced::widget::Space::new().width(Length::Fill));
+            error_row = error_row.push(retry_compact);
+        }
+    }
+
+    container(error_row)
     .padding(Padding::from([8u16, 12]))
     .width(Length::Fill)
     .style(move |_theme| container::Style {

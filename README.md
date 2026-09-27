@@ -46,6 +46,7 @@ Mango can set up a PPQ account automatically inside the app, so you do not need 
 - Model picker showing models available from your configured providers, with the active provider pre-selected
 - Per-conversation system instructions and tool-use controls
 - Image attachments for vision-capable models, stored encrypted at rest
+- Context windows are respected at the model's real limit (learned from the provider, or the on-device engine's budget): long chats can be compacted — older turns are summarized for the model while the full history stays on the device
 
 ### Confidentiality & attestation
 - Remote attestation verification for AMD SEV-SNP and Intel TDX/SGX quotes, fully on-device

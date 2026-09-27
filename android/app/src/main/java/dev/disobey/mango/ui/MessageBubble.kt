@@ -504,6 +504,7 @@ fun ErrorBubble(
     error: String,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    onCompact: (() -> Unit)? = null,
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -538,6 +539,17 @@ fun ErrorBubble(
                         "Retry",
                         style = MaterialTheme.typography.labelSmall,
                     )
+                }
+                onCompact?.let { compact ->
+                    TextButton(
+                        onClick = compact,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    ) {
+                        Text(
+                            "Compact & retry",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                 }
             }
         }

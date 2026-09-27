@@ -348,6 +348,13 @@ typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod6)(uint64_t, RustBuf
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD7
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOCAL_LLM_PROVIDER_METHOD7
+typedef void (*UniffiCallbackInterfaceLocalLlmProviderMethod7)(uint64_t, uint32_t* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_APP_RECONCILER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_APP_RECONCILER
 typedef struct UniffiVTableCallbackInterfaceAppReconciler {
@@ -408,6 +415,7 @@ typedef struct UniffiVTableCallbackInterfaceLocalLlmProvider {
     UniffiCallbackInterfaceLocalLlmProviderMethod4 _Nonnull unload;
     UniffiCallbackInterfaceLocalLlmProviderMethod5 _Nonnull loadedModelPath;
     UniffiCallbackInterfaceLocalLlmProviderMethod6 _Nonnull deviceCapability;
+    UniffiCallbackInterfaceLocalLlmProviderMethod7 _Nonnull maxPromptTokens;
 } UniffiVTableCallbackInterfaceLocalLlmProvider;
 
 #endif
@@ -1051,6 +1059,12 @@ uint16_t uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path(vo
 #ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_DEVICE_CAPABILITY
 #define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_DEVICE_CAPABILITY
 uint16_t uniffi_mango_core_checksum_method_localllmprovider_device_capability(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_MAX_PROMPT_TOKENS
+#define UNIFFI_FFIDEF_UNIFFI_MANGO_CORE_CHECKSUM_METHOD_LOCALLLMPROVIDER_MAX_PROMPT_TOKENS
+uint16_t uniffi_mango_core_checksum_method_localllmprovider_max_prompt_tokens(void
     
 );
 #endif

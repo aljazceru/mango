@@ -1,5 +1,8 @@
 pub mod backend;
 pub mod capabilities;
+pub mod compact;
+pub mod complete;
+pub mod context;
 pub mod error;
 pub mod local;
 pub mod local_models;

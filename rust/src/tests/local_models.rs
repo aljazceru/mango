@@ -140,6 +140,37 @@ impl LocalLlmProvider for FakeLocalProvider {
             available_storage_bytes: 20 * 1024 * 1024 * 1024,
         }
     }
+
+    fn max_prompt_tokens(&self) -> u32 {
+        // Mirrors the real engines (2048-token contexts minus generation budget).
+        1848
+    }
+}
+
+#[test]
+fn local_completion_collects_generated_tokens() {
+    // The on-device completer (used by chat compaction) must collect the
+    // engine's tokens from its private channel instead of streaming them.
+    let temp = tempfile::tempdir().unwrap();
+    let bytes = b"tiny-model-bytes";
+    let preset = tiny_local_preset("tiny.gguf", bytes);
+    write_tiny_model(&temp, &preset, bytes);
+
+    let provider = Arc::new(FakeLocalProvider::default());
+    let messages = vec![crate::llm::streaming::ChatMessage {
+        role: crate::llm::streaming::ChatRole::User,
+        content: "hello".to_string(),
+    }];
+    let output = crate::llm::local::complete_local_blocking_with_preset(
+        provider,
+        temp.path().to_str().unwrap().to_string(),
+        "test-backend",
+        &preset.id,
+        &preset,
+        &messages,
+    )
+    .expect("local completion must succeed");
+    assert_eq!(output, "local ok");
 }
 
 #[test]

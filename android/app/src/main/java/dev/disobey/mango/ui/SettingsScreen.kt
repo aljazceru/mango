@@ -247,6 +247,14 @@ private fun LocalInferenceToggleRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
+                appState.localModelsError?.let { error ->
+                    Text(
+                        error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 2,
+                    )
+                }
             }
             Switch(
                 checked = appState.localInferenceEnabled,

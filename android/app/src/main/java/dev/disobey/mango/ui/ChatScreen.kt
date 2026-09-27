@@ -408,7 +408,24 @@ fun ChatScreen(
                     // Error bubble (bottommost)
                     state.lastError?.takeUnless { isEmptyIdleChat }?.let { error ->
                         item(key = "error") {
-                            ErrorBubble(error = error, onRetry = onRetry)
+                            ErrorBubble(
+                                error = error,
+                                onRetry = onRetry,
+                                onCompact = if (state.compactionOffered) {
+                                    {
+                                        state.currentConversationId?.let { cid ->
+                                            onDispatchAction(
+                                                AppAction.CompactConversation(
+                                                    conversationId = cid,
+                                                    retryAfter = true,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    null
+                                },
+                            )
                         }
                     }
 
@@ -442,6 +459,17 @@ fun ChatScreen(
                             onReadEncryptedImage = onReadEncryptedImage,
                             fontScale = fontScale,
                         )
+                    }
+
+                    // Compaction badge (topmost item in the reversed list)
+                    state.compaction?.let { info ->
+                        item(key = "compaction") {
+                            Text(
+                                text = "Compacted · ${info.coveredMessageCount} of ${info.totalMessageCount} messages summarized",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
                 if (showScrollToBottom) {
@@ -817,6 +845,33 @@ private fun ChatTopBar(
                             showConvMenu = false
                             state.currentConversationId?.let { cid ->
                                 onDispatchAction(AppAction.ForkConversation(id = cid))
+                            }
+                        },
+                    )
+                    // Compact chat: summarize older turns for the model; the full
+                    // history stays on device. The core guards busy state (toast).
+                    val canCompact = state.currentConversationId != null
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Compact chat",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (canCompact)
+                                    MaterialTheme.colorScheme.onSurface
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        enabled = canCompact,
+                        onClick = {
+                            showConvMenu = false
+                            state.currentConversationId?.let { cid ->
+                                onDispatchAction(
+                                    AppAction.CompactConversation(
+                                        conversationId = cid,
+                                        retryAfter = false,
+                                    ),
+                                )
                             }
                         },
                     )

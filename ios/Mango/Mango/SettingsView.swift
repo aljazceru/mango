@@ -71,6 +71,12 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                if let localModelsError = appState.localModelsError {
+                    Text(localModelsError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
                 if let progress = appState.localDownloadProgress {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(localProgressLabel(progress.stage)): \(localProgressBytes(progress.downloadedBytes, progress.totalBytes))")

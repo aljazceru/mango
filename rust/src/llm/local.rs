@@ -244,6 +244,10 @@ pub trait LocalLlmProvider: Send + Sync + 'static {
     fn unload(&self);
     fn loaded_model_path(&self) -> Option<String>;
     fn device_capability(&self) -> DeviceCapability;
+    /// Maximum prompt tokens the engine will actually accept (context window
+    /// minus the generation budget). Used to bound prompts to the model's
+    /// REAL limits — never an artificial cap. 0 = unknown/disabled.
+    fn max_prompt_tokens(&self) -> u32;
 }
 
 pub struct NullLocalLlmProvider;
@@ -294,6 +298,10 @@ impl LocalLlmProvider for NullLocalLlmProvider {
 
     fn device_capability(&self) -> DeviceCapability {
         DeviceCapability::default()
+    }
+
+    fn max_prompt_tokens(&self) -> u32 {
+        0
     }
 }
 
@@ -484,59 +492,13 @@ fn run_local_generation_with_preset_blocking(
     core_tx: flume::Sender<crate::CoreMsg>,
     cancel_token: CancellationToken,
 ) {
-    let path = local_model_path(&data_dir, &preset);
-    if !path.is_file() {
-        let err = LocalLlmError::ModelMissing {
-            path: path.to_string_lossy().to_string(),
-        };
+    if let Err(error) = ensure_local_model_loaded(&provider, &data_dir, &preset) {
         let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
             InternalEvent::StreamError {
-                error: err.into_llm_error(),
+                error: error.into_llm_error(),
             },
         )));
         return;
-    }
-
-    match local_model_verified(&data_dir, &preset) {
-        Ok(true) => {}
-        Ok(false) => {
-            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                InternalEvent::StreamError {
-                    error: LlmError::NetworkError {
-                        reason: format!(
-                            "local model failed integrity verification: {}",
-                            preset.name
-                        ),
-                    },
-                },
-            )));
-            return;
-        }
-        Err(error) => {
-            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                InternalEvent::StreamError {
-                    error: LlmError::NetworkError {
-                        reason: format!("failed to verify local model before loading: {error}"),
-                    },
-                },
-            )));
-            return;
-        }
-    }
-
-    let path_string = path.to_string_lossy().to_string();
-    if provider.loaded_model_path().as_deref() != Some(path_string.as_str()) {
-        if provider.loaded_model_path().is_some() {
-            provider.unload();
-        }
-        if let Err(error) = provider.load_model(path_string.clone()) {
-            let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
-                InternalEvent::StreamError {
-                    error: error.into_llm_error(),
-                },
-            )));
-            return;
-        }
     }
 
     if cancel_token.is_cancelled() {
@@ -603,6 +565,98 @@ fn prompt_json_for_local(
         "messages": messages_json,
     })
     .to_string()
+}
+
+/// Verify integrity and load the model into the platform engine, reusing an
+/// already-loaded copy when possible. Shared by the streaming path and the
+/// one-shot completer used for chat compaction.
+fn ensure_local_model_loaded(
+    provider: &Arc<dyn LocalLlmProvider>,
+    data_dir: &str,
+    preset: &LocalModelPreset,
+) -> Result<(), LocalLlmError> {
+    let path = local_model_path(data_dir, preset);
+    if !path.is_file() {
+        return Err(LocalLlmError::ModelMissing {
+            path: path.to_string_lossy().to_string(),
+        });
+    }
+
+    match local_model_verified(data_dir, preset) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(LocalLlmError::LoadFailed {
+                reason: format!("local model failed integrity verification: {}", preset.name),
+            });
+        }
+        Err(error) => {
+            return Err(LocalLlmError::LoadFailed {
+                reason: format!("failed to verify local model before loading: {error}"),
+            });
+        }
+    }
+
+    let path_string = path.to_string_lossy().to_string();
+    if provider.loaded_model_path().as_deref() != Some(path_string.as_str()) {
+        if provider.loaded_model_path().is_some() {
+            provider.unload();
+        }
+        provider.load_model(path_string)?;
+    }
+    Ok(())
+}
+
+/// One-shot non-streaming completion on the on-device engine.
+///
+/// Used by chat compaction when no remote backend is configured. Collects the
+/// generated tokens from a private `LocalGenerationContext` channel instead of
+/// streaming them into the chat UI. Blocks the calling thread (GGUF generation
+/// is blocking) — callers run it inside `spawn_blocking`.
+pub fn complete_local_blocking(
+    provider: Arc<dyn LocalLlmProvider>,
+    data_dir: String,
+    backend_id: &str,
+    model_id: &str,
+    messages: &[super::streaming::ChatMessage],
+) -> Result<String, LlmError> {
+    let Some(preset) = find_local_model(model_id) else {
+        return Err(LlmError::ModelNotFound {
+            model_id: model_id.to_string(),
+        });
+    };
+    complete_local_blocking_with_preset(provider, data_dir, backend_id, model_id, &preset, messages)
+}
+
+pub(crate) fn complete_local_blocking_with_preset(
+    provider: Arc<dyn LocalLlmProvider>,
+    data_dir: String,
+    backend_id: &str,
+    model_id: &str,
+    preset: &LocalModelPreset,
+    messages: &[super::streaming::ChatMessage],
+) -> Result<String, LlmError> {
+    ensure_local_model_loaded(&provider, &data_dir, preset).map_err(|error| error.into_llm_error())?;
+
+    let prompt_json = prompt_json_for_local(backend_id, model_id, messages);
+    let (tx, rx) = flume::unbounded();
+    let context = LocalGenerationContext::new(tx, CancellationToken::new());
+    if let Err(error) = provider.generate(prompt_json, context.clone()) {
+        if !context.error_sent() {
+            return Err(error.into_llm_error());
+        }
+    }
+
+    let mut output = String::new();
+    for msg in rx.drain() {
+        if let crate::CoreMsg::InternalEvent(event) = msg {
+            match *event {
+                InternalEvent::StreamChunk { token } => output.push_str(&token),
+                InternalEvent::StreamError { error } => return Err(error),
+                _ => {}
+            }
+        }
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
