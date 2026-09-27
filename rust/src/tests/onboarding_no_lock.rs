@@ -31,7 +31,7 @@ struct SharedKeychain(SharedKeychainInner);
 impl KeychainProvider for SharedKeychain {
     fn store(&self, service: String, key: String, value: String) -> bool {
         self.0
-            .0
+             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert((service, key), value);
@@ -39,7 +39,7 @@ impl KeychainProvider for SharedKeychain {
     }
     fn load(&self, service: String, key: String) -> Option<String> {
         self.0
-            .0
+             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&(service, key))
@@ -47,7 +47,7 @@ impl KeychainProvider for SharedKeychain {
     }
     fn delete(&self, service: String, key: String) -> bool {
         self.0
-            .0
+             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&(service, key));
@@ -103,7 +103,10 @@ fn setup_no_lock_completes_enrollment_and_creates_first_conversation() {
 
     let state = app.state();
     assert!(
-        !matches!(state.router.current_screen, Screen::PinSetup | Screen::Locked),
+        !matches!(
+            state.router.current_screen,
+            Screen::PinSetup | Screen::Locked
+        ),
         "no-lock enrollment must leave the enrollment/lock screens, got {:?}",
         state.router.current_screen
     );
@@ -140,7 +143,10 @@ fn setup_no_lock_cold_start_bypasses_lock_screen() {
         "cold start in no-lock mode must bypass the lock screen, got {:?}",
         state.router.current_screen
     );
-    assert!(state.no_lock_mode, "no_lock_mode must persist across restart");
+    assert!(
+        state.no_lock_mode,
+        "no_lock_mode must persist across restart"
+    );
     assert_eq!(
         state.conversations.len(),
         1,
@@ -206,7 +212,10 @@ fn setup_no_lock_rejected_when_auth_exists() {
     let state = app.state();
     assert!(!state.no_lock_mode, "PIN install must not flip to no-lock");
     assert!(
-        state.toast.as_deref().is_some_and(|t| t.contains("already")),
+        state
+            .toast
+            .as_deref()
+            .is_some_and(|t| t.contains("already")),
         "rejection must explain, got {:?}",
         state.toast
     );
@@ -238,7 +247,10 @@ fn enable_pin_lock_rejected_outside_no_lock_mode() {
 
     let state = app.state();
     assert!(
-        state.toast.as_deref().is_some_and(|t| t.contains("already")),
+        state
+            .toast
+            .as_deref()
+            .is_some_and(|t| t.contains("already")),
         "EnablePinLock on a PIN install must be rejected, got {:?}",
         state.toast
     );
@@ -286,8 +298,14 @@ fn interrupted_no_lock_enrollment_auto_resumes_at_startup() {
     let dek = generate_dek();
     let salt = generate_salt();
     let secret = generate_dek();
-    let kek = derive_kek(&secret, &salt, DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM)
-        .unwrap();
+    let kek = derive_kek(
+        &secret,
+        &salt,
+        DEFAULT_MEMORY_KIB,
+        DEFAULT_ITERATIONS,
+        DEFAULT_PARALLELISM,
+    )
+    .unwrap();
     let secret_hex: String = secret.iter().map(|b| format!("{:02x}", b)).collect();
     let params = AuthParams {
         salt: salt.to_vec(),
@@ -301,12 +319,19 @@ fn interrupted_no_lock_enrollment_auto_resumes_at_startup() {
     let bootstrap = BootstrapDb::open(&format!("{dir}/mango_auth.db")).unwrap();
     bootstrap.write_pending_auth(&params).unwrap();
     let kc = SharedKeychain(keychain.clone());
-    kc.store("mango".into(), crate::KEYCHAIN_NO_LOCK_SECRET_KEY.into(), secret_hex);
+    kc.store(
+        "mango".into(),
+        crate::KEYCHAIN_NO_LOCK_SECRET_KEY.into(),
+        secret_hex,
+    );
 
     let app2 = make_app(&dir, &keychain);
     let state = app2.state();
     assert!(
-        !matches!(state.router.current_screen, Screen::PinSetup | Screen::Locked),
+        !matches!(
+            state.router.current_screen,
+            Screen::PinSetup | Screen::Locked
+        ),
         "no-lock resume needs no user input, got {:?}",
         state.router.current_screen
     );
@@ -344,7 +369,10 @@ fn interrupted_no_lock_enrollment_survives_candidate_only_crash_window() {
     let app2 = make_app(&dir, &keychain);
     let state = app2.state();
     assert!(
-        !matches!(state.router.current_screen, Screen::PinSetup | Screen::Locked),
+        !matches!(
+            state.router.current_screen,
+            Screen::PinSetup | Screen::Locked
+        ),
         "candidate-window resume needs no user input, got {:?}",
         state.router.current_screen
     );
@@ -375,7 +403,10 @@ fn no_lock_resume_survives_second_restart_after_lost_dek_slot() {
 
     let app2 = make_app(&dir, &keychain);
     let state = app2.state();
-    assert!(state.no_lock_mode, "resume must succeed from the secret alone");
+    assert!(
+        state.no_lock_mode,
+        "resume must succeed from the secret alone"
+    );
     assert!(state.encryption_enabled, "resume must finish encryption");
     drop(app2);
 

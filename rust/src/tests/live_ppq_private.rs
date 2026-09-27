@@ -69,10 +69,10 @@ async fn live_ppq_private_rejects_invalid_api_key() {
 #[ignore]
 async fn live_ppq_private_kimi_k3_accepts_image_input() {
     use async_openai::types::chat::{
-        ChatCompletionRequestMessage, ChatCompletionRequestUserMessageContentPart,
-        ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
-        ChatCompletionRequestUserMessageArgs, ChatCompletionRequestUserMessageContent, ImageDetail,
-        ImageUrl,
+        ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
+        ChatCompletionRequestMessageContentPartText, ChatCompletionRequestUserMessageArgs,
+        ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
+        ImageDetail, ImageUrl,
     };
 
     let api_key = std::env::var("PPQ_LIVE_API_KEY").unwrap_or_else(|_| {
@@ -169,10 +169,10 @@ async fn live_ppq_private_kimi_k3_accepts_image_input() {
 #[ignore]
 async fn live_ppq_private_gpt_oss_120b_image_probe() {
     use async_openai::types::chat::{
-        ChatCompletionRequestMessage, ChatCompletionRequestUserMessageContentPart,
-        ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
-        ChatCompletionRequestUserMessageArgs, ChatCompletionRequestUserMessageContent, ImageDetail,
-        ImageUrl,
+        ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
+        ChatCompletionRequestMessageContentPartText, ChatCompletionRequestUserMessageArgs,
+        ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
+        ImageDetail, ImageUrl,
     };
 
     let api_key = std::env::var("PPQ_LIVE_API_KEY").unwrap_or_else(|_| {

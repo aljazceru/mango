@@ -595,7 +595,7 @@ fn hybrid_routing_card<'a>(
         })
         .into()
 }
-
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     state: &'a AppState,
     is_dark: bool,
@@ -1146,18 +1146,16 @@ pub fn view<'a>(
             iced::widget::Space::new().height(0).into()
         };
 
-        let can_enable =
-            applock_pin_input.len() >= 4 && applock_pin_input == applock_confirm_input;
-        let mismatch: Element<'_, Message> = if !applock_confirm_input.is_empty()
-            && applock_pin_input != applock_confirm_input
-        {
-            text("PINs do not match.")
-                .size(11)
-                .color(vc.destructive)
-                .into()
-        } else {
-            iced::widget::Space::new().height(0).into()
-        };
+        let can_enable = applock_pin_input.len() >= 4 && applock_pin_input == applock_confirm_input;
+        let mismatch: Element<'_, Message> =
+            if !applock_confirm_input.is_empty() && applock_pin_input != applock_confirm_input {
+                text("PINs do not match.")
+                    .size(11)
+                    .color(vc.destructive)
+                    .into()
+            } else {
+                iced::widget::Space::new().height(0).into()
+            };
 
         let enable_btn = if can_enable {
             button(text("Enable app lock").size(13).color(vc.bg))
@@ -1332,15 +1330,16 @@ pub fn view<'a>(
             ..Default::default()
         });
 
-    let retention_warning: Element<'_, Message> =
-        if state.conversation_retention_mode == ConversationRetentionMode::Delete {
-            text("Delete permanently removes conversations and their messages once older than the threshold. This cannot be undone.")
+    let retention_warning: Element<'_, Message> = if state.conversation_retention_mode
+        == ConversationRetentionMode::Delete
+    {
+        text("Delete permanently removes conversations and their messages once older than the threshold. This cannot be undone.")
                 .size(11)
                 .color(vc.muted)
                 .into()
-        } else {
-            iced::widget::Space::new().height(0).into()
-        };
+    } else {
+        iced::widget::Space::new().height(0).into()
+    };
 
     let archived_rows: Vec<Element<'_, Message>> = state
         .archived_conversations

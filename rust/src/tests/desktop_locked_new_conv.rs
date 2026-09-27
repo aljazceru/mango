@@ -48,7 +48,7 @@ fn make_locked_data_dir(tag: &str) -> String {
             salt: salt.to_vec(),
             wrapped_dek,
             duress_hash: None,
-        no_lock: false,
+            no_lock: false,
             kdf_memory_kib: crypto::key_derivation::DEFAULT_MEMORY_KIB,
             kdf_iterations: crypto::key_derivation::DEFAULT_ITERATIONS,
             kdf_parallelism: crypto::key_derivation::DEFAULT_PARALLELISM,

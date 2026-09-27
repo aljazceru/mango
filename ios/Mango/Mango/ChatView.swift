@@ -92,6 +92,14 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
+                        if let compaction = state.compaction {
+                            Text("Compacted · \(compaction.coveredMessageCount) of \(compaction.totalMessageCount) messages summarized")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .accessibilityLabel("Conversation compacted")
+                        }
+
                         ForEach(state.messages, id: \.id) { message in
                             MessageBubbleView(
                                 message: message,
@@ -113,7 +121,11 @@ struct ChatView: View {
 
                         // Error bubble
                         if let error = state.lastError {
-                            ErrorBubbleView(error: error, onRetry: onRetry)
+                            ErrorBubbleView(
+                                error: error,
+                                onRetry: onRetry,
+                                onCompact: state.compactionOffered ? { compactConversation(retryAfter: true) } : nil
+                            )
                                 .id("error")
                         }
 
@@ -228,6 +240,10 @@ struct ChatView: View {
             let toolsOn = currentConversation?.toolsEnabled ?? false
             Button(toolsOn ? "Tools: On" : "Tools") {
                 showToolsSheet = true
+            }
+
+            Button("Compact chat") {
+                compactConversation(retryAfter: false)
             }
         }
         .sheet(isPresented: $showSystemPromptSheet) {
@@ -403,6 +419,15 @@ struct ChatView: View {
             .replacingOccurrences(of: "-", with: " ")
     }
 
+    /// Summarizes older turns of the open conversation into a compaction
+    /// summary; history on device is never modified. `retryAfter` re-sends the
+    /// pending turn afterwards ("Compact & retry").
+    private func compactConversation(retryAfter: Bool) {
+        guard let conversationId = state.currentConversationId else { return }
+        appManager.dispatch(.compactConversation(conversationId: conversationId,
+                                                 retryAfter: retryAfter))
+    }
+
     private func isLastAssistantMessage(_ message: UiMessage) -> Bool {
         guard message.role == "assistant" else { return false }
         return state.messages.last(where: { $0.role == "assistant" })?.id == message.id
@@ -470,7 +495,7 @@ private struct StreamingBubbleView: View {
 private struct ErrorBubbleView: View {
     let error: String
     let onRetry: () -> Void
-
+    var onCompact: (() -> Void)? = nil
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -480,10 +505,18 @@ private struct ErrorBubbleView: View {
                 Text(error)
                     .font(.subheadline)
                     .foregroundColor(.primary)
-                Button("Retry") { onRetry() }
-                    .font(.caption)
-                    .foregroundColor(.accentColor)
-                    .accessibilityLabel("Retry last message")
+                HStack(spacing: 12) {
+                    Button("Retry") { onRetry() }
+                        .font(.caption)
+                        .foregroundColor(.accentColor)
+                        .accessibilityLabel("Retry last message")
+                    if let onCompact {
+                        Button("Compact & retry") { onCompact() }
+                            .font(.caption)
+                            .foregroundColor(.accentColor)
+                            .accessibilityLabel("Compact chat and retry last message")
+                    }
+                }
             }
             Spacer()
         }

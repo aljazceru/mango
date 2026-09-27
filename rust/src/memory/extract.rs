@@ -1,11 +1,6 @@
-use async_openai::{
-    config::OpenAIConfig,
-    types::chat::{
-        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-        ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
-        CreateChatCompletionResponse, FinishReason,
-    },
-    Client,
+use async_openai::types::chat::{
+    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+    ChatCompletionRequestUserMessageArgs, FinishReason,
 };
 
 /// System prompt for memory extraction.
@@ -105,7 +100,13 @@ pub async fn call_extraction_llm(
         .build()?
         .into();
 
-    let response = complete(backend, model, vec![system_msg, user_msg]).await?;
+    let response = crate::llm::complete::complete(
+        backend,
+        model,
+        vec![system_msg, user_msg],
+        EXTRACTION_MAX_TOKENS,
+    )
+    .await?;
     let choice = response.choices.first();
     // Distinguish "nothing worth remembering" (finish_reason=stop, "[]") from a
     // truncated JSON body (finish_reason=length) — the latter silently parsed
@@ -124,78 +125,4 @@ pub async fn call_extraction_llm(
 
     let memories: Vec<String> = serde_json::from_str(text.trim()).unwrap_or_default();
     Ok(memories)
-}
-
-/// One-shot non-streaming completion routed through the backend's own
-/// transport, preserving the extraction output budget on every provider.
-/// Mirrors the dispatch in `agent::loop::run_agent_step_for_backend`.
-async fn complete(
-    backend: &crate::llm::BackendConfig,
-    model: &str,
-    messages: Vec<ChatCompletionRequestMessage>,
-) -> Result<CreateChatCompletionResponse, crate::llm::LlmError> {
-    use crate::llm::ProviderTransportKind;
-    match backend.transport_kind() {
-        ProviderTransportKind::PpqPrivateE2ee => {
-            crate::llm::ppq_private::create_chat_completion(
-                backend,
-                model,
-                messages,
-                vec![],
-                Some(EXTRACTION_MAX_TOKENS),
-            )
-            .await
-        }
-        ProviderTransportKind::TinfoilSecure => {
-            crate::llm::tinfoil_secure::create_chat_completion(
-                backend,
-                model,
-                messages,
-                vec![],
-                Some(EXTRACTION_MAX_TOKENS),
-            )
-            .await
-        }
-        ProviderTransportKind::VeniceE2ee => {
-            crate::llm::venice::create_chat_completion(
-                backend.clone(),
-                model.to_string(),
-                messages,
-                None,
-                Some(EXTRACTION_MAX_TOKENS),
-            )
-            .await
-        }
-        ProviderTransportKind::Redpill => {
-            crate::llm::redpill::create_chat_completion(
-                backend.clone(),
-                model.to_string(),
-                messages,
-                None,
-                Some(EXTRACTION_MAX_TOKENS),
-            )
-            .await
-        }
-        ProviderTransportKind::OpenAiCompatible | ProviderTransportKind::LocalOnDevice => {
-            let config = OpenAIConfig::new()
-                .with_api_base(&backend.base_url)
-                .with_api_key(&backend.api_key);
-            let client = Client::with_config(config);
-            let request = CreateChatCompletionRequestArgs::default()
-                .model(model)
-                .max_tokens(EXTRACTION_MAX_TOKENS)
-                .messages(messages)
-                .build()
-                .map_err(|e: async_openai::error::OpenAIError| {
-                    crate::llm::LlmError::NetworkError {
-                        reason: e.to_string(),
-                    }
-                })?;
-            client
-                .chat()
-                .create(request)
-                .await
-                .map_err(crate::llm::error::map_openai_error)
-        }
-    }
 }

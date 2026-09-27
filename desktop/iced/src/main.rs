@@ -1748,7 +1748,6 @@ impl App {
                         }
                     }
 
-
                     // ── Phase 32 DIR-05: directory sources handlers ────────────
                     Message::OpenDirectorySources => {
                         manager.dispatch(AppAction::PushScreen {

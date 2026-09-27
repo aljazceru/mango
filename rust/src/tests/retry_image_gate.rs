@@ -5,7 +5,9 @@
 /// reject the turn; after switching the conversation to a text-only model, a
 /// rejected retry left the exchange permanently deleted. The handler now
 /// checks the conversation model before touching any rows.
-use crate::persistence::queries::{insert_conversation, insert_message, ConversationRow, MessageRow};
+use crate::persistence::queries::{
+    insert_conversation, insert_message, ConversationRow, MessageRow,
+};
 use crate::persistence::Database;
 use crate::{
     AppAction, EmbeddingStatus, FfiApp, NullBiometricProvider, NullEmbeddingProvider,
@@ -13,11 +15,8 @@ use crate::{
 };
 
 fn temp_dir(tag: &str) -> String {
-    let dir = std::env::temp_dir().join(format!(
-        "mango_retry_gate_{}_{}",
-        tag,
-        uuid::Uuid::new_v4()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("mango_retry_gate_{}_{}", tag, uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir.to_str().unwrap().to_string()
 }
@@ -100,7 +99,9 @@ fn retry_image_turn_on_text_only_model_preserves_history() {
 
     // Startup after seeding so the actor loads the conversation list.
     let app = make_app(&dir);
-    app.dispatch(AppAction::LoadConversation { conversation_id: conv_id.clone() });
+    app.dispatch(AppAction::LoadConversation {
+        conversation_id: conv_id.clone(),
+    });
     app.sync();
 
     app.dispatch(AppAction::RetryLastMessage);
@@ -180,7 +181,9 @@ fn retry_image_turn_with_empty_model_rejected_without_deletion() {
     drop(db);
 
     let app = make_app(&dir);
-    app.dispatch(AppAction::LoadConversation { conversation_id: conv_id.clone() });
+    app.dispatch(AppAction::LoadConversation {
+        conversation_id: conv_id.clone(),
+    });
     app.sync();
     app.dispatch(AppAction::RetryLastMessage);
     app.sync();
@@ -209,17 +212,19 @@ fn retry_image_turn_routed_to_text_only_hybrid_local_restores_history() {
     // covers. (Local inference stays off: the local route errors before any
     // generation attempt.)
     let dir = temp_dir("retry_gate_hybrid");
-    let keychain_state =
-        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
-            (String, String),
-            String,
-        >::new()));
+    let keychain_state = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        (String, String),
+        String,
+    >::new()));
     struct MapKeychain(
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(String, String), String>>>,
     );
     impl crate::KeychainProvider for MapKeychain {
         fn store(&self, s: String, k: String, v: String) -> bool {
-            self.0.lock().unwrap_or_else(|e| e.into_inner()).insert((s, k), v);
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert((s, k), v);
             true
         }
         fn load(&self, s: String, k: String) -> Option<String> {
@@ -239,7 +244,7 @@ fn retry_image_turn_routed_to_text_only_hybrid_local_restores_history() {
     }
     let mk_app = || {
         let app = FfiApp::new(
-            dir.clone().into(),
+            dir.clone(),
             Box::new(MapKeychain(keychain_state.clone())),
             Box::new(NullEmbeddingProvider),
             crate::EmbeddingStatus::Active,
@@ -300,11 +305,8 @@ fn retry_image_turn_routed_to_text_only_hybrid_local_restores_history() {
     std::fs::write(&image_path, &encrypted).unwrap();
 
     let conv_id = "conv-retry-hybrid".to_string();
-    let db = crate::persistence::Database::open_encrypted(
-        &format!("{dir}/mango.db"),
-        &dek_hex,
-    )
-    .unwrap();
+    let db =
+        crate::persistence::Database::open_encrypted(&format!("{dir}/mango.db"), &dek_hex).unwrap();
     crate::persistence::queries::insert_conversation(
         db.conn(),
         &ConversationRow {
@@ -402,7 +404,9 @@ fn retry_image_turn_routed_to_text_only_hybrid_local_restores_history() {
     drop(db);
 
     let app2 = mk_app();
-    app2.dispatch(AppAction::LoadConversation { conversation_id: conv_id.clone() });
+    app2.dispatch(AppAction::LoadConversation {
+        conversation_id: conv_id.clone(),
+    });
     app2.sync();
     app2.dispatch(AppAction::RetryLastMessage);
     app2.sync();
@@ -418,11 +422,8 @@ fn retry_image_turn_routed_to_text_only_hybrid_local_restores_history() {
         4,
         "the deleted exchange (incl. earlier turns and answers) must be restored"
     );
-    let db = crate::persistence::Database::open_encrypted(
-        &format!("{dir}/mango.db"),
-        &dek_hex,
-    )
-    .unwrap();
+    let db =
+        crate::persistence::Database::open_encrypted(&format!("{dir}/mango.db"), &dek_hex).unwrap();
     let count: i64 = db
         .conn()
         .query_row(
@@ -447,17 +448,19 @@ fn deferred_image_retry_restores_history_while_attestation_pending() {
     // the image retry routes to the (unattested) PPQ remote leg and is DEFERRED
     // pending attestation. History must be fully restored while deferred.
     let dir = temp_dir("retry_gate_deferred");
-    let keychain_state =
-        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
-            (String, String),
-            String,
-        >::new()));
+    let keychain_state = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        (String, String),
+        String,
+    >::new()));
     struct MapKeychain(
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(String, String), String>>>,
     );
     impl crate::KeychainProvider for MapKeychain {
         fn store(&self, s: String, k: String, v: String) -> bool {
-            self.0.lock().unwrap_or_else(|e| e.into_inner()).insert((s, k), v);
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert((s, k), v);
             true
         }
         fn load(&self, s: String, k: String) -> Option<String> {
@@ -477,7 +480,7 @@ fn deferred_image_retry_restores_history_while_attestation_pending() {
     }
     let mk_app = || {
         let app = FfiApp::new(
-            dir.clone().into(),
+            dir.clone(),
             Box::new(MapKeychain(keychain_state.clone())),
             Box::new(NullEmbeddingProvider),
             crate::EmbeddingStatus::Active,
@@ -530,11 +533,8 @@ fn deferred_image_retry_restores_history_while_attestation_pending() {
     std::fs::write(&image_path, &encrypted).unwrap();
 
     let conv_id = "conv-retry-deferred".to_string();
-    let db = crate::persistence::Database::open_encrypted(
-        &format!("{dir}/mango.db"),
-        &dek_hex,
-    )
-    .unwrap();
+    let db =
+        crate::persistence::Database::open_encrypted(&format!("{dir}/mango.db"), &dek_hex).unwrap();
     crate::persistence::queries::insert_conversation(
         db.conn(),
         &ConversationRow {
@@ -632,7 +632,9 @@ fn deferred_image_retry_restores_history_while_attestation_pending() {
     drop(db);
 
     let app2 = mk_app();
-    app2.dispatch(AppAction::LoadConversation { conversation_id: conv_id.clone() });
+    app2.dispatch(AppAction::LoadConversation {
+        conversation_id: conv_id.clone(),
+    });
     app2.sync();
     app2.dispatch(AppAction::RetryLastMessage);
     app2.sync();
@@ -644,15 +646,15 @@ fn deferred_image_retry_restores_history_while_attestation_pending() {
         "history must be fully restored while the retry waits for attestation"
     );
     assert!(
-        matches!(
-            state.busy_state,
-            crate::BusyState::Loading { .. }
-        ),
+        matches!(state.busy_state, crate::BusyState::Loading { .. }),
         "the retry should be deferred (attestation pending), got {:?}",
         state.busy_state
     );
     assert!(
-        state.messages.iter().any(|m| m.id == "msg-assistant-early-d"),
+        state
+            .messages
+            .iter()
+            .any(|m| m.id == "msg-assistant-early-d"),
         "earlier assistant answers must survive the deferred retry"
     );
 }

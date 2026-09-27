@@ -471,6 +471,30 @@ pub const MIGRATION_V27: &str = "
 ALTER TABLE conversations ADD COLUMN archived_at INTEGER;
 ";
 
+/// Migration v28: chat compaction + learned model context limits.
+///
+/// Compaction replaces OLDER messages with an LLM summary in the prompt sent to
+/// the model. Nothing on device is ever deleted — `compaction_summary` is
+/// derived state, and `compaction_covered_count` is the number of messages
+/// (ordered by created_at, id) that the summary covers. Messages at or after
+/// that ordinal are still sent verbatim.
+///
+/// `model_context_limits` records each model's REAL context window as reported
+/// by its own provider (400 context-overflow errors state the exact limit).
+/// No artificial caps: a model absent from this table is sent without a
+/// client-side pre-check and only the provider's own limit applies.
+pub const MIGRATION_V28: &str = "
+ALTER TABLE conversations ADD COLUMN compaction_summary TEXT;
+ALTER TABLE conversations ADD COLUMN compaction_covered_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS model_context_limits (
+    backend_id     TEXT NOT NULL,
+    model_id       TEXT NOT NULL,
+    context_tokens INTEGER NOT NULL,
+    PRIMARY KEY (backend_id, model_id)
+);
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -500,6 +524,7 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V25,
     MIGRATION_V26,
     MIGRATION_V27,
+    MIGRATION_V28,
 ];
 
 #[cfg(test)]
@@ -656,5 +681,43 @@ mod tests {
             dup.is_err(),
             "second insert with same (source_id, file_path) should fail UNIQUE constraint"
         );
+    }
+
+    #[test]
+    fn test_migration_v28_compaction_columns_and_model_context_limits() {
+        let db = Database::open(":memory:").unwrap();
+        let conn = db.conn();
+
+        conn.execute(
+            "INSERT INTO conversations (id, title, model_id, backend_id, created_at, updated_at)
+             VALUES ('c1', 'T', 'm', 'b', 1, 1)",
+            [],
+        )
+        .unwrap();
+        // New columns exist with sane defaults: no compaction, nothing covered.
+        let (summary, covered): (Option<String>, i64) = conn
+            .query_row(
+                "SELECT compaction_summary, compaction_covered_count FROM conversations WHERE id='c1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(summary, None);
+        assert_eq!(covered, 0);
+
+        conn.execute(
+            "INSERT INTO model_context_limits (backend_id, model_id, context_tokens)
+             VALUES ('b', 'm', 131072)",
+            [],
+        )
+        .unwrap();
+        let limit: i64 = conn
+            .query_row(
+                "SELECT context_tokens FROM model_context_limits WHERE backend_id='b' AND model_id='m'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(limit, 131072);
     }
 }

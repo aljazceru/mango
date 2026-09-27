@@ -600,6 +600,12 @@ final class IOSLocalLlmProvider: LocalLlmProvider, @unchecked Sendable {
         capability
     }
 
+    /// Prompt budget the llama.cpp engine actually enforces (context minus
+    /// generation budget) — the same math as the prompt clamp in `generate`.
+    func maxPromptTokens() -> UInt32 {
+        UInt32(max(1, Int(iosLocalContextTokens - iosLocalMaxTokens)))
+    }
+
     private func unloadLocked() {
         session = nil
     }

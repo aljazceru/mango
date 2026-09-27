@@ -354,7 +354,10 @@ pub fn insert_message(conn: &Connection, row: &MessageRow) -> Result<(), Persist
     Ok(())
 }
 
-/// Return all messages for a conversation ordered by `created_at` ascending.
+/// Return all messages for a conversation ordered by `created_at` ascending
+/// (with `id` as a deterministic tiebreak for same-second inserts).
+///
+/// The compaction `covered_count` ordinal is defined against this exact order.
 pub fn list_messages(
     conn: &Connection,
     conversation_id: &str,
@@ -363,7 +366,7 @@ pub fn list_messages(
         "SELECT id, conversation_id, role, content, created_at, token_count, image_path,
                 route_backend_id, route_model_id, route_decision, route_reason,
                 route_provider_name, route_tee_label, route_tee_verified
-         FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC",
+         FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC, id ASC",
     )?;
     let rows = stmt
         .query_map(rusqlite::params![conversation_id], |row| {
@@ -386,6 +389,100 @@ pub fn list_messages(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+// ── Compaction + model context limit queries ─────────────────────────────────
+
+/// Compaction state for a conversation: an LLM summary covering the first
+/// `covered_count` messages (in `list_messages` order). Derived state only —
+/// the covered messages themselves are never deleted from the device.
+#[derive(Debug, Clone)]
+pub struct CompactionRow {
+    pub summary: String,
+    pub covered_count: i64,
+}
+
+/// Return the stored compaction for a conversation, if any.
+pub fn get_conversation_compaction(
+    conn: &Connection,
+    conversation_id: &str,
+) -> Result<Option<CompactionRow>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT compaction_summary, compaction_covered_count
+         FROM conversations WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query_map(rusqlite::params![conversation_id], |row| {
+        Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    match rows.next() {
+        Some(Ok((Some(summary), covered_count))) => Ok(Some(CompactionRow {
+            summary,
+            covered_count,
+        })),
+        Some(Ok((None, _))) | None => Ok(None),
+        Some(Err(error)) => Err(error.into()),
+    }
+}
+
+/// Store (or clear, with `None`) the compaction summary for a conversation.
+///
+/// Intentionally does NOT touch `updated_at`: compaction is derived state and
+/// must not reorder the conversation list.
+pub fn update_conversation_compaction(
+    conn: &Connection,
+    conversation_id: &str,
+    summary: Option<&str>,
+    covered_count: i64,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "UPDATE conversations SET compaction_summary = ?2, compaction_covered_count = ?3
+         WHERE id = ?1",
+    )?
+    .execute(rusqlite::params![conversation_id, summary, covered_count])?;
+    Ok(())
+}
+
+/// Learned context window (in tokens) for a model on a backend.
+///
+/// Sourced from the model's own provider (400 context-overflow errors state
+/// the exact limit). None = unknown; sends then rely on the provider's limit.
+pub fn get_model_context_limit(
+    conn: &Connection,
+    backend_id: &str,
+    model_id: &str,
+) -> Result<Option<u64>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT context_tokens FROM model_context_limits
+         WHERE backend_id = ?1 AND model_id = ?2",
+    )?;
+    let mut rows = stmt.query_map(rusqlite::params![backend_id, model_id], |row| {
+        row.get::<_, i64>(0)
+    })?;
+    match rows.next() {
+        Some(Ok(tokens)) => Ok(Some(tokens as u64)),
+        Some(Err(error)) => Err(error.into()),
+        None => Ok(None),
+    }
+}
+
+/// Persist a model's real context window as reported by its provider.
+pub fn upsert_model_context_limit(
+    conn: &Connection,
+    backend_id: &str,
+    model_id: &str,
+    context_tokens: u64,
+) -> Result<(), PersistenceError> {
+    conn.prepare_cached(
+        "INSERT INTO model_context_limits (backend_id, model_id, context_tokens)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(backend_id, model_id) DO UPDATE SET context_tokens = excluded.context_tokens",
+    )?
+    .execute(rusqlite::params![
+        backend_id,
+        model_id,
+        context_tokens as i64
+    ])?;
+    Ok(())
 }
 
 /// Return a single message row by ID.
@@ -457,7 +554,9 @@ pub struct ArchivedConversationRow {
 }
 
 /// Active (non-archived) conversations, `updated_at DESC` — sidebar list source.
-pub fn list_active_conversations(conn: &Connection) -> Result<Vec<ConversationRow>, PersistenceError> {
+pub fn list_active_conversations(
+    conn: &Connection,
+) -> Result<Vec<ConversationRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, title, model_id, backend_id, system_prompt, created_at, updated_at, tools_enabled
          FROM conversations WHERE archived_at IS NULL ORDER BY updated_at DESC",

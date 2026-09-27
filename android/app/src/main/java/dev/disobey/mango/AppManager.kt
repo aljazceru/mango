@@ -144,6 +144,9 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
                 error = null,
                 destructivePreflight = null,
             ),
+            localModelsError = null,
+            compaction = null,
+            compactionOffered = false,
         ),
         policy = neverEqualPolicy(),
     )

@@ -69,7 +69,7 @@ fun SettingsLocalModelsScreen(
                 }
             }
 
-            appState.lastError?.let { error ->
+            appState.localModelsError?.let { error ->
                 item {
                     Text(
                         error,

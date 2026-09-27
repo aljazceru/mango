@@ -386,6 +386,19 @@ pub struct ForgetResult {
     pub error: Option<String>,
 }
 
+/// UI-facing chat compaction state for the current conversation.
+///
+/// The summary is derived state sent to the model INSTEAD of the covered
+/// messages' full text — the messages themselves remain on the device.
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq)]
+pub struct CompactionInfo {
+    pub conversation_id: String,
+    /// Messages the summary covers (from the start, in message order).
+    pub covered_message_count: u64,
+    /// Total messages in the conversation.
+    pub total_message_count: u64,
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct AppState {
     pub rev: u64,
@@ -556,6 +569,16 @@ pub struct AppState {
     /// the platform keychain and cold starts bypass the lock screen. UIs hide
     /// PIN/duress/timeout controls and offer "enable app lock" instead.
     pub no_lock_mode: bool,
+    // Chat compaction + local-models error scoping:
+    /// Errors from local-models actions (download/delete/capability/toggle).
+    /// Scoped here so the Local Models picker shows ITS errors without chat
+    /// errors from `last_error` leaking onto the screen.
+    pub local_models_error: Option<String>,
+    /// Compaction state for the current conversation (None = not compacted).
+    pub compaction: Option<CompactionInfo>,
+    /// True when the current turn hit (or would hit) a model context overflow
+    /// and compaction would help. Chat UI offers "Compact & retry".
+    pub compaction_offered: bool,
 }
 
 impl Default for AppState {
@@ -618,6 +641,9 @@ impl Default for AppState {
             enrollment_resume_pending: false,
             no_lock_mode: false,
             contextvm_discovery_state: ContextvmDiscoveryState::Idle,
+            local_models_error: None,
+            compaction: None,
+            compaction_offered: false,
         }
     }
 }
@@ -832,6 +858,14 @@ pub enum AppAction {
     EditMessage {
         message_id: String,
         new_text: String,
+    },
+    /// Compact the conversation for the model: summarize older turns into a
+    /// summary sent to the model instead of the full text. The full history
+    /// stays on the device untouched. `retry_after` re-sends the pending turn
+    /// once the summary is stored ("Compact & retry" on a context overflow).
+    CompactConversation {
+        conversation_id: String,
+        retry_after: bool,
     },
     /// Store a pending file attachment to be sent with the next message (per D-17, D-18)
     AttachFile {
@@ -3829,6 +3863,46 @@ fn refresh_messages(actor_state: &mut ActorState, conversation_id: &str) {
             route_tee_verified: row.route_tee_verified,
         })
         .collect();
+
+    // Conversation boundary: reset turn-scoped context-overflow offer and
+    // surface the stored compaction state (derived; history stays in rows).
+    actor_state.app_state.compaction_offered = false;
+    let compaction = persistence::queries::get_conversation_compaction(db.conn(), conversation_id)
+        .ok()
+        .flatten();
+    actor_state.app_state.compaction =
+        compaction
+            .filter(|row| row.covered_count > 0)
+            .map(|row| CompactionInfo {
+                conversation_id: conversation_id.to_string(),
+                covered_message_count: row.covered_count.max(0) as u64,
+                total_message_count: rows.len() as u64,
+            });
+}
+
+/// Refresh AppState.compaction for `conversation_id` after a compaction write,
+/// without reloading the message list (history is unchanged by compaction).
+fn refresh_compaction_state(actor_state: &mut ActorState, conversation_id: &str) {
+    if actor_state.app_state.current_conversation_id.as_deref() != Some(conversation_id) {
+        return;
+    }
+    let Some(db) = actor_state.db.as_ref() else {
+        return;
+    };
+    let conn = db.conn();
+    let total = persistence::queries::list_messages(conn, conversation_id)
+        .map(|rows| rows.len())
+        .unwrap_or(0);
+    actor_state.app_state.compaction =
+        persistence::queries::get_conversation_compaction(conn, conversation_id)
+            .ok()
+            .flatten()
+            .filter(|row| row.covered_count > 0)
+            .map(|row| CompactionInfo {
+                conversation_id: conversation_id.to_string(),
+                covered_message_count: row.covered_count.max(0) as u64,
+                total_message_count: total as u64,
+            });
 }
 
 fn sync_visible_streaming_text(actor_state: &mut ActorState) {
@@ -3874,8 +3948,40 @@ fn build_chat_messages_for_conversation(
         }
     }
 
+    msgs.extend(build_wire_history(actor_state, conversation_id));
+    msgs
+}
+
+/// Wire-side history for a conversation.
+///
+/// When the conversation is compacted, a summary system message stands in for
+/// the covered messages; everything after the covered ordinal is sent verbatim
+/// from SQLite (FULL content — the 100K-char UI clamp is display-only and must
+/// never shrink what the model sees).
+fn build_wire_history(
+    actor_state: &ActorState,
+    conversation_id: &str,
+) -> Vec<llm::streaming::ChatMessage> {
+    let mut msgs = Vec::new();
+    let Some(db) = actor_state.db.as_ref() else {
+        log::debug!("[chat] build_wire_history skipped while DB is locked");
+        return msgs;
+    };
+    let conn = db.conn();
+
+    let mut covered_count = 0usize;
+    if let Ok(Some(compaction)) =
+        persistence::queries::get_conversation_compaction(conn, conversation_id)
+    {
+        covered_count = compaction.covered_count.max(0) as usize;
+        msgs.push(llm::streaming::ChatMessage {
+            role: llm::streaming::ChatRole::System,
+            content: format_compaction_system_message(&compaction.summary),
+        });
+    }
+
     let rows = persistence::queries::list_messages(conn, conversation_id).unwrap_or_default();
-    for row in rows {
+    for row in rows.into_iter().skip(covered_count) {
         let role = match row.role.as_str() {
             "user" => llm::streaming::ChatRole::User,
             "assistant" => llm::streaming::ChatRole::Assistant,
@@ -3889,6 +3995,82 @@ fn build_chat_messages_for_conversation(
     }
 
     msgs
+}
+
+/// The compaction summary message sent to the model in place of covered turns.
+fn format_compaction_system_message(summary: &str) -> String {
+    format!(
+        "Earlier conversation summary (older turns were compacted to fit the model's \
+context window; the full history remains on the user's device):\n\n{summary}"
+    )
+}
+
+/// The model's REAL input window in tokens, when known.
+///
+/// Local models: the engine's actual prompt budget. Remote models: the limit
+/// the provider itself reported (learned from context-overflow errors).
+/// `None` = unknown → no client-side pre-check; the provider's limit applies.
+fn model_input_token_limit(
+    actor_state: &ActorState,
+    backend: &llm::BackendConfig,
+    model: &str,
+) -> Option<u64> {
+    if llm::local_models::is_local_base_url(&backend.base_url) {
+        let budget = actor_state.local_llm_provider.max_prompt_tokens();
+        return (budget > 0).then_some(budget as u64);
+    }
+    let db = actor_state.db.as_ref()?;
+    persistence::queries::get_model_context_limit(db.conn(), &backend.id, model)
+        .ok()
+        .flatten()
+}
+
+/// User-facing message for a model context overflow. Points at compaction —
+/// nothing is ever deleted from the device.
+fn context_overflow_message(model: &str, needed_tokens: Option<u64>, limit_tokens: u64) -> String {
+    let needed = needed_tokens
+        .map(|tokens| format!("{tokens} tokens"))
+        .unwrap_or_else(|| "more tokens".to_string());
+    format!(
+        "This chat is longer than {model}'s context window (needs {needed}, model limit {limit_tokens}). \
+Compact the chat to continue — your full history stays on this device."
+    )
+}
+
+/// Bound a wire prompt by the model's REAL context window.
+///
+/// Unknown limit → no pre-check at all (the provider's own limit is the only
+/// bound). Over budget → `Some(user-facing error)`: history is never silently
+/// trimmed — compaction is the way forward and it is user-offered.
+fn enforce_model_limit(
+    actor_state: &ActorState,
+    backend: &llm::BackendConfig,
+    model: &str,
+    chat_messages: &mut [llm::streaming::ChatMessage],
+) -> Option<String> {
+    let limit_tokens = model_input_token_limit(actor_state, backend, model)?;
+    match llm::context::fit_messages_to_limit(chat_messages, limit_tokens) {
+        llm::context::FitOutcome::Fits => None,
+        llm::context::FitOutcome::TruncatedMessage => {
+            // Single oversized message (pasted document): the model physically
+            // cannot accept more. Truncated on the wire only, with a marker.
+            log::warn!(
+                target: "chat",
+                "[chat] oversized message truncated on the wire to fit {}'s {} token window",
+                model,
+                limit_tokens
+            );
+            None
+        }
+        llm::context::FitOutcome::OverBudget {
+            needed_tokens,
+            limit_tokens,
+        } => Some(context_overflow_message(
+            model,
+            Some(needed_tokens),
+            limit_tokens,
+        )),
+    }
 }
 
 /// Refresh app_state.backends summaries using live router health state.
@@ -4603,10 +4785,7 @@ fn handle_pending_attested_send_after_attestation(
                 if let Some(db) = actor_state.db.as_ref() {
                     let _ = persistence::queries::delete_message(db.conn(), id);
                 }
-                actor_state
-                    .app_state
-                    .messages
-                    .retain(|m| &m.id != id);
+                actor_state.app_state.messages.retain(|m| &m.id != id);
             }
             let pre_send_ids: std::collections::HashSet<String> = actor_state
                 .app_state
@@ -4614,10 +4793,7 @@ fn handle_pending_attested_send_after_attestation(
                 .iter()
                 .map(|m| m.id.clone())
                 .collect();
-            let conv_id_for_restore = actor_state
-                .app_state
-                .current_conversation_id
-                .clone();
+            let conv_id_for_restore = actor_state.app_state.current_conversation_id.clone();
             actor_state.app_state.busy_state = BusyState::Idle;
             actor_state.app_state.last_error = None;
             do_send_message(actor_state, pending.text, pending.force_role, core_tx);
@@ -5226,50 +5402,6 @@ fn normalize_modelscope_download_url(location: &str) -> Result<String, String> {
             "model download redirected to unexpected URL: {snippet}"
         ))
     }
-}
-
-/// Build a Vec<ChatMessage> from the current conversation's in-memory messages and system prompt.
-///
-/// Used both in do_send_message (initial send) and StreamError failover (retry).
-fn build_chat_messages(actor_state: &ActorState) -> Vec<llm::streaming::ChatMessage> {
-    let mut msgs = Vec::new();
-    if let Some(conv_id) = &actor_state.app_state.current_conversation_id {
-        let conv_system_prompt = persistence::queries::list_conversations(
-            actor_state.db.as_ref().expect("db unlocked").conn(),
-        )
-        .unwrap_or_default()
-        .into_iter()
-        .find(|c| &c.id == conv_id)
-        .and_then(|c| c.system_prompt);
-        let system_prompt = conv_system_prompt.or_else(|| {
-            persistence::queries::get_setting(
-                actor_state.db.as_ref().expect("db unlocked").conn(),
-                "global_system_prompt",
-            )
-            .unwrap_or(None)
-        });
-        if let Some(sp) = system_prompt {
-            if !sp.is_empty() {
-                msgs.push(llm::streaming::ChatMessage {
-                    role: llm::streaming::ChatRole::System,
-                    content: sp,
-                });
-            }
-        }
-    }
-    for m in &actor_state.app_state.messages {
-        let role = match m.role.as_str() {
-            "user" => llm::streaming::ChatRole::User,
-            "assistant" => llm::streaming::ChatRole::Assistant,
-            "system" => llm::streaming::ChatRole::System,
-            _ => llm::streaming::ChatRole::User,
-        };
-        msgs.push(llm::streaming::ChatMessage {
-            role,
-            content: m.content.clone(),
-        });
-    }
-    msgs
 }
 
 fn pinned_tls_public_key_fp_for_backend(
@@ -6224,19 +6356,9 @@ fn do_send_message(
         });
     }
 
-    // Add all existing messages (including the one we just appended)
-    for msg in &actor_state.app_state.messages {
-        let role = match msg.role.as_str() {
-            "user" => llm::streaming::ChatRole::User,
-            "assistant" => llm::streaming::ChatRole::Assistant,
-            "system" => llm::streaming::ChatRole::System,
-            _ => llm::streaming::ChatRole::User,
-        };
-        chat_messages.push(llm::streaming::ChatMessage {
-            role,
-            content: msg.content.clone(),
-        });
-    }
+    // Full history from SQLite (compaction-aware, unclamped wire content),
+    // including the message we just persisted.
+    chat_messages.extend(build_wire_history(actor_state, &conv_id));
 
     // Swap the placeholder of THIS turn's user message for the full attachment
     // content on the wire (persistence keeps the placeholder — see the split
@@ -6250,6 +6372,21 @@ fn do_send_message(
         {
             last_user.content = wire;
         }
+    }
+
+    // Bound the prompt by the model's REAL context window. Over budget →
+    // surface the compaction offer instead of silently trimming history.
+    if let Some(message) = enforce_model_limit(actor_state, &backend, &model, &mut chat_messages) {
+        actor_state.app_state.busy_state = BusyState::Idle;
+        actor_state.app_state.streaming_text = None;
+        actor_state.app_state.last_error = Some(message);
+        actor_state.app_state.compaction_offered = true;
+        actor_state.current_streaming_backend_id = None;
+        actor_state.current_streaming_model_id = None;
+        actor_state.current_streaming_conversation_id = None;
+        actor_state.current_streaming_text.clear();
+        refresh_backend_summaries(actor_state);
+        return;
     }
 
     // Phase 27/35: Chat tool use branch.
@@ -9184,7 +9321,10 @@ impl FfiApp {
                     .flatten()
                     .is_some_and(|params| params.no_lock);
                 if pending_is_no_lock {
-                    if keychain.load("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string()).is_some() {
+                    if keychain
+                        .load("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string())
+                        .is_some()
+                    {
                         let resumed = (|| -> Option<zeroize::Zeroizing<String>> {
                             let pending = bootstrap.read_pending_auth().ok().flatten()?;
                             no_lock_dek_from_keychain_secret(keychain.as_ref(), &pending)
@@ -9218,7 +9358,9 @@ impl FfiApp {
                                     } else if persistence::Database::is_encrypted(&db_path) {
                                         bootstrap.promote_pending_auth().is_ok()
                                     } else {
-                                        match persistence::Database::migrate_to_encrypted(&db_path, &dek_hex) {
+                                        match persistence::Database::migrate_to_encrypted(
+                                            &db_path, &dek_hex,
+                                        ) {
                                             Ok(()) => bootstrap.promote_pending_auth().is_ok(),
                                             Err(e) => {
                                                 log::error!("[auth] startup: no-lock resume migrate failed: {e}");
@@ -9275,7 +9417,9 @@ impl FfiApp {
                         ) {
                             Ok(persistence::EnrollmentRecovery::PlaintextReady) => {
                                 if let Err(e) = bootstrap.clear_pending_auth() {
-                                    log::warn!("[auth] startup: clear stale pending_auth failed: {e}");
+                                    log::warn!(
+                                        "[auth] startup: clear stale pending_auth failed: {e}"
+                                    );
                                 }
                             }
                             Ok(persistence::EnrollmentRecovery::NothingToRecover) => {
@@ -9316,9 +9460,10 @@ impl FfiApp {
             // no-lock install — both cache the raw DEK in the OS-gated keychain.
             let cold_launch_bypass = has_auth
                 && (bootstrap.read_cold_launch_bypass().unwrap_or(false) || active_no_lock);
-            let cold_launch_dek_hex: Option<zeroize::Zeroizing<String>> =
-                if cold_launch_bypass || no_lock_resume_dek_hex.is_some() {
-                    keychain
+            let cold_launch_dek_hex: Option<zeroize::Zeroizing<String>> = if cold_launch_bypass
+                || no_lock_resume_dek_hex.is_some()
+            {
+                keychain
                         .load("mango".to_string(), "dek".to_string())
                         .map(zeroize::Zeroizing::new)
                         .or(no_lock_resume_dek_hex)
@@ -9344,9 +9489,9 @@ impl FfiApp {
                                 },
                             )
                         })
-                } else {
-                    None
-                };
+            } else {
+                None
+            };
 
             // (has_auth / orphan cleanup / bypass computed above with no-lock support)
 
@@ -9560,6 +9705,7 @@ impl FfiApp {
                                     | AppAction::SendMessage { .. }
                                     | AppAction::RetryLastMessage
                                     | AppAction::EditMessage { .. }
+                                    | AppAction::CompactConversation { .. }
                                     | AppAction::ForkConversation { .. }
                                     | AppAction::NextOnboardingStep
                                     | AppAction::PreviousOnboardingStep
@@ -10179,12 +10325,20 @@ impl FfiApp {
                                         .app_state
                                         .conversations
                                         .iter()
-                                        .find(|c| Some(&c.id) == actor_state.app_state.current_conversation_id.as_ref())
+                                        .find(|c| {
+                                            Some(&c.id)
+                                                == actor_state
+                                                    .app_state
+                                                    .current_conversation_id
+                                                    .as_ref()
+                                        })
                                         .map(|c| c.backend_id.clone())
-                                        .or_else(|| actor_state.app_state.active_backend_id.clone());
+                                        .or_else(|| {
+                                            actor_state.app_state.active_backend_id.clone()
+                                        });
                                     let gate_model = {
-                                        let from_conv =
-                                            image_capability_model_id(&actor_state).unwrap_or_default();
+                                        let from_conv = image_capability_model_id(&actor_state)
+                                            .unwrap_or_default();
                                         if !from_conv.is_empty() {
                                             from_conv
                                         } else {
@@ -10240,37 +10394,52 @@ impl FfiApp {
                                     Err(error) => {
                                         actor_state.app_state.last_error = Some(error);
                                         actor_state.app_state.rev += 1;
-                                        emit(
-                                            &actor_state.app_state,
-                                            &shared_for_core,
-                                            &update_tx,
-                                        );
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
                                     }
                                 };
                                 // Lossless snapshot of exactly the rows this retry will
-                                // delete: the LAST assistant row and the retried user row.
-                                // (A conversation-wide assistant filter would delete earlier
-                                // answers on the deferred-send replacement path.)
-                                // pre_retry_ids covers EVERY prior row so an earlier user
-                                // turn can never masquerade as the new send.
-                                let pre_retry_ids: std::collections::HashSet<String> =
-                                    actor_state
-                                        .app_state
-                                        .messages
-                                        .iter()
-                                        .map(|m| m.id.clone())
-                                        .collect();
-                                let last_assistant_id = actor_state
+                                // delete: the retried turn's assistant row and the retried
+                                // user row. (A conversation-wide assistant filter would
+                                // delete earlier answers on the deferred-send replacement
+                                // path.) pre_retry_ids covers EVERY prior row so an
+                                // earlier user turn can never masquerade as the new send.
+                                let pre_retry_ids: std::collections::HashSet<String> = actor_state
                                     .app_state
                                     .messages
                                     .iter()
-                                    .rev()
-                                    .find(|m| m.role == "assistant")
-                                    .map(|m| m.id.clone());
+                                    .map(|m| m.id.clone())
+                                    .collect();
+                                // The assistant reply produced by the turn being
+                                // retried — and ONLY that one: it must follow the last
+                                // user message. A failed send leaves the user turn at
+                                // the tail; the previous turn's answer stays untouched.
+                                let last_user_pos = actor_state
+                                    .app_state
+                                    .messages
+                                    .iter()
+                                    .rposition(|m| m.role == "user");
+                                let last_assistant_pos = actor_state
+                                    .app_state
+                                    .messages
+                                    .iter()
+                                    .rposition(|m| m.role == "assistant");
+                                let retried_assistant_id = match (last_user_pos, last_assistant_pos)
+                                {
+                                    (Some(user_pos), Some(assistant_pos))
+                                        if assistant_pos > user_pos =>
+                                    {
+                                        Some(
+                                            actor_state.app_state.messages[assistant_pos]
+                                                .id
+                                                .clone(),
+                                        )
+                                    }
+                                    _ => None,
+                                };
                                 let snapshot_rows: Vec<persistence::MessageRow> = {
                                     let conn = actor_state.db.as_ref().expect("db unlocked").conn();
-                                    [last_assistant_id.clone(), Some(message.id.clone())]
+                                    [retried_assistant_id.clone(), Some(message.id.clone())]
                                         .into_iter()
                                         .flatten()
                                         .filter_map(|id| {
@@ -10280,18 +10449,19 @@ impl FfiApp {
                                         })
                                         .collect()
                                 };
-                                if let Some(pos) = actor_state
-                                    .app_state
-                                    .messages
-                                    .iter()
-                                    .rposition(|m| m.role == "assistant")
+                                if let (Some(user_pos), Some(assistant_pos)) =
+                                    (last_user_pos, last_assistant_pos)
                                 {
-                                    let msg_id = actor_state.app_state.messages[pos].id.clone();
-                                    actor_state.app_state.messages.remove(pos);
-                                    let _ = persistence::queries::delete_message(
-                                        actor_state.db.as_ref().expect("db unlocked").conn(),
-                                        &msg_id,
-                                    );
+                                    if assistant_pos > user_pos {
+                                        let msg_id = actor_state.app_state.messages[assistant_pos]
+                                            .id
+                                            .clone();
+                                        actor_state.app_state.messages.remove(assistant_pos);
+                                        let _ = persistence::queries::delete_message(
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
+                                            &msg_id,
+                                        );
+                                    }
                                 }
                                 if let Some(pos) = actor_state
                                     .app_state
@@ -10305,7 +10475,8 @@ impl FfiApp {
                                         &message.id,
                                     );
                                 }
-                                actor_state.app_state.current_conversation_id = Some(conv_id.clone());
+                                actor_state.app_state.current_conversation_id =
+                                    Some(conv_id.clone());
                                 if let Some(image) = retry_image {
                                     drop_pending_attachment(&mut actor_state);
                                     actor_state.pending_image_attachment = Some(image);
@@ -10322,11 +10493,10 @@ impl FfiApp {
                                 // (do_send_message inserts a fresh id). Anything else —
                                 // rejection OR attestation deferral — restores the exchange;
                                 // a deferred send re-inserts its own row on completion.
-                                let resend_accepted = actor_state
-                                    .app_state
-                                    .messages
-                                    .iter()
-                                    .any(|m| m.role == "user" && !pre_retry_ids.contains(&m.id));
+                                let resend_accepted =
+                                    actor_state.app_state.messages.iter().any(|m| {
+                                        m.role == "user" && !pre_retry_ids.contains(&m.id)
+                                    });
                                 if !resend_accepted {
                                     if let Some(db) = actor_state.db.as_ref() {
                                         for row in &snapshot_rows {
@@ -10340,11 +10510,179 @@ impl FfiApp {
                                     // Deferred (attestation pending): the restored rows are
                                     // stand-ins; mark them for replacement so the accepted
                                     // deferred send deletes them instead of duplicating.
-                                    if let Some(pending) = actor_state.pending_attested_send.as_mut() {
+                                    if let Some(pending) =
+                                        actor_state.pending_attested_send.as_mut()
+                                    {
                                         pending.replaced_message_ids =
                                             snapshot_rows.iter().map(|r| r.id.clone()).collect();
                                     }
                                 }
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
+                            AppAction::CompactConversation {
+                                conversation_id,
+                                retry_after,
+                            } => {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+                                if actor_state.active_stream_token.is_some() {
+                                    actor_state.app_state.toast = Some(
+                                        "Wait for the current response before compacting."
+                                            .to_string(),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                // Plan inputs from SQLite. Messages are READ ONLY here —
+                                // compaction never modifies device history.
+                                let plan_inputs = actor_state.db.as_ref().map(|db| {
+                                    let conn = db.conn();
+                                    let rows =
+                                        persistence::queries::list_messages(conn, &conversation_id)
+                                            .unwrap_or_default();
+                                    let transcript: Vec<(String, String)> = rows
+                                        .iter()
+                                        .map(|row| (row.role.clone(), row.content.clone()))
+                                        .collect();
+                                    let compaction =
+                                        persistence::queries::get_conversation_compaction(
+                                            conn,
+                                            &conversation_id,
+                                        )
+                                        .ok()
+                                        .flatten();
+                                    let already_covered = compaction
+                                        .as_ref()
+                                        .map(|row| row.covered_count.max(0) as usize)
+                                        .unwrap_or(0);
+                                    let prior_summary = compaction.map(|row| row.summary);
+                                    (transcript, already_covered, prior_summary)
+                                });
+                                let Some((transcript, already_covered, prior_summary)) =
+                                    plan_inputs
+                                else {
+                                    actor_state.app_state.toast =
+                                        Some("Could not compact: storage is locked.".to_string());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                };
+                                let Some(plan) =
+                                    llm::compact::plan_compaction(&transcript, already_covered)
+                                else {
+                                    actor_state.app_state.toast = Some(
+                                        "Nothing to compact — earlier turns are already summarized."
+                                            .to_string(),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                };
+
+                                // The summarizer runs on the conversation's own model.
+                                let conv = actor_state
+                                    .app_state
+                                    .conversations
+                                    .iter()
+                                    .find(|c| c.id == conversation_id)
+                                    .cloned();
+                                let preferred_id = conv
+                                    .as_ref()
+                                    .map(|c| c.backend_id.clone())
+                                    .filter(|id| !id.is_empty())
+                                    .or_else(|| actor_state.app_state.active_backend_id.clone());
+                                let backend = preferred_id.and_then(|id| {
+                                    actor_state.backends.iter().find(|b| b.id == id).cloned()
+                                });
+                                let Some(backend) = backend else {
+                                    actor_state.app_state.last_error =
+                                        Some("No backend available for compaction.".to_string());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                };
+                                let model = conv
+                                    .as_ref()
+                                    .map(|c| c.model_id.clone())
+                                    .filter(|m| !m.is_empty())
+                                    .unwrap_or_else(|| {
+                                        default_model_for_preferred(&actor_state, Some(&backend.id))
+                                            .unwrap_or_default()
+                                    });
+                                if model.is_empty() {
+                                    actor_state.app_state.last_error =
+                                        Some("No model configured for compaction.".to_string());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                let is_local = is_local_on_device_backend(&backend);
+                                let backend_for_task = if is_local {
+                                    backend.clone()
+                                } else {
+                                    hydrate_backend_api_key(&actor_state, &backend)
+                                };
+                                let semaphore = actor_state.router.get_semaphore(&backend.id);
+                                let known_limit =
+                                    model_input_token_limit(&actor_state, &backend, &model);
+                                let local_provider = actor_state.local_llm_provider.clone();
+                                let data_dir = actor_state.data_dir.clone();
+                                let core_tx_clone = core_tx_for_thread.clone();
+                                let covered = plan.covered.clone();
+                                let covered_count = plan.covered_count as u64;
+                                let model_for_task = model.clone();
+                                let conv_id_for_task = conversation_id.clone();
+
+                                actor_state.app_state.busy_state = BusyState::Loading {
+                                    message: "Compacting chat…".to_string(),
+                                };
+                                actor_state.app_state.last_error = None;
+                                actor_state.app_state.compaction_offered = false;
+
+                                actor_state.runtime.spawn(async move {
+                                    let _permit = match semaphore {
+                                        Some(sem) => sem.acquire_owned().await.ok(),
+                                        None => None,
+                                    };
+                                    let target = if is_local {
+                                        llm::compact::CompletionTarget::Local {
+                                            provider: local_provider,
+                                            data_dir,
+                                            backend_id: &backend_for_task.id,
+                                            model_id: &model_for_task,
+                                        }
+                                    } else {
+                                        llm::compact::CompletionTarget::Remote {
+                                            backend: &backend_for_task,
+                                            model: &model_for_task,
+                                        }
+                                    };
+                                    let result = llm::compact::summarize_for_compaction(
+                                        &target,
+                                        prior_summary.as_deref(),
+                                        &covered,
+                                        known_limit,
+                                    )
+                                    .await
+                                    .map_err(|error| error.display_message());
+                                    let _ = core_tx_clone.send(CoreMsg::InternalEvent(Box::new(
+                                        llm::InternalEvent::ConversationCompactionComplete {
+                                            conversation_id: conv_id_for_task,
+                                            covered_count,
+                                            retry_after,
+                                            result,
+                                        },
+                                    )));
+                                });
+
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
@@ -10852,7 +11190,7 @@ impl FfiApp {
                                 if enabled
                                     && !actor_state.app_state.local_device_capability.is_supported()
                                 {
-                                    actor_state.app_state.last_error = Some(
+                                    actor_state.app_state.local_models_error = Some(
                                         actor_state
                                             .app_state
                                             .local_device_capability
@@ -10869,7 +11207,7 @@ impl FfiApp {
                                         actor_state.current_streaming_backend_id.as_deref()
                                     {
                                         if llm::local_models::is_local_backend_id(active_id) {
-                                            actor_state.app_state.last_error = Some(
+                                            actor_state.app_state.local_models_error = Some(
                                                 "Stop the local generation before turning local inference off."
                                                     .to_string(),
                                             );
@@ -10889,7 +11227,7 @@ impl FfiApp {
                                     if enabled { "1" } else { "0" },
                                 );
                                 actor_state.app_state.local_inference_enabled = enabled;
-                                actor_state.app_state.last_error = None;
+                                actor_state.app_state.local_models_error = None;
                                 if !enabled {
                                     actor_state.local_llm_provider.unload();
                                 }
@@ -10906,7 +11244,7 @@ impl FfiApp {
                                     log::warn!(
                                         "[local-model] download rejected: another download is active"
                                     );
-                                    actor_state.app_state.last_error =
+                                    actor_state.app_state.local_models_error =
                                         Some("A local model download is already running.".into());
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
@@ -10918,7 +11256,7 @@ impl FfiApp {
                                     log::warn!(
                                         "[local-model] download rejected: unknown model {model_id}"
                                     );
-                                    actor_state.app_state.last_error =
+                                    actor_state.app_state.local_models_error =
                                         Some(format!("Unknown local model: {model_id}"));
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
@@ -10937,7 +11275,7 @@ impl FfiApp {
                                         preset.min_ram_bytes,
                                         cap.reason
                                     );
-                                    actor_state.app_state.last_error = Some(
+                                    actor_state.app_state.local_models_error = Some(
                                         cap.blocked_reason().unwrap_or(reason.as_str()).to_string(),
                                     );
                                     actor_state.app_state.rev += 1;
@@ -10952,7 +11290,7 @@ impl FfiApp {
                                         total_bytes: Some(preset.size_bytes),
                                         stage: "downloading".to_string(),
                                     });
-                                actor_state.app_state.last_error = None;
+                                actor_state.app_state.local_models_error = None;
                                 log::info!(
                                     "[local-model] starting download model_id={} url={}",
                                     preset.id,
@@ -10972,7 +11310,7 @@ impl FfiApp {
                             AppAction::DeleteLocalModel { model_id } => {
                                 let Some(preset) = llm::local_models::find_local_model(&model_id)
                                 else {
-                                    actor_state.app_state.last_error =
+                                    actor_state.app_state.local_models_error =
                                         Some(format!("Unknown local model: {model_id}"));
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
@@ -10982,7 +11320,7 @@ impl FfiApp {
                                 if actor_state.current_streaming_backend_id.as_deref()
                                     == Some(backend_id.as_str())
                                 {
-                                    actor_state.app_state.last_error = Some(
+                                    actor_state.app_state.local_models_error = Some(
                                         "Stop the local generation before deleting this model."
                                             .to_string(),
                                     );
@@ -11018,6 +11356,7 @@ impl FfiApp {
                                 reconcile_local_model_backends(&mut actor_state);
                                 actor_state.app_state.toast =
                                     Some(format!("Deleted local model: {}", preset.name));
+                                actor_state.app_state.local_models_error = None;
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
@@ -12763,21 +13102,30 @@ impl FfiApp {
                                     ) {
                                         Ok(k) => k,
                                         Err(e) => {
-                                            log::error!("[auth] SetupNoLock: KEK derivation failed: {e}");
-                                            actor_state.app_state.toast =
-                                                Some("No-lock setup failed: key derivation error".into());
+                                            log::error!(
+                                                "[auth] SetupNoLock: KEK derivation failed: {e}"
+                                            );
+                                            actor_state.app_state.toast = Some(
+                                                "No-lock setup failed: key derivation error".into(),
+                                            );
                                             actor_state.app_state.rev += 1;
-                                            emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
                                             continue;
                                         }
                                     };
-                                let wrapped_dek =
-                                    crypto::key_derivation::wrap_dek(&kek, &dek);
+                                let wrapped_dek = crypto::key_derivation::wrap_dek(&kek, &dek);
                                 let dek_hex: Zeroizing<String> = Zeroizing::new(
                                     dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                 );
                                 let secret_hex: Zeroizing<String> = Zeroizing::new(
-                                    no_lock_secret.iter().map(|b| format!("{:02x}", b)).collect(),
+                                    no_lock_secret
+                                        .iter()
+                                        .map(|b| format!("{:02x}", b))
+                                        .collect(),
                                 );
 
                                 // Keychain entries FIRST: without them the install could
@@ -12794,8 +13142,13 @@ impl FfiApp {
                                     (*secret_hex).clone(),
                                 );
                                 if !dek_staged || !secret_staged {
-                                    actor_state.keychain.delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
-                                    actor_state.keychain.delete("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string());
+                                    actor_state
+                                        .keychain
+                                        .delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+                                    actor_state.keychain.delete(
+                                        "mango".to_string(),
+                                        KEYCHAIN_NO_LOCK_SECRET_KEY.to_string(),
+                                    );
                                     actor_state.app_state.toast = Some(
                                         "No-lock setup failed: secure storage unavailable. Set a PIN instead.".into(),
                                     );
@@ -12816,9 +13169,16 @@ impl FfiApp {
                                 if let Err(e) =
                                     actor_state.bootstrap.write_pending_auth(&auth_params)
                                 {
-                                    log::error!("[auth] SetupNoLock: write_pending_auth failed: {e}");
-                                    actor_state.keychain.delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
-                                    actor_state.keychain.delete("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string());
+                                    log::error!(
+                                        "[auth] SetupNoLock: write_pending_auth failed: {e}"
+                                    );
+                                    actor_state
+                                        .keychain
+                                        .delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+                                    actor_state.keychain.delete(
+                                        "mango".to_string(),
+                                        KEYCHAIN_NO_LOCK_SECRET_KEY.to_string(),
+                                    );
                                     actor_state.app_state.toast =
                                         Some("No-lock setup failed: storage error".into());
                                     actor_state.app_state.rev += 1;
@@ -12836,13 +13196,16 @@ impl FfiApp {
                                         continue;
                                     }
                                     let _ = actor_state.bootstrap.clear_pending_first_run();
-                                } else if !persistence::Database::is_encrypted(&actor_state.db_path) {
+                                } else if !persistence::Database::is_encrypted(&actor_state.db_path)
+                                {
                                     actor_state.db = None;
                                     if let Err(e) = persistence::Database::migrate_to_encrypted(
                                         &actor_state.db_path,
                                         &dek_hex,
                                     ) {
-                                        log::error!("[auth] SetupNoLock: migrate_to_encrypted failed: {e}");
+                                        log::error!(
+                                            "[auth] SetupNoLock: migrate_to_encrypted failed: {e}"
+                                        );
                                         // Same recovery contract as SetupPin: only a
                                         // verified plaintext restore may clear the staged
                                         // credentials; otherwise keep them — the startup
@@ -12887,15 +13250,18 @@ impl FfiApp {
                                     }
                                     if let Err(e) = actor_state.bootstrap.promote_pending_auth() {
                                         log::error!("[auth] SetupNoLock: promote failed: {e}");
-                                        actor_state.app_state.toast =
-                                            Some("No-lock setup failed: could not commit auth".into());
+                                        actor_state.app_state.toast = Some(
+                                            "No-lock setup failed: could not commit auth".into(),
+                                        );
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
                                     }
-                                    if let Err(e) = persistence::Database::finalize_encrypted_storage(
-                                        &actor_state.db_path,
-                                    ) {
+                                    if let Err(e) =
+                                        persistence::Database::finalize_encrypted_storage(
+                                            &actor_state.db_path,
+                                        )
+                                    {
                                         log::error!("[auth] SetupNoLock: finalize failed: {e}");
                                     }
                                     match persistence::Database::open_encrypted(
@@ -12904,14 +13270,20 @@ impl FfiApp {
                                     ) {
                                         Ok(db) => actor_state.db = Some(db),
                                         Err(e) => {
-                                            log::error!("[auth] SetupNoLock: open_encrypted failed: {e}");
+                                            log::error!(
+                                                "[auth] SetupNoLock: open_encrypted failed: {e}"
+                                            );
                                             actor_state.app_state.auth_initialized = true;
                                             actor_state.app_state.encryption_enabled = true;
                                             actor_state.app_state.no_lock_mode = true;
                                             actor_state.app_state.router.current_screen =
                                                 Screen::Locked;
                                             actor_state.app_state.rev += 1;
-                                            emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
                                             continue;
                                         }
                                     }
@@ -12928,14 +13300,14 @@ impl FfiApp {
                                 actor_state.app_state.lock_timeout_seconds = -1;
                                 actor_state.dek = Some(dek);
                                 let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_deref();
-                                actor_state.vector_index = rag::VectorIndex::new(
-                                    &actor_state.data_dir,
-                                    dek_ref,
-                                )
-                                .unwrap_or_else(|e| {
-                                    log::warn!("[auth] SetupNoLock: VectorIndex open failed: {e}");
-                                    rag::VectorIndex::new("", None).expect("empty fallback")
-                                });
+                                actor_state.vector_index =
+                                    rag::VectorIndex::new(&actor_state.data_dir, dek_ref)
+                                        .unwrap_or_else(|e| {
+                                            log::warn!(
+                                                "[auth] SetupNoLock: VectorIndex open failed: {e}"
+                                            );
+                                            rag::VectorIndex::new("", None).expect("empty fallback")
+                                        });
                                 actor_state.app_state.auth_initialized = true;
                                 actor_state.app_state.encryption_enabled =
                                     actor_state.db_path != ":memory:";
@@ -12964,7 +13336,9 @@ impl FfiApp {
                                         continue;
                                     }
                                     Err(e) => {
-                                        log::error!("[auth] EnablePinLock: read_auth_params failed: {e}");
+                                        log::error!(
+                                            "[auth] EnablePinLock: read_auth_params failed: {e}"
+                                        );
                                         actor_state.app_state.toast =
                                             Some("Could not enable app lock.".into());
                                         actor_state.app_state.rev += 1;
@@ -12992,8 +13366,9 @@ impl FfiApp {
                                     .map(str::trim)
                                     .filter(|s| !s.is_empty());
                                 if duress_trimmed.is_some_and(|dp| dp == trimmed_pin) {
-                                    actor_state.app_state.toast =
-                                        Some("Duress PIN must be different from your main PIN.".into());
+                                    actor_state.app_state.toast = Some(
+                                        "Duress PIN must be different from your main PIN.".into(),
+                                    );
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
@@ -13024,11 +13399,17 @@ impl FfiApp {
                                     ) {
                                         Ok(k) => k,
                                         Err(e) => {
-                                            log::error!("[auth] EnablePinLock: KEK derivation failed: {e}");
+                                            log::error!(
+                                                "[auth] EnablePinLock: KEK derivation failed: {e}"
+                                            );
                                             actor_state.app_state.toast =
                                                 Some("Could not enable app lock.".into());
                                             actor_state.app_state.rev += 1;
-                                            emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
                                             continue;
                                         }
                                     };
@@ -13076,10 +13457,9 @@ impl FfiApp {
                                     }
                                 }
                                 if !biometric_on {
-                                    actor_state.keychain.delete(
-                                        "mango".to_string(),
-                                        KEYCHAIN_DEK_KEY.to_string(),
-                                    );
+                                    actor_state
+                                        .keychain
+                                        .delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
                                 }
                                 if let Some(db) = actor_state.db.as_ref() {
                                     let _ = persistence::queries::set_setting(
@@ -14075,6 +14455,7 @@ impl FfiApp {
                             // the Action gate above).
                             | llm::InternalEvent::StreamError { .. }
                             | llm::InternalEvent::MemoryExtractionComplete { .. }
+                            | llm::InternalEvent::ConversationCompactionComplete { .. }
                             | llm::InternalEvent::ChatToolCallsReady { .. }
                             | llm::InternalEvent::AgentStepComplete { .. }
                             | llm::InternalEvent::HealthCheckResult { .. }
@@ -14603,18 +14984,20 @@ impl FfiApp {
                                             actor_state.current_streaming_turn_not_retryable =
                                                 false;
                                             sync_visible_streaming_text(&mut actor_state);
-                                            let chat_messages = actor_state
+                                            let mut chat_messages = actor_state
                                                 .current_streaming_conversation_id
                                                 .as_deref()
+                                                .or(actor_state
+                                                    .app_state
+                                                    .current_conversation_id
+                                                    .as_deref())
                                                 .map(|conv_id| {
                                                     build_chat_messages_for_conversation(
                                                         &actor_state,
                                                         conv_id,
                                                     )
                                                 })
-                                                .unwrap_or_else(|| {
-                                                    build_chat_messages(&actor_state)
-                                                });
+                                                .unwrap_or_default();
                                             let next_model = if !model_id.is_empty() {
                                                 model_id.clone()
                                             } else {
@@ -14632,6 +15015,35 @@ impl FfiApp {
                                                 &next_model,
                                                 &failed_id,
                                             );
+                                            // Retry must also honor the model's
+                                            // REAL window — a context overflow
+                                            // never failovers its way out.
+                                            if let Some(message) = enforce_model_limit(
+                                                &actor_state,
+                                                &next_backend,
+                                                &next_model,
+                                                &mut chat_messages,
+                                            ) {
+                                                actor_state.app_state.busy_state = BusyState::Idle;
+                                                actor_state.app_state.last_error = Some(message);
+                                                actor_state.app_state.compaction_offered = true;
+                                                actor_state.current_streaming_backend_id = None;
+                                                actor_state.current_streaming_model_id = None;
+                                                actor_state.current_streaming_conversation_id =
+                                                    None;
+                                                actor_state.current_streaming_text.clear();
+                                                actor_state.current_streaming_turn_not_retryable =
+                                                    false;
+                                                actor_state.failover_exclude.clear();
+                                                refresh_backend_summaries(&mut actor_state);
+                                                actor_state.app_state.rev += 1;
+                                                emit(
+                                                    &actor_state.app_state,
+                                                    &shared_for_core,
+                                                    &update_tx,
+                                                );
+                                                continue;
+                                            }
                                             actor_state.app_state.busy_state =
                                                 BusyState::Streaming {
                                                     model: next_model.clone(),
@@ -14681,7 +15093,49 @@ impl FfiApp {
 
                                 // No failover or all exhausted: surface the error
                                 actor_state.app_state.busy_state = BusyState::Idle;
-                                actor_state.app_state.last_error = Some(error.display_message());
+                                // A context-overflow 400 states the model's REAL
+                                // context length: learn it (future sends pre-check
+                                // against it) and steer the user to compaction.
+                                let overflow = match &error {
+                                    llm::LlmError::ApiError {
+                                        status_code: 400,
+                                        reason,
+                                    } => llm::context::parse_context_overflow(reason),
+                                    _ => None,
+                                };
+                                if let Some(overflow) = overflow {
+                                    if let (Some(backend_id), Some(model_id)) = (
+                                        actor_state.current_streaming_backend_id.clone(),
+                                        actor_state.current_streaming_model_id.clone(),
+                                    ) {
+                                        if let Some(db) = actor_state.db.as_ref() {
+                                            let _ =
+                                                persistence::queries::upsert_model_context_limit(
+                                                    db.conn(),
+                                                    &backend_id,
+                                                    &model_id,
+                                                    overflow.limit_tokens,
+                                                );
+                                        }
+                                        actor_state.app_state.last_error =
+                                            Some(context_overflow_message(
+                                                &model_id,
+                                                overflow.input_tokens,
+                                                overflow.limit_tokens,
+                                            ));
+                                    } else {
+                                        actor_state.app_state.last_error =
+                                            Some(context_overflow_message(
+                                                "this model",
+                                                overflow.input_tokens,
+                                                overflow.limit_tokens,
+                                            ));
+                                    }
+                                    actor_state.app_state.compaction_offered = true;
+                                } else {
+                                    actor_state.app_state.last_error =
+                                        Some(error.display_message());
+                                }
                                 actor_state.active_stream_token = None;
                                 let visible_partial = actor_state
                                     .current_streaming_conversation_id
@@ -15041,14 +15495,14 @@ impl FfiApp {
                                             .unwrap_or(model_id);
                                         actor_state.app_state.toast =
                                             Some(format!("Downloaded local model: {model_name}"));
-                                        actor_state.app_state.last_error = None;
+                                        actor_state.app_state.local_models_error = None;
                                     }
                                     Err(message) => {
                                         log::warn!(
                                             "[local-model] download failed model_id={model_id}: {message}"
                                         );
                                         refresh_local_model_state(&mut actor_state);
-                                        actor_state.app_state.last_error = Some(message);
+                                        actor_state.app_state.local_models_error = Some(message);
                                     }
                                 }
                                 actor_state.app_state.rev += 1;
@@ -15177,6 +15631,60 @@ impl FfiApp {
                                 }
                                 // No AppState rev increment -- memories are invisible in Phase 20 UI
                                 continue;
+                            }
+
+                            llm::InternalEvent::ConversationCompactionComplete {
+                                conversation_id,
+                                covered_count,
+                                retry_after,
+                                result,
+                            } => {
+                                actor_state.app_state.busy_state = BusyState::Idle;
+                                match result {
+                                    Ok(summary) => {
+                                        if let Some(db) = actor_state.db.as_ref() {
+                                            let _ =
+                                                persistence::queries::update_conversation_compaction(
+                                                    db.conn(),
+                                                    &conversation_id,
+                                                    Some(&summary),
+                                                    covered_count as i64,
+                                                );
+                                        }
+                                        refresh_compaction_state(
+                                            &mut actor_state,
+                                            &conversation_id,
+                                        );
+                                        // The overflow that prompted compaction is resolved.
+                                        actor_state.app_state.last_error = None;
+                                        actor_state.app_state.compaction_offered = false;
+                                        actor_state.app_state.toast = Some(
+                                            "Chat compacted — full history stays on this device"
+                                                .to_string(),
+                                        );
+                                        log::info!(
+                                            "[compact] summary stored conv={} covered={}",
+                                            conversation_id,
+                                            covered_count
+                                        );
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        if retry_after {
+                                            // Re-send the pending turn with the
+                                            // compacted prompt (single retry
+                                            // semantics live in the action handler).
+                                            let _ = core_tx_for_thread
+                                                .send(CoreMsg::Action(AppAction::RetryLastMessage));
+                                        }
+                                        continue;
+                                    }
+                                    Err(message) => {
+                                        actor_state.app_state.last_error = Some(message);
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                }
                             }
 
                             llm::InternalEvent::ChatToolCallsReady {
@@ -18010,16 +18518,19 @@ mod image_red_tests {
         }];
         actor_state.app_state.active_backend_id = Some("tinfoil".to_string());
         actor_state.app_state.current_conversation_id = Some("conv-switch".to_string());
-        actor_state.app_state.conversations.push(ConversationSummary {
-            id: "conv-switch".to_string(),
-            title: "Switched".to_string(),
-            // User switched to a text-only model while attestation was pending.
-            model_id: "llama3-3-70b".to_string(),
-            backend_id: "tinfoil".to_string(),
-            updated_at: 0,
-            system_prompt: None,
-            tools_enabled: false,
-        });
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-switch".to_string(),
+                title: "Switched".to_string(),
+                // User switched to a text-only model while attestation was pending.
+                model_id: "llama3-3-70b".to_string(),
+                backend_id: "tinfoil".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
 
         let conn = actor_state.db.as_ref().unwrap().conn();
         let _ = persistence::queries::insert_conversation(
@@ -18538,9 +19049,8 @@ mod image_red_tests {
             } => {
                 let current_model_id = image_capability_model_id(actor_state).unwrap_or_default();
                 if current_model_id.is_empty() {
-                    actor_state.app_state.last_error = Some(
-                        "Select a vision-capable model before attaching an image".to_string(),
-                    );
+                    actor_state.app_state.last_error =
+                        Some("Select a vision-capable model before attaching an image".to_string());
                     return;
                 }
                 if !llm::is_vision_model(&current_model_id) {

@@ -299,6 +299,11 @@ class AndroidLocalLlmProvider(context: Context) : LocalLlmProvider {
     override fun loadedModelPath(): String? = loadedPath
 
     override fun deviceCapability(): DeviceCapability = capability
+
+    // The engine's real prompt budget: context window minus the generation
+    // reserve. 0 = unknown/disabled (no client-side pre-check in the core).
+    override fun maxPromptTokens(): UInt =
+        if (loadedPath != null) (LOCAL_CONTEXT_TOKENS - LOCAL_MAX_TOKENS).toUInt() else 0u
 }
 
 private fun isBridgeResponse(url: URL, contentType: String, contentLength: Long): Boolean {
