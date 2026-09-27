@@ -132,6 +132,7 @@ pub async fn create_chat_completion(
     model: String,
     messages: Vec<ChatCompletionRequestMessage>,
     tools: Option<Vec<ChatCompletionTools>>,
+    max_tokens: Option<u32>,
 ) -> Result<CreateChatCompletionResponse, LlmError> {
     // 1. Refuse Tinfoil-routed models BEFORE attestation fetch (T-34-08).
     if let Err(e) = check_model_routable(&backend, &model).await {
@@ -150,6 +151,9 @@ pub async fn create_chat_completion(
     req_builder.model(&model).messages(messages);
     if let Some(t) = tools {
         req_builder.tools(t);
+    }
+    if let Some(max) = max_tokens {
+        req_builder.max_tokens(max);
     }
     let request = req_builder.build().map_err(|e| LlmError::NetworkError {
         reason: format!("Build Redpill chat request: {e}"),

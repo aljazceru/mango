@@ -204,13 +204,15 @@ pub async fn create_chat_completion(
     model: &str,
     messages: Vec<ChatCompletionRequestMessage>,
     tools: Vec<ChatCompletionTools>,
+    max_tokens: Option<u32>,
 ) -> Result<CreateChatCompletionResponse, LlmError> {
-    let request = CreateChatCompletionRequestArgs::default()
-        .model(model)
-        .messages(messages)
-        .tools(tools)
-        .build()
-        .map_err(
+    let mut args = CreateChatCompletionRequestArgs::default();
+    args.model(model).messages(messages).tools(tools);
+    if let Some(max_tokens) = max_tokens {
+        args.max_tokens(max_tokens);
+    }
+    let request =
+        args.build().map_err(
             |error: async_openai::error::OpenAIError| LlmError::NetworkError {
                 reason: error.to_string(),
             },

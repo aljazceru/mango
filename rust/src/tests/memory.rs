@@ -370,3 +370,156 @@ fn test_memories_screen_navigation() {
         "current_screen should be Memories after PushScreen"
     );
 }
+
+// ── Extraction transport dispatch (memories on sealed providers) ─────────────
+
+/// `call_extraction_llm` must go through the backend's own transport with the
+/// extraction output budget attached. Proven here against a local
+/// OpenAI-compatible fake server: the request must carry
+/// `max_tokens = EXTRACTION_MAX_TOKENS`, and the JSON array in the response
+/// must come back as memories. Sealed providers use the same `complete()`
+/// dispatch (their `create_chat_completion` entry points); their crypto
+/// handshake is covered by the live ignored tests.
+#[tokio::test]
+async fn extraction_uses_backend_transport_with_output_budget() {
+    use crate::memory::extract::{call_extraction_llm, EXTRACTION_MAX_TOKENS};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake extraction server");
+    let addr = listener.local_addr().expect("fake server addr");
+
+    let server = tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).expect("read request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let text = String::from_utf8_lossy(&request);
+                let content_length = text
+                    .lines()
+                    .find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                let header_end = request
+                    .windows(4)
+                    .position(|w| w == b"\r\n\r\n")
+                    .map(|p| p + 4)
+                    .expect("header terminator");
+                while request.len() - header_end < content_length {
+                    let read = stream.read(&mut buffer).expect("read body");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&request).to_string();
+
+        let body = concat!(
+            "{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"m1\",",
+            "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"[\\\"User prefers dark mode\\\"]\"},",
+            "\"finish_reason\":\"stop\"}]}"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+        request
+    });
+
+    let backend = crate::llm::BackendConfig {
+        id: "fake-openai".into(),
+        name: "Fake".into(),
+        base_url: format!("http://{addr}/v1/"),
+        api_key: "sk-test".into(),
+        models: vec!["m1".into()],
+        tee_type: crate::llm::TeeType::Unknown,
+        max_concurrent_requests: 5,
+        supports_tool_use: true,
+    };
+    let messages = vec![
+        (
+            "user".to_string(),
+            "I prefer dark mode everywhere".to_string(),
+        ),
+        (
+            "assistant".to_string(),
+            "Noted, dark mode it is.".to_string(),
+        ),
+    ];
+    let memories = call_extraction_llm(&backend, &messages, "m1")
+        .await
+        .expect("extraction should succeed");
+
+    let request = server.await.expect("server finished");
+    assert_eq!(memories, vec!["User prefers dark mode".to_string()]);
+    assert!(
+        request.contains(&format!("\"max_tokens\":{EXTRACTION_MAX_TOKENS}")),
+        "extraction request must carry the output budget, got: {request}"
+    );
+    assert!(
+        request.contains("I prefer dark mode everywhere"),
+        "extraction request must carry the conversation transcript"
+    );
+}
+
+/// The transcript fed to extraction is bounded to a recent window so per-turn
+/// extraction cost does not grow quadratically with conversation length.
+#[test]
+fn extraction_transcript_is_bounded_to_recent_window() {
+    use crate::memory::extract::EXTRACTION_TRANSCRIPT_CHAR_CAP;
+
+    // One message far over the cap plus a recent tail: the giant message is
+    // never fully shipped; the tail always is.
+    let giant = "g".repeat(EXTRACTION_TRANSCRIPT_CHAR_CAP * 2);
+    let mut messages = vec![("user".to_string(), giant)];
+    for i in 0..10 {
+        messages.push(("user".to_string(), format!("recent turn {i}")));
+        messages.push(("assistant".to_string(), format!("reply {i}")));
+    }
+    // Build the transcript through the same path production uses.
+    let transcript = crate::memory::extract::bounded_transcript(&messages);
+    assert!(
+        transcript.chars().count() < EXTRACTION_TRANSCRIPT_CHAR_CAP * 2,
+        "bounded transcript must stay near the cap, got {}",
+        transcript.chars().count()
+    );
+    assert!(
+        transcript.contains("recent turn 9"),
+        "the most recent turns must always be included"
+    );
+    assert!(
+        !transcript.contains(&"g".repeat(1024)),
+        "the oversized old turn must be dropped"
+    );
+
+    // A single newest turn larger than the whole cap is truncated, not shipped
+    // whole to the (paid, sealed) extraction backend (review finding D-5).
+    let huge_newest = vec![(
+        "assistant".to_string(),
+        "n".repeat(crate::memory::extract::EXTRACTION_TRANSCRIPT_CHAR_CAP * 2),
+    )];
+    let trimmed = crate::memory::extract::bounded_transcript(&huge_newest);
+    assert!(
+        trimmed.chars().count() <= crate::memory::extract::EXTRACTION_TRANSCRIPT_CHAR_CAP + 64,
+        "oversized newest turn must be truncated to the cap, got {}",
+        trimmed.chars().count()
+    );
+    assert!(trimmed.contains("[older content truncated]"));
+}

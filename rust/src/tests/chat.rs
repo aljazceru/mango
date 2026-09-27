@@ -588,13 +588,15 @@ fn test_send_with_attachment_prepends_content() {
         "Attachment should be cleared after send"
     );
 
-    // The persisted user message should contain the file content prefix
+    // The persisted user message must carry the placeholder marker, NOT the
+    // file content — inlining multi-MB content froze the app on every emit
+    // (debug session `android-6mb-pdf-freeze`).
     let user_msg = state.messages.iter().find(|m| m.role == "user");
     assert!(user_msg.is_some(), "Should have a user message");
     let content = &user_msg.unwrap().content;
     assert!(
-        content.contains("FILE_CONTENT_HERE"),
-        "User message content should include the attached file content. Got: {}",
+        !content.contains("FILE_CONTENT_HERE"),
+        "User message content must NOT inline the attached file content (freeze + 6MB-per-emit regression). Got: {}",
         content
     );
     assert!(
@@ -831,4 +833,295 @@ fn test_attach_file_size_display_mb() {
     wait(&app);
     let att = app.state().pending_attachment.unwrap();
     assert_eq!(att.size_display, "2 MB");
+}
+
+// ── Attachment freeze regressions (debug session `android-6mb-pdf-freeze`) ───
+
+/// A message whose content would be enormous (legacy rows with inlined
+/// attachments, or a giant paste) must never enter AppState unclamped —
+/// every AppState emit clones and marshals all message contents across FFI,
+/// and Compose lays out the full string. Reopening such a conversation used
+/// to freeze the app.
+#[test]
+fn oversized_message_content_is_clamped_in_state_and_on_reload() {
+    let app = make_app();
+    let giant = "x".repeat(crate::MAX_MESSAGE_CONTENT_CHARS + 250_000);
+    app.dispatch(AppAction::SendMessage {
+        text: giant,
+        force_role: None,
+    });
+    wait(&app);
+    let state = app.state();
+    let user_msg = state
+        .messages
+        .iter()
+        .find(|m| m.role == "user")
+        .expect("user message");
+    assert!(
+        user_msg.content.chars().count() <= crate::MAX_MESSAGE_CONTENT_CHARS + 32,
+        "state content must be clamped, got {} chars",
+        user_msg.content.chars().count()
+    );
+    assert!(user_msg.content.contains("[content truncated]"));
+
+    // Reopen the conversation: the clamp must survive a LoadConversation pass.
+    let conv_id = app.state().current_conversation_id.clone().unwrap();
+    app.dispatch(AppAction::LoadConversation {
+        conversation_id: conv_id,
+    });
+    wait(&app);
+    let reloaded = app
+        .state()
+        .messages
+        .iter()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .expect("user message after reload");
+    assert!(
+        reloaded.chars().count() <= crate::MAX_MESSAGE_CONTENT_CHARS + 32,
+        "reloaded content must stay clamped, got {} chars",
+        reloaded.chars().count()
+    );
+    assert!(reloaded.contains("[content truncated]"));
+}
+
+// ── Locked-session action gate (crash regression) ─────────────────────────────
+
+/// Regression (bug report: "app crashes after switching models and sending a
+/// message when using PPQ"): Android dispatches `LockApp` from `onResume`
+/// asynchronously; a chat action dispatched in the same window used to reach
+/// handlers full of `expect("db unlocked")` and abort the process
+/// (`panic = "abort"` in release). The actor must DROP such actions and stay
+/// alive — and unlock must still work afterwards.
+#[test]
+fn chat_actions_racing_the_lock_are_dropped_not_fatal() {
+    let app = make_app();
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    wait(&app);
+    assert!(app.state().auth_initialized);
+
+    app.dispatch(AppAction::LockApp);
+    wait(&app);
+    assert!(matches!(
+        app.state().router.current_screen,
+        crate::Screen::Locked
+    ));
+
+    // Pre-fix: each of these aborted the process via expect("db unlocked").
+    app.dispatch(AppAction::SendMessage {
+        text: "hello".into(),
+        force_role: None,
+    });
+    app.dispatch(AppAction::SelectModel {
+        model_id: "gpt-4o-mini".into(),
+    });
+    app.dispatch(AppAction::RetryLastMessage);
+    wait(&app);
+
+    // The actor survived: unlock reopens the DB and the session is usable.
+    app.dispatch(AppAction::UnlockWithPin { pin: "1234".into() });
+    wait(&app);
+    assert!(!matches!(
+        app.state().router.current_screen,
+        crate::Screen::Locked
+    ));
+    assert!(app.state().current_conversation_id.is_none());
+}
+
+// ── Path-staged text attachments (no client-side size caps) ──────────────────
+
+fn staged_attachment_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("mango_staged_{tag}_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("create staged dir");
+    dir
+}
+
+/// `AttachFileFromPath` (mobile pickers) stages a path; the send must persist
+/// only the placeholder, put the full content on the wire via the override,
+/// and delete the staged file after consuming it. No size cap exists anywhere
+/// on this path — backend limits are the only bound.
+#[test]
+fn attach_file_from_path_placeholder_persisted_and_file_consumed() {
+    let app = make_app();
+    let dir = staged_attachment_dir("send");
+    let file = dir.join("attach_notes.txt");
+    std::fs::write(&file, "STAGED FILE CONTENT").expect("stage file");
+
+    app.dispatch(AppAction::NewConversation);
+    wait(&app);
+    app.dispatch(AppAction::AttachFileFromPath {
+        filename: "notes.txt".into(),
+        file_path: file.to_str().unwrap().into(),
+    });
+    wait(&app);
+    let state = app.state();
+    let pending = state.pending_attachment.as_ref().expect("pending shown");
+    assert_eq!(pending.filename, "notes.txt");
+    assert_eq!(pending.size_display, "19 B");
+
+    app.dispatch(AppAction::SendMessage {
+        text: "Summarize this".into(),
+        force_role: None,
+    });
+    wait(&app);
+
+    let state = app.state();
+    let user_msg = state
+        .messages
+        .iter()
+        .find(|m| m.role == "user")
+        .expect("user message persisted");
+    assert!(
+        user_msg.content.contains("[Attached: notes.txt]"),
+        "placeholder must be persisted, got: {}",
+        user_msg.content
+    );
+    assert!(
+        !user_msg.content.contains("STAGED FILE CONTENT"),
+        "staged content must never enter persisted/rendered state"
+    );
+    assert!(
+        !file.exists(),
+        "staged file must be deleted after the send consumed it"
+    );
+    assert!(
+        state.pending_attachment.is_none(),
+        "pending attachment must be cleared after send"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ClearAttachment must delete a staged file — staged cache files never
+/// outlive their attachment slot.
+#[test]
+fn clear_attachment_deletes_staged_file() {
+    let app = make_app();
+    let dir = staged_attachment_dir("clear");
+    let file = dir.join("attach_big.txt");
+    std::fs::write(&file, "x").expect("stage file");
+
+    app.dispatch(AppAction::AttachFileFromPath {
+        filename: "big.txt".into(),
+        file_path: file.to_str().unwrap().into(),
+    });
+    wait(&app);
+    assert!(app.state().pending_attachment.is_some());
+    assert!(file.exists());
+
+    app.dispatch(AppAction::ClearAttachment);
+    wait(&app);
+    assert!(app.state().pending_attachment.is_none());
+    assert!(
+        !file.exists(),
+        "ClearAttachment must delete the staged file"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Path hygiene: relative paths are rejected (mirrors AttachImage T-31-01).
+#[test]
+fn attach_file_from_path_rejects_relative_path() {
+    let app = make_app();
+    app.dispatch(AppAction::AttachFileFromPath {
+        filename: "rel.txt".into(),
+        file_path: "relative/no/slash.txt".into(),
+    });
+    wait(&app);
+    let state = app.state();
+    assert!(state.pending_attachment.is_none());
+    assert!(
+        state
+            .last_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("absolute"),
+        "relative path must be rejected with a clear error, got: {:?}",
+        state.last_error
+    );
+}
+
+/// Review finding B-4: the actor must refuse to delete staged files it does
+/// not own — a path with a non-generated name survives the send untouched.
+#[test]
+fn staged_file_deletion_is_confined_to_generated_names() {
+    let app = make_app();
+    let dir = staged_attachment_dir("confine");
+    let foreign = dir.join("secret-notes.txt"); // not attach_*.txt
+    std::fs::write(&foreign, "STAGED FILE CONTENT").expect("stage foreign file");
+
+    app.dispatch(AppAction::NewConversation);
+    wait(&app);
+    app.dispatch(AppAction::AttachFileFromPath {
+        filename: "secret-notes.txt".into(),
+        file_path: foreign.to_str().unwrap().into(),
+    });
+    wait(&app);
+    app.dispatch(AppAction::SendMessage {
+        text: "summarize".into(),
+        force_role: None,
+    });
+    wait(&app);
+
+    let state = app.state();
+    let user_msg = state
+        .messages
+        .iter()
+        .find(|m| m.role == "user")
+        .expect("user message");
+    assert!(
+        !user_msg.content.contains("STAGED FILE CONTENT"),
+        "content stays wire-only"
+    );
+    assert!(
+        foreign.exists(),
+        "actor must NOT delete a file with a non-generated name (confined cleanup)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review finding B-1: retrying an attachment turn must not replay the
+/// persisted "[Attached: ...]" placeholder as literal text.
+#[test]
+fn retry_strips_attachment_placeholder() {
+    let app = make_app();
+    let dir = staged_attachment_dir("retry");
+    let file = dir.join("attach_data.txt");
+    std::fs::write(&file, "FILE CONTENT").expect("stage file");
+
+    app.dispatch(AppAction::NewConversation);
+    wait(&app);
+    app.dispatch(AppAction::AttachFileFromPath {
+        filename: "data.txt".into(),
+        file_path: file.to_str().unwrap().into(),
+    });
+    wait(&app);
+    app.dispatch(AppAction::SendMessage {
+        text: "original question".into(),
+        force_role: None,
+    });
+    wait(&app);
+
+    // RetryLastMessage re-sends the last user turn (no assistant exists yet —
+    // the assistant-removal step is skipped, the user replay still runs).
+    app.dispatch(AppAction::RetryLastMessage);
+    wait(&app);
+
+    let state = app.state();
+    let last_user = state
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .expect("retried user message");
+    assert!(
+        !last_user.content.contains("[Attached:"),
+        "retry must strip the attachment placeholder, got: {}",
+        last_user.content
+    );
+    assert_eq!(last_user.content, "original question");
+    let _ = std::fs::remove_dir_all(&dir);
 }

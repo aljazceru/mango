@@ -133,15 +133,17 @@ pub async fn run_agent_step_for_backend(
 ) -> Result<AgentStepResult, LlmError> {
     match backend.transport_kind() {
         ProviderTransportKind::TinfoilSecure => {
-            let response =
-                crate::llm::tinfoil_secure::create_chat_completion(backend, model, messages, tools)
-                    .await?;
+            let response = crate::llm::tinfoil_secure::create_chat_completion(
+                backend, model, messages, tools, None,
+            )
+            .await?;
             return agent_step_result_from_response(response);
         }
         ProviderTransportKind::PpqPrivateE2ee => {
-            let response =
-                crate::llm::ppq_private::create_chat_completion(backend, model, messages, tools)
-                    .await?;
+            let response = crate::llm::ppq_private::create_chat_completion(
+                backend, model, messages, tools, None,
+            )
+            .await?;
             return agent_step_result_from_response(response);
         }
         ProviderTransportKind::VeniceE2ee => {
@@ -151,6 +153,7 @@ pub async fn run_agent_step_for_backend(
                 model.to_string(),
                 messages,
                 tools_opt,
+                None,
             )
             .await?;
             return agent_step_result_from_response(response);
@@ -162,6 +165,7 @@ pub async fn run_agent_step_for_backend(
                 model.to_string(),
                 messages,
                 tools_opt,
+                None,
             )
             .await?;
             return agent_step_result_from_response(response);

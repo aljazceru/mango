@@ -101,7 +101,6 @@ fun ChatScreen(
     onRetry: () -> Unit,
     onEdit: (String, String) -> Unit,
     onCopy: (String) -> Unit,
-    onAttach: (String, String, ULong) -> Unit,
     onAttachImage: (String, String, String) -> Unit,
     onClearAttachment: () -> Unit,
     onSelectModel: (String) -> Unit,
@@ -207,15 +206,56 @@ fun ChatScreen(
     ) { uri: Uri? ->
         uri?.let {
             scope.launch(Dispatchers.IO) {
+                var staged: File? = null
                 try {
-                    val content = context.contentResolver.openInputStream(it)
-                        ?.bufferedReader()?.readText() ?: return@launch
+                    // Stage to an app cache file with STRICT streaming UTF-8
+                    // validation (fresh CharsetDecoder defaults to REPORT, set
+                    // again for clarity): binary files abort at the first
+                    // malformed byte — that is not a size restriction, it is
+                    // correctness for text attachments — and no matter how
+                    // large the file is, only an 8 KB buffer lives in Kotlin
+                    // memory. The content never crosses the FFI as a string;
+                    // there is NO client-side size cap. Only backend limits
+                    // apply (the backend's error surfaces if it rejects).
+                    val decoder: java.nio.charset.CharsetDecoder =
+                        Charsets.UTF_8.newDecoder()
+                    decoder.onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    staged = File.createTempFile("attach_", ".txt", context.cacheDir)
+                    context.contentResolver.openInputStream(it)?.use { input ->
+                        java.io.InputStreamReader(input, decoder).use { reader ->
+                            staged!!.outputStream().use { raw ->
+                                java.io.OutputStreamWriter(raw, Charsets.UTF_8).use { writer ->
+                                    val buffer = CharArray(8192)
+                                    while (true) {
+                                        val read = reader.read(buffer)
+                                        if (read < 0) break
+                                        writer.write(buffer, 0, read)
+                                    }
+                                }
+                            }
+                        }
+                    } ?: run {
+                        staged!!.delete()
+                        return@launch
+                    }
                     val filename = it.lastPathSegment ?: "attachment"
-                    val sizeBytes = content.length.toLong()
                     withContext(Dispatchers.Main) {
-                        onAttach(filename, content, sizeBytes.toULong())
+                        onDispatchAction(
+                            AppAction.AttachFileFromPath(
+                                filename = filename,
+                                filePath = staged!!.absolutePath,
+                            ),
+                        )
+                    }
+                } catch (_: java.nio.charset.CharacterCodingException) {
+                    staged?.delete()
+                    withContext(Dispatchers.Main) {
+                        onDispatchAction(AppAction.ShowToast(
+                            message = "Only text files can be attached. Use the document library for documents.",
+                        ))
                     }
                 } catch (_: Exception) {
+                    staged?.delete()
                     withContext(Dispatchers.Main) {
                         onDispatchAction(AppAction.ShowToast(message = "Could not read attachment"))
                     }

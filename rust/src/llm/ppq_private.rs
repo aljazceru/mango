@@ -137,13 +137,15 @@ pub async fn create_chat_completion(
     model: &str,
     messages: Vec<ChatCompletionRequestMessage>,
     tools: Vec<ChatCompletionTools>,
+    max_tokens: Option<u32>,
 ) -> Result<CreateChatCompletionResponse, LlmError> {
-    let request = CreateChatCompletionRequestArgs::default()
-        .model(model)
-        .messages(messages)
-        .tools(tools)
-        .build()
-        .map_err(
+    let mut args = CreateChatCompletionRequestArgs::default();
+    args.model(model).messages(messages).tools(tools);
+    if let Some(max_tokens) = max_tokens {
+        args.max_tokens(max_tokens);
+    }
+    let request =
+        args.build().map_err(
             |error: async_openai::error::OpenAIError| LlmError::NetworkError {
                 reason: error.to_string(),
             },
@@ -443,6 +445,16 @@ async fn send_private_request(
     body: Vec<u8>,
     allow_retry: bool,
 ) -> Result<EncryptedResponse, LlmError> {
+    // Never ship a credential-less sealed request. PPQ answers "Bearer " with
+    // a 401 ("Missing credentials…", live-captured 2026-09-24) that reads like
+    // a broken key instead of a missing one. Failing locally with a clear
+    // message covers every stale/unhydrated caller path at once.
+    if backend.api_key.trim().is_empty() {
+        return Err(LlmError::AuthError {
+            reason: "No PPQ API key is available on this device. Restore or set up your PPQ account in Settings, then try again."
+                .to_string(),
+        });
+    }
     // The attestation task will have already run with the loaded policy (and
     // populated the cache). If the cache is cold here we fall back to defaults,
     // which match the previously hardcoded constants.
@@ -1510,6 +1522,44 @@ mod tests {
                 assert_eq!(reason, "temporary private backend outage");
             }
             other => panic!("expected ApiError, got {other:?}"),
+        }
+    }
+
+    /// Regression (bug report: "first message sent to PPQ always fails with
+    /// 'authentication failed: didn't provide an API key'"): a sealed request
+    /// must never be sent with an empty key. The enclave answers "Bearer "
+    /// with a 401 that reads like a broken key (live-captured 2026-09-24:
+    /// "Missing credentials. Send an API key as Authorization: Bearer <key>").
+    /// The guard fails fast, locally, with an actionable message — and without
+    /// touching the network (the unreachable base_url proves it: a network
+    /// attempt would return a NetworkError instead).
+    #[tokio::test]
+    async fn empty_api_key_fails_fast_without_sending() {
+        let backend = BackendConfig {
+            id: "ppq-ai".into(),
+            name: "PPQ.AI".into(),
+            base_url: "https://unreachable.invalid/private/v1/".into(),
+            api_key: String::new(),
+            models: vec!["private/test".into()],
+            tee_type: crate::TeeType::AmdSevSnp,
+            max_concurrent_requests: 5,
+            supports_tool_use: true,
+        };
+        let err =
+            match send_private_request(&backend, "/chat/completions", "private/test", vec![], true)
+                .await
+            {
+                Ok(_) => panic!("empty key must fail"),
+                Err(err) => err,
+            };
+        match err {
+            LlmError::AuthError { reason } => {
+                assert!(
+                    reason.contains("No PPQ API key"),
+                    "guard must explain the missing key, got: {reason}"
+                );
+            }
+            other => panic!("expected AuthError, got {other:?}"),
         }
     }
 }

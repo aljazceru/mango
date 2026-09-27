@@ -86,6 +86,7 @@ async fn live_venice_chat_completion_e2ee() {
         VENICE_MODEL.to_string(),
         vec![user_msg],
         None,
+        None,
     )
     .await
     .expect("Venice E2EE chat completion must round-trip");

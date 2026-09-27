@@ -49,6 +49,7 @@ async fn live_ppq_private_rejects_invalid_api_key() {
         "private/kimi-k2-5",
         vec![message],
         vec![],
+        None,
     )
     .await
     .expect_err("invalid PPQ API key should be rejected");

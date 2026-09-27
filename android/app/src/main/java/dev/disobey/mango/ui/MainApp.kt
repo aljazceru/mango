@@ -122,7 +122,6 @@ fun MainApp(
                         }
                     }
                 },
-                onAttach = { filename, content, size -> manager.dispatch(AppAction.AttachFile(filename = filename, content = content, sizeBytes = size)) },
                 onAttachImage = { filename, filePath, mimeType -> manager.dispatch(AppAction.AttachImage(filename = filename, filePath = filePath, mimeType = mimeType)) },
                 onClearAttachment = { manager.dispatch(AppAction.ClearAttachment) },
                 onSelectModel = { model -> manager.dispatch(AppAction.SelectModel(modelId = model)) },

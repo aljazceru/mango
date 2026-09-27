@@ -637,8 +637,9 @@ pub async fn create_chat_completion(
     model: String,
     messages: Vec<ChatCompletionRequestMessage>,
     tools: Option<Vec<ChatCompletionTools>>,
+    max_tokens: Option<u32>,
 ) -> Result<CreateChatCompletionResponse, LlmError> {
-    create_chat_completion_inner(&backend, &model, messages, tools, true).await
+    create_chat_completion_inner(&backend, &model, messages, tools, max_tokens, true).await
 }
 
 async fn create_chat_completion_inner(
@@ -646,6 +647,7 @@ async fn create_chat_completion_inner(
     model: &str,
     messages: Vec<ChatCompletionRequestMessage>,
     tools: Option<Vec<ChatCompletionTools>>,
+    max_tokens: Option<u32>,
     allow_retry: bool,
 ) -> Result<CreateChatCompletionResponse, LlmError> {
     let tdx_policy = TdxPolicy::default();
@@ -662,6 +664,9 @@ async fn create_chat_completion_inner(
     builder.model(model).messages(messages.clone());
     if let Some(t) = tools.clone() {
         builder.tools(t);
+    }
+    if let Some(max_tokens) = max_tokens {
+        builder.max_tokens(max_tokens);
     }
     let mut request = builder.build().map_err(|e| LlmError::NetworkError {
         reason: format!("Build chat request: {e}"),
@@ -693,7 +698,7 @@ async fn create_chat_completion_inner(
             if lower.contains("stale") || lower.contains("attestation") || lower.contains("key") {
                 invalidate_cached_venice_attestation(backend, model);
                 return Box::pin(create_chat_completion_inner(
-                    backend, model, messages, tools, false,
+                    backend, model, messages, tools, max_tokens, false,
                 ))
                 .await;
             }

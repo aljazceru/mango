@@ -834,6 +834,14 @@ pub enum AppAction {
         content: String,
         size_bytes: u64,
     },
+    /// Attach a text file by absolute path (mobile pickers stage large picks to
+    /// an app cache file and hand over the path — mirroring `AttachImage` — so
+    /// multi-MB content never crosses the FFI as a string and no client-side
+    /// size cap is needed; only backend limits apply).
+    AttachFileFromPath {
+        filename: String,
+        file_path: String,
+    },
     /// Clear the pending file attachment without sending
     ClearAttachment,
     /// Store a pending image attachment to be sent with the next message (Phase 31).
@@ -1699,8 +1707,104 @@ pub struct PpqTaskResult {
 #[derive(Clone, Debug)]
 struct PendingAttachment {
     filename: String,
-    /// Full UTF-8 text content of the file
-    content: String,
+    /// Full UTF-8 text of the file. Inline content is shared via `Arc` so the
+    /// attestation-pending snapshot copies a handle, not megabytes; staged
+    /// paths (mobile pickers) are read exactly once at send time and the file
+    /// is deleted after the content is consumed.
+    content: PendingAttachmentContent,
+}
+
+#[derive(Clone, Debug)]
+enum PendingAttachmentContent {
+    Inline(std::sync::Arc<String>),
+    /// Absolute path to a staged UTF-8 text file.
+    StagedPath(String),
+}
+
+impl PendingAttachment {
+    fn read_content(&self) -> Result<std::borrow::Cow<'_, str>, String> {
+        match &self.content {
+            PendingAttachmentContent::Inline(content) => Ok(std::borrow::Cow::Borrowed(content)),
+            PendingAttachmentContent::StagedPath(path) => std::fs::read_to_string(path)
+                .map_err(|e| format!("{e}"))
+                .map(std::borrow::Cow::Owned),
+        }
+    }
+
+    fn staged_path(&self) -> Option<&str> {
+        match &self.content {
+            PendingAttachmentContent::Inline(_) => None,
+            PendingAttachmentContent::StagedPath(path) => Some(path),
+        }
+    }
+}
+
+/// Staged text attachments may only be deleted from app-owned cache/temp
+/// locations with our generated `attach_*.txt` names — the FFI accepts any
+/// absolute path, and an actor-side delete of an arbitrary caller path would
+/// turn the attachment surface into a delete primitive (review finding B-4;
+/// mirrors `plaintext_image_cleanup_allowed`).
+fn staged_attachment_cleanup_allowed(path: &str, data_dir: &str) -> bool {
+    if path.trim().is_empty() {
+        return false;
+    }
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return false;
+    }
+    let filename = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or_default();
+    let ext_ok = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("txt"));
+    if !(filename.starts_with("attach_") && ext_ok) {
+        return false;
+    }
+    let data_dir_path = Path::new(data_dir);
+    if !data_dir.trim().is_empty() {
+        if let Some(cache_dir) = android_cache_dir_from_data_dir(data_dir_path) {
+            if path_within_dir(path, &cache_dir) {
+                return true;
+            }
+        }
+        if let Some(temp_dir) = ios_temp_dir_from_data_dir(data_dir_path) {
+            if path_within_dir(path, &temp_dir) {
+                return true;
+            }
+        }
+        if path_within_dir(path, &data_dir_path.join("staged-attachments")) {
+            return true;
+        }
+    }
+    #[cfg(test)]
+    // Unit tests stage inside the host temp dir with in-memory actors
+    // (data_dir="" would otherwise forbid every cleanup assertion).
+    if path_within_dir(path, &std::env::temp_dir()) {
+        return true;
+    }
+    false
+}
+
+fn remove_staged_attachment_file(path: &str, data_dir: &str) {
+    if staged_attachment_cleanup_allowed(path, data_dir) {
+        let _ = std::fs::remove_file(path);
+    } else {
+        log::warn!("[attachment] refusing to delete staged file outside app-owned dirs: {path}");
+    }
+}
+
+/// Drop the pending text attachment, deleting any staged file. Idempotent;
+/// every site that clears the slot must go through here so staged cache files
+/// never outlive their attachment.
+fn drop_pending_attachment(actor_state: &mut ActorState) {
+    if let Some(att) = actor_state.pending_attachment.take() {
+        if let Some(path) = att.staged_path() {
+            remove_staged_attachment_file(path, &actor_state.data_dir);
+        }
+    }
 }
 
 /// Actor-internal pending image attachment -- never crosses UniFFI.
@@ -1816,9 +1920,12 @@ struct ActorState {
     /// only while the owning conversation is visible.
     current_streaming_text: String,
     /// True when the active stream's user turn included an image attachment.
-    /// Generic failover cannot safely replay multipart image payloads, and local
-    /// on-device backends cannot see images.
-    current_streaming_has_image_attachment: bool,
+    /// True while the streaming turn cannot be faithfully replayed by the
+    /// failover path: failover rebuilds message history from persisted rows,
+    /// which carry only placeholders — multipart image payloads and the
+    /// wire-only text-attachment content would be silently lost (review
+    /// finding B-2). Such turns surface their error instead of failing over.
+    current_streaming_turn_not_retryable: bool,
     /// Backend IDs already excluded in the current failover chain (tried and failed).
     failover_exclude: Vec<String>,
     // Phase 8 additions:
@@ -3262,13 +3369,13 @@ fn wipe_local_install(
     actor_state.db = None;
     actor_state.dek = None;
     actor_state.pre_lock_screen = None;
-    actor_state.pending_attachment = None;
+    drop_pending_attachment(actor_state);
     actor_state.active_agent_sessions.clear();
     actor_state.current_streaming_backend_id = None;
     actor_state.current_streaming_model_id = None;
     actor_state.current_streaming_conversation_id = None;
     actor_state.current_streaming_text.clear();
-    actor_state.current_streaming_has_image_attachment = false;
+    actor_state.current_streaming_turn_not_retryable = false;
     actor_state.failover_exclude.clear();
     actor_state.current_conv_tools_enabled = false;
     actor_state.attested_tls_public_keys.clear();
@@ -3386,6 +3493,27 @@ fn strip_image_placeholder(content: &str) -> String {
             }
         }
         if let Some(placeholder) = prefix.strip_prefix("[Image: ") {
+            if !placeholder.is_empty() {
+                return String::new();
+            }
+        }
+    }
+    content.to_string()
+}
+
+/// Strip a persisted `[Attached: name]` placeholder before replaying a stored
+/// user message (retry). Text-attachment content is wire-only and unrecoverable
+/// after the original send, so the replay must not ship a dangling marker that
+/// reads like a truncated attachment reference (image retry strips its marker
+/// for the same reason; review finding B-1).
+fn strip_attachment_placeholder(content: &str) -> String {
+    if let Some(prefix) = content.strip_suffix(']') {
+        if let Some((text, placeholder)) = prefix.rsplit_once("\n\n[Attached: ") {
+            if !placeholder.is_empty() {
+                return text.to_string();
+            }
+        }
+        if let Some(placeholder) = prefix.strip_prefix("[Attached: ") {
             if !placeholder.is_empty() {
                 return String::new();
             }
@@ -3552,6 +3680,27 @@ fn truncate_title(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Ceiling for a single message's rendered/serialized content in AppState.
+///
+/// Every AppState emit clones and (on mobile) marshals all message contents
+/// across FFI, and Compose lays out the full string — a multi-megabyte
+/// `messages.content` (the old attachment inlining, debug session
+/// `android-6mb-pdf-freeze`) froze the app on send and on conversation open.
+/// Rows larger than this are clamped for display and LLM context; the SQLite
+/// row keeps its full content.
+// ponytail: hard clamp, display+context only — if providers ever need >100k
+// char turns in history, raise or make this provider-aware.
+pub const MAX_MESSAGE_CONTENT_CHARS: usize = 100_000;
+
+fn clamp_message_content(content: String) -> String {
+    if content.chars().count() <= MAX_MESSAGE_CONTENT_CHARS {
+        return content;
+    }
+    let mut out: String = content.chars().take(MAX_MESSAGE_CONTENT_CHARS).collect();
+    out.push_str("\n\n[content truncated]");
+    out
+}
+
 /// Refresh the conversations list in AppState from SQLite.
 fn refresh_conversations(actor_state: &mut ActorState) {
     let Some(db) = actor_state.db.as_ref() else {
@@ -3594,7 +3743,9 @@ fn refresh_conversations(actor_state: &mut ActorState) {
 /// so a settings change takes effect immediately.
 fn apply_conversation_retention(actor_state: &ActorState) {
     let mode = actor_state.app_state.conversation_retention_mode;
-    if mode == ConversationRetentionMode::Off || actor_state.app_state.conversation_retention_days == 0 {
+    if mode == ConversationRetentionMode::Off
+        || actor_state.app_state.conversation_retention_days == 0
+    {
         return;
     }
     let Some(db) = actor_state.db.as_ref() else {
@@ -3639,7 +3790,9 @@ fn refresh_messages(actor_state: &mut ActorState, conversation_id: &str) {
         .map(|row| UiMessage {
             id: row.id.clone(),
             role: row.role.clone(),
-            content: row.content.clone(),
+            // Clamp legacy giant rows (old attachment inlining) so reopening a
+            // conversation never ships megabytes across FFI per emit.
+            content: clamp_message_content(row.content.clone()),
             created_at: row.created_at,
             has_attachment: false,
             attachment_name: None,
@@ -3848,6 +4001,39 @@ fn default_backend_and_model(actor_state: &ActorState) -> (String, String) {
             .map(|b| (b.id.clone(), b.models[0].clone()))
             .unwrap_or((preferred_backend, String::new())),
     }
+}
+
+/// Actions that are safe to process while the encrypted DB is locked
+/// (`actor_state.db == None`).
+///
+/// The Android activity dispatches `LockApp` from `onResume` asynchronously and
+/// keeps rendering the previous screen until the Locked state propagates back —
+/// a chat action dispatched in that window (e.g. the user taps Send right as the
+/// auto-lock fires after a slow PPQ turn) reached handlers full of
+/// `expect("db unlocked")` and aborted the whole process (panic=abort), which
+/// users saw as "app crashes after switching models and sending a message".
+/// Every other action is dropped while locked; the UI is showing the Lock
+/// screen by then anyway.
+fn action_safe_while_locked(action: &AppAction) -> bool {
+    matches!(
+        action,
+        AppAction::LockApp
+            | AppAction::AttemptBiometricUnlock
+            | AppAction::UnlockWithPin { .. }
+            | AppAction::UnlockWithDek { .. }
+            | AppAction::SetupPin { .. }
+            | AppAction::ShowToast { .. }
+            | AppAction::ClearToast
+            | AppAction::Noop
+            | AppAction::SetBusyState { .. }
+            | AppAction::CheckPpqTopup
+            | AppAction::RefreshPpqAccount
+            | AppAction::CancelPpqTopup
+            // SAF save can complete while the app locked mid-pick; the
+            // handler defers the confirmation actor-internally (follow-up 4)
+            // and applies it at unlock.
+            | AppAction::ConfirmPpqBackupSaved
+    )
 }
 
 /// Returns true when a first-time (or legacy) enrollment is still pending and
@@ -4239,8 +4425,11 @@ fn set_inline_secure_turn_verified(actor_state: &mut ActorState, backend_id: &st
     }
 }
 
-fn should_failover_stream_error(error: &llm::LlmError, has_image_attachment: bool) -> bool {
-    if has_image_attachment {
+fn should_failover_stream_error(error: &llm::LlmError, turn_not_retryable: bool) -> bool {
+    // Attachment-bearing turns (multipart images, wire-only text-attachment
+    // content) cannot be faithfully rebuilt from persisted placeholders —
+    // failover would silently drop the payload. Surface the error instead.
+    if turn_not_retryable {
         return false;
     }
 
@@ -5552,18 +5741,32 @@ fn do_send_message(
         };
         // api_text is the original user input, without the "[Image: ...]" placeholder.
         (persisted, text.clone(), true, Some(name))
-    } else if let Some(att) = actor_state.pending_attachment.as_ref() {
-        let augmented = format!(
-            "[Attached: {}]\n\n{}\n\n---\n\n{}",
-            att.filename, att.content, text
-        );
-        let name = att.filename.clone();
-        // For text attachments there is no wire/persistence split today — both carry
-        // the full augmented context; keep api_text == final_text.
-        (augmented.clone(), augmented, true, Some(name))
+    } else if actor_state.pending_attachment.is_some() {
+        // Text-attachment path mirrors the image split (debug session
+        // `android-6mb-pdf-freeze`): the persisted/rendered message carries only a
+        // "[Attached: name]" placeholder — inlining megabytes of file content
+        // into `messages.content` froze the app: every AppState emit (including
+        // per-token streaming emits) marshalled the full content across FFI and
+        // Compose laid out a multi-million-char Text. The full content is read
+        // (once, post-routing) for the wire-only swap below — no client-side
+        // size cap; backend limits are the only bound.
+        let name = actor_state
+            .pending_attachment
+            .as_ref()
+            .map(|att| att.filename.clone())
+            .unwrap_or_default();
+        let persisted = if text.is_empty() {
+            format!("[Attached: {}]", name)
+        } else {
+            format!("{}\n\n[Attached: {}]", text, name)
+        };
+        (persisted, text.clone(), true, Some(name))
     } else {
         (text.clone(), text.clone(), false, None)
     };
+    // Wire-only full content for this turn's user message, built after routing
+    // succeeds so a staged file is read exactly once per accepted send.
+    let mut wire_last_user_override: Option<String> = None;
 
     let (backend, model, turn_routing) = match resolve_turn_backend_and_model(
         actor_state,
@@ -5603,8 +5806,45 @@ fn do_send_message(
         return;
     }
 
-    if !has_image_attachment {
-        actor_state.pending_attachment = None;
+    if !has_image_attachment && actor_state.pending_attachment.is_some() {
+        // Routing accepted the turn: read the attachment content exactly once
+        // (staged files are opened here and deleted after), then clear the
+        // slot. Failures abort the send with a clear error — the message is
+        // not persisted half-attached.
+        let att = actor_state.pending_attachment.take().unwrap();
+        // Delete the staged cache file (if any) in every outcome — success,
+        // read failure — the content is either on the wire or unrecoverable.
+        // Deletion is confined to app-owned dirs (see
+        // staged_attachment_cleanup_allowed).
+        let staged_path = att.staged_path().map(str::to_string);
+        let read = att.read_content();
+        if let Some(path) = &staged_path {
+            remove_staged_attachment_file(path, &actor_state.data_dir);
+        }
+        match read {
+            Ok(content) => {
+                // No trailing separator when the turn has no user text
+                // (review finding B-6).
+                let wire_body = if text.is_empty() {
+                    content.into_owned()
+                } else {
+                    format!("{}\n\n---\n\n{}", content, text)
+                };
+                wire_last_user_override =
+                    Some(format!("[Attached: {}]\n\n{}", att.filename, wire_body));
+            }
+            Err(reason) => {
+                actor_state.app_state.last_error = Some(format!(
+                    "Could not read attachment '{}': {}",
+                    att.filename, reason
+                ));
+                actor_state.app_state.busy_state = BusyState::Idle;
+                actor_state.app_state.streaming_text = None;
+                return;
+            }
+        }
+    } else if !has_image_attachment {
+        drop_pending_attachment(actor_state);
     }
     // Clear pending_attachment from AppState once this send is accepted.
     actor_state.app_state.pending_attachment = None;
@@ -5686,7 +5926,7 @@ fn do_send_message(
     let user_ui_msg = UiMessage {
         id: msg_id,
         role: "user".to_string(),
-        content: final_text.clone(),
+        content: clamp_message_content(final_text.clone()),
         created_at: now,
         has_attachment,
         attachment_name,
@@ -5725,7 +5965,7 @@ fn do_send_message(
     actor_state.current_streaming_conversation_id = Some(conv_id.clone());
     actor_state.current_streaming_text.clear();
     actor_state.last_stream_emit = None;
-    actor_state.current_streaming_has_image_attachment = has_image_attachment;
+    actor_state.current_streaming_turn_not_retryable = has_image_attachment || has_attachment;
     actor_state.failover_exclude = vec![];
 
     // Build full message history for the LLM (system prompt + all messages)
@@ -5872,6 +6112,20 @@ fn do_send_message(
             role,
             content: msg.content.clone(),
         });
+    }
+
+    // Swap the placeholder of THIS turn's user message for the full attachment
+    // content on the wire (persistence keeps the placeholder — see the split
+    // above). The just-appended user message is the last User entry. The
+    // override moves in by value — no second copy of the content.
+    if let Some(wire) = wire_last_user_override.take() {
+        if let Some(last_user) = chat_messages
+            .iter_mut()
+            .rev()
+            .find(|m| matches!(m.role, llm::streaming::ChatRole::User))
+        {
+            last_user.content = wire;
+        }
     }
 
     // Phase 27/35: Chat tool use branch.
@@ -9006,7 +9260,7 @@ impl FfiApp {
                 current_streaming_model_id: None,
                 current_streaming_conversation_id: None,
                 current_streaming_text: String::new(),
-                current_streaming_has_image_attachment: false,
+                current_streaming_turn_not_retryable: false,
                 failover_exclude: vec![],
                 embedding_provider: embedding_provider_arc,
                 local_llm_provider: local_llm_provider_arc,
@@ -9051,6 +9305,15 @@ impl FfiApp {
             while let Ok(msg) = core_rx.recv() {
                 match msg {
                     CoreMsg::Action(action) => {
+                        // Locked/wiped session: only allow-listed actions may run.
+                        // Everything else would hit one of the many
+                        // `expect("db unlocked")` call sites below and abort the
+                        // process (panic=abort) when a UI action races the
+                        // async LockApp dispatch (Android onResume auto-lock).
+                        if actor_state.db.is_none() && !action_safe_while_locked(&action) {
+                            log::warn!("[actor] dropped action while DB locked: {:?}", action);
+                            continue;
+                        }
                         // D-14 mandatory enrollment: block navigation/chat actions while a
                         // first-run (or legacy) enrollment is incomplete. Enrollment actions
                         // (SetupPin, CompleteOnboarding, SkipOnboarding, UnlockWithPin) are
@@ -9723,12 +9986,14 @@ impl FfiApp {
                                     // Keep conv_id active and re-send
                                     actor_state.app_state.current_conversation_id = Some(conv_id);
                                     if let Some(image) = retry_image {
-                                        actor_state.pending_attachment = None;
+                                        drop_pending_attachment(&mut actor_state);
                                         actor_state.pending_image_attachment = Some(image);
                                     }
                                     do_send_message(
                                         &mut actor_state,
-                                        strip_image_placeholder(&message.content),
+                                        strip_attachment_placeholder(&strip_image_placeholder(
+                                            &message.content,
+                                        )),
                                         replay_force_role,
                                         &core_tx_for_thread,
                                     );
@@ -9808,12 +10073,57 @@ impl FfiApp {
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
                                 }
+                                // No core-side size cap: the freeze is fixed by the
+                                // placeholder/clamp split; provider context/body limits
+                                // bound the wire. Mobile pickers enforce their own
+                                // read bound before content ever reaches this arm.
                                 let size_display = format_size_display(size_bytes);
                                 // Mutually exclusive with any pending image attachment.
-                                actor_state.pending_image_attachment = None;
+                                clear_pending_image_attachment(&mut actor_state);
+                                drop_pending_attachment(&mut actor_state);
                                 actor_state.pending_attachment = Some(PendingAttachment {
                                     filename: filename.clone(),
-                                    content,
+                                    content: PendingAttachmentContent::Inline(std::sync::Arc::new(
+                                        content,
+                                    )),
+                                });
+                                actor_state.app_state.pending_attachment = Some(AttachmentInfo {
+                                    filename,
+                                    size_display,
+                                    is_image: false,
+                                });
+                            }
+
+                            AppAction::AttachFileFromPath {
+                                filename,
+                                file_path,
+                            } => {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+                                // Same path hygiene as AttachImage (T-31-01): absolute
+                                // paths only, no traversal. The file is read once at
+                                // send time and deleted after — no size cap, backend
+                                // limits are the only bound.
+                                if !std::path::Path::new(&file_path).is_absolute() {
+                                    actor_state.app_state.last_error = Some(
+                                        "AttachFileFromPath requires absolute file_path".into(),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+                                let size_bytes =
+                                    std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+                                let size_display = format_size_display(size_bytes);
+                                // Mutually exclusive with any pending image attachment.
+                                clear_pending_image_attachment(&mut actor_state);
+                                drop_pending_attachment(&mut actor_state);
+                                actor_state.pending_attachment = Some(PendingAttachment {
+                                    filename: filename.clone(),
+                                    content: PendingAttachmentContent::StagedPath(file_path),
                                 });
                                 actor_state.app_state.pending_attachment = Some(AttachmentInfo {
                                     filename,
@@ -9828,7 +10138,7 @@ impl FfiApp {
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
                                 }
-                                actor_state.pending_attachment = None;
+                                drop_pending_attachment(&mut actor_state);
                                 clear_pending_image_attachment(&mut actor_state);
                                 actor_state.app_state.pending_attachment = None;
                             }
@@ -9883,7 +10193,7 @@ impl FfiApp {
                                             Some("Image exceeds 50 MB limit".into());
                                     } else {
                                         // Clear any pending text attachment — one slot.
-                                        actor_state.pending_attachment = None;
+                                        drop_pending_attachment(&mut actor_state);
                                         actor_state.pending_image_attachment =
                                             Some(PendingImageAttachment {
                                                 filename: filename.clone(),
@@ -13006,6 +13316,12 @@ impl FfiApp {
                         let drop_late_result = match &*event {
                             llm::InternalEvent::StreamChunk { .. }
                             | llm::InternalEvent::StreamDone
+                            // StreamError's handler persists backend health
+                            // (expect("db unlocked")) — a failover-class error
+                            // queued just before LockApp must not abort the
+                            // process (review finding A-3; same race family as
+                            // the Action gate above).
+                            | llm::InternalEvent::StreamError { .. }
                             | llm::InternalEvent::MemoryExtractionComplete { .. }
                             | llm::InternalEvent::ChatToolCallsReady { .. }
                             | llm::InternalEvent::AgentStepComplete { .. }
@@ -13249,7 +13565,7 @@ impl FfiApp {
                                 }
                                 actor_state.current_streaming_model_id = None;
                                 actor_state.failover_exclude.clear();
-                                actor_state.current_streaming_has_image_attachment = false;
+                                actor_state.current_streaming_turn_not_retryable = false;
 
                                 actor_state.app_state.busy_state = BusyState::Idle;
                                 actor_state.active_stream_token = None;
@@ -13265,7 +13581,11 @@ impl FfiApp {
                                         )
                                         .unwrap_or_default()
                                         .into_iter()
-                                        .map(|m| (m.role, m.content))
+                                        // Raw rows bypass the AppState clamp —
+                                        // legacy multi-MB inlined attachment rows
+                                        // must not ship whole to a paid sealed
+                                        // extraction backend (review finding D-5).
+                                        .map(|m| (m.role, clamp_message_content(m.content)))
                                         .collect();
 
                                     if actor_state.app_state.memories_enabled
@@ -13282,6 +13602,18 @@ impl FfiApp {
                                                 .filter(|b| !is_local_on_device_backend(b))
                                                 .cloned()
                                             {
+                                                // Memory extraction over the backend's own
+                                                // transport (sealed providers included —
+                                                // debug session `ppq-first-message-auth`):
+                                                // hydrate keychain-only keys — actor memory
+                                                // keeps "" for managed PPQ — and hand the
+                                                // per-backend concurrency semaphore into the
+                                                // task so extraction competes fairly with
+                                                // chat streams instead of bypassing the limiter.
+                                                let backend =
+                                                    hydrate_backend_api_key(&actor_state, &backend);
+                                                let semaphore =
+                                                    actor_state.router.get_semaphore(&backend.id);
                                                 let conv_id = completed_conv_id.clone();
                                                 let model = extraction_model_id
                                                     .clone()
@@ -13301,6 +13633,21 @@ impl FfiApp {
                                                 let core_tx_clone = core_tx_for_thread.clone();
 
                                                 actor_state.runtime.spawn(async move {
+                                                    let _permit = match semaphore {
+                                                        Some(sem) => {
+                                                            match sem.acquire_owned().await {
+                                                                Ok(permit) => Some(permit),
+                                                                Err(_) => {
+                                                                    log::warn!(
+                                                                        target: "memory",
+                                                                        "[memory] extraction skipped: concurrency limiter closed"
+                                                                    );
+                                                                    return;
+                                                                }
+                                                            }
+                                                        }
+                                                        None => None,
+                                                    };
                                                     let memories =
                                                         memory::extract::call_extraction_llm(
                                                             &backend,
@@ -13308,7 +13655,13 @@ impl FfiApp {
                                                             &model,
                                                         )
                                                         .await
-                                                        .unwrap_or_default();
+                                                        .unwrap_or_else(|e| {
+                                                            log::warn!(
+                                                                target: "memory",
+                                                                "[memory] extraction failed: {e}"
+                                                            );
+                                                            Vec::new()
+                                                        });
 
                                                     let _ =
                                                         core_tx_clone.send(CoreMsg::InternalEvent(
@@ -13343,7 +13696,7 @@ impl FfiApp {
                                     matches!(&error, llm::LlmError::RateLimited { .. });
                                 let should_failover = should_failover_stream_error(
                                     &error,
-                                    actor_state.current_streaming_has_image_attachment,
+                                    actor_state.current_streaming_turn_not_retryable,
                                 );
                                 if should_failover {
                                     if let llm::LlmError::RateLimited {
@@ -13482,10 +13835,20 @@ impl FfiApp {
                                         actor_state.failover_exclude = retry_exclude;
 
                                         if let Some(next_backend) = next {
+                                            // Hydrate keychain-only keys: `next_backend` is
+                                            // cloned from actor memory, which keeps
+                                            // api_key="" for managed PPQ (keychain-only)
+                                            // backends — an unhydrated retry shipped
+                                            // "Bearer " and PPQ answered 401
+                                            // "Missing credentials…".
+                                            let next_backend = hydrate_backend_api_key(
+                                                &actor_state,
+                                                &next_backend,
+                                            );
                                             actor_state.current_streaming_backend_id =
                                                 Some(next_backend.id.clone());
                                             actor_state.current_streaming_text.clear();
-                                            actor_state.current_streaming_has_image_attachment =
+                                            actor_state.current_streaming_turn_not_retryable =
                                                 false;
                                             sync_visible_streaming_text(&mut actor_state);
                                             let chat_messages = actor_state
@@ -13585,7 +13948,7 @@ impl FfiApp {
                                 actor_state.current_streaming_model_id = None;
                                 actor_state.current_streaming_conversation_id = None;
                                 actor_state.current_streaming_text.clear();
-                                actor_state.current_streaming_has_image_attachment = false;
+                                actor_state.current_streaming_turn_not_retryable = false;
                                 actor_state.failover_exclude.clear();
                                 refresh_backend_summaries(&mut actor_state);
                                 actor_state.app_state.rev += 1;
@@ -13611,7 +13974,7 @@ impl FfiApp {
                                 actor_state.current_streaming_model_id = None;
                                 actor_state.current_streaming_conversation_id = None;
                                 actor_state.current_streaming_text.clear();
-                                actor_state.current_streaming_has_image_attachment = false;
+                                actor_state.current_streaming_turn_not_retryable = false;
                                 actor_state.failover_exclude.clear();
                                 refresh_backend_summaries(&mut actor_state);
                                 actor_state.app_state.rev += 1;
@@ -16572,7 +16935,9 @@ mod image_red_tests {
         .unwrap();
         actor_state.pending_attachment = Some(PendingAttachment {
             filename: "context.txt".to_string(),
-            content: "keep me pending".to_string(),
+            content: PendingAttachmentContent::Inline(std::sync::Arc::new(
+                "keep me pending".to_string(),
+            )),
         });
         actor_state.app_state.pending_attachment = Some(AttachmentInfo {
             filename: "context.txt".to_string(),
@@ -16671,7 +17036,9 @@ mod image_red_tests {
             force_role: Some(BackendRole::Remote),
             pending_attachment: Some(PendingAttachment {
                 filename: "original.txt".to_string(),
-                content: "original".to_string(),
+                content: PendingAttachmentContent::Inline(std::sync::Arc::new(
+                    "original".to_string(),
+                )),
             }),
             pending_image_attachment: None,
             app_pending_attachment: Some(AttachmentInfo {
@@ -16714,7 +17081,9 @@ mod image_red_tests {
             force_role: Some(BackendRole::Remote),
             pending_attachment: Some(PendingAttachment {
                 filename: "queued.txt".to_string(),
-                content: "queued".to_string(),
+                content: PendingAttachmentContent::Inline(std::sync::Arc::new(
+                    "queued".to_string(),
+                )),
             }),
             pending_image_attachment: None,
             app_pending_attachment: Some(AttachmentInfo {
@@ -16760,7 +17129,7 @@ mod image_red_tests {
             force_role: Some(BackendRole::Remote),
             pending_attachment: Some(PendingAttachment {
                 filename: "retry.txt".to_string(),
-                content: "retry".to_string(),
+                content: PendingAttachmentContent::Inline(std::sync::Arc::new("retry".to_string())),
             }),
             pending_image_attachment: None,
             app_pending_attachment: Some(AttachmentInfo {
@@ -16977,7 +17346,7 @@ mod image_red_tests {
             current_streaming_model_id: None,
             current_streaming_conversation_id: None,
             current_streaming_text: String::new(),
-            current_streaming_has_image_attachment: false,
+            current_streaming_turn_not_retryable: false,
             failover_exclude: vec![],
             embedding_provider: embedding_provider_arc,
             local_llm_provider: local_llm_provider_arc,
