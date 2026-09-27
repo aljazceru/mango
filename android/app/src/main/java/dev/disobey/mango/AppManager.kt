@@ -128,6 +128,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             lastTurnRouting = null,
             trustedProviders = emptyList(),
             enrollmentResumePending = false,
+            noLockMode = false,
             conversationRetentionMode = ConversationRetentionMode.OFF,
             conversationRetentionDays = 30u,
             archivedConversations = emptyList(),

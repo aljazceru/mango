@@ -33,6 +33,10 @@ pub struct AuthParams {
     /// `duress_salt` column is needed — `verify_pin_hash` re-extracts the salt from
     /// the PHC string at verification time.
     pub duress_hash: Option<String>,
+    /// True when this enrollment used no user PIN: the DEK is wrapped under a
+    /// random secret held in the platform keychain and the app unlocks via the
+    /// cold-launch bypass (no-lock mode).
+    pub no_lock: bool,
     /// Argon2id memory cost in KiB.
     pub kdf_memory_kib: u32,
     /// Argon2id iteration count.
@@ -61,28 +65,18 @@ impl BootstrapDb {
                 salt            BLOB NOT NULL,
                 wrapped_dek     BLOB NOT NULL,
                 duress_hash     TEXT,
+                no_lock         INTEGER NOT NULL DEFAULT 0,
                 kdf_memory_kib  INTEGER NOT NULL,
                 kdf_iterations  INTEGER NOT NULL,
                 kdf_parallelism INTEGER NOT NULL
-            );",
-        )?;
-        // Quick 260421-bys: add cold_launch_bypass column to existing DBs idempotently.
-        // `cold_launch_bypass`: non-sensitive hint. Flipping this to 1 without the
-        // corresponding keychain DEK entry is benign — cold-launch code falls back to
-        // Screen::Locked when the keychain load returns None.
-        conn.execute_batch(
-            "ALTER TABLE auth_params ADD COLUMN cold_launch_bypass INTEGER NOT NULL DEFAULT 0;",
-        )
-        .ok(); // ignore "duplicate column" on existing DBs
+            );
 
-        // Enrollment crash-recovery tables. Both are keyed as singletons (id=1)
-        // so their presence is atomic and easy to inspect at startup.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS pending_auth (
+            CREATE TABLE IF NOT EXISTS pending_auth (
                 id              INTEGER PRIMARY KEY CHECK (id = 1),
                 salt            BLOB NOT NULL,
                 wrapped_dek     BLOB NOT NULL,
                 duress_hash     TEXT,
+                no_lock         INTEGER NOT NULL DEFAULT 0,
                 kdf_memory_kib  INTEGER NOT NULL,
                 kdf_iterations  INTEGER NOT NULL,
                 kdf_parallelism INTEGER NOT NULL
@@ -94,6 +88,21 @@ impl BootstrapDb {
                 conversation_id TEXT
             );",
         )?;
+        // Idempotent migrations for DBs created before these columns existed.
+        conn.execute_batch(
+            "ALTER TABLE auth_params ADD COLUMN no_lock INTEGER NOT NULL DEFAULT 0;",
+        )
+        .ok();
+        conn.execute_batch(
+            "ALTER TABLE pending_auth ADD COLUMN no_lock INTEGER NOT NULL DEFAULT 0;",
+        )
+        .ok();
+        // Cold-launch bypass hint. Flipping to 1 without the keychain DEK is
+        // benign — startup falls back to Screen::Locked.
+        conn.execute_batch(
+            "ALTER TABLE auth_params ADD COLUMN cold_launch_bypass INTEGER NOT NULL DEFAULT 0;",
+        )
+        .ok(); // ignore "duplicate column" on existing DBs
 
         Ok(Self { conn })
     }
@@ -108,13 +117,14 @@ impl BootstrapDb {
     pub fn write_auth_params(&self, params: &AuthParams) -> Result<(), anyhow::Error> {
         self.conn.execute(
             "INSERT INTO auth_params
-                (id, salt, wrapped_dek, duress_hash,
+                (id, salt, wrapped_dek, duress_hash, no_lock,
                  kdf_memory_kib, kdf_iterations, kdf_parallelism)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET
                 salt = excluded.salt,
                 wrapped_dek = excluded.wrapped_dek,
                 duress_hash = excluded.duress_hash,
+                no_lock = excluded.no_lock,
                 kdf_memory_kib = excluded.kdf_memory_kib,
                 kdf_iterations = excluded.kdf_iterations,
                 kdf_parallelism = excluded.kdf_parallelism",
@@ -122,6 +132,40 @@ impl BootstrapDb {
                 params.salt,
                 params.wrapped_dek,
                 params.duress_hash,
+                params.no_lock,
+                params.kdf_memory_kib,
+                params.kdf_iterations,
+                params.kdf_parallelism,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Atomically write auth params AND clear the cold-launch bypass.
+    ///
+    /// Single-statement upsert: a crash cannot leave the new params committed
+    /// while the bypass flag (and its keychain DEK) still grants auto-unlock.
+    /// Used by EnablePinLock when transitioning out of no-lock mode.
+    pub fn write_auth_params_locking_out(&self, params: &AuthParams) -> Result<(), anyhow::Error> {
+        self.conn.execute(
+            "INSERT INTO auth_params
+                (id, salt, wrapped_dek, duress_hash, no_lock,
+                 kdf_memory_kib, kdf_iterations, kdf_parallelism, cold_launch_bypass)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
+             ON CONFLICT(id) DO UPDATE SET
+                salt = excluded.salt,
+                wrapped_dek = excluded.wrapped_dek,
+                duress_hash = excluded.duress_hash,
+                no_lock = excluded.no_lock,
+                kdf_memory_kib = excluded.kdf_memory_kib,
+                kdf_iterations = excluded.kdf_iterations,
+                kdf_parallelism = excluded.kdf_parallelism,
+                cold_launch_bypass = 0",
+            params![
+                params.salt,
+                params.wrapped_dek,
+                params.duress_hash,
+                params.no_lock,
                 params.kdf_memory_kib,
                 params.kdf_iterations,
                 params.kdf_parallelism,
@@ -133,7 +177,7 @@ impl BootstrapDb {
     /// Read the singleton auth params row. Returns `None` if not yet initialised.
     pub fn read_auth_params(&self) -> Result<Option<AuthParams>, anyhow::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT salt, wrapped_dek, duress_hash,
+            "SELECT salt, wrapped_dek, duress_hash, no_lock,
                     kdf_memory_kib, kdf_iterations, kdf_parallelism
              FROM auth_params WHERE id = 1",
         )?;
@@ -142,9 +186,10 @@ impl BootstrapDb {
                 salt: row.get(0)?,
                 wrapped_dek: row.get(1)?,
                 duress_hash: row.get(2)?,
-                kdf_memory_kib: row.get::<_, u32>(3)?,
-                kdf_iterations: row.get::<_, u32>(4)?,
-                kdf_parallelism: row.get::<_, u32>(5)?,
+                no_lock: row.get::<_, i32>(3)? != 0,
+                kdf_memory_kib: row.get::<_, u32>(4)?,
+                kdf_iterations: row.get::<_, u32>(5)?,
+                kdf_parallelism: row.get::<_, u32>(6)?,
             })
         });
         match result {
@@ -223,13 +268,14 @@ impl BootstrapDb {
     pub fn write_pending_auth(&self, params: &AuthParams) -> Result<(), anyhow::Error> {
         self.conn.execute(
             "INSERT INTO pending_auth
-                (id, salt, wrapped_dek, duress_hash,
+                (id, salt, wrapped_dek, duress_hash, no_lock,
                  kdf_memory_kib, kdf_iterations, kdf_parallelism)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET
                 salt = excluded.salt,
                 wrapped_dek = excluded.wrapped_dek,
                 duress_hash = excluded.duress_hash,
+                no_lock = excluded.no_lock,
                 kdf_memory_kib = excluded.kdf_memory_kib,
                 kdf_iterations = excluded.kdf_iterations,
                 kdf_parallelism = excluded.kdf_parallelism",
@@ -237,6 +283,7 @@ impl BootstrapDb {
                 params.salt,
                 params.wrapped_dek,
                 params.duress_hash,
+                params.no_lock,
                 params.kdf_memory_kib,
                 params.kdf_iterations,
                 params.kdf_parallelism,
@@ -248,7 +295,7 @@ impl BootstrapDb {
     /// Read the singleton pending auth row, if any.
     pub fn read_pending_auth(&self) -> Result<Option<AuthParams>, anyhow::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT salt, wrapped_dek, duress_hash,
+            "SELECT salt, wrapped_dek, duress_hash, no_lock,
                     kdf_memory_kib, kdf_iterations, kdf_parallelism
              FROM pending_auth WHERE id = 1",
         )?;
@@ -257,9 +304,10 @@ impl BootstrapDb {
                 salt: row.get(0)?,
                 wrapped_dek: row.get(1)?,
                 duress_hash: row.get(2)?,
-                kdf_memory_kib: row.get::<_, u32>(3)?,
-                kdf_iterations: row.get::<_, u32>(4)?,
-                kdf_parallelism: row.get::<_, u32>(5)?,
+                no_lock: row.get::<_, i32>(3)? != 0,
+                kdf_memory_kib: row.get::<_, u32>(4)?,
+                kdf_iterations: row.get::<_, u32>(5)?,
+                kdf_parallelism: row.get::<_, u32>(6)?,
             })
         });
         match result {
@@ -293,15 +341,16 @@ impl BootstrapDb {
         let tx = self.conn.unchecked_transaction()?;
         let n = tx.execute(
             "INSERT INTO auth_params
-                (id, salt, wrapped_dek, duress_hash,
+                (id, salt, wrapped_dek, duress_hash, no_lock,
                  kdf_memory_kib, kdf_iterations, kdf_parallelism)
-             SELECT 1, salt, wrapped_dek, duress_hash,
+             SELECT 1, salt, wrapped_dek, duress_hash, no_lock,
                     kdf_memory_kib, kdf_iterations, kdf_parallelism
              FROM pending_auth WHERE id = 1
              ON CONFLICT(id) DO UPDATE SET
                 salt = excluded.salt,
                 wrapped_dek = excluded.wrapped_dek,
                 duress_hash = excluded.duress_hash,
+                no_lock = excluded.no_lock,
                 kdf_memory_kib = excluded.kdf_memory_kib,
                 kdf_iterations = excluded.kdf_iterations,
                 kdf_parallelism = excluded.kdf_parallelism",

@@ -30,6 +30,8 @@ mod local_models;
 mod memory;
 mod onboarding;
 mod onboarding_mandatory;
+mod onboarding_no_lock;
+mod retry_image_gate;
 mod perf_streaming_e2e;
 mod persistence;
 mod persistence_encrypted;

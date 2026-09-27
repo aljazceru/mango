@@ -181,6 +181,22 @@ struct PinSetupScreen: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 32)
             .disabled(pin.isEmpty || pinConfirm.isEmpty)
+
+            if !appState.enrollmentResumePending {
+                Button("Continue without a PIN") {
+                    clearSubmissionErrors()
+                    appManager.dispatch(.setupNoLock)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+
+                Text("Without a PIN the app opens directly; your data is protected by your device unlock only, and there is no duress wipe. You can add a PIN later in Settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 32)
+            }
         }
     }
 

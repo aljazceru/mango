@@ -36,6 +36,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -58,6 +59,9 @@ fun SettingsSecurityScreen(
     var newPin by remember { mutableStateOf("") }
     var confirmNewPin by remember { mutableStateOf("") }
     var pinMessage by remember { mutableStateOf<String?>(null) }
+    var enableLockPin by remember { mutableStateOf("") }
+    var enableLockConfirm by remember { mutableStateOf("") }
+    var enableLockBiometric by remember { mutableStateOf(false) }
     var lockExpanded by remember { mutableStateOf(false) }
     var retentionExpanded by remember { mutableStateOf(false) }
     var retentionDaysText by remember { mutableStateOf("") }
@@ -137,6 +141,77 @@ fun SettingsSecurityScreen(
                 Spacer(Modifier.height(8.dp))
                 SettingsSectionLabel("Security")
                 Card(modifier = Modifier.fillMaxWidth()) {
+                    if (appState.noLockMode) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("App lock", fontWeight = FontWeight.Medium)
+                            Text(
+                                "No PIN is set. The app opens directly and your data is " +
+                                    "protected by your device unlock only.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            OutlinedTextField(
+                                value = enableLockPin,
+                                onValueChange = { enableLockPin = it },
+                                label = { Text("New PIN (min 4 characters)") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            OutlinedTextField(
+                                value = enableLockConfirm,
+                                onValueChange = { enableLockConfirm = it },
+                                label = { Text("Confirm PIN") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            if (appState.biometricAvailable) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text("Enable biometric unlock")
+                                    Switch(
+                                        checked = enableLockBiometric,
+                                        onCheckedChange = { enableLockBiometric = it },
+                                    )
+                                }
+                            }
+                            pinMessage?.let { note ->
+                                Text(
+                                    note,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                            Button(
+                                onClick = {
+                                    val nw = enableLockPin.trim()
+                                    when {
+                                        nw.length < 4 -> pinMessage = "PIN must be at least 4 characters."
+                                        nw != enableLockConfirm.trim() -> pinMessage = "PIN confirmation does not match."
+                                        else -> {
+                                            pinMessage = null
+                                            onDispatch(
+                                                AppAction.EnablePinLock(
+                                                    pin = nw,
+                                                    duressPin = null,
+                                                    enableBiometric = enableLockBiometric,
+                                                )
+                                            )
+                                            enableLockPin = ""
+                                            enableLockConfirm = ""
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Enable app lock")
+                            }
+                        }
+                    } else {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Lock timeout", fontWeight = FontWeight.Medium)
                         Text(
@@ -342,6 +417,8 @@ fun SettingsSecurityScreen(
                             }
                         }
                     }
+                    }
+
 
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 

@@ -1781,6 +1781,12 @@ public struct AppState: Equatable, Hashable {
      * Cleared once active auth is committed.
      */
     public var enrollmentResumePending: Bool
+    /**
+     * No-lock mode: enrollment completed without a PIN. The DEK is cached in
+     * the platform keychain and cold starts bypass the lock screen. UIs hide
+     * PIN/duress/timeout controls and offer "enable app lock" instead.
+     */
+    public var noLockMode: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1977,7 +1983,12 @@ public struct AppState: Equatable, Hashable {
          * that the user has to re-enter the PIN they previously chose (resuming
          * enrollment) instead of presenting a fresh new-credential form.
          * Cleared once active auth is committed.
-         */enrollmentResumePending: Bool) {
+         */enrollmentResumePending: Bool, 
+        /**
+         * No-lock mode: enrollment completed without a PIN. The DEK is cached in
+         * the platform keychain and cold starts bypass the lock screen. UIs hide
+         * PIN/duress/timeout controls and offer "enable app lock" instead.
+         */noLockMode: Bool) {
         self.rev = rev
         self.router = router
         self.busyState = busyState
@@ -2031,6 +2042,7 @@ public struct AppState: Equatable, Hashable {
         self.lastTurnRouting = lastTurnRouting
         self.trustedProviders = trustedProviders
         self.enrollmentResumePending = enrollmentResumePending
+        self.noLockMode = noLockMode
     }
 
     
@@ -2101,7 +2113,8 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 hybridProfiles: FfiConverterSequenceTypeHybridProfile.read(from: &buf), 
                 lastTurnRouting: FfiConverterOptionTypeTurnRoutingSummary.read(from: &buf), 
                 trustedProviders: FfiConverterSequenceTypeTrustedProvider.read(from: &buf), 
-                enrollmentResumePending: FfiConverterBool.read(from: &buf)
+                enrollmentResumePending: FfiConverterBool.read(from: &buf), 
+                noLockMode: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -2159,6 +2172,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterOptionTypeTurnRoutingSummary.write(value.lastTurnRouting, into: &buf)
         FfiConverterSequenceTypeTrustedProvider.write(value.trustedProviders, into: &buf)
         FfiConverterBool.write(value.enrollmentResumePending, into: &buf)
+        FfiConverterBool.write(value.noLockMode, into: &buf)
     }
 }
 
@@ -5463,6 +5477,20 @@ public enum AppAction: Equatable, Hashable {
     case setupPin(pin: String, duressPin: String?, enableBiometric: Bool
     )
     /**
+     * Complete first-run enrollment WITHOUT a PIN (no-lock mode): the DEK is
+     * wrapped under a random secret held in the platform keychain and cold
+     * starts unlock automatically. No duress wipe in this mode (no PIN entry
+     * point); losing the OS keychain data equals forgetting a PIN (reinstall).
+     */
+    case setupNoLock
+    /**
+     * Enable a PIN lock from no-lock mode while unlocked: re-wraps the live
+     * DEK under the new PIN, clears the cold-launch bypass, and evicts the
+     * keychain DEK unless biometric login is being enabled.
+     */
+    case enablePinLock(pin: String, duressPin: String?, enableBiometric: Bool
+    )
+    /**
      * Update or clear the duress PIN while the app is unlocked.
      */
     case setDuressPin(pin: String?
@@ -5811,60 +5839,65 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 77: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
         )
         
-        case 78: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
+        case 78: return .setupNoLock
+        
+        case 79: return .enablePinLock(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
         )
         
-        case 79: return .changePin(currentPin: try FfiConverterString.read(from: &buf), newPin: try FfiConverterString.read(from: &buf)
+        case 80: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 80: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
+        case 81: return .changePin(currentPin: try FfiConverterString.read(from: &buf), newPin: try FfiConverterString.read(from: &buf)
         )
         
-        case 81: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
+        case 82: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
         )
         
-        case 82: return .lockApp
-        
-        case 83: return .attemptBiometricUnlock
-        
-        case 84: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 83: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
         )
         
-        case 85: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
+        case 84: return .lockApp
+        
+        case 85: return .attemptBiometricUnlock
+        
+        case 86: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 86: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
+        case 87: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
         )
         
-        case 87: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
+        case 88: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 88: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
+        case 89: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
         )
         
-        case 89: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
+        case 90: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
         )
         
-        case 90: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
+        case 91: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 91: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
+        case 92: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
         )
         
-        case 92: return .discoverContextvmTools
-        
-        case 93: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 93: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
         )
         
-        case 94: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
+        case 94: return .discoverContextvmTools
+        
+        case 95: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 95: return .retryContextvmDiscovery
-        
-        case 96: return .addTrustedProvider(pubkey: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        case 96: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 97: return .removeTrustedProvider(pubkey: try FfiConverterString.read(from: &buf)
+        case 97: return .retryContextvmDiscovery
+        
+        case 98: return .addTrustedProvider(pubkey: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 99: return .removeTrustedProvider(pubkey: try FfiConverterString.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -6258,47 +6291,58 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterBool.write(enableBiometric, into: &buf)
             
         
-        case let .setDuressPin(pin):
+        case .setupNoLock:
             writeInt(&buf, Int32(78))
+        
+        
+        case let .enablePinLock(pin,duressPin,enableBiometric):
+            writeInt(&buf, Int32(79))
+            FfiConverterString.write(pin, into: &buf)
+            FfiConverterOptionString.write(duressPin, into: &buf)
+            FfiConverterBool.write(enableBiometric, into: &buf)
+            
+        
+        case let .setDuressPin(pin):
+            writeInt(&buf, Int32(80))
             FfiConverterOptionString.write(pin, into: &buf)
             
         
         case let .changePin(currentPin,newPin):
-            writeInt(&buf, Int32(79))
+            writeInt(&buf, Int32(81))
             FfiConverterString.write(currentPin, into: &buf)
             FfiConverterString.write(newPin, into: &buf)
             
         
         case let .unlockWithDek(dekHex):
-            writeInt(&buf, Int32(80))
+            writeInt(&buf, Int32(82))
             FfiConverterString.write(dekHex, into: &buf)
             
         
         case let .unlockWithPin(pin):
-            writeInt(&buf, Int32(81))
+            writeInt(&buf, Int32(83))
             FfiConverterString.write(pin, into: &buf)
             
         
         case .lockApp:
-            writeInt(&buf, Int32(82))
+            writeInt(&buf, Int32(84))
         
         
         case .attemptBiometricUnlock:
-            writeInt(&buf, Int32(83))
+            writeInt(&buf, Int32(85))
         
         
         case let .setBiometricLoginEnabled(enabled):
-            writeInt(&buf, Int32(84))
+            writeInt(&buf, Int32(86))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setLockTimeout(seconds):
-            writeInt(&buf, Int32(85))
+            writeInt(&buf, Int32(87))
             FfiConverterInt64.write(seconds, into: &buf)
             
         
         case let .addDirectorySource(displayName,path,bookmarkData,treeUri,exclusionGlobs):
-            writeInt(&buf, Int32(86))
+            writeInt(&buf, Int32(88))
             FfiConverterString.write(displayName, into: &buf)
             FfiConverterOptionString.write(path, into: &buf)
             FfiConverterOptionData.write(bookmarkData, into: &buf)
@@ -6307,7 +6351,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .syncDirectoryFiles(sourceId,files,removedPaths,isFinalBatch):
-            writeInt(&buf, Int32(87))
+            writeInt(&buf, Int32(89))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceTypeDirectoryFileEntry.write(files, into: &buf)
             FfiConverterSequenceString.write(removedPaths, into: &buf)
@@ -6315,54 +6359,54 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .removeDirectorySource(sourceId):
-            writeInt(&buf, Int32(88))
+            writeInt(&buf, Int32(90))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .setDirectoryExclusions(sourceId,globs):
-            writeInt(&buf, Int32(89))
+            writeInt(&buf, Int32(91))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceString.write(globs, into: &buf)
             
         
         case let .triggerDirectorySync(sourceId):
-            writeInt(&buf, Int32(90))
+            writeInt(&buf, Int32(92))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .updateDirectorySourceBookmark(sourceId,bookmarkData):
-            writeInt(&buf, Int32(91))
+            writeInt(&buf, Int32(93))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterData.write(bookmarkData, into: &buf)
             
         
         case .discoverContextvmTools:
-            writeInt(&buf, Int32(92))
+            writeInt(&buf, Int32(94))
         
         
         case let .setContextvmToolEnabled(toolId,enabled):
-            writeInt(&buf, Int32(93))
+            writeInt(&buf, Int32(95))
             FfiConverterString.write(toolId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setAutoDiscoverTools(enabled):
-            writeInt(&buf, Int32(94))
+            writeInt(&buf, Int32(96))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case .retryContextvmDiscovery:
-            writeInt(&buf, Int32(95))
+            writeInt(&buf, Int32(97))
         
         
         case let .addTrustedProvider(pubkey,label):
-            writeInt(&buf, Int32(96))
+            writeInt(&buf, Int32(98))
             FfiConverterString.write(pubkey, into: &buf)
             FfiConverterOptionString.write(label, into: &buf)
             
         
         case let .removeTrustedProvider(pubkey):
-            writeInt(&buf, Int32(97))
+            writeInt(&buf, Int32(99))
             FfiConverterString.write(pubkey, into: &buf)
             
         }

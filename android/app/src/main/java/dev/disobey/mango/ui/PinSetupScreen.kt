@@ -35,8 +35,9 @@ import dev.disobey.mango.rust.AppState
 /**
  * First-time PIN setup screen (Phase 28, D-14, D-18).
  *
- * Shown after onboarding completes on first install. Encryption is always on — there is
- * no skip option (D-14). Steps:
+ * Shown after onboarding completes on first install. Encryption is always on.
+ * A "Continue without a PIN" opt-out enrolls no-lock mode (keychain-cached
+ * DEK, cold-launch bypass); a PIN can be added later from Settings.
  *   1. Set a PIN (min 4 chars) + confirmation field.
  *   2. Optional duress PIN that triggers an immediate silent data wipe (D-18).
  *   3. Optional biometric enrollment toggle if biometrics are available.
@@ -271,6 +272,20 @@ fun PinSetupScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(if (isResume) "Resume Setup" else "Set PIN and Continue")
+        }
+
+        if (!isResume) {
+            TextButton(onClick = { onDispatchAction(AppAction.SetupNoLock) }) {
+                Text("Continue without a PIN")
+            }
+            Text(
+                text = "Without a PIN the app opens directly; your data is " +
+                    "protected by your device unlock only, and there is no " +
+                    "duress wipe. You can add a PIN later in Settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
         }
 
         Spacer(modifier = Modifier.height(32.dp))

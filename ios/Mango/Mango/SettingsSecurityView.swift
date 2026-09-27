@@ -9,6 +9,9 @@ struct SettingsSecurityView: View {
     @State private var showDeleteChatsConfirmation = false
     @State private var showDeleteDataConfirmation = false
     @State private var retentionDaysText: String = ""
+    @State private var enableLockPin: String = ""
+    @State private var enableLockConfirm: String = ""
+    @State private var enableLockBiometric: Bool = false
 
     private let lockTimeoutOptions: [(String, Int64)] = [
         ("Immediately", 0),
@@ -23,9 +26,13 @@ struct SettingsSecurityView: View {
     var body: some View {
         NavigationStack {
             List {
-                lockSection
-                biometricSection
-                duressSection
+                if appState.noLockMode {
+                    appLockSection
+                } else {
+                    lockSection
+                    biometricSection
+                    duressSection
+                }
                 retentionSection
                 deleteChatsSection
                 deleteDataSection
@@ -78,6 +85,54 @@ struct SettingsSecurityView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// Shown in place of the lock-timeout/biometric/duress sections while the
+    /// app runs without a PIN (no-lock mode): offers re-enabling the PIN lock.
+    private var appLockSection: some View {
+        Section("App Lock") {
+            Text("No PIN is set. The app opens directly and your data is protected by your device unlock only.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            SecureField("New PIN (min 4 characters)", text: $enableLockPin)
+                .textFieldStyle(.roundedBorder)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+            SecureField("Confirm PIN", text: $enableLockConfirm)
+                .textFieldStyle(.roundedBorder)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+
+            if appState.biometricAvailable {
+                Toggle("Enable biometric unlock", isOn: $enableLockBiometric)
+            }
+
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(message.localizedCaseInsensitiveContains("must") || message.localizedCaseInsensitiveContains("does not match") || message.localizedCaseInsensitiveContains("failed") ? .red : .secondary)
+            }
+
+            Button("Enable App Lock") {
+                let trimmed = enableLockPin.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.count < 4 {
+                    message = "PIN must be at least 4 characters."
+                } else if trimmed != enableLockConfirm.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    message = "PIN confirmation does not match."
+                } else {
+                    message = nil
+                    appManager.dispatch(.enablePinLock(
+                        pin: trimmed,
+                        duressPin: nil,
+                        enableBiometric: enableLockBiometric
+                    ))
+                    enableLockPin = ""
+                    enableLockConfirm = ""
+                }
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 

@@ -385,6 +385,10 @@ enum App {
         setup_pin_input: String,
         setup_confirm_input: String,
         setup_duress_input: String,
+        // Settings "App lock" section (no-lock mode): new PIN form inputs
+        settings_applock_pin: String,
+        settings_applock_confirm: String,
+        settings_applock_biometric: bool,
         // IMG-07: decrypted image thumbnails keyed by message_id
         image_cache: HashMap<String, iced::widget::image::Handle>,
         // Phase 32 DIR-05: directory sources view local state
@@ -579,6 +583,13 @@ enum Message {
     PinSetupConfirmChanged(String),
     PinSetupDuressChanged(String),
     PinSetupSubmit,
+    // Fresh-setup opt-out: complete enrollment without a PIN (no-lock mode)
+    PinSetupContinueNoLock,
+    // Settings "App lock" form (no-lock mode): enable PIN lock inputs
+    SettingsAppLockPinChanged(String),
+    SettingsAppLockConfirmChanged(String),
+    SettingsAppLockBiometricToggled(bool),
+    SettingsAppLockSubmit,
     // IMG-07: thumbnail decrypted and ready for display
     ThumbnailLoaded {
         message_id: String,
@@ -667,6 +678,9 @@ impl App {
                     setup_pin_input: String::new(),
                     setup_confirm_input: String::new(),
                     setup_duress_input: String::new(),
+                    settings_applock_pin: String::new(),
+                    settings_applock_confirm: String::new(),
+                    settings_applock_biometric: false,
                     image_cache: HashMap::new(),
                     dir_editing_exclusions_for: None,
                     dir_exclusion_edit_text: String::new(),
@@ -788,6 +802,9 @@ impl App {
                 setup_pin_input,
                 setup_confirm_input,
                 setup_duress_input,
+                settings_applock_pin,
+                settings_applock_confirm,
+                settings_applock_biometric,
                 image_cache,
                 dir_editing_exclusions_for,
                 dir_exclusion_edit_text,
@@ -1699,6 +1716,38 @@ impl App {
                             *setup_duress_input = String::new();
                         }
                     }
+                    Message::PinSetupContinueNoLock => {
+                        manager.dispatch(AppAction::SetupNoLock);
+                        *setup_pin_input = String::new();
+                        *setup_confirm_input = String::new();
+                        *setup_duress_input = String::new();
+                    }
+
+                    // Settings "App lock" form (shown only in no-lock mode)
+                    Message::SettingsAppLockPinChanged(val) => {
+                        *settings_applock_pin = val;
+                    }
+                    Message::SettingsAppLockConfirmChanged(val) => {
+                        *settings_applock_confirm = val;
+                    }
+                    Message::SettingsAppLockBiometricToggled(on) => {
+                        *settings_applock_biometric = on;
+                    }
+                    Message::SettingsAppLockSubmit => {
+                        let pin = settings_applock_pin.clone();
+                        if pin.len() >= 4 && pin == *settings_applock_confirm {
+                            manager.dispatch(AppAction::EnablePinLock {
+                                pin,
+                                duress_pin: None,
+                                enable_biometric: *settings_applock_biometric,
+                            });
+                            // Clear PIN material from local state after dispatch (T-28-23)
+                            *settings_applock_pin = String::new();
+                            *settings_applock_confirm = String::new();
+                            *settings_applock_biometric = false;
+                        }
+                    }
+
 
                     // ── Phase 32 DIR-05: directory sources handlers ────────────
                     Message::OpenDirectorySources => {
@@ -1997,6 +2046,9 @@ impl App {
                 setup_pin_input,
                 setup_confirm_input,
                 setup_duress_input,
+                settings_applock_pin,
+                settings_applock_confirm,
+                settings_applock_biometric,
                 image_cache,
                 dir_editing_exclusions_for,
                 dir_exclusion_edit_text,
@@ -2050,6 +2102,9 @@ impl App {
                         settings_brave_api_key,
                         settings_brave_api_key_message.as_deref(),
                         *theme_override,
+                        settings_applock_pin,
+                        settings_applock_confirm,
+                        *settings_applock_biometric,
                     );
                 }
 

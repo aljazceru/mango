@@ -310,6 +310,7 @@ fn make_active_auth(pin: &str) -> (AuthParams, String, [u8; 32]) {
         salt: salt.to_vec(),
         wrapped_dek: wrapped,
         duress_hash: None,
+        no_lock: false,
         kdf_memory_kib: DEFAULT_MEMORY_KIB,
         kdf_iterations: DEFAULT_ITERATIONS,
         kdf_parallelism: DEFAULT_PARALLELISM,

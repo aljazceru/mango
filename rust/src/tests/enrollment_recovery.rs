@@ -65,6 +65,7 @@ fn setup_auth_params(pin: &str) -> (crate::crypto::bootstrap_db::AuthParams, Str
         salt: salt.to_vec(),
         wrapped_dek: wrapped,
         duress_hash: None,
+        no_lock: false,
         kdf_memory_kib: DEFAULT_MEMORY_KIB,
         kdf_iterations: DEFAULT_ITERATIONS,
         kdf_parallelism: DEFAULT_PARALLELISM,

@@ -3286,6 +3286,13 @@ data class AppState (
      * Cleared once active auth is committed.
      */
     var `enrollmentResumePending`: kotlin.Boolean
+    , 
+    /**
+     * No-lock mode: enrollment completed without a PIN. The DEK is cached in
+     * the platform keychain and cold starts bypass the lock screen. UIs hide
+     * PIN/duress/timeout controls and offer "enable app lock" instead.
+     */
+    var `noLockMode`: kotlin.Boolean
     
 ){
     
@@ -3355,6 +3362,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalTypeTurnRoutingSummary.read(buf),
             FfiConverterSequenceTypeTrustedProvider.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -3411,7 +3419,8 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeHybridProfile.allocationSize(value.`hybridProfiles`) +
             FfiConverterOptionalTypeTurnRoutingSummary.allocationSize(value.`lastTurnRouting`) +
             FfiConverterSequenceTypeTrustedProvider.allocationSize(value.`trustedProviders`) +
-            FfiConverterBoolean.allocationSize(value.`enrollmentResumePending`)
+            FfiConverterBoolean.allocationSize(value.`enrollmentResumePending`) +
+            FfiConverterBoolean.allocationSize(value.`noLockMode`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -3468,6 +3477,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalTypeTurnRoutingSummary.write(value.`lastTurnRouting`, buf)
             FfiConverterSequenceTypeTrustedProvider.write(value.`trustedProviders`, buf)
             FfiConverterBoolean.write(value.`enrollmentResumePending`, buf)
+            FfiConverterBoolean.write(value.`noLockMode`, buf)
     }
 }
 
@@ -6545,6 +6555,31 @@ sealed class AppAction {
     }
     
     /**
+     * Complete first-run enrollment WITHOUT a PIN (no-lock mode): the DEK is
+     * wrapped under a random secret held in the platform keychain and cold
+     * starts unlock automatically. No duress wipe in this mode (no PIN entry
+     * point); losing the OS keychain data equals forgetting a PIN (reinstall).
+     */
+    object SetupNoLock : AppAction()
+    
+    
+    /**
+     * Enable a PIN lock from no-lock mode while unlocked: re-wraps the live
+     * DEK under the new PIN, clears the cold-launch bypass, and evicts the
+     * keychain DEK unless biometric login is being enabled.
+     */
+    data class EnablePinLock(
+        val `pin`: kotlin.String, 
+        val `duressPin`: kotlin.String?, 
+        val `enableBiometric`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
      * Update or clear the duress PIN while the app is unlocked.
      */
     data class SetDuressPin(
@@ -7018,68 +7053,74 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterOptionalString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            78 -> AppAction.SetDuressPin(
+            78 -> AppAction.SetupNoLock
+            79 -> AppAction.EnablePinLock(
+                FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
-                )
-            79 -> AppAction.ChangePin(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            80 -> AppAction.UnlockWithDek(
-                FfiConverterString.read(buf),
-                )
-            81 -> AppAction.UnlockWithPin(
-                FfiConverterString.read(buf),
-                )
-            82 -> AppAction.LockApp
-            83 -> AppAction.AttemptBiometricUnlock
-            84 -> AppAction.SetBiometricLoginEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            85 -> AppAction.SetLockTimeout(
+            80 -> AppAction.SetDuressPin(
+                FfiConverterOptionalString.read(buf),
+                )
+            81 -> AppAction.ChangePin(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            82 -> AppAction.UnlockWithDek(
+                FfiConverterString.read(buf),
+                )
+            83 -> AppAction.UnlockWithPin(
+                FfiConverterString.read(buf),
+                )
+            84 -> AppAction.LockApp
+            85 -> AppAction.AttemptBiometricUnlock
+            86 -> AppAction.SetBiometricLoginEnabled(
+                FfiConverterBoolean.read(buf),
+                )
+            87 -> AppAction.SetLockTimeout(
                 FfiConverterLong.read(buf),
                 )
-            86 -> AppAction.AddDirectorySource(
+            88 -> AppAction.AddDirectorySource(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalByteArray.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            87 -> AppAction.SyncDirectoryFiles(
+            89 -> AppAction.SyncDirectoryFiles(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceTypeDirectoryFileEntry.read(buf),
                 FfiConverterSequenceString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            88 -> AppAction.RemoveDirectorySource(
+            90 -> AppAction.RemoveDirectorySource(
                 FfiConverterString.read(buf),
                 )
-            89 -> AppAction.SetDirectoryExclusions(
+            91 -> AppAction.SetDirectoryExclusions(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            90 -> AppAction.TriggerDirectorySync(
+            92 -> AppAction.TriggerDirectorySync(
                 FfiConverterString.read(buf),
                 )
-            91 -> AppAction.UpdateDirectorySourceBookmark(
+            93 -> AppAction.UpdateDirectorySourceBookmark(
                 FfiConverterString.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            92 -> AppAction.DiscoverContextvmTools
-            93 -> AppAction.SetContextvmToolEnabled(
+            94 -> AppAction.DiscoverContextvmTools
+            95 -> AppAction.SetContextvmToolEnabled(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            94 -> AppAction.SetAutoDiscoverTools(
+            96 -> AppAction.SetAutoDiscoverTools(
                 FfiConverterBoolean.read(buf),
                 )
-            95 -> AppAction.RetryContextvmDiscovery
-            96 -> AppAction.AddTrustedProvider(
+            97 -> AppAction.RetryContextvmDiscovery
+            98 -> AppAction.AddTrustedProvider(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            97 -> AppAction.RemoveTrustedProvider(
+            99 -> AppAction.RemoveTrustedProvider(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -7624,6 +7665,21 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterBoolean.allocationSize(value.`enableBiometric`)
             )
         }
+        is AppAction.SetupNoLock -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.EnablePinLock -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`pin`)
+                + FfiConverterOptionalString.allocationSize(value.`duressPin`)
+                + FfiConverterBoolean.allocationSize(value.`enableBiometric`)
+            )
+        }
         is AppAction.SetDuressPin -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -8159,47 +8215,58 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterBoolean.write(value.`enableBiometric`, buf)
                 Unit
             }
-            is AppAction.SetDuressPin -> {
+            is AppAction.SetupNoLock -> {
                 buf.putInt(78)
+                Unit
+            }
+            is AppAction.EnablePinLock -> {
+                buf.putInt(79)
+                FfiConverterString.write(value.`pin`, buf)
+                FfiConverterOptionalString.write(value.`duressPin`, buf)
+                FfiConverterBoolean.write(value.`enableBiometric`, buf)
+                Unit
+            }
+            is AppAction.SetDuressPin -> {
+                buf.putInt(80)
                 FfiConverterOptionalString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.ChangePin -> {
-                buf.putInt(79)
+                buf.putInt(81)
                 FfiConverterString.write(value.`currentPin`, buf)
                 FfiConverterString.write(value.`newPin`, buf)
                 Unit
             }
             is AppAction.UnlockWithDek -> {
-                buf.putInt(80)
+                buf.putInt(82)
                 FfiConverterString.write(value.`dekHex`, buf)
                 Unit
             }
             is AppAction.UnlockWithPin -> {
-                buf.putInt(81)
+                buf.putInt(83)
                 FfiConverterString.write(value.`pin`, buf)
                 Unit
             }
             is AppAction.LockApp -> {
-                buf.putInt(82)
+                buf.putInt(84)
                 Unit
             }
             is AppAction.AttemptBiometricUnlock -> {
-                buf.putInt(83)
+                buf.putInt(85)
                 Unit
             }
             is AppAction.SetBiometricLoginEnabled -> {
-                buf.putInt(84)
+                buf.putInt(86)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetLockTimeout -> {
-                buf.putInt(85)
+                buf.putInt(87)
                 FfiConverterLong.write(value.`seconds`, buf)
                 Unit
             }
             is AppAction.AddDirectorySource -> {
-                buf.putInt(86)
+                buf.putInt(88)
                 FfiConverterString.write(value.`displayName`, buf)
                 FfiConverterOptionalString.write(value.`path`, buf)
                 FfiConverterOptionalByteArray.write(value.`bookmarkData`, buf)
@@ -8208,7 +8275,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.SyncDirectoryFiles -> {
-                buf.putInt(87)
+                buf.putInt(89)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceTypeDirectoryFileEntry.write(value.`files`, buf)
                 FfiConverterSequenceString.write(value.`removedPaths`, buf)
@@ -8216,54 +8283,54 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.RemoveDirectorySource -> {
-                buf.putInt(88)
+                buf.putInt(90)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.SetDirectoryExclusions -> {
-                buf.putInt(89)
+                buf.putInt(91)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterSequenceString.write(value.`globs`, buf)
                 Unit
             }
             is AppAction.TriggerDirectorySync -> {
-                buf.putInt(90)
+                buf.putInt(92)
                 FfiConverterString.write(value.`sourceId`, buf)
                 Unit
             }
             is AppAction.UpdateDirectorySourceBookmark -> {
-                buf.putInt(91)
+                buf.putInt(93)
                 FfiConverterString.write(value.`sourceId`, buf)
                 FfiConverterByteArray.write(value.`bookmarkData`, buf)
                 Unit
             }
             is AppAction.DiscoverContextvmTools -> {
-                buf.putInt(92)
+                buf.putInt(94)
                 Unit
             }
             is AppAction.SetContextvmToolEnabled -> {
-                buf.putInt(93)
+                buf.putInt(95)
                 FfiConverterString.write(value.`toolId`, buf)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.SetAutoDiscoverTools -> {
-                buf.putInt(94)
+                buf.putInt(96)
                 FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
             is AppAction.RetryContextvmDiscovery -> {
-                buf.putInt(95)
+                buf.putInt(97)
                 Unit
             }
             is AppAction.AddTrustedProvider -> {
-                buf.putInt(96)
+                buf.putInt(98)
                 FfiConverterString.write(value.`pubkey`, buf)
                 FfiConverterOptionalString.write(value.`label`, buf)
                 Unit
             }
             is AppAction.RemoveTrustedProvider -> {
-                buf.putInt(97)
+                buf.putInt(99)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }

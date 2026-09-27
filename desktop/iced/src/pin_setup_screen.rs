@@ -1,7 +1,8 @@
 /// Desktop PIN setup screen (Phase 28, first-time auth setup, D-14).
 ///
 /// Shown on first launch after onboarding wizard completes, and after a duress wipe.
-/// No skip option — encryption is mandatory (D-14).
+/// Fresh setup offers a "Continue without a PIN" opt-out (no-lock mode); an
+/// interrupted enrollment (`is_resume`) must be completed with the original PIN.
 /// No biometric toggle on desktop (D-23).
 ///
 /// Steps:
@@ -256,6 +257,35 @@ pub fn view<'a>(
         content_col = content_col.push(duress_col);
     }
     content_col = content_col.push(action_btn);
+
+    // No-lock opt-out is only available on fresh setup — an interrupted
+    // enrollment already staged pending auth and must be completed with a PIN.
+    if !is_resume {
+        let skip_btn = button(
+            text("Continue without a PIN")
+                .size(13)
+                .color(vc.text_dim)
+                .align_x(Alignment::Center),
+        )
+        .on_press(Message::PinSetupContinueNoLock)
+        .width(Length::Fill)
+        .padding(Padding::from([8u16, 0]))
+        .style(move |_, _| button::Style {
+            background: Some(Background::Color(vc.ghost_overlay)),
+            border: Border {
+                radius: 8.0.into(),
+                color: vc.border,
+                width: 1.0,
+            },
+            ..Default::default()
+        });
+        content_col = content_col.push(skip_btn);
+        content_col = content_col.push(
+            text("Your data stays on this device but won't be protected if someone else uses it while it's unlocked.")
+                .size(11)
+                .color(vc.muted),
+        );
+    }
 
     if let Some(err) = inline_err {
         // Use owned String so the widget doesn't borrow from a local variable.

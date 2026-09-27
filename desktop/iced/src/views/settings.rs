@@ -605,6 +605,9 @@ pub fn view<'a>(
     brave_api_key_input: &'a str,
     brave_api_key_message: Option<&'a str>,
     theme_override: crate::ThemeOverride,
+    applock_pin_input: &'a str,
+    applock_confirm_input: &'a str,
+    applock_biometric: bool,
 ) -> Element<'a, Message> {
     let vc = crate::theme::view_colors(is_dark);
 
@@ -1110,62 +1113,164 @@ pub fn view<'a>(
         .padding(Padding::from([0u16, 16]))
         .width(Length::Fill);
 
-    // ── Security Section (Lock Timeout) ──────────────────────────────────────
-    let current_label = lock_timeout_label(state.lock_timeout_seconds);
+    // ── Security Section ──────────────────────────────────────────────────────
+    // No-lock mode: the lock-timeout picker is meaningless — replace the
+    // PIN-based controls with an "App lock" form that enables PIN lock via
+    // AppAction::EnablePinLock.
+    let security_body = if state.no_lock_mode {
+        let pin_field = text_input("New PIN (min 4 characters)", applock_pin_input)
+            .secure(true)
+            .on_input(Message::SettingsAppLockPinChanged)
+            .on_submit(Message::SettingsAppLockSubmit)
+            .size(13)
+            .padding(Padding::from([7u16, 10]));
+        let confirm_field = text_input("Confirm PIN", applock_confirm_input)
+            .secure(true)
+            .on_input(Message::SettingsAppLockConfirmChanged)
+            .on_submit(Message::SettingsAppLockSubmit)
+            .size(13)
+            .padding(Padding::from([7u16, 10]));
 
-    let lock_timeout_picker = pick_list(
-        LOCK_TIMEOUT_OPTIONS
-            .iter()
-            .map(|(label, _)| *label)
-            .collect::<Vec<_>>(),
-        Some(current_label),
-        |selected: &str| {
-            let seconds = LOCK_TIMEOUT_OPTIONS
-                .iter()
-                .find(|(label, _)| *label == selected)
-                .map(|(_, s)| *s)
-                .unwrap_or(300);
-            Message::DispatchAction(AppAction::SetLockTimeout { seconds })
-        },
-    )
-    .text_size(13)
-    .padding(Padding::from([7u16, 10]));
-
-    let never_warning: Element<'_, Message> = if state.lock_timeout_seconds == -1 {
-        text("Auto-lock disabled. The app will open without your PIN — it is protected only by your device unlock. If your device is unlocked, anyone with access can open the app.")
-            .size(11)
-            .color(vc.muted)
-            .into()
-    } else {
-        iced::widget::Space::new().height(0).into()
-    };
-
-    let security_body = container(
-        column![
+        let biometric_row: Element<'_, Message> = if state.biometric_available {
             row![
-                text("Lock Timeout").size(13).color(vc.text),
+                text("Unlock with biometrics").size(13).color(vc.text),
                 iced::widget::Space::new().width(Length::Fill),
-                lock_timeout_picker,
+                toggler(applock_biometric)
+                    .on_toggle(Message::SettingsAppLockBiometricToggled)
+                    .size(20),
             ]
-            .align_y(Alignment::Center),
-            text("How long the app can be in the background before it locks.")
+            .align_y(Alignment::Center)
+            .spacing(8)
+            .into()
+        } else {
+            iced::widget::Space::new().height(0).into()
+        };
+
+        let can_enable =
+            applock_pin_input.len() >= 4 && applock_pin_input == applock_confirm_input;
+        let mismatch: Element<'_, Message> = if !applock_confirm_input.is_empty()
+            && applock_pin_input != applock_confirm_input
+        {
+            text("PINs do not match.")
                 .size(11)
-                .color(vc.muted),
-            never_warning,
-        ]
-        .spacing(6),
-    )
-    .padding(Padding::from([10u16, 16]))
-    .width(Length::Fill)
-    .style(move |_| container::Style {
-        background: Some(Background::Color(vc.card)),
-        border: Border {
-            radius: 8.0.into(),
-            color: vc.border,
-            width: 1.0,
-        },
-        ..Default::default()
-    });
+                .color(vc.destructive)
+                .into()
+        } else {
+            iced::widget::Space::new().height(0).into()
+        };
+
+        let enable_btn = if can_enable {
+            button(text("Enable app lock").size(13).color(vc.bg))
+                .on_press(Message::SettingsAppLockSubmit)
+                .padding(Padding::from([7u16, 14]))
+                .style(move |_, _| button::Style {
+                    background: Some(Background::Color(vc.accent)),
+                    border: Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+        } else {
+            button(text("Enable app lock").size(13).color(vc.muted))
+                .padding(Padding::from([7u16, 14]))
+                .style(move |_, _| button::Style {
+                    background: Some(Background::Color(vc.ghost_overlay)),
+                    border: Border {
+                        radius: 6.0.into(),
+                        color: vc.border,
+                        width: 1.0,
+                    },
+                    ..Default::default()
+                })
+        };
+
+        container(
+            column![
+                text("App lock").size(13).color(vc.text),
+                text("The app currently opens without a PIN. Set a PIN to lock the app and require it on open.")
+                    .size(11)
+                    .color(vc.muted),
+                pin_field,
+                confirm_field,
+                mismatch,
+                biometric_row,
+                row![
+                    iced::widget::Space::new().width(Length::Fill),
+                    enable_btn,
+                ]
+                .align_y(Alignment::Center),
+            ]
+            .spacing(6),
+        )
+        .padding(Padding::from([10u16, 16]))
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(vc.card)),
+            border: Border {
+                radius: 8.0.into(),
+                color: vc.border,
+                width: 1.0,
+            },
+            ..Default::default()
+        })
+    } else {
+        let current_label = lock_timeout_label(state.lock_timeout_seconds);
+
+        let lock_timeout_picker = pick_list(
+            LOCK_TIMEOUT_OPTIONS
+                .iter()
+                .map(|(label, _)| *label)
+                .collect::<Vec<_>>(),
+            Some(current_label),
+            |selected: &str| {
+                let seconds = LOCK_TIMEOUT_OPTIONS
+                    .iter()
+                    .find(|(label, _)| *label == selected)
+                    .map(|(_, s)| *s)
+                    .unwrap_or(300);
+                Message::DispatchAction(AppAction::SetLockTimeout { seconds })
+            },
+        )
+        .text_size(13)
+        .padding(Padding::from([7u16, 10]));
+
+        let never_warning: Element<'_, Message> = if state.lock_timeout_seconds == -1 {
+            text("Auto-lock disabled. The app will open without your PIN — it is protected only by your device unlock. If your device is unlocked, anyone with access can open the app.")
+                .size(11)
+                .color(vc.muted)
+                .into()
+        } else {
+            iced::widget::Space::new().height(0).into()
+        };
+
+        container(
+            column![
+                row![
+                    text("Lock Timeout").size(13).color(vc.text),
+                    iced::widget::Space::new().width(Length::Fill),
+                    lock_timeout_picker,
+                ]
+                .align_y(Alignment::Center),
+                text("How long the app can be in the background before it locks.")
+                    .size(11)
+                    .color(vc.muted),
+                never_warning,
+            ]
+            .spacing(6),
+        )
+        .padding(Padding::from([10u16, 16]))
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(vc.card)),
+            border: Border {
+                radius: 8.0.into(),
+                color: vc.border,
+                width: 1.0,
+            },
+            ..Default::default()
+        })
+    };
 
     let security_row = container(security_body)
         .padding(Padding::from([0u16, 16]))

@@ -64,6 +64,13 @@ pub fn is_vision_model(model_id: &str) -> bool {
         return true;
     }
 
+    // Kimi K3: natively multimodal — verified live on the PPQ private E2EE
+    // transport (2026-09-27) and in the PPQ/Tinfoil catalogs. K3 only: the
+    // K2 family is mixed text/vision.
+    if id.contains("kimi-k3") {
+        return true;
+    }
+
     // OpenAI multimodal: gpt-4o / gpt-4-turbo / gpt-4.1 / gpt-4.5 / gpt-4v.
     // Must NOT match gpt-3.5 or gpt-oss-120b (text-only Tinfoil model).
     if id.contains("gpt-4o")
@@ -115,7 +122,13 @@ mod tests {
             is_vision_model("private/qwen3-vl-30b"),
             "private/qwen3-vl-30b should be vision"
         );
-        assert!(is_vision_model("qwen2-vl-7b"), "qwen2-vl should be vision");
+        // Kimi K3 (verified live on PPQ private E2EE transport 2026-09-27;
+        // PPQ + Tinfoil catalogs both mark it multimodal).
+        assert!(is_vision_model("kimi-k3"), "kimi-k3 should be vision");
+        assert!(
+            is_vision_model("private/kimi-k3"),
+            "private/kimi-k3 (PPQ) should be vision"
+        );
 
         // Llama vision variants (NOT plain llama3-3-70b).
         assert!(
@@ -160,7 +173,12 @@ mod tests {
             !is_vision_model("deepseek-r1-0528"),
             "deepseek-r1-0528 is text-only"
         );
-        assert!(!is_vision_model("kimi-k2-5"), "kimi-k2-5 is text-only");
+        // K2 family is mixed (some variants text-only) — K3-only match by design.
+        assert!(!is_vision_model("kimi-k2"), "kimi-k2 is text-only");
+        assert!(
+            !is_vision_model("kimi-k2-thinking"),
+            "kimi-k2-thinking is text-only"
+        );
 
         // Seeded PPQ.AI private models that are text-only.
         assert!(

@@ -552,6 +552,10 @@ pub struct AppState {
     /// enrollment) instead of presenting a fresh new-credential form.
     /// Cleared once active auth is committed.
     pub enrollment_resume_pending: bool,
+    /// No-lock mode: enrollment completed without a PIN. The DEK is cached in
+    /// the platform keychain and cold starts bypass the lock screen. UIs hide
+    /// PIN/duress/timeout controls and offer "enable app lock" instead.
+    pub no_lock_mode: bool,
 }
 
 impl Default for AppState {
@@ -612,6 +616,7 @@ impl Default for AppState {
             last_turn_routing: None,
             trusted_providers: vec![],
             enrollment_resume_pending: false,
+            no_lock_mode: false,
             contextvm_discovery_state: ContextvmDiscoveryState::Idle,
         }
     }
@@ -1065,6 +1070,19 @@ pub enum AppAction {
     /// `duress_pin` is optional; if Some, its hash is stored in the bootstrap DB (D-18).
     /// `enable_biometric` determines whether biometric unlock is offered after setup (D-14).
     SetupPin {
+        pin: String,
+        duress_pin: Option<String>,
+        enable_biometric: bool,
+    },
+    /// Complete first-run enrollment WITHOUT a PIN (no-lock mode): the DEK is
+    /// wrapped under a random secret held in the platform keychain and cold
+    /// starts unlock automatically. No duress wipe in this mode (no PIN entry
+    /// point); losing the OS keychain data equals forgetting a PIN (reinstall).
+    SetupNoLock,
+    /// Enable a PIN lock from no-lock mode while unlocked: re-wraps the live
+    /// DEK under the new PIN, clears the cold-launch bypass, and evicts the
+    /// keychain DEK unless biometric login is being enabled.
+    EnablePinLock {
         pin: String,
         duress_pin: Option<String>,
         enable_biometric: bool,
@@ -1825,6 +1843,10 @@ struct PendingAttestedSend {
     pending_image_attachment: Option<PendingImageAttachment>,
     app_pending_attachment: Option<AttachmentInfo>,
     attestation_attempts: u32,
+    /// Retry origin: rows that were restored while this send was deferred and
+    /// must be deleted again once the deferred send is accepted, so a retried
+    /// exchange is replaced instead of duplicated.
+    replaced_message_ids: Vec<String>,
 }
 
 const MAX_PENDING_ATTESTATION_TRANSIENT_RETRIES: u32 = 2;
@@ -4036,6 +4058,38 @@ fn action_safe_while_locked(action: &AppAction) -> bool {
     )
 }
 
+/// Keychain slot for the raw DEK (biometric login, "Never" auto-lock,
+/// no-lock mode). Service "mango".
+pub const KEYCHAIN_DEK_KEY: &str = "dek";
+/// Keychain slot holding the random no-lock wrap secret. Losing it (and the
+/// DEK slot) is equivalent to forgetting a PIN: data is unrecoverable.
+pub const KEYCHAIN_NO_LOCK_SECRET_KEY: &str = "nolock-secret";
+
+/// Recover the DEK hex for a no-lock enrollment from the keychain-held wrap
+/// secret and the given (pending or active) auth params. Returns None when
+/// the secret is missing or does not unwrap the params.
+fn no_lock_dek_from_keychain_secret(
+    keychain: &dyn KeychainProvider,
+    params: &crypto::bootstrap_db::AuthParams,
+) -> Option<zeroize::Zeroizing<String>> {
+    let secret_hex = keychain.load("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string())?;
+    let secret = hex::decode(secret_hex).ok()?;
+    let secret_arr = <[u8; 32]>::try_from(secret.as_slice()).ok()?;
+    let salt: [u8; 32] = params.salt.as_slice().try_into().ok()?;
+    let kek = crypto::key_derivation::derive_kek(
+        &secret_arr,
+        &salt,
+        params.kdf_memory_kib,
+        params.kdf_iterations,
+        params.kdf_parallelism,
+    )
+    .ok()?;
+    let dek = crypto::key_derivation::unwrap_dek(&kek, &params.wrapped_dek).ok()?;
+    Some(zeroize::Zeroizing::new(
+        dek.iter().map(|b| format!("{:02x}", b)).collect(),
+    ))
+}
+
 /// Returns true when a first-time (or legacy) enrollment is still pending and
 /// the app must not allow navigation/chat actions until the PIN is committed.
 ///
@@ -4527,9 +4581,68 @@ fn handle_pending_attested_send_after_attestation(
     if status_is_verified || backend_attestation_verified(actor_state, backend_id) {
         if let Some(pending) = actor_state.pending_attested_send.take() {
             restore_pending_attested_send_snapshot(actor_state, pending.clone());
+            // Retry-origin sends replace their restored stand-in rows rather
+            // than duplicating the exchange — but only once the resumed send
+            // is actually accepted (e.g. the model may have been switched to
+            // text-only while attestation was pending, rejecting the turn).
+            let snapshot_rows: Vec<persistence::MessageRow> = {
+                let conn = actor_state.db.as_ref().map(|db| db.conn());
+                pending
+                    .replaced_message_ids
+                    .iter()
+                    .filter_map(|id| {
+                        conn.and_then(|c| {
+                            persistence::queries::get_message_by_id(c, id)
+                                .ok()
+                                .flatten()
+                        })
+                    })
+                    .collect()
+            };
+            for id in &pending.replaced_message_ids {
+                if let Some(db) = actor_state.db.as_ref() {
+                    let _ = persistence::queries::delete_message(db.conn(), id);
+                }
+                actor_state
+                    .app_state
+                    .messages
+                    .retain(|m| &m.id != id);
+            }
+            let pre_send_ids: std::collections::HashSet<String> = actor_state
+                .app_state
+                .messages
+                .iter()
+                .map(|m| m.id.clone())
+                .collect();
+            let conv_id_for_restore = actor_state
+                .app_state
+                .current_conversation_id
+                .clone();
             actor_state.app_state.busy_state = BusyState::Idle;
             actor_state.app_state.last_error = None;
             do_send_message(actor_state, pending.text, pending.force_role, core_tx);
+            let accepted = actor_state
+                .app_state
+                .messages
+                .iter()
+                .any(|m| m.role == "user" && !pre_send_ids.contains(&m.id));
+            if !accepted && !snapshot_rows.is_empty() {
+                if let Some(db) = actor_state.db.as_ref() {
+                    for row in &snapshot_rows {
+                        let _ = persistence::queries::insert_message(db.conn(), row);
+                    }
+                }
+                // A second deferral (profile switched to another unattested
+                // backend) must inherit the replacement ids so its eventual
+                // success still replaces — not duplicates — the exchange.
+                if let Some(pending) = actor_state.pending_attested_send.as_mut() {
+                    pending.replaced_message_ids =
+                        snapshot_rows.iter().map(|r| r.id.clone()).collect();
+                }
+                if let Some(conv_id) = conv_id_for_restore.as_deref() {
+                    refresh_messages(actor_state, conv_id);
+                }
+            }
         }
         return;
     }
@@ -5787,6 +5900,7 @@ fn do_send_message(
                 pending_image_attachment: actor_state.pending_image_attachment.clone(),
                 app_pending_attachment: actor_state.app_state.pending_attachment.clone(),
                 attestation_attempts: 0,
+                replaced_message_ids: Vec::new(),
             });
             actor_state.app_state.busy_state = BusyState::Loading {
                 message: "Verifying remote attestation...".to_string(),
@@ -5803,6 +5917,16 @@ fn do_send_message(
     if is_local_on_device_backend(&backend) && has_image_attachment {
         actor_state.app_state.last_error =
             Some("Local on-device models do not support image attachments yet.".into());
+        return;
+    }
+
+    // Send-time vision gate: the attach-time gate is bypassable (model switch
+    // after attach, retry rehydration, empty model_id falling back to
+    // models[0]). Keep the pending image so the user can switch models and
+    // resend.
+    if has_image_attachment && !model.is_empty() && !llm::is_vision_model(&model) {
+        actor_state.app_state.last_error =
+            Some(format!("Model \"{}\" does not support image input", model));
         return;
     }
 
@@ -9049,75 +9173,182 @@ impl FfiApp {
             //     auth, and start the enrollment over.
             //   - no pending_auth → normal startup below.
             let mut enrollment_resume = false;
+            // Crash-window resume for no-lock enrollment: pending auth exists and
+            // the keychain still holds the random wrap secret — finish the
+            // migration/promotion automatically (no user input exists to ask for).
+            let mut no_lock_resume_dek_hex: Option<zeroize::Zeroizing<String>> = None;
             if db_path != ":memory:" && bootstrap.has_pending_auth() {
-                let main_encrypted = std::path::Path::new(&db_path).exists()
-                    && persistence::Database::is_encrypted(&db_path);
-                if main_encrypted {
-                    enrollment_resume = true;
-                } else {
-                    match persistence::Database::recover_plaintext_after_failed_enrollment(&db_path)
-                    {
-                        Ok(persistence::EnrollmentRecovery::PlaintextReady) => {
-                            // Plaintext is restored and verified. Clear the stale pending
-                            // auth and continue as a normal unauthenticated install.
-                            if let Err(e) = bootstrap.clear_pending_auth() {
-                                log::warn!("[auth] startup: clear stale pending_auth failed: {e}");
+                let pending_is_no_lock = bootstrap
+                    .read_pending_auth()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|params| params.no_lock);
+                if pending_is_no_lock {
+                    if keychain.load("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string()).is_some() {
+                        let resumed = (|| -> Option<zeroize::Zeroizing<String>> {
+                            let pending = bootstrap.read_pending_auth().ok().flatten()?;
+                            no_lock_dek_from_keychain_secret(keychain.as_ref(), &pending)
+                        })();
+                        match resumed {
+                            Some(dek_hex) => {
+                                let promoted = if persistence::Database::is_encrypted(&db_path) {
+                                    bootstrap.promote_pending_auth().is_ok()
+                                } else {
+                                    // A crash mid-migration may have left only the
+                                    // plaintext backup or an encrypted candidate; use the
+                                    // same recovery contract as SetupPin resume.
+                                    let recovered = persistence::Database::recover_plaintext_after_failed_enrollment(&db_path);
+                                    let main_ready = match recovered {
+                                        Ok(persistence::EnrollmentRecovery::PlaintextReady)
+                                        | Ok(persistence::EnrollmentRecovery::EncryptedReady) => true,
+                                        Ok(persistence::EnrollmentRecovery::EncryptedCandidate) => {
+                                            persistence::Database::promote_encrypted_candidate(&db_path, &dek_hex)
+                                                .map_err(|e| {
+                                                    log::error!("[auth] startup: no-lock resume candidate promote failed: {e}");
+                                                    e
+                                                })
+                                                .unwrap_or(false)
+                                                && persistence::Database::is_encrypted(&db_path)
+                                        }
+                                        Ok(persistence::EnrollmentRecovery::NothingToRecover) | Err(_) => false,
+                                    };
+                                    if !main_ready {
+                                        log::error!("[auth] startup: no-lock resume found no recoverable main DB");
+                                        false
+                                    } else if persistence::Database::is_encrypted(&db_path) {
+                                        bootstrap.promote_pending_auth().is_ok()
+                                    } else {
+                                        match persistence::Database::migrate_to_encrypted(&db_path, &dek_hex) {
+                                            Ok(()) => bootstrap.promote_pending_auth().is_ok(),
+                                            Err(e) => {
+                                                log::error!("[auth] startup: no-lock resume migrate failed: {e}");
+                                                false
+                                            }
+                                        }
+                                    }
+                                };
+                                if promoted {
+                                    // The DEK slot may have been lost while the secret
+                                    // survived — restore it now so the NEXT cold start can
+                                    // bypass (promotion deletes pending auth, after which
+                                    // the secret alone can no longer recover the DEK).
+                                    if keychain
+                                        .load("mango".to_string(), KEYCHAIN_DEK_KEY.to_string())
+                                        .is_none()
+                                    {
+                                        let stored = keychain.store(
+                                            "mango".to_string(),
+                                            KEYCHAIN_DEK_KEY.to_string(),
+                                            (*dek_hex).clone(),
+                                        );
+                                        log::info!(
+                                            "[auth] startup: no-lock resume re-stored keychain DEK slot: {stored}"
+                                        );
+                                    }
+                                    no_lock_resume_dek_hex = Some(dek_hex);
+                                    log::info!("[auth] startup: no-lock enrollment resumed");
+                                } else {
+                                    enrollment_resume = true;
+                                }
+                            }
+                            None => {
+                                log::error!(
+                                    "[auth] startup: no-lock pending auth but no usable keychain secret; blocking"
+                                );
+                                enrollment_resume = true;
                             }
                         }
-                        Ok(persistence::EnrollmentRecovery::NothingToRecover) => {
-                            // Pending auth is only written by SetupPin after a real
-                            // main DB exists, so finding no database files at all
-                            // means the data is gone. Keep the pending auth (it is
-                            // the only record of the key material the user chose)
-                            // and block at PinSetup — do not create a blank
-                            // replacement database.
-                            log::error!(
-                                "[auth] startup: pending auth but no database files; blocking"
-                            );
-                            enrollment_resume = true;
-                        }
-                        Ok(persistence::EnrollmentRecovery::EncryptedReady)
-                        | Ok(persistence::EnrollmentRecovery::EncryptedCandidate) => {
-                            // An encrypted main or a surviving encrypted candidate
-                            // (.enc_tmp / .enc_replaced) is present. Resume enrollment
-                            // so the user can finish it with the previously entered PIN.
-                            enrollment_resume = true;
-                        }
-                        Err(e) => {
-                            log::error!("[auth] startup: enrollment recovery failed: {e}");
-                            // Recovery could not determine a safe state. Block all
-                            // navigation/chat actions and force the user back to PinSetup.
-                            // Do NOT open the main DB or clear pending auth.
-                            enrollment_resume = true;
+                    } else {
+                        log::error!(
+                            "[auth] startup: no-lock pending auth but keychain secret lost; blocking"
+                        );
+                        enrollment_resume = true;
+                    }
+                } else {
+                    let main_encrypted = std::path::Path::new(&db_path).exists()
+                        && persistence::Database::is_encrypted(&db_path);
+                    if main_encrypted {
+                        enrollment_resume = true;
+                    } else {
+                        match persistence::Database::recover_plaintext_after_failed_enrollment(
+                            &db_path,
+                        ) {
+                            Ok(persistence::EnrollmentRecovery::PlaintextReady) => {
+                                if let Err(e) = bootstrap.clear_pending_auth() {
+                                    log::warn!("[auth] startup: clear stale pending_auth failed: {e}");
+                                }
+                            }
+                            Ok(persistence::EnrollmentRecovery::NothingToRecover) => {
+                                log::error!(
+                                    "[auth] startup: pending auth but no database files; blocking"
+                                );
+                                enrollment_resume = true;
+                            }
+                            Ok(persistence::EnrollmentRecovery::EncryptedReady)
+                            | Ok(persistence::EnrollmentRecovery::EncryptedCandidate) => {
+                                enrollment_resume = true;
+                            }
+                            Err(e) => {
+                                log::error!("[auth] startup: enrollment recovery failed: {e}");
+                                enrollment_resume = true;
+                            }
                         }
                     }
                 }
             }
 
             let has_auth = bootstrap.has_auth_params();
+            let active_no_lock = bootstrap
+                .read_auth_params()
+                .ok()
+                .flatten()
+                .is_some_and(|params| params.no_lock);
 
             // Any keychain DEK cached without committed auth params is an orphaned
-            // leftover from an interrupted enrollment. Biometric DEK staging happens
-            // *after* active auth commits, so remove the orphan before deciding
-            // biometric_login_enabled and before any cold-launch bypass attempt.
-            if !has_auth {
+            // leftover from an interrupted enrollment. Pending auth still represents
+            // recoverable credentials — never delete alongside it.
+            if !has_auth && !bootstrap.has_pending_auth() {
                 keychain.delete("mango".to_string(), "dek".to_string());
+                keychain.delete("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string());
             }
 
-            // Quick 260421-bys: Case D bypass — if the user has set lock_timeout == Never,
-            // a DEK is cached in the keychain and cold_launch_bypass == 1 in the bootstrap DB.
-            // In that case we can open the encrypted DB immediately without a PIN prompt.
-            // The keychain item is OS-gated (device unlock required), which is the same
-            // protection level as biometric login with a PIN bypass.
-            let cold_launch_bypass =
-                has_auth && bootstrap.read_cold_launch_bypass().unwrap_or(false);
-            let cold_launch_dek_hex: Option<zeroize::Zeroizing<String>> = if cold_launch_bypass {
-                keychain
-                    .load("mango".to_string(), "dek".to_string())
-                    .map(zeroize::Zeroizing::new)
-            } else {
-                None
-            };
+            // Cold-launch bypass: lock_timeout == Never (PIN installs) or any
+            // no-lock install — both cache the raw DEK in the OS-gated keychain.
+            let cold_launch_bypass = has_auth
+                && (bootstrap.read_cold_launch_bypass().unwrap_or(false) || active_no_lock);
+            let cold_launch_dek_hex: Option<zeroize::Zeroizing<String>> =
+                if cold_launch_bypass || no_lock_resume_dek_hex.is_some() {
+                    keychain
+                        .load("mango".to_string(), "dek".to_string())
+                        .map(zeroize::Zeroizing::new)
+                        .or(no_lock_resume_dek_hex)
+                        .or_else(|| {
+                            // Committed no-lock install that lost only the DEK slot:
+                            // recover it from the wrap secret + active params so the
+                            // lock screen (which has no PIN) is never a dead end.
+                            if !active_no_lock {
+                                return None;
+                            }
+                            let params = bootstrap.read_auth_params().ok().flatten()?;
+                            no_lock_dek_from_keychain_secret(keychain.as_ref(), &params).map(
+                                |dek_hex| {
+                                    let restored = keychain.store(
+                                        "mango".to_string(),
+                                        "dek".to_string(),
+                                        (*dek_hex).clone(),
+                                    );
+                                    log::info!(
+                                        "[auth] cold start: recovered keychain DEK from no-lock secret (re-stored: {restored})"
+                                    );
+                                    dek_hex
+                                },
+                            )
+                        })
+                } else {
+                    None
+                };
+
+            // (has_auth / orphan cleanup / bypass computed above with no-lock support)
 
             let (db_opt, encryption_enabled, auth_initialized, bypass_succeeded) = if db_path
                 == ":memory:"
@@ -9213,6 +9444,7 @@ impl FfiApp {
                 auth_initialized,
                 encryption_enabled,
                 duress_pin_configured,
+                no_lock_mode: has_auth && active_no_lock,
                 ..AppState::default()
             };
 
@@ -9451,6 +9683,11 @@ impl FfiApp {
                                     force_role,
                                     &core_tx_for_thread,
                                 );
+                                // do_send_message can reject the turn before spawning
+                                // anything (e.g. send-time vision gate, routing errors);
+                                // no stream event would ever emit, so surface state here.
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
                             AppAction::StopGeneration => {
                                 // Signal the streaming task to stop cooperatively.
@@ -9918,19 +10155,137 @@ impl FfiApp {
                                     None => {
                                         actor_state.app_state.last_error =
                                             Some("No active conversation".into());
-                                        // still bump rev and emit below
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
                                     }
                                 };
-                                // Find and remove the last assistant message
-                                let last_assistant_pos = actor_state
+                                // Vision pre-check BEFORE deleting anything: a retried
+                                // image turn against a text-only model would be rejected
+                                // by the send-time gate after this handler already
+                                // removed the last exchange from history.
+                                let retry_carries_image = actor_state
                                     .app_state
                                     .messages
                                     .iter()
-                                    .rposition(|m| m.role == "assistant");
-                                if let Some(pos) = last_assistant_pos {
+                                    .rev()
+                                    .find(|m| m.role == "user")
+                                    .is_some_and(|m| m.image_path.is_some());
+                                if retry_carries_image {
+                                    // Resolve the model the send would actually use:
+                                    // conversation/hybrid-remote model, falling back to
+                                    // the backend default exactly like do_send_message.
+                                    let conv_backend_id = actor_state
+                                        .app_state
+                                        .conversations
+                                        .iter()
+                                        .find(|c| Some(&c.id) == actor_state.app_state.current_conversation_id.as_ref())
+                                        .map(|c| c.backend_id.clone())
+                                        .or_else(|| actor_state.app_state.active_backend_id.clone());
+                                    let gate_model = {
+                                        let from_conv =
+                                            image_capability_model_id(&actor_state).unwrap_or_default();
+                                        if !from_conv.is_empty() {
+                                            from_conv
+                                        } else {
+                                            default_model_for_preferred(
+                                                &actor_state,
+                                                conv_backend_id.as_deref(),
+                                            )
+                                            .unwrap_or_default()
+                                        }
+                                    };
+                                    let rejected = if gate_model.is_empty() {
+                                        actor_state.app_state.last_error = Some(
+                                            "Select a vision-capable model before retrying an image message."
+                                                .into(),
+                                        );
+                                        true
+                                    } else if !llm::is_vision_model(&gate_model) {
+                                        actor_state.app_state.last_error = Some(format!(
+                                            "Model \"{}\" does not support image input",
+                                            gate_model
+                                        ));
+                                        true
+                                    } else {
+                                        false
+                                    };
+                                    if rejected {
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                }
+                                // Resolve the re-send material BEFORE deleting anything:
+                                // a failed rehydrate must not cost history either.
+                                let last_user_message = actor_state
+                                    .app_state
+                                    .messages
+                                    .iter()
+                                    .rfind(|m| m.role == "user")
+                                    .cloned();
+                                let Some(message) = last_user_message else {
+                                    continue;
+                                };
+                                let replay_force_role = replay_force_role_for_latest_user_turn(
+                                    &actor_state,
+                                    &conv_id,
+                                    &message.id,
+                                );
+                                let retry_image = match rehydrate_retry_image_attachment(
+                                    &actor_state,
+                                    &message,
+                                ) {
+                                    Ok(image) => image,
+                                    Err(error) => {
+                                        actor_state.app_state.last_error = Some(error);
+                                        actor_state.app_state.rev += 1;
+                                        emit(
+                                            &actor_state.app_state,
+                                            &shared_for_core,
+                                            &update_tx,
+                                        );
+                                        continue;
+                                    }
+                                };
+                                // Lossless snapshot of exactly the rows this retry will
+                                // delete: the LAST assistant row and the retried user row.
+                                // (A conversation-wide assistant filter would delete earlier
+                                // answers on the deferred-send replacement path.)
+                                // pre_retry_ids covers EVERY prior row so an earlier user
+                                // turn can never masquerade as the new send.
+                                let pre_retry_ids: std::collections::HashSet<String> =
+                                    actor_state
+                                        .app_state
+                                        .messages
+                                        .iter()
+                                        .map(|m| m.id.clone())
+                                        .collect();
+                                let last_assistant_id = actor_state
+                                    .app_state
+                                    .messages
+                                    .iter()
+                                    .rev()
+                                    .find(|m| m.role == "assistant")
+                                    .map(|m| m.id.clone());
+                                let snapshot_rows: Vec<persistence::MessageRow> = {
+                                    let conn = actor_state.db.as_ref().expect("db unlocked").conn();
+                                    [last_assistant_id.clone(), Some(message.id.clone())]
+                                        .into_iter()
+                                        .flatten()
+                                        .filter_map(|id| {
+                                            persistence::queries::get_message_by_id(conn, &id)
+                                                .ok()
+                                                .flatten()
+                                        })
+                                        .collect()
+                                };
+                                if let Some(pos) = actor_state
+                                    .app_state
+                                    .messages
+                                    .iter()
+                                    .rposition(|m| m.role == "assistant")
+                                {
                                     let msg_id = actor_state.app_state.messages[pos].id.clone();
                                     actor_state.app_state.messages.remove(pos);
                                     let _ = persistence::queries::delete_message(
@@ -9938,66 +10293,60 @@ impl FfiApp {
                                         &msg_id,
                                     );
                                 }
-                                // Find last user message to re-send. Image messages store
-                                // a render-only "[Image: ...]" placeholder in content; retry
-                                // must strip that placeholder and rehydrate the encrypted image.
-                                let last_user_message = actor_state
+                                if let Some(pos) = actor_state
                                     .app_state
                                     .messages
                                     .iter()
-                                    .rfind(|m| m.role == "user")
-                                    .cloned();
-                                if let Some(message) = last_user_message {
-                                    let replay_force_role = replay_force_role_for_latest_user_turn(
-                                        &actor_state,
-                                        &conv_id,
+                                    .rposition(|m| m.id == message.id)
+                                {
+                                    actor_state.app_state.messages.remove(pos);
+                                    let _ = persistence::queries::delete_message(
+                                        actor_state.db.as_ref().expect("db unlocked").conn(),
                                         &message.id,
                                     );
-                                    let retry_image = match rehydrate_retry_image_attachment(
-                                        &actor_state,
-                                        &message,
-                                    ) {
-                                        Ok(image) => image,
-                                        Err(error) => {
-                                            actor_state.app_state.last_error = Some(error);
-                                            actor_state.app_state.rev += 1;
-                                            emit(
-                                                &actor_state.app_state,
-                                                &shared_for_core,
-                                                &update_tx,
-                                            );
-                                            continue;
-                                        }
-                                    };
-                                    // Remove the last user message too (do_send_message will re-insert)
-                                    let last_user_pos = actor_state
-                                        .app_state
-                                        .messages
-                                        .iter()
-                                        .rposition(|m| m.role == "user");
-                                    if let Some(pos) = last_user_pos {
-                                        let uid = actor_state.app_state.messages[pos].id.clone();
-                                        actor_state.app_state.messages.remove(pos);
-                                        let _ = persistence::queries::delete_message(
-                                            actor_state.db.as_ref().expect("db unlocked").conn(),
-                                            &uid,
-                                        );
-                                    }
-                                    // Keep conv_id active and re-send
-                                    actor_state.app_state.current_conversation_id = Some(conv_id);
-                                    if let Some(image) = retry_image {
-                                        drop_pending_attachment(&mut actor_state);
-                                        actor_state.pending_image_attachment = Some(image);
-                                    }
-                                    do_send_message(
-                                        &mut actor_state,
-                                        strip_attachment_placeholder(&strip_image_placeholder(
-                                            &message.content,
-                                        )),
-                                        replay_force_role,
-                                        &core_tx_for_thread,
-                                    );
                                 }
+                                actor_state.app_state.current_conversation_id = Some(conv_id.clone());
+                                if let Some(image) = retry_image {
+                                    drop_pending_attachment(&mut actor_state);
+                                    actor_state.pending_image_attachment = Some(image);
+                                }
+                                do_send_message(
+                                    &mut actor_state,
+                                    strip_attachment_placeholder(&strip_image_placeholder(
+                                        &message.content,
+                                    )),
+                                    replay_force_role,
+                                    &core_tx_for_thread,
+                                );
+                                // Accepted = a user row that did not exist before the retry
+                                // (do_send_message inserts a fresh id). Anything else —
+                                // rejection OR attestation deferral — restores the exchange;
+                                // a deferred send re-inserts its own row on completion.
+                                let resend_accepted = actor_state
+                                    .app_state
+                                    .messages
+                                    .iter()
+                                    .any(|m| m.role == "user" && !pre_retry_ids.contains(&m.id));
+                                if !resend_accepted {
+                                    if let Some(db) = actor_state.db.as_ref() {
+                                        for row in &snapshot_rows {
+                                            let _ = persistence::queries::insert_message(
+                                                db.conn(),
+                                                row,
+                                            );
+                                        }
+                                    }
+                                    refresh_messages(&mut actor_state, &conv_id);
+                                    // Deferred (attestation pending): the restored rows are
+                                    // stand-ins; mark them for replacement so the accepted
+                                    // deferred send deletes them instead of duplicating.
+                                    if let Some(pending) = actor_state.pending_attested_send.as_mut() {
+                                        pending.replaced_message_ids =
+                                            snapshot_rows.iter().map(|r| r.id.clone()).collect();
+                                    }
+                                }
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
                             AppAction::EditMessage {
@@ -10060,6 +10409,8 @@ impl FfiApp {
                                         replay_force_role,
                                         &core_tx_for_thread,
                                     );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                 }
                             }
 
@@ -10153,17 +10504,20 @@ impl FfiApp {
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
                                 }
-                                // Defense-in-depth vision capability gate (follow-up to
-                                // "image-upload-still-broken-after-fix" debug session):
-                                // UIs hide the image-picker entry points for non-vision
-                                // models, but a stale state or a model-switch-after-attach
-                                // could still dispatch this action. Reject with a clear
-                                // error before the image ever enters the pending slot.
+                                // Defense-in-depth vision gate (UIs already hide
+                                // image pickers for text-only models): also reject
+                                // an undetermined model — send-time resolution
+                                // would fall back to models[0].
                                 let current_model_id =
                                     image_capability_model_id(&actor_state).unwrap_or_default();
-                                if !current_model_id.is_empty()
-                                    && !llm::is_vision_model(&current_model_id)
-                                {
+                                if current_model_id.is_empty() {
+                                    remove_plaintext_image_file(&file_path, &actor_state.data_dir);
+                                    actor_state.app_state.last_error = Some(
+                                        "Select a vision-capable model before attaching an image"
+                                            .to_string(),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                } else if !llm::is_vision_model(&current_model_id) {
                                     remove_plaintext_image_file(&file_path, &actor_state.data_dir);
                                     actor_state.app_state.last_error = Some(format!(
                                         "Model \"{}\" does not support image input",
@@ -12015,7 +12369,7 @@ impl FfiApp {
                                     {
                                         let staged = actor_state.keychain.store(
                                             "mango".to_string(),
-                                            "dek".to_string(),
+                                            KEYCHAIN_DEK_KEY.to_string(),
                                             (*dek_hex).clone(),
                                         );
                                         actor_state.app_state.biometric_login_enabled = staged;
@@ -12110,11 +12464,11 @@ impl FfiApp {
                                     salt: salt.to_vec(),
                                     wrapped_dek,
                                     duress_hash,
+                                    no_lock: false,
                                     kdf_memory_kib: crypto::key_derivation::DEFAULT_MEMORY_KIB,
                                     kdf_iterations: crypto::key_derivation::DEFAULT_ITERATIONS,
                                     kdf_parallelism: crypto::key_derivation::DEFAULT_PARALLELISM,
                                 };
-
                                 // Stage pending auth before touching the main DB. On file-backed
                                 // installs the main DB migration is still ahead; on in-memory the
                                 // promotion is immediate.
@@ -12347,7 +12701,7 @@ impl FfiApp {
                                 if enable_biometric && actor_state.app_state.biometric_available {
                                     dek_staged = actor_state.keychain.store(
                                         "mango".to_string(),
-                                        "dek".to_string(),
+                                        KEYCHAIN_DEK_KEY.to_string(),
                                         (*dek_hex).clone(),
                                     );
                                     if dek_staged {
@@ -12368,6 +12722,378 @@ impl FfiApp {
                                     core_tx_for_thread.clone(),
                                     false,
                                 );
+                            }
+
+                            AppAction::SetupNoLock => {
+                                // Fresh-enrollment guards mirror SetupPin.
+                                if actor_state.bootstrap.has_auth_params()
+                                    || actor_state.bootstrap.has_pending_auth()
+                                {
+                                    actor_state.app_state.toast =
+                                        Some("Lock settings are already configured.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+                                if actor_state.db_path != ":memory:"
+                                    && Path::new(&actor_state.db_path).exists()
+                                    && persistence::Database::is_encrypted(&actor_state.db_path)
+                                {
+                                    actor_state.app_state.toast =
+                                        Some("Setup failed: data is not recoverable".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                let dek: Zeroizing<[u8; 32]> =
+                                    Zeroizing::new(crypto::key_derivation::generate_dek());
+                                let salt = crypto::key_derivation::generate_salt();
+                                // Random wrap secret — not a user credential. Held only in
+                                // the platform keychain alongside the raw DEK.
+                                let no_lock_secret: Zeroizing<[u8; 32]> =
+                                    Zeroizing::new(crypto::key_derivation::generate_dek());
+                                let kek: Zeroizing<[u8; 32]> =
+                                    match crypto::key_derivation::derive_kek(
+                                        no_lock_secret.as_slice(),
+                                        &salt,
+                                        crypto::key_derivation::DEFAULT_MEMORY_KIB,
+                                        crypto::key_derivation::DEFAULT_ITERATIONS,
+                                        crypto::key_derivation::DEFAULT_PARALLELISM,
+                                    ) {
+                                        Ok(k) => k,
+                                        Err(e) => {
+                                            log::error!("[auth] SetupNoLock: KEK derivation failed: {e}");
+                                            actor_state.app_state.toast =
+                                                Some("No-lock setup failed: key derivation error".into());
+                                            actor_state.app_state.rev += 1;
+                                            emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                            continue;
+                                        }
+                                    };
+                                let wrapped_dek =
+                                    crypto::key_derivation::wrap_dek(&kek, &dek);
+                                let dek_hex: Zeroizing<String> = Zeroizing::new(
+                                    dek.iter().map(|b| format!("{:02x}", b)).collect(),
+                                );
+                                let secret_hex: Zeroizing<String> = Zeroizing::new(
+                                    no_lock_secret.iter().map(|b| format!("{:02x}", b)).collect(),
+                                );
+
+                                // Keychain entries FIRST: without them the install could
+                                // never unlock (no user secret exists). Nothing is persisted
+                                // on failure.
+                                let dek_staged = actor_state.keychain.store(
+                                    "mango".to_string(),
+                                    KEYCHAIN_DEK_KEY.to_string(),
+                                    (*dek_hex).clone(),
+                                );
+                                let secret_staged = actor_state.keychain.store(
+                                    "mango".to_string(),
+                                    KEYCHAIN_NO_LOCK_SECRET_KEY.to_string(),
+                                    (*secret_hex).clone(),
+                                );
+                                if !dek_staged || !secret_staged {
+                                    actor_state.keychain.delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+                                    actor_state.keychain.delete("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string());
+                                    actor_state.app_state.toast = Some(
+                                        "No-lock setup failed: secure storage unavailable. Set a PIN instead.".into(),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                let auth_params = crypto::bootstrap_db::AuthParams {
+                                    salt: salt.to_vec(),
+                                    wrapped_dek,
+                                    duress_hash: None,
+                                    no_lock: true,
+                                    kdf_memory_kib: crypto::key_derivation::DEFAULT_MEMORY_KIB,
+                                    kdf_iterations: crypto::key_derivation::DEFAULT_ITERATIONS,
+                                    kdf_parallelism: crypto::key_derivation::DEFAULT_PARALLELISM,
+                                };
+                                if let Err(e) =
+                                    actor_state.bootstrap.write_pending_auth(&auth_params)
+                                {
+                                    log::error!("[auth] SetupNoLock: write_pending_auth failed: {e}");
+                                    actor_state.keychain.delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+                                    actor_state.keychain.delete("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string());
+                                    actor_state.app_state.toast =
+                                        Some("No-lock setup failed: storage error".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                if actor_state.db_path == ":memory:" {
+                                    if let Err(e) = actor_state.bootstrap.promote_pending_auth() {
+                                        log::error!("[auth] SetupNoLock: promote failed: {e}");
+                                        actor_state.app_state.toast =
+                                            Some("No-lock setup failed: storage error".into());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                    let _ = actor_state.bootstrap.clear_pending_first_run();
+                                } else if !persistence::Database::is_encrypted(&actor_state.db_path) {
+                                    actor_state.db = None;
+                                    if let Err(e) = persistence::Database::migrate_to_encrypted(
+                                        &actor_state.db_path,
+                                        &dek_hex,
+                                    ) {
+                                        log::error!("[auth] SetupNoLock: migrate_to_encrypted failed: {e}");
+                                        // Same recovery contract as SetupPin: only a
+                                        // verified plaintext restore may clear the staged
+                                        // credentials; otherwise keep them — the startup
+                                        // no-lock resume finishes the enrollment later.
+                                        match persistence::Database::recover_plaintext_after_failed_enrollment(
+                                            &actor_state.db_path,
+                                        ) {
+                                            Ok(persistence::EnrollmentRecovery::PlaintextReady) => {
+                                                // Credentials are only destroyed once the
+                                                // pending row is provably gone — a failed
+                                                // clear must leave the resume path intact.
+                                                match actor_state.bootstrap.clear_pending_auth() {
+                                                    Ok(()) => {
+                                                        actor_state.keychain.delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+                                                        actor_state.keychain.delete("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string());
+                                                        if let Ok(db) = persistence::Database::open(&actor_state.db_path) {
+                                                            actor_state.db = Some(db);
+                                                        }
+                                                        actor_state.app_state.toast =
+                                                            Some("No-lock setup failed: DB migration error".into());
+                                                    }
+                                                    Err(e) => {
+                                                        log::error!("[auth] SetupNoLock: clear pending auth after recovery failed: {e}");
+                                                        actor_state.app_state.toast = Some(
+                                                            "No-lock setup failed: DB migration error. Restart the app to finish setup.".into(),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            _ => {
+                                                // Encrypted/candidate/nothing survived: keep
+                                                // pending auth and keychain entries so the
+                                                // next startup auto-resumes the enrollment.
+                                                actor_state.app_state.toast = Some(
+                                                    "No-lock setup failed: DB migration error. Restart the app to finish setup.".into(),
+                                                );
+                                            }
+                                        }
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                    if let Err(e) = actor_state.bootstrap.promote_pending_auth() {
+                                        log::error!("[auth] SetupNoLock: promote failed: {e}");
+                                        actor_state.app_state.toast =
+                                            Some("No-lock setup failed: could not commit auth".into());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                    if let Err(e) = persistence::Database::finalize_encrypted_storage(
+                                        &actor_state.db_path,
+                                    ) {
+                                        log::error!("[auth] SetupNoLock: finalize failed: {e}");
+                                    }
+                                    match persistence::Database::open_encrypted(
+                                        &actor_state.db_path,
+                                        &dek_hex,
+                                    ) {
+                                        Ok(db) => actor_state.db = Some(db),
+                                        Err(e) => {
+                                            log::error!("[auth] SetupNoLock: open_encrypted failed: {e}");
+                                            actor_state.app_state.auth_initialized = true;
+                                            actor_state.app_state.encryption_enabled = true;
+                                            actor_state.app_state.no_lock_mode = true;
+                                            actor_state.app_state.router.current_screen =
+                                                Screen::Locked;
+                                            actor_state.app_state.rev += 1;
+                                            emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                let _ = actor_state.bootstrap.write_cold_launch_bypass(true);
+                                if let Some(db) = actor_state.db.as_ref() {
+                                    let _ = persistence::queries::set_setting(
+                                        db.conn(),
+                                        "lock_timeout_seconds",
+                                        "-1",
+                                    );
+                                }
+                                actor_state.app_state.lock_timeout_seconds = -1;
+                                actor_state.dek = Some(dek);
+                                let dek_ref: Option<&[u8; 32]> = actor_state.dek.as_deref();
+                                actor_state.vector_index = rag::VectorIndex::new(
+                                    &actor_state.data_dir,
+                                    dek_ref,
+                                )
+                                .unwrap_or_else(|e| {
+                                    log::warn!("[auth] SetupNoLock: VectorIndex open failed: {e}");
+                                    rag::VectorIndex::new("", None).expect("empty fallback")
+                                });
+                                actor_state.app_state.auth_initialized = true;
+                                actor_state.app_state.encryption_enabled =
+                                    actor_state.db_path != ":memory:";
+                                actor_state.app_state.no_lock_mode = true;
+                                actor_state.app_state.biometric_login_enabled = false;
+                                actor_state.app_state.duress_pin_configured = false;
+                                load_post_unlock(
+                                    &mut actor_state,
+                                    core_tx_for_thread.clone(),
+                                    false,
+                                );
+                            }
+
+                            AppAction::EnablePinLock {
+                                pin,
+                                duress_pin,
+                                enable_biometric,
+                            } => {
+                                let params = match actor_state.bootstrap.read_auth_params() {
+                                    Ok(Some(params)) => params,
+                                    Ok(None) => {
+                                        actor_state.app_state.toast =
+                                            Some("Set up your device first.".into());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        log::error!("[auth] EnablePinLock: read_auth_params failed: {e}");
+                                        actor_state.app_state.toast =
+                                            Some("Could not enable app lock.".into());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                };
+                                if !params.no_lock {
+                                    actor_state.app_state.toast =
+                                        Some("App lock is already enabled.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+                                let trimmed_pin = pin.trim();
+                                if trimmed_pin.chars().count() < 4 {
+                                    actor_state.app_state.toast =
+                                        Some("PIN must be at least 4 characters.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+                                let duress_trimmed = duress_pin
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty());
+                                if duress_trimmed.is_some_and(|dp| dp == trimmed_pin) {
+                                    actor_state.app_state.toast =
+                                        Some("Duress PIN must be different from your main PIN.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+                                if duress_trimmed.is_some_and(|dp| dp.chars().count() < 4) {
+                                    actor_state.app_state.toast =
+                                        Some("Emergency PIN must be at least 4 characters.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+                                let Some(dek) = actor_state.dek.as_ref() else {
+                                    actor_state.app_state.toast =
+                                        Some("Unlock the app before enabling a PIN.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                };
+
+                                let salt = crypto::key_derivation::generate_salt();
+                                let kek: Zeroizing<[u8; 32]> =
+                                    match crypto::key_derivation::derive_kek(
+                                        pin.as_bytes(),
+                                        &salt,
+                                        params.kdf_memory_kib,
+                                        params.kdf_iterations,
+                                        params.kdf_parallelism,
+                                    ) {
+                                        Ok(k) => k,
+                                        Err(e) => {
+                                            log::error!("[auth] EnablePinLock: KEK derivation failed: {e}");
+                                            actor_state.app_state.toast =
+                                                Some("Could not enable app lock.".into());
+                                            actor_state.app_state.rev += 1;
+                                            emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                            continue;
+                                        }
+                                    };
+                                let wrapped_dek = crypto::key_derivation::wrap_dek(&kek, dek);
+                                let duress_hash = duress_trimmed.map(|dp| {
+                                    crypto::key_derivation::hash_pin(dp.as_bytes(), &salt)
+                                });
+                                let new_params = crypto::bootstrap_db::AuthParams {
+                                    salt: salt.to_vec(),
+                                    wrapped_dek,
+                                    duress_hash,
+                                    no_lock: false,
+                                    kdf_memory_kib: params.kdf_memory_kib,
+                                    kdf_iterations: params.kdf_iterations,
+                                    kdf_parallelism: params.kdf_parallelism,
+                                };
+                                if let Err(e) = actor_state
+                                    .bootstrap
+                                    .write_auth_params_locking_out(&new_params)
+                                {
+                                    log::error!("[auth] EnablePinLock: commit failed: {e}");
+                                    actor_state.app_state.toast =
+                                        Some("Could not enable app lock.".into());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                actor_state.keychain.delete(
+                                    "mango".to_string(),
+                                    KEYCHAIN_NO_LOCK_SECRET_KEY.to_string(),
+                                );
+                                let dek_hex: Zeroizing<String> = Zeroizing::new(
+                                    dek.iter().map(|b| format!("{:02x}", b)).collect(),
+                                );
+                                let mut biometric_on = false;
+                                if enable_biometric && actor_state.app_state.biometric_available {
+                                    biometric_on = actor_state.keychain.store(
+                                        "mango".to_string(),
+                                        KEYCHAIN_DEK_KEY.to_string(),
+                                        (*dek_hex).clone(),
+                                    );
+                                    if !biometric_on {
+                                        log::warn!("[auth] EnablePinLock: keychain DEK store failed; biometric not enabled");
+                                    }
+                                }
+                                if !biometric_on {
+                                    actor_state.keychain.delete(
+                                        "mango".to_string(),
+                                        KEYCHAIN_DEK_KEY.to_string(),
+                                    );
+                                }
+                                if let Some(db) = actor_state.db.as_ref() {
+                                    let _ = persistence::queries::set_setting(
+                                        db.conn(),
+                                        "lock_timeout_seconds",
+                                        "300",
+                                    );
+                                }
+                                actor_state.app_state.lock_timeout_seconds = 300;
+                                actor_state.app_state.no_lock_mode = false;
+                                actor_state.app_state.biometric_login_enabled = biometric_on;
+                                actor_state.app_state.duress_pin_configured =
+                                    new_params.duress_hash.is_some();
+                                actor_state.app_state.toast = Some("App lock enabled.".into());
                             }
 
                             AppAction::SetDuressPin { pin } => {
@@ -12661,6 +13387,14 @@ impl FfiApp {
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
                                 }
+                                // No-lock installs have no PIN to unlock with — the lock
+                                // screen would be a dead end until process restart.
+                                if actor_state.app_state.no_lock_mode {
+                                    log::debug!("[auth] LockApp skipped — no-lock mode");
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 // T-28-10: Clear sensitive state from AppState.
                                 let current_screen =
                                     actor_state.app_state.router.current_screen.clone();
@@ -12731,6 +13465,16 @@ impl FfiApp {
                             }
 
                             AppAction::SetBiometricLoginEnabled { enabled } => {
+                                // Disabling in no-lock mode would evict the keychain DEK
+                                // and strand the install on an unlockable lock screen.
+                                if actor_state.app_state.no_lock_mode && !enabled {
+                                    actor_state.app_state.toast = Some(
+                                        "Biometric login is required for no-lock mode. Set a PIN first.".to_string(),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 if enabled {
                                     if !actor_state.app_state.biometric_available {
                                         actor_state.app_state.toast = Some(
@@ -12756,7 +13500,7 @@ impl FfiApp {
                                         dek.iter().map(|b| format!("{:02x}", b)).collect();
                                     actor_state.keychain.store(
                                         "mango".to_string(),
-                                        "dek".to_string(),
+                                        KEYCHAIN_DEK_KEY.to_string(),
                                         dek_hex,
                                     );
                                 } else {
@@ -12774,6 +13518,14 @@ impl FfiApp {
                             }
 
                             AppAction::SetLockTimeout { seconds } => {
+                                if actor_state.app_state.no_lock_mode && seconds != -1 {
+                                    actor_state.app_state.toast = Some(
+                                        "Set a PIN before changing the lock timeout.".to_string(),
+                                    );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 actor_state.app_state.lock_timeout_seconds = seconds;
                                 if let Some(db) = actor_state.db.as_ref() {
                                     let _ = persistence::queries::set_setting(
@@ -12793,7 +13545,7 @@ impl FfiApp {
                                             dek.iter().map(|b| format!("{:02x}", b)).collect();
                                         actor_state.keychain.store(
                                             "mango".to_string(),
-                                            "dek".to_string(),
+                                            KEYCHAIN_DEK_KEY.to_string(),
                                             dek_hex,
                                         );
                                         let _ =
@@ -15654,7 +16406,21 @@ mod image_red_tests {
     #[test]
     fn test_attach_image_action() {
         let mut actor_state = test_build_actor_state_for_image_tests();
-        // NOTE: `AppAction::AttachImage` does not exist yet -- RED.
+        // The attach gate requires a determinable vision-capable model on the
+        // current conversation; a bare harness state has none.
+        actor_state.app_state.current_conversation_id = Some("conv-1".to_string());
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-1".to_string(),
+                title: "Test".to_string(),
+                model_id: "gemma3:27b".to_string(),
+                backend_id: "tinfoil".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
         let action = AppAction::AttachImage {
             filename: "a.png".to_string(),
             file_path: "/tmp/a.png".to_string(),
@@ -15662,9 +16428,6 @@ mod image_red_tests {
         };
 
         // Apply the action via the same handler pattern used by other AppActions.
-        // Plan 31-01 may introduce a dedicated helper; for now we expect a
-        // `handle_app_action` or equivalent path to exist. If it doesn't,
-        // the test still fails at the AttachImage variant (RED).
         handle_attach_image_for_test(&mut actor_state, action);
 
         let pending = actor_state
@@ -15732,6 +16495,115 @@ mod image_red_tests {
             "error message should name the model and mention image support, got: {}",
             err
         );
+    }
+
+    /// An undetermined conversation model must reject the attach instead of
+    /// silently accepting (send-time fallback would pick models[0]).
+    #[test]
+    fn attach_image_rejected_when_model_undetermined() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        // No conversation at all: image_capability_model_id resolves None.
+        handle_attach_image_for_test(
+            &mut actor_state,
+            AppAction::AttachImage {
+                filename: "a.png".to_string(),
+                file_path: "/tmp/a.png".to_string(),
+                mime_type: "image/png".to_string(),
+            },
+        );
+
+        assert!(
+            actor_state.pending_image_attachment.is_none(),
+            "pending_image_attachment must not be set when the model is undetermined"
+        );
+        assert!(
+            actor_state.app_state.pending_attachment.is_none(),
+            "AttachmentInfo must not be published when the model is undetermined"
+        );
+        let err = actor_state
+            .app_state
+            .last_error
+            .as_ref()
+            .expect("last_error must be set");
+        assert!(
+            err.contains("vision-capable"),
+            "error should tell the user to pick a vision-capable model, got: {}",
+            err
+        );
+    }
+
+    /// Send-time vision gate: an image turn resolved to a text-only model is
+    /// rejected before persistence or any request spawn; the attachment is
+    /// kept for a later resend on a vision model.
+    #[test]
+    fn send_message_rejects_image_turn_for_text_only_model() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![llm::BackendConfig {
+            id: "ppq-ai".to_string(),
+            name: "PPQ.AI".to_string(),
+            base_url: "https://api.ppq.ai/private/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec![
+                "private/gpt-oss-120b".to_string(),
+                "private/gemma4-31b".to_string(),
+            ],
+            tee_type: llm::TeeType::AmdSevSnp,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        }];
+        actor_state.app_state.current_conversation_id = Some("conv-1".to_string());
+        actor_state
+            .app_state
+            .conversations
+            .push(ConversationSummary {
+                id: "conv-1".to_string(),
+                title: "PPQ".to_string(),
+                model_id: "private/gpt-oss-120b".to_string(),
+                backend_id: "ppq-ai".to_string(),
+                updated_at: 0,
+                system_prompt: None,
+                tools_enabled: false,
+            });
+        // The send-time gate runs before prepare_image_for_api, so any file works.
+        let tmp = std::env::temp_dir().join("send-gate-probe.jpg");
+        std::fs::write(&tmp, b"probe").expect("tmp write");
+        actor_state.pending_image_attachment = Some(PendingImageAttachment {
+            filename: "probe.jpg".to_string(),
+            file_path: tmp.to_str().unwrap().to_string(),
+        });
+
+        let (core_tx, _core_rx) = flume::unbounded();
+        do_send_message(
+            &mut actor_state,
+            "describe this image".to_string(),
+            None,
+            &core_tx,
+        );
+
+        let err = actor_state
+            .app_state
+            .last_error
+            .as_ref()
+            .expect("last_error must be set");
+        assert!(
+            err.contains("private/gpt-oss-120b") && err.contains("does not support image"),
+            "error should name the text-only model, got: {}",
+            err
+        );
+        assert!(
+            actor_state.app_state.messages.is_empty(),
+            "rejected image turn must not persist a user message"
+        );
+        assert!(
+            actor_state.pending_image_attachment.is_some(),
+            "pending image is kept so the user can switch to a vision model and resend"
+        );
+        assert_eq!(
+            actor_state.app_state.busy_state,
+            BusyState::Idle,
+            "rejected turn must not leave the app busy"
+        );
+        let _ = std::fs::remove_file(&tmp);
     }
 
     /// Vision-capable model with an otherwise-valid AttachImage should proceed
@@ -16993,6 +17865,7 @@ mod image_red_tests {
             pending_image_attachment: None,
             app_pending_attachment: None,
             attestation_attempts: 0,
+            replaced_message_ids: Vec::new(),
         });
         let (tx, _rx) = flume::unbounded();
 
@@ -17047,6 +17920,7 @@ mod image_red_tests {
                 is_image: false,
             }),
             attestation_attempts: 0,
+            replaced_message_ids: Vec::new(),
         });
 
         assert!(reject_chat_action_while_attestation_pending(
@@ -17092,6 +17966,7 @@ mod image_red_tests {
                 is_image: false,
             }),
             attestation_attempts: 0,
+            replaced_message_ids: Vec::new(),
         });
         actor_state.pending_attachment = None;
         actor_state.app_state.pending_attachment = None;
@@ -17121,6 +17996,288 @@ mod image_red_tests {
     }
 
     #[test]
+    fn deferred_retry_rejected_after_model_switch_restores_history() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![llm::BackendConfig {
+            id: "tinfoil".to_string(),
+            name: "Tinfoil".to_string(),
+            base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec!["llama3-3-70b".to_string()],
+            tee_type: llm::TeeType::AmdSevSnp,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        }];
+        actor_state.app_state.active_backend_id = Some("tinfoil".to_string());
+        actor_state.app_state.current_conversation_id = Some("conv-switch".to_string());
+        actor_state.app_state.conversations.push(ConversationSummary {
+            id: "conv-switch".to_string(),
+            title: "Switched".to_string(),
+            // User switched to a text-only model while attestation was pending.
+            model_id: "llama3-3-70b".to_string(),
+            backend_id: "tinfoil".to_string(),
+            updated_at: 0,
+            system_prompt: None,
+            tools_enabled: false,
+        });
+
+        let conn = actor_state.db.as_ref().unwrap().conn();
+        let _ = persistence::queries::insert_conversation(
+            conn,
+            &persistence::ConversationRow {
+                id: "conv-switch".to_string(),
+                title: "Switched".to_string(),
+                model_id: "llama3-3-70b".to_string(),
+                backend_id: "tinfoil".to_string(),
+                system_prompt: None,
+                created_at: 1000,
+                updated_at: 1000,
+                tools_enabled: false,
+            },
+        );
+        for (id, role) in [("msg-su", "user"), ("msg-sa", "assistant")] {
+            let _ = persistence::queries::insert_message(
+                conn,
+                &persistence::MessageRow {
+                    id: id.to_string(),
+                    conversation_id: "conv-switch".to_string(),
+                    role: role.to_string(),
+                    content: "content".to_string(),
+                    created_at: 1001,
+                    token_count: None,
+                    image_path: None,
+                    route_backend_id: None,
+                    route_model_id: None,
+                    route_decision: None,
+                    route_reason: None,
+                    route_provider_name: None,
+                    route_tee_label: None,
+                    route_tee_verified: None,
+                },
+            );
+        }
+        actor_state.app_state.messages = vec![
+            UiMessage {
+                id: "msg-su".to_string(),
+                role: "user".to_string(),
+                content: "describe".to_string(),
+                created_at: 1001,
+                has_attachment: true,
+                attachment_name: Some("photo.jpg".to_string()),
+                rag_context_count: None,
+                image_path: None,
+                route_backend_id: None,
+                route_model_id: None,
+                route_decision: None,
+                route_reason: None,
+                route_provider_name: None,
+                route_tee_label: None,
+                route_tee_verified: None,
+            },
+            UiMessage {
+                id: "msg-sa".to_string(),
+                role: "assistant".to_string(),
+                content: "old answer".to_string(),
+                created_at: 1002,
+                has_attachment: false,
+                attachment_name: None,
+                rag_context_count: None,
+                image_path: None,
+                route_backend_id: None,
+                route_model_id: None,
+                route_decision: None,
+                route_reason: None,
+                route_provider_name: None,
+                route_tee_label: None,
+                route_tee_verified: None,
+            },
+        ];
+        // The resumed send carries an image, so the text-only conversation
+        // model trips the send-time vision gate.
+        actor_state.pending_attested_send = Some(PendingAttestedSend {
+            backend_id: "tinfoil".to_string(),
+            text: "describe".to_string(),
+            force_role: None,
+            pending_attachment: None,
+            pending_image_attachment: Some(PendingImageAttachment {
+                filename: "photo.jpg".to_string(),
+                file_path: "/tmp/retry-switch-does-not-exist.jpg".to_string(),
+            }),
+            app_pending_attachment: None,
+            attestation_attempts: 0,
+            replaced_message_ids: vec!["msg-su".to_string(), "msg-sa".to_string()],
+        });
+        let (tx, _rx) = flume::unbounded();
+
+        handle_pending_attested_send_after_attestation(
+            &mut actor_state,
+            "tinfoil",
+            true,
+            false,
+            None,
+            &tx,
+        );
+
+        let ids: Vec<&str> = actor_state
+            .app_state
+            .messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert!(
+            ids.contains(&"msg-su") && ids.contains(&"msg-sa"),
+            "rejected resumed send must restore the stand-ins: {ids:?}"
+        );
+        let conn = actor_state.db.as_ref().unwrap().conn();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE id IN ('msg-su','msg-sa')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 2, "stand-in rows must be back in the DB");
+    }
+
+    #[test]
+    fn deferred_retry_replaces_restored_exchange_on_success() {
+        let mut actor_state = test_build_actor_state_for_image_tests();
+        actor_state.backends = vec![llm::BackendConfig {
+            id: "tinfoil".to_string(),
+            name: "Tinfoil".to_string(),
+            base_url: "https://inference.tinfoil.sh/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec!["llama3-3-70b".to_string()],
+            tee_type: llm::TeeType::AmdSevSnp,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        }];
+        actor_state.app_state.active_backend_id = Some("tinfoil".to_string());
+
+        // Rows the retry restored while the send was deferred.
+        let conn = actor_state.db.as_ref().unwrap().conn();
+        let _ = persistence::queries::insert_conversation(
+            conn,
+            &persistence::ConversationRow {
+                id: "conv-deferred".to_string(),
+                title: "Deferred".to_string(),
+                model_id: "llama3-3-70b".to_string(),
+                backend_id: "tinfoil".to_string(),
+                system_prompt: None,
+                created_at: 1000,
+                updated_at: 1000,
+                tools_enabled: false,
+            },
+        );
+        for (id, role, content) in [
+            ("msg-u", "user", "describe\n\n[Image: photo.jpg]"),
+            ("msg-a", "assistant", "old answer"),
+        ] {
+            let _ = persistence::queries::insert_message(
+                conn,
+                &persistence::MessageRow {
+                    id: id.to_string(),
+                    conversation_id: "conv-deferred".to_string(),
+                    role: role.to_string(),
+                    content: content.to_string(),
+                    created_at: 1001,
+                    token_count: None,
+                    image_path: None,
+                    route_backend_id: None,
+                    route_model_id: None,
+                    route_decision: None,
+                    route_reason: None,
+                    route_provider_name: None,
+                    route_tee_label: None,
+                    route_tee_verified: None,
+                },
+            );
+        }
+        actor_state.app_state.current_conversation_id = Some("conv-deferred".to_string());
+        actor_state.app_state.messages = vec![
+            UiMessage {
+                id: "msg-u".to_string(),
+                role: "user".to_string(),
+                content: "describe".to_string(),
+                created_at: 1001,
+                has_attachment: true,
+                attachment_name: Some("photo.jpg".to_string()),
+                rag_context_count: None,
+                image_path: None,
+                route_backend_id: None,
+                route_model_id: None,
+                route_decision: None,
+                route_reason: None,
+                route_provider_name: None,
+                route_tee_label: None,
+                route_tee_verified: None,
+            },
+            UiMessage {
+                id: "msg-a".to_string(),
+                role: "assistant".to_string(),
+                content: "old answer".to_string(),
+                created_at: 1002,
+                has_attachment: false,
+                attachment_name: None,
+                rag_context_count: None,
+                image_path: None,
+                route_backend_id: None,
+                route_model_id: None,
+                route_decision: None,
+                route_reason: None,
+                route_provider_name: None,
+                route_tee_label: None,
+                route_tee_verified: None,
+            },
+        ];
+        actor_state.pending_attested_send = Some(PendingAttestedSend {
+            backend_id: "tinfoil".to_string(),
+            text: "describe".to_string(),
+            force_role: None,
+            pending_attachment: None,
+            pending_image_attachment: None,
+            app_pending_attachment: None,
+            attestation_attempts: 0,
+            replaced_message_ids: vec!["msg-u".to_string(), "msg-a".to_string()],
+        });
+        let (tx, _rx) = flume::unbounded();
+
+        handle_pending_attested_send_after_attestation(
+            &mut actor_state,
+            "tinfoil",
+            true,
+            false,
+            None,
+            &tx,
+        );
+
+        let ids: Vec<&str> = actor_state
+            .app_state
+            .messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert!(
+            !ids.contains(&"msg-u") && !ids.contains(&"msg-a"),
+            "restored stand-ins must be replaced on the accepted deferred send: {ids:?}"
+        );
+        assert_eq!(
+            actor_state.app_state.messages.len(),
+            1,
+            "exactly the new user row should remain"
+        );
+        let conn = actor_state.db.as_ref().unwrap().conn();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE id IN ('msg-u','msg-a')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "stand-in rows must be deleted from the DB");
+    }
+
+    #[test]
     fn transient_attestation_failures_retry_then_release_pending_turn() {
         let mut actor_state = test_build_actor_state_for_image_tests();
         actor_state.pending_attested_send = Some(PendingAttestedSend {
@@ -17138,6 +18295,7 @@ mod image_red_tests {
                 is_image: false,
             }),
             attestation_attempts: 0,
+            replaced_message_ids: Vec::new(),
         });
         let (tx, _rx) = flume::unbounded();
 
@@ -17379,7 +18537,13 @@ mod image_red_tests {
                 mime_type,
             } => {
                 let current_model_id = image_capability_model_id(actor_state).unwrap_or_default();
-                if !current_model_id.is_empty() && !llm::is_vision_model(&current_model_id) {
+                if current_model_id.is_empty() {
+                    actor_state.app_state.last_error = Some(
+                        "Select a vision-capable model before attaching an image".to_string(),
+                    );
+                    return;
+                }
+                if !llm::is_vision_model(&current_model_id) {
                     actor_state.app_state.last_error = Some(format!(
                         "Model \"{}\" does not support image input",
                         current_model_id
