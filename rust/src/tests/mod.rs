@@ -40,6 +40,7 @@ mod rag;
 mod redpill;
 mod retention;
 mod retry_image_gate;
+mod route_mode;
 mod routing;
 mod security_regressions;
 mod settings;

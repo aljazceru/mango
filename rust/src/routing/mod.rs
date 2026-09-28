@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 pub mod inference;
+pub mod route_mode;
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
 pub enum BackendRole {
