@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,11 +17,21 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.AltRoute
+import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.EditNote
+import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Handshake
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.PhoneAndroid
+import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -29,10 +40,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -42,11 +49,9 @@ import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.DiscoverableTool
-import dev.disobey.mango.rust.HealthStatus
 import dev.disobey.mango.rust.LocalLlmCapabilityStatus
 import dev.disobey.mango.rust.LocalModelSummary
 import dev.disobey.mango.rust.Screen
-import dev.disobey.mango.rust.TeeType
 import dev.disobey.mango.rust.TrustedProvider
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -71,148 +76,73 @@ fun SettingsScreen(
             )
         }
     ) { pad ->
+        val push = { screen: Screen -> { onDispatch(AppAction.PushScreen(screen = screen)) } }
+        val hybrid = appState.hybridProfiles.firstOrNull()
+        val capability = appState.localDeviceCapability
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(pad)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(bottom = 24.dp),
         ) {
-            item {
-                Spacer(Modifier.height(4.dp))
-                SettingsLinkCard(
-                    title = "Providers",
-                    subtitle = "${providerEnabledCount(appState)} enabled",
-                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.SettingsProviders)) },
-                )
+            item(key = "status") {
+                InferenceStatusCard(appState = appState, onDispatch = onDispatch, modifier = Modifier.padding(top = 4.dp))
             }
-
-            item {
-                SettingsLinkCard(
-                    title = "Browse local models",
-                    subtitle = localModelsSubtitle(appState),
-                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.SettingsLocalModels)) },
-                )
-                LocalInferenceToggleRow(appState = appState, onDispatch = onDispatch)
-            }
-
-            item {
-                SettingsLinkCard(
-                    title = "Hybrid routing",
-                    subtitle = hybridRoutingSubtitle(appState),
-                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.SettingsHybridRouting)) },
-                )
-            }
-
-            item {
-                SettingsLinkCard(
-                    title = "Defaults",
-                    subtitle = appState.backends.firstOrNull { it.isActive }?.models?.firstOrNull(),
-                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.SettingsDefaults)) },
-                )
-            }
-
-            item {
-                SettingsLinkCard(
-                    title = "Directory Sources",
-                    subtitle = appState.directorySources.size.let { n ->
-                        when (n) {
-                            0 -> "No folders added"
-                            1 -> "1 folder"
-                            else -> "$n folders"
-                        }
-                    },
-                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.DirectorySources)) },
-                )
-            }
-
-            item {
-                SettingsLinkCard(
-                    title = "Memory",
-                    subtitle = buildString {
-                        append(if (appState.memoriesEnabled) "Auto-extract on" else "Auto-extract off")
-                        if (appState.memoryCount > 0UL) {
-                            append(" • ${appState.memoryCount}")
-                        }
-                    },
-                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.SettingsMemory)) },
-                )
-            }
-
-            item {
-                SettingsLinkCard(
-                    title = "Security",
-                    subtitle = securitySummary(appState),
-                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.SettingsSecurity)) },
-                )
-            }
-
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SettingsLinkCard(
-                        title = "Tools",
-                        subtitle = if (appState.braveApiKeySet) "Web search configured" else "Web search not configured",
-                        onClick = { onDispatch(AppAction.PushScreen(screen = Screen.SettingsTools)) },
-                    )
-                    SettingsLinkCard(
-                        title = "Trusted providers",
-                        subtitle = trustedProvidersSubtitle(appState.trustedProviders),
-                        onClick = { onDispatch(AppAction.PushScreen(screen = Screen.TrustedProviders)) },
-                    )
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Text(
-                                text = "Automatically discover and use tools",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Text(
-                                text = if (appState.trustedProviders.isEmpty())
-                                    "Add trusted providers first to enable auto-discovery."
-                                else
-                                    "Find new tools each conversation from trusted providers only.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Spacer(Modifier.width(16.dp))
-                        Switch(
-                            modifier = Modifier.semantics {
-                                contentDescription = "Automatically discover and use tools"
-                            },
-                            checked = appState.autoDiscoverToolsEnabled,
-                            onCheckedChange = { checked ->
-                                onDispatch(AppAction.SetAutoDiscoverTools(enabled = checked))
-                            },
-                        )
-                    }
-                }
-                }
-            }
-
-            item {
-                SettingsLinkCard(
-                    title = "Appearance",
-                    subtitle = appearanceSummary(themeMode) + " • " + fontSizeSummary(fontSize),
-                    onClick = { onDispatch(AppAction.PushScreen(screen = Screen.SettingsAppearance)) },
-                )
-                Spacer(Modifier.height(16.dp))
-            }
+            settingsGroup("Models", listOf(
+                SettingsRowSpec("providers", Icons.Outlined.Dns, SettingsTint.MODELS, "Providers",
+                    providersSummary(appState.backends.filter { !isOnDeviceBackend(it.id) && it.id != "qvac-local" && it.hasApiKey }.map { it.name }),
+                    push(Screen.SettingsProviders)),
+                SettingsRowSpec("local", Icons.Outlined.PhoneAndroid, SettingsTint.MODELS, "On-device models",
+                    onDeviceModelsSummary(
+                        installed = appState.localModels.count { it.downloaded && it.verified },
+                        freeRam = formatLocalBytes(capability.availableRamBytes),
+                        unsupportedReason = capability.reason.takeIf { capability.status != LocalLlmCapabilityStatus.SUPPORTED },
+                    ),
+                    push(Screen.SettingsLocalModels)),
+                SettingsRowSpec("hybrid", Icons.AutoMirrored.Outlined.AltRoute, SettingsTint.MODELS, "Hybrid rules",
+                    hybridRulesSummary(
+                        localModel = hybrid?.let { compactModelName(it.localModelId) },
+                        remoteModel = hybrid?.let { compactModelName(it.remoteModelId) },
+                        policiesOn = hybrid?.policy?.let { p ->
+                            listOf(p.escalateIfAttachment, p.preferLocalWhenOffline, p.escalateIfMessageLongerThan != null).count { it }
+                        } ?: 0,
+                    ),
+                    push(Screen.SettingsHybridRouting)),
+                SettingsRowSpec("defaults", Icons.Outlined.EditNote, SettingsTint.MODELS, "Default instructions",
+                    defaultInstructionsSummary(appState.globalSystemPrompt), push(Screen.SettingsDefaults)),
+            ))
+            settingsGroup("Knowledge", listOf(
+                SettingsRowSpec("folders", Icons.Outlined.FolderOpen, SettingsTint.KNOWLEDGE, "Document folders",
+                    documentFoldersSummary(appState.directorySources.size), push(Screen.DirectorySources)),
+                SettingsRowSpec("memory", Icons.Outlined.Psychology, SettingsTint.KNOWLEDGE, "Memory",
+                    memorySummary(appState.memoriesEnabled, appState.memoryCount.toLong()), push(Screen.SettingsMemory)),
+            ))
+            settingsGroup("Tools", listOf(
+                SettingsRowSpec("tools", Icons.Outlined.Extension, SettingsTint.TOOLS, "Tools & web search",
+                    toolsSummary(appState.braveApiKeySet, appState.autoDiscoverToolsEnabled), push(Screen.SettingsTools)),
+                SettingsRowSpec("trusted", Icons.Outlined.Handshake, SettingsTint.TOOLS, "Trusted providers",
+                    trustedProvidersSubtitle(appState.trustedProviders), push(Screen.TrustedProviders)),
+            ))
+            settingsGroup("Privacy & security", listOf(
+                SettingsRowSpec("applock", Icons.Outlined.Lock, SettingsTint.PRIVACY, "App lock",
+                    appLockSummary(appState.noLockMode, appState.lockTimeoutSeconds, appState.biometricLoginEnabled, appState.duressPinConfigured),
+                    push(Screen.SettingsAppLock)),
+                SettingsRowSpec("data", Icons.Outlined.Storage, SettingsTint.PRIVACY, "Data & retention",
+                    dataRetentionSummary(
+                        mode = appState.conversationRetentionMode.name.lowercase(),
+                        days = appState.conversationRetentionDays.toInt(),
+                        archived = appState.archivedConversations.size,
+                    ),
+                    push(Screen.SettingsDataRetention)),
+            ))
+            settingsGroup("App", listOf(
+                SettingsRowSpec("appearance", Icons.Outlined.Palette, SettingsTint.APP, "Appearance",
+                    appearanceSummary(themeMode) + " · " + fontSizeSummary(fontSize), push(Screen.SettingsAppearance)),
+            ))
         }
     }
 }
 
 @Composable
-private fun LocalInferenceToggleRow(
+internal fun LocalInferenceToggleRow(
     appState: AppState,
     onDispatch: (AppAction) -> Unit,
 ) {
@@ -372,34 +302,6 @@ internal fun LocalModelRow(
 
 internal fun isOnDeviceBackend(id: String): Boolean = id.startsWith("local-")
 
-private fun hybridRoutingSubtitle(appState: AppState): String {
-    val isActive = appState.activeBackendId?.startsWith("hybrid:") == true
-    val profile = appState.hybridProfiles.firstOrNull()
-    return when {
-        isActive && profile != null ->
-            "On \u2022 ${compactModelName(profile.localModelId)} -> ${compactModelName(profile.remoteModelId)}"
-        profile != null -> "Configured \u2022 Off"
-        else -> "Off"
-    }
-}
-
-private fun providerEnabledCount(appState: AppState): Int {
-    return appState.backends.count { backend ->
-        !isOnDeviceBackend(backend.id) &&
-            backend.id != "qvac-local" &&
-            backend.hasApiKey
-    }
-}
-
-private fun localModelsSubtitle(appState: AppState): String {
-    val installed = appState.localModels.count { it.downloaded && it.verified }
-    val total = appState.localModels.size
-    val runtime = appStateLocalLlmReason(
-        appState = appState,
-        fallback = "${formatLocalBytes(appState.localDeviceCapability.availableRamBytes)} RAM available",
-    )
-    return "$total available • $installed installed • $runtime"
-}
 
 private fun appStateLocalLlmReason(
     appState: AppState,
@@ -585,16 +487,6 @@ internal fun SettingsLinkCard(
     }
 }
 
-private fun securitySummary(appState: AppState): String {
-    val parts = mutableListOf<String>()
-    parts += lockTimeoutLabel(appState.lockTimeoutSeconds)
-    if (appState.duressPinConfigured) {
-        parts += "Duress PIN set"
-    }
-    parts += if (appState.biometricLoginEnabled) "Biometrics on" else "Biometrics off"
-    return parts.joinToString(" • ")
-}
-
 internal data class LockTimeoutOption(val label: String, val seconds: Long)
 
 internal val lockTimeoutOptions = listOf(
@@ -607,3 +499,44 @@ internal val lockTimeoutOptions = listOf(
 
 internal fun lockTimeoutLabel(seconds: Long): String =
     lockTimeoutOptions.firstOrNull { it.seconds == seconds }?.label ?: "5 minutes"
+
+@Composable
+internal fun AutoDiscoverToolsRow(appState: AppState, onDispatch: (AppAction) -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "Automatically discover and use tools",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = if (appState.trustedProviders.isEmpty())
+                        "Add trusted providers first to enable auto-discovery."
+                    else
+                        "Find new tools each conversation from trusted providers only.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+            Switch(
+                modifier = Modifier.semantics {
+                    contentDescription = "Automatically discover and use tools"
+                },
+                checked = appState.autoDiscoverToolsEnabled,
+                onCheckedChange = { checked ->
+                    onDispatch(AppAction.SetAutoDiscoverTools(enabled = checked))
+                },
+            )
+        }
+    }
+}

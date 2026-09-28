@@ -37,7 +37,7 @@ fun SettingsLocalModelsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Local Models", fontWeight = FontWeight.Medium) },
+                title = { Text("On-device models", fontWeight = FontWeight.Medium) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -53,6 +53,12 @@ fun SettingsLocalModelsScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            item(key = "local-toggle") {
+                Column(Modifier.padding(top = 4.dp)) {
+                    LocalInferenceToggleRow(appState = appState, onDispatch = onDispatch)
+                }
+            }
+
             progress?.let {
                 item {
                     Column(
@@ -66,16 +72,6 @@ fun SettingsLocalModelsScreen(
                         )
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
-                }
-            }
-
-            appState.localModelsError?.let { error ->
-                item {
-                    Text(
-                        error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
                 }
             }
 

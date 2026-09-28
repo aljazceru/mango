@@ -37,6 +37,7 @@ import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.BackendSummary
 import dev.disobey.mango.rust.HybridProfile
+import dev.disobey.mango.rust.InferenceRoute
 import dev.disobey.mango.rust.LocalPreprocessing
 import dev.disobey.mango.rust.RoutingPolicy
 
@@ -50,7 +51,7 @@ fun SettingsHybridRoutingScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Hybrid Routing", fontWeight = FontWeight.Medium) },
+                title = { Text("Hybrid rules", fontWeight = FontWeight.Medium) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -82,19 +83,7 @@ private fun HybridRoutingToggleCard(
     val isActive = appState.activeBackendId?.startsWith("hybrid:") == true
     val hasProfile = appState.hybridProfiles.isNotEmpty()
     val toggleHybrid: (Boolean) -> Unit = { enable ->
-        onDispatch(
-            if (enable && hasProfile) {
-                AppAction.SetActiveHybridProfile(profileId = appState.hybridProfiles.first().id)
-            } else {
-                val fallback = appState.backends.firstOrNull {
-                    !isOnDeviceBackend(it.id) &&
-                        it.hasApiKey &&
-                        it.healthStatus.name != "FAILED"
-                }
-                fallback?.let { AppAction.SetActiveBackend(backendId = it.id) }
-                    ?: AppAction.PopScreen
-            },
-        )
+        onDispatch(AppAction.SetInferenceRoute(route = if (enable) InferenceRoute.HYBRID else InferenceRoute.CLOUD))
     }
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -106,7 +95,7 @@ private fun HybridRoutingToggleCard(
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    "Use hybrid routing",
+                    "Use hybrid for new chats",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )

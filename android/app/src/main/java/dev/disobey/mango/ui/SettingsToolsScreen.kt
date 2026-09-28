@@ -111,6 +111,8 @@ fun SettingsToolsScreen(
                 }
             }
 
+            item(key = "auto-discover") { AutoDiscoverToolsRow(appState = appState, onDispatch = onDispatch) }
+
             item {
                 Spacer(Modifier.height(8.dp))
                 SettingsSectionLabel("Discover")
