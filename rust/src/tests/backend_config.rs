@@ -109,3 +109,70 @@ fn test_supports_tool_use_false_propagates() {
         "supports_tool_use=false on BackendConfig must propagate to BackendSummary (no hardcoded override)"
     );
 }
+
+#[test]
+fn test_summary_hides_models_for_unconfigured_seeded_backend() {
+    // Fresh-install shape: Tinfoil row seeded by migration with a model list,
+    // no API key. /v1/models is public, so the list exists — it must not surface.
+    let b = BackendConfig {
+        id: "tinfoil".into(),
+        name: "Tinfoil".into(),
+        base_url: "https://inference.tinfoil.sh/v1/".into(),
+        api_key: String::new(),
+        models: vec!["deepseek-v4-flash".into()],
+        tee_type: TeeType::AmdSevSnp,
+        max_concurrent_requests: 5,
+        supports_tool_use: true,
+    };
+    assert!(!b.is_user_configured());
+    let summary = b.to_summary(true, HealthStatus::Healthy);
+    assert!(
+        summary.models.is_empty(),
+        "unconfigured backend must not expose models to UIs"
+    );
+
+    // Same backend once a key is stored: models reappear.
+    let configured = BackendConfig {
+        api_key: "sk-test".into(),
+        ..b
+    };
+    let summary = configured.to_summary(true, HealthStatus::Healthy);
+    assert_eq!(summary.models, vec!["deepseek-v4-flash".to_string()]);
+}
+
+#[test]
+fn test_summary_keeps_models_for_keyless_local_backends() {
+    // Keyless local-server preset: configured by design.
+    let qvac = BackendConfig {
+        id: "qvac-local".into(),
+        name: "Local server".into(),
+        base_url: "http://127.0.0.1:11434/v1/".into(),
+        api_key: String::new(),
+        models: vec!["llama3.2".into()],
+        tee_type: TeeType::Unknown,
+        max_concurrent_requests: 5,
+        supports_tool_use: true,
+    };
+    assert!(qvac.is_user_configured());
+    assert_eq!(
+        qvac.to_summary(false, HealthStatus::Unknown).models,
+        vec!["llama3.2".to_string()]
+    );
+
+    // On-device backend (local:// base URL): configured without a key.
+    let on_device = BackendConfig {
+        id: "local-gemma3".into(),
+        name: "Gemma 3 (on-device)".into(),
+        base_url: "local://gemma3".into(),
+        api_key: String::new(),
+        models: vec!["gemma3".into()],
+        tee_type: TeeType::Unknown,
+        max_concurrent_requests: 1,
+        supports_tool_use: false,
+    };
+    assert!(on_device.is_user_configured());
+    assert_eq!(
+        on_device.to_summary(false, HealthStatus::Unknown).models,
+        vec!["gemma3".to_string()]
+    );
+}

@@ -56,6 +56,13 @@ pub struct BackendConfig {
 pub struct BackendSummary {
     pub id: String,
     pub name: String,
+    /// Models this backend offers, as last fetched from `/v1/models`.
+    ///
+    /// ALWAYS empty for backends the user has not configured
+    /// (`BackendConfig::is_user_configured`): most providers serve
+    /// `/v1/models` without authentication, so seeded preset rows (e.g.
+    /// Tinfoil on a fresh install) carry live model lists despite having no
+    /// API key. Those listings must never surface in model pickers.
     pub models: Vec<String>,
     pub tee_type: TeeType,
     pub is_active: bool,
@@ -81,13 +88,32 @@ impl BackendConfig {
         BackendSummary {
             id: self.id.clone(),
             name: self.name.clone(),
-            models: self.models.clone(),
+            // Unconfigured backends ship an empty list: their public
+            // `/v1/models` data must not reach any model picker.
+            models: if self.is_user_configured() {
+                self.models.clone()
+            } else {
+                Vec::new()
+            },
             tee_type: self.tee_type.clone(),
             is_active,
             health_status,
             supports_tool_use: self.supports_tool_use,
             has_api_key: !self.api_key.is_empty(),
         }
+    }
+
+    /// True when the user has actually configured this backend: an API key is
+    /// stored, or it needs none (on-device models via a `local://` base URL,
+    /// or the keyless `qvac-local` local-server preset).
+    ///
+    /// Single source of truth — the actor's `backend_is_user_configured`
+    /// delegates here. Seeded preset rows are NOT configured even when
+    /// `/v1/models` already populated `models`.
+    pub fn is_user_configured(&self) -> bool {
+        !self.api_key.is_empty()
+            || self.transport_kind() == super::transport::ProviderTransportKind::LocalOnDevice
+            || (self.id == "qvac-local" && self.tee_type == TeeType::Unknown)
     }
 
     /// Resolve the outbound transport implementation for this backend.

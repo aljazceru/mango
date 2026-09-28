@@ -4173,6 +4173,8 @@ fn default_model_for_preferred(
 /// Picks one model from the active/default provider; if it offers none (not
 /// configured, or /v1/models not fetched yet), falls back to the first
 /// configured provider that has models so new chats always start usable.
+/// Models from unconfigured providers are never returned: `/v1/models` is
+/// public on most providers, so a model listing alone proves nothing.
 fn default_backend_and_model(actor_state: &ActorState) -> (String, String) {
     let db = match actor_state.db.as_ref() {
         Some(db) => db.conn(),
@@ -4184,24 +4186,43 @@ fn default_backend_and_model(actor_state: &ActorState) -> (String, String) {
         .flatten()
         .or(actor_state.app_state.active_backend_id.clone())
         .unwrap_or_default();
+    // Hybrid virtual backend ids name user-created profiles; always configured.
+    let preferred_is_configured =
+        routing::profile_id_from_backend_id(&preferred_backend).is_some()
+            || actor_state
+                .backends
+                .iter()
+                .find(|b| b.id == preferred_backend)
+                .map(backend_is_user_configured)
+                .unwrap_or(false);
+    // A persisted default model may reference a provider the user never (or no
+    // longer) configured — earlier builds offered seeded models in the Defaults
+    // picker. Only honor it while a configured provider actually serves it.
     let default_model_setting = persistence::queries::get_setting(db, "default_model_id")
         .ok()
         .flatten()
-        .filter(|m| !m.is_empty());
-    let preferred_model =
+        .filter(|m| {
+            !m.is_empty()
+                && actor_state.backends.iter().any(|b| {
+                    backend_is_user_configured(b)
+                        && b
+                            .models
+                            .iter()
+                            .any(|candidate| llm::BackendConfig::same_model_id(candidate, m))
+                })
+        });
+    let preferred_model = if preferred_is_configured {
         default_model_for_preferred(actor_state, Some(preferred_backend.as_str()))
-            .filter(|m| !m.is_empty());
+            .filter(|m| !m.is_empty())
+    } else {
+        None
+    };
     match default_model_setting.or(preferred_model) {
         Some(model) => (preferred_backend, model),
         None => actor_state
             .backends
             .iter()
-            .find(|b| {
-                !b.models.is_empty()
-                    && (!b.api_key.is_empty()
-                        || is_local_on_device_backend(b)
-                        || b.id == "qvac-local")
-            })
+            .find(|b| !b.models.is_empty() && backend_is_user_configured(b))
             .map(|b| (b.id.clone(), b.models[0].clone()))
             .unwrap_or((preferred_backend, String::new())),
     }
@@ -4402,12 +4423,8 @@ fn backend_requires_attestation(backend: &llm::BackendConfig) -> bool {
     !is_local_on_device_backend(backend) && backend.tee_type != llm::TeeType::Unknown
 }
 
-fn is_keyless_local_server_backend(backend: &llm::BackendConfig) -> bool {
-    backend.id == "qvac-local" && backend.tee_type == llm::TeeType::Unknown
-}
-
 fn backend_is_user_configured(backend: &llm::BackendConfig) -> bool {
-    !backend.api_key.is_empty() || is_keyless_local_server_backend(backend)
+    backend.is_user_configured()
 }
 
 fn backend_or_hybrid_profile_exists(

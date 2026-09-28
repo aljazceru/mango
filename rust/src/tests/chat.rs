@@ -55,7 +55,31 @@ fn test_new_conversation_creates_and_navigates() {
 
 #[test]
 fn test_new_conversation_picks_model_from_configured_provider() {
-    let app = make_app();
+    // A provider only counts as configured when its API key loads back from
+    // the keychain — NullKeychainProvider (load -> None) cannot express that,
+    // so this test uses a round-tripping in-memory keychain.
+    struct MapKeychain(std::sync::Mutex<std::collections::HashMap<(String, String), String>>);
+    impl crate::KeychainProvider for MapKeychain {
+        fn store(&self, service: String, key: String, value: String) -> bool {
+            self.0.lock().unwrap().insert((service, key), value);
+            true
+        }
+        fn load(&self, service: String, key: String) -> Option<String> {
+            self.0.lock().unwrap().get(&(service, key)).cloned()
+        }
+        fn delete(&self, service: String, key: String) -> bool {
+            self.0.lock().unwrap().remove(&(service, key)).is_some()
+        }
+    }
+    let app = FfiApp::new(
+        "".into(),
+        Box::new(MapKeychain(Default::default())),
+        Box::new(NullEmbeddingProvider),
+        EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
+        Box::new(NullBiometricProvider),
+    );
+    app.sync();
     // Remove the seeded (keyless) tinfoil backend; only keyless ppq-ai with
     // seeded models remains, which must NOT count as available.
     app.dispatch(AppAction::RemoveBackend {
@@ -90,6 +114,17 @@ fn test_new_conversation_picks_model_from_configured_provider() {
     assert_eq!(
         conv.backend_id, added.id,
         "new chat backend should point at the configured provider"
+    );
+    // Seeded keyless ppq-ai carries a persisted model list, but its summary
+    // must not surface those models: /v1/models answers without a key.
+    let ppq = state
+        .backends
+        .iter()
+        .find(|b| b.id == "ppq-ai")
+        .expect("seeded ppq-ai row should exist");
+    assert!(
+        ppq.models.is_empty(),
+        "unconfigured ppq-ai must not expose models to the UI"
     );
 }
 
