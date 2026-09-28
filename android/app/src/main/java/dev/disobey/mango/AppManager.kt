@@ -11,6 +11,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.neverEqualPolicy
 import androidx.compose.runtime.setValue
 import dev.disobey.mango.rust.AppAction
+import dev.disobey.mango.rust.InferenceRoute
+import dev.disobey.mango.rust.InferenceStatus
 import dev.disobey.mango.rust.AppReconciler
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.PpqAccountMode
@@ -147,6 +149,18 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             localModelsError = null,
             compaction = null,
             compactionOffered = false,
+            inferenceStatus = InferenceStatus(
+                route = InferenceRoute.CLOUD,
+                backendId = "",
+                backendName = "",
+                modelId = "",
+                teeType = null,
+                attestedBackendId = null,
+                localModelName = null,
+                hybridAvailable = false,
+                onDeviceAvailable = false,
+            ),
+
         ),
         policy = neverEqualPolicy(),
     )

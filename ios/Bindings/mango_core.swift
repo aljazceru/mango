@@ -1802,6 +1802,11 @@ public struct AppState: Equatable, Hashable {
      * and compaction would help. Chat UI offers "Compact & retry".
      */
     public var compactionOffered: Bool
+    /**
+     * Settings status card: what new chats use and where they run. Derived by
+     * `refresh_inference_status`; never persisted.
+     */
+    public var inferenceStatus: InferenceStatus
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2015,7 +2020,11 @@ public struct AppState: Equatable, Hashable {
         /**
          * True when the current turn hit (or would hit) a model context overflow
          * and compaction would help. Chat UI offers "Compact & retry".
-         */compactionOffered: Bool) {
+         */compactionOffered: Bool, 
+        /**
+         * Settings status card: what new chats use and where they run. Derived by
+         * `refresh_inference_status`; never persisted.
+         */inferenceStatus: InferenceStatus) {
         self.rev = rev
         self.router = router
         self.busyState = busyState
@@ -2073,6 +2082,7 @@ public struct AppState: Equatable, Hashable {
         self.localModelsError = localModelsError
         self.compaction = compaction
         self.compactionOffered = compactionOffered
+        self.inferenceStatus = inferenceStatus
     }
 
     
@@ -2147,7 +2157,8 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 noLockMode: FfiConverterBool.read(from: &buf), 
                 localModelsError: FfiConverterOptionString.read(from: &buf), 
                 compaction: FfiConverterOptionTypeCompactionInfo.read(from: &buf), 
-                compactionOffered: FfiConverterBool.read(from: &buf)
+                compactionOffered: FfiConverterBool.read(from: &buf), 
+                inferenceStatus: FfiConverterTypeInferenceStatus.read(from: &buf)
         )
     }
 
@@ -2209,6 +2220,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.localModelsError, into: &buf)
         FfiConverterOptionTypeCompactionInfo.write(value.compaction, into: &buf)
         FfiConverterBool.write(value.compactionOffered, into: &buf)
+        FfiConverterTypeInferenceStatus.write(value.inferenceStatus, into: &buf)
     }
 }
 
@@ -2376,6 +2388,15 @@ public func FfiConverterTypeAttestationStatusEntry_lower(_ value: AttestationSta
 public struct BackendSummary: Equatable, Hashable {
     public var id: String
     public var name: String
+    /**
+     * Models this backend offers, as last fetched from `/v1/models`.
+     *
+     * ALWAYS empty for backends the user has not configured
+     * (`BackendConfig::is_user_configured`): most providers serve
+     * `/v1/models` without authentication, so seeded preset rows (e.g.
+     * Tinfoil on a fresh install) carry live model lists despite having no
+     * API key. Those listings must never surface in model pickers.
+     */
     public var models: [String]
     public var teeType: TeeType
     public var isActive: Bool
@@ -2400,7 +2421,16 @@ public struct BackendSummary: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, name: String, models: [String], teeType: TeeType, isActive: Bool, healthStatus: HealthStatus, 
+    public init(id: String, name: String, 
+        /**
+         * Models this backend offers, as last fetched from `/v1/models`.
+         *
+         * ALWAYS empty for backends the user has not configured
+         * (`BackendConfig::is_user_configured`): most providers serve
+         * `/v1/models` without authentication, so seeded preset rows (e.g.
+         * Tinfoil on a fresh install) carry live model lists despite having no
+         * API key. Those listings must never surface in model pickers.
+         */models: [String], teeType: TeeType, isActive: Bool, healthStatus: HealthStatus, 
         /**
          * Whether this backend supports function calling (tool use).
          *
@@ -3470,6 +3500,124 @@ public func FfiConverterTypeHybridProfile_lift(_ buf: RustBuffer) throws -> Hybr
 #endif
 public func FfiConverterTypeHybridProfile_lower(_ value: HybridProfile) -> RustBuffer {
     return FfiConverterTypeHybridProfile.lower(value)
+}
+
+
+public struct InferenceStatus: Equatable, Hashable {
+    public var route: InferenceRoute
+    /**
+     * Backend id new chats use (`hybrid:<profile>` for hybrid).
+     */
+    public var backendId: String
+    /**
+     * Provider name, or the hybrid profile name. Empty when unresolved.
+     */
+    public var backendName: String
+    /**
+     * Model new chats use; the remote model for hybrid.
+     */
+    public var modelId: String
+    /**
+     * TEE of the remote side. `None` on-device.
+     */
+    public var teeType: TeeType?
+    /**
+     * Backend whose `attestation_statuses` entry the card shows.
+     */
+    public var attestedBackendId: String?
+    /**
+     * Display name of the local model (hybrid and on-device).
+     */
+    public var localModelName: String?
+    public var hybridAvailable: Bool
+    public var onDeviceAvailable: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(route: InferenceRoute, 
+        /**
+         * Backend id new chats use (`hybrid:<profile>` for hybrid).
+         */backendId: String, 
+        /**
+         * Provider name, or the hybrid profile name. Empty when unresolved.
+         */backendName: String, 
+        /**
+         * Model new chats use; the remote model for hybrid.
+         */modelId: String, 
+        /**
+         * TEE of the remote side. `None` on-device.
+         */teeType: TeeType?, 
+        /**
+         * Backend whose `attestation_statuses` entry the card shows.
+         */attestedBackendId: String?, 
+        /**
+         * Display name of the local model (hybrid and on-device).
+         */localModelName: String?, hybridAvailable: Bool, onDeviceAvailable: Bool) {
+        self.route = route
+        self.backendId = backendId
+        self.backendName = backendName
+        self.modelId = modelId
+        self.teeType = teeType
+        self.attestedBackendId = attestedBackendId
+        self.localModelName = localModelName
+        self.hybridAvailable = hybridAvailable
+        self.onDeviceAvailable = onDeviceAvailable
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension InferenceStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInferenceStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InferenceStatus {
+        return
+            try InferenceStatus(
+                route: FfiConverterTypeInferenceRoute.read(from: &buf), 
+                backendId: FfiConverterString.read(from: &buf), 
+                backendName: FfiConverterString.read(from: &buf), 
+                modelId: FfiConverterString.read(from: &buf), 
+                teeType: FfiConverterOptionTypeTeeType.read(from: &buf), 
+                attestedBackendId: FfiConverterOptionString.read(from: &buf), 
+                localModelName: FfiConverterOptionString.read(from: &buf), 
+                hybridAvailable: FfiConverterBool.read(from: &buf), 
+                onDeviceAvailable: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: InferenceStatus, into buf: inout [UInt8]) {
+        FfiConverterTypeInferenceRoute.write(value.route, into: &buf)
+        FfiConverterString.write(value.backendId, into: &buf)
+        FfiConverterString.write(value.backendName, into: &buf)
+        FfiConverterString.write(value.modelId, into: &buf)
+        FfiConverterOptionTypeTeeType.write(value.teeType, into: &buf)
+        FfiConverterOptionString.write(value.attestedBackendId, into: &buf)
+        FfiConverterOptionString.write(value.localModelName, into: &buf)
+        FfiConverterBool.write(value.hybridAvailable, into: &buf)
+        FfiConverterBool.write(value.onDeviceAvailable, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInferenceStatus_lift(_ buf: RustBuffer) throws -> InferenceStatus {
+    return try FfiConverterTypeInferenceStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInferenceStatus_lower(_ value: InferenceStatus) -> RustBuffer {
+    return FfiConverterTypeInferenceStatus.lower(value)
 }
 
 
@@ -5397,6 +5545,12 @@ public enum AppAction: Equatable, Hashable {
     case setLocalInferenceEnabled(enabled: Bool
     )
     /**
+     * Switch where new chats run (settings status card). The core picks the
+     * concrete backend/model; blocked switches toast and open the setup screen.
+     */
+    case setInferenceRoute(route: InferenceRoute
+    )
+    /**
      * Download and verify a built-in local model.
      */
     case downloadLocalModel(modelId: String
@@ -5863,164 +6017,167 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 43: return .setLocalInferenceEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 44: return .downloadLocalModel(modelId: try FfiConverterString.read(from: &buf)
+        case 44: return .setInferenceRoute(route: try FfiConverterTypeInferenceRoute.read(from: &buf)
         )
         
-        case 45: return .deleteLocalModel(modelId: try FfiConverterString.read(from: &buf)
+        case 45: return .downloadLocalModel(modelId: try FfiConverterString.read(from: &buf)
         )
         
-        case 46: return .saveHybridProfile(profile: try FfiConverterTypeHybridProfile.read(from: &buf)
+        case 46: return .deleteLocalModel(modelId: try FfiConverterString.read(from: &buf)
         )
         
-        case 47: return .deleteHybridProfile(profileId: try FfiConverterString.read(from: &buf)
+        case 47: return .saveHybridProfile(profile: try FfiConverterTypeHybridProfile.read(from: &buf)
         )
         
-        case 48: return .setActiveHybridProfile(profileId: try FfiConverterString.read(from: &buf)
+        case 48: return .deleteHybridProfile(profileId: try FfiConverterString.read(from: &buf)
         )
         
-        case 49: return .overrideConversationBackend(conversationId: try FfiConverterString.read(from: &buf), backendId: try FfiConverterString.read(from: &buf)
+        case 49: return .setActiveHybridProfile(profileId: try FfiConverterString.read(from: &buf)
         )
         
-        case 50: return .nextOnboardingStep
-        
-        case 51: return .previousOnboardingStep
-        
-        case 52: return .updateBackendApiKey(backendId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
+        case 50: return .overrideConversationBackend(conversationId: try FfiConverterString.read(from: &buf), backendId: try FfiConverterString.read(from: &buf)
         )
         
-        case 53: return .validateApiKey(backendId: try FfiConverterString.read(from: &buf)
+        case 51: return .nextOnboardingStep
+        
+        case 52: return .previousOnboardingStep
+        
+        case 53: return .updateBackendApiKey(backendId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 54: return .completeOnboarding
-        
-        case 55: return .skipOnboarding
-        
-        case 56: return .addBackendFromPreset(presetId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
+        case 54: return .validateApiKey(backendId: try FfiConverterString.read(from: &buf)
         )
         
-        case 57: return .ingestDocument(filename: try FfiConverterString.read(from: &buf), content: try FfiConverterData.read(from: &buf)
+        case 55: return .completeOnboarding
+        
+        case 56: return .skipOnboarding
+        
+        case 57: return .addBackendFromPreset(presetId: try FfiConverterString.read(from: &buf), apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 58: return .deleteDocument(documentId: try FfiConverterString.read(from: &buf)
+        case 58: return .ingestDocument(filename: try FfiConverterString.read(from: &buf), content: try FfiConverterData.read(from: &buf)
         )
         
-        case 59: return .attachDocumentToConversation(documentId: try FfiConverterString.read(from: &buf)
+        case 59: return .deleteDocument(documentId: try FfiConverterString.read(from: &buf)
         )
         
-        case 60: return .detachDocumentFromConversation(documentId: try FfiConverterString.read(from: &buf)
+        case 60: return .attachDocumentToConversation(documentId: try FfiConverterString.read(from: &buf)
         )
         
-        case 61: return .launchAgentSession(taskDescription: try FfiConverterString.read(from: &buf)
+        case 61: return .detachDocumentFromConversation(documentId: try FfiConverterString.read(from: &buf)
         )
         
-        case 62: return .pauseAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 62: return .launchAgentSession(taskDescription: try FfiConverterString.read(from: &buf)
         )
         
-        case 63: return .resumeAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 63: return .pauseAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 64: return .cancelAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 64: return .resumeAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 65: return .loadAgentSession(sessionId: try FfiConverterString.read(from: &buf)
+        case 65: return .cancelAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 66: return .clearAgentDetail
-        
-        case 67: return .setAttestationInterval(minutes: try FfiConverterUInt32.read(from: &buf)
+        case 66: return .loadAgentSession(sessionId: try FfiConverterString.read(from: &buf)
         )
         
-        case 68: return .setGlobalSystemPrompt(prompt: try FfiConverterOptionString.read(from: &buf)
+        case 67: return .clearAgentDetail
+        
+        case 68: return .setAttestationInterval(minutes: try FfiConverterUInt32.read(from: &buf)
         )
         
-        case 69: return .listMemories
-        
-        case 70: return .deleteMemory(memoryId: try FfiConverterString.read(from: &buf)
+        case 69: return .setGlobalSystemPrompt(prompt: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 71: return .updateMemory(memoryId: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf)
+        case 70: return .listMemories
+        
+        case 71: return .deleteMemory(memoryId: try FfiConverterString.read(from: &buf)
         )
         
-        case 72: return .setBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
+        case 72: return .updateMemory(memoryId: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf)
         )
         
-        case 73: return .validateBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
+        case 73: return .setBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 74: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 74: return .validateBraveApiKey(apiKey: try FfiConverterString.read(from: &buf)
         )
         
-        case 75: return .setConversationRetention(mode: try FfiConverterTypeConversationRetentionMode.read(from: &buf), days: try FfiConverterUInt32.read(from: &buf)
+        case 75: return .setMemoriesEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 76: return .unarchiveConversation(id: try FfiConverterString.read(from: &buf)
+        case 76: return .setConversationRetention(mode: try FfiConverterTypeConversationRetentionMode.read(from: &buf), days: try FfiConverterUInt32.read(from: &buf)
         )
         
-        case 77: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 77: return .unarchiveConversation(id: try FfiConverterString.read(from: &buf)
         )
         
-        case 78: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
+        case 78: return .setConversationToolsEnabled(conversationId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 79: return .setupNoLock
-        
-        case 80: return .enablePinLock(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
+        case 79: return .setupPin(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
         )
         
-        case 81: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
+        case 80: return .setupNoLock
+        
+        case 81: return .enablePinLock(pin: try FfiConverterString.read(from: &buf), duressPin: try FfiConverterOptionString.read(from: &buf), enableBiometric: try FfiConverterBool.read(from: &buf)
         )
         
-        case 82: return .changePin(currentPin: try FfiConverterString.read(from: &buf), newPin: try FfiConverterString.read(from: &buf)
+        case 82: return .setDuressPin(pin: try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 83: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
+        case 83: return .changePin(currentPin: try FfiConverterString.read(from: &buf), newPin: try FfiConverterString.read(from: &buf)
         )
         
-        case 84: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
+        case 84: return .unlockWithDek(dekHex: try FfiConverterString.read(from: &buf)
         )
         
-        case 85: return .lockApp
-        
-        case 86: return .attemptBiometricUnlock
-        
-        case 87: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
+        case 85: return .unlockWithPin(pin: try FfiConverterString.read(from: &buf)
         )
         
-        case 88: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
+        case 86: return .lockApp
+        
+        case 87: return .attemptBiometricUnlock
+        
+        case 88: return .setBiometricLoginEnabled(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 89: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
+        case 89: return .setLockTimeout(seconds: try FfiConverterInt64.read(from: &buf)
         )
         
-        case 90: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
+        case 90: return .addDirectorySource(displayName: try FfiConverterString.read(from: &buf), path: try FfiConverterOptionString.read(from: &buf), bookmarkData: try FfiConverterOptionData.read(from: &buf), treeUri: try FfiConverterOptionString.read(from: &buf), exclusionGlobs: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 91: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
+        case 91: return .syncDirectoryFiles(sourceId: try FfiConverterString.read(from: &buf), files: try FfiConverterSequenceTypeDirectoryFileEntry.read(from: &buf), removedPaths: try FfiConverterSequenceString.read(from: &buf), isFinalBatch: try FfiConverterBool.read(from: &buf)
         )
         
-        case 92: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
+        case 92: return .removeDirectorySource(sourceId: try FfiConverterString.read(from: &buf)
         )
         
-        case 93: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
+        case 93: return .setDirectoryExclusions(sourceId: try FfiConverterString.read(from: &buf), globs: try FfiConverterSequenceString.read(from: &buf)
         )
         
-        case 94: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
+        case 94: return .triggerDirectorySync(sourceId: try FfiConverterString.read(from: &buf)
         )
         
-        case 95: return .discoverContextvmTools
-        
-        case 96: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
+        case 95: return .updateDirectorySourceBookmark(sourceId: try FfiConverterString.read(from: &buf), bookmarkData: try FfiConverterData.read(from: &buf)
         )
         
-        case 97: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
+        case 96: return .discoverContextvmTools
+        
+        case 97: return .setContextvmToolEnabled(toolId: try FfiConverterString.read(from: &buf), enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 98: return .retryContextvmDiscovery
-        
-        case 99: return .addTrustedProvider(pubkey: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        case 98: return .setAutoDiscoverTools(enabled: try FfiConverterBool.read(from: &buf)
         )
         
-        case 100: return .removeTrustedProvider(pubkey: try FfiConverterString.read(from: &buf)
+        case 99: return .retryContextvmDiscovery
+        
+        case 100: return .addTrustedProvider(pubkey: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 101: return .removeTrustedProvider(pubkey: try FfiConverterString.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -6242,236 +6399,241 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterBool.write(enabled, into: &buf)
             
         
-        case let .downloadLocalModel(modelId):
+        case let .setInferenceRoute(route):
             writeInt(&buf, Int32(44))
-            FfiConverterString.write(modelId, into: &buf)
+            FfiConverterTypeInferenceRoute.write(route, into: &buf)
             
         
-        case let .deleteLocalModel(modelId):
+        case let .downloadLocalModel(modelId):
             writeInt(&buf, Int32(45))
             FfiConverterString.write(modelId, into: &buf)
             
         
-        case let .saveHybridProfile(profile):
+        case let .deleteLocalModel(modelId):
             writeInt(&buf, Int32(46))
+            FfiConverterString.write(modelId, into: &buf)
+            
+        
+        case let .saveHybridProfile(profile):
+            writeInt(&buf, Int32(47))
             FfiConverterTypeHybridProfile.write(profile, into: &buf)
             
         
         case let .deleteHybridProfile(profileId):
-            writeInt(&buf, Int32(47))
-            FfiConverterString.write(profileId, into: &buf)
-            
-        
-        case let .setActiveHybridProfile(profileId):
             writeInt(&buf, Int32(48))
             FfiConverterString.write(profileId, into: &buf)
             
         
-        case let .overrideConversationBackend(conversationId,backendId):
+        case let .setActiveHybridProfile(profileId):
             writeInt(&buf, Int32(49))
+            FfiConverterString.write(profileId, into: &buf)
+            
+        
+        case let .overrideConversationBackend(conversationId,backendId):
+            writeInt(&buf, Int32(50))
             FfiConverterString.write(conversationId, into: &buf)
             FfiConverterString.write(backendId, into: &buf)
             
         
         case .nextOnboardingStep:
-            writeInt(&buf, Int32(50))
-        
-        
-        case .previousOnboardingStep:
             writeInt(&buf, Int32(51))
         
         
-        case let .updateBackendApiKey(backendId,apiKey):
+        case .previousOnboardingStep:
             writeInt(&buf, Int32(52))
+        
+        
+        case let .updateBackendApiKey(backendId,apiKey):
+            writeInt(&buf, Int32(53))
             FfiConverterString.write(backendId, into: &buf)
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .validateApiKey(backendId):
-            writeInt(&buf, Int32(53))
+            writeInt(&buf, Int32(54))
             FfiConverterString.write(backendId, into: &buf)
             
         
         case .completeOnboarding:
-            writeInt(&buf, Int32(54))
-        
-        
-        case .skipOnboarding:
             writeInt(&buf, Int32(55))
         
         
-        case let .addBackendFromPreset(presetId,apiKey):
+        case .skipOnboarding:
             writeInt(&buf, Int32(56))
+        
+        
+        case let .addBackendFromPreset(presetId,apiKey):
+            writeInt(&buf, Int32(57))
             FfiConverterString.write(presetId, into: &buf)
             FfiConverterString.write(apiKey, into: &buf)
             
         
         case let .ingestDocument(filename,content):
-            writeInt(&buf, Int32(57))
+            writeInt(&buf, Int32(58))
             FfiConverterString.write(filename, into: &buf)
             FfiConverterData.write(content, into: &buf)
             
         
         case let .deleteDocument(documentId):
-            writeInt(&buf, Int32(58))
-            FfiConverterString.write(documentId, into: &buf)
-            
-        
-        case let .attachDocumentToConversation(documentId):
             writeInt(&buf, Int32(59))
             FfiConverterString.write(documentId, into: &buf)
             
         
-        case let .detachDocumentFromConversation(documentId):
+        case let .attachDocumentToConversation(documentId):
             writeInt(&buf, Int32(60))
             FfiConverterString.write(documentId, into: &buf)
             
         
-        case let .launchAgentSession(taskDescription):
+        case let .detachDocumentFromConversation(documentId):
             writeInt(&buf, Int32(61))
+            FfiConverterString.write(documentId, into: &buf)
+            
+        
+        case let .launchAgentSession(taskDescription):
+            writeInt(&buf, Int32(62))
             FfiConverterString.write(taskDescription, into: &buf)
             
         
         case let .pauseAgentSession(sessionId):
-            writeInt(&buf, Int32(62))
-            FfiConverterString.write(sessionId, into: &buf)
-            
-        
-        case let .resumeAgentSession(sessionId):
             writeInt(&buf, Int32(63))
             FfiConverterString.write(sessionId, into: &buf)
             
         
-        case let .cancelAgentSession(sessionId):
+        case let .resumeAgentSession(sessionId):
             writeInt(&buf, Int32(64))
             FfiConverterString.write(sessionId, into: &buf)
             
         
-        case let .loadAgentSession(sessionId):
+        case let .cancelAgentSession(sessionId):
             writeInt(&buf, Int32(65))
             FfiConverterString.write(sessionId, into: &buf)
             
         
-        case .clearAgentDetail:
+        case let .loadAgentSession(sessionId):
             writeInt(&buf, Int32(66))
+            FfiConverterString.write(sessionId, into: &buf)
+            
+        
+        case .clearAgentDetail:
+            writeInt(&buf, Int32(67))
         
         
         case let .setAttestationInterval(minutes):
-            writeInt(&buf, Int32(67))
+            writeInt(&buf, Int32(68))
             FfiConverterUInt32.write(minutes, into: &buf)
             
         
         case let .setGlobalSystemPrompt(prompt):
-            writeInt(&buf, Int32(68))
+            writeInt(&buf, Int32(69))
             FfiConverterOptionString.write(prompt, into: &buf)
             
         
         case .listMemories:
-            writeInt(&buf, Int32(69))
+            writeInt(&buf, Int32(70))
         
         
         case let .deleteMemory(memoryId):
-            writeInt(&buf, Int32(70))
+            writeInt(&buf, Int32(71))
             FfiConverterString.write(memoryId, into: &buf)
             
         
         case let .updateMemory(memoryId,content):
-            writeInt(&buf, Int32(71))
+            writeInt(&buf, Int32(72))
             FfiConverterString.write(memoryId, into: &buf)
             FfiConverterString.write(content, into: &buf)
             
         
         case let .setBraveApiKey(apiKey):
-            writeInt(&buf, Int32(72))
-            FfiConverterString.write(apiKey, into: &buf)
-            
-        
-        case let .validateBraveApiKey(apiKey):
             writeInt(&buf, Int32(73))
             FfiConverterString.write(apiKey, into: &buf)
             
         
-        case let .setMemoriesEnabled(enabled):
+        case let .validateBraveApiKey(apiKey):
             writeInt(&buf, Int32(74))
+            FfiConverterString.write(apiKey, into: &buf)
+            
+        
+        case let .setMemoriesEnabled(enabled):
+            writeInt(&buf, Int32(75))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setConversationRetention(mode,days):
-            writeInt(&buf, Int32(75))
+            writeInt(&buf, Int32(76))
             FfiConverterTypeConversationRetentionMode.write(mode, into: &buf)
             FfiConverterUInt32.write(days, into: &buf)
             
         
         case let .unarchiveConversation(id):
-            writeInt(&buf, Int32(76))
+            writeInt(&buf, Int32(77))
             FfiConverterString.write(id, into: &buf)
             
         
         case let .setConversationToolsEnabled(conversationId,enabled):
-            writeInt(&buf, Int32(77))
+            writeInt(&buf, Int32(78))
             FfiConverterString.write(conversationId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setupPin(pin,duressPin,enableBiometric):
-            writeInt(&buf, Int32(78))
+            writeInt(&buf, Int32(79))
             FfiConverterString.write(pin, into: &buf)
             FfiConverterOptionString.write(duressPin, into: &buf)
             FfiConverterBool.write(enableBiometric, into: &buf)
             
         
         case .setupNoLock:
-            writeInt(&buf, Int32(79))
+            writeInt(&buf, Int32(80))
         
         
         case let .enablePinLock(pin,duressPin,enableBiometric):
-            writeInt(&buf, Int32(80))
+            writeInt(&buf, Int32(81))
             FfiConverterString.write(pin, into: &buf)
             FfiConverterOptionString.write(duressPin, into: &buf)
             FfiConverterBool.write(enableBiometric, into: &buf)
             
         
         case let .setDuressPin(pin):
-            writeInt(&buf, Int32(81))
+            writeInt(&buf, Int32(82))
             FfiConverterOptionString.write(pin, into: &buf)
             
         
         case let .changePin(currentPin,newPin):
-            writeInt(&buf, Int32(82))
+            writeInt(&buf, Int32(83))
             FfiConverterString.write(currentPin, into: &buf)
             FfiConverterString.write(newPin, into: &buf)
             
         
         case let .unlockWithDek(dekHex):
-            writeInt(&buf, Int32(83))
+            writeInt(&buf, Int32(84))
             FfiConverterString.write(dekHex, into: &buf)
             
         
         case let .unlockWithPin(pin):
-            writeInt(&buf, Int32(84))
+            writeInt(&buf, Int32(85))
             FfiConverterString.write(pin, into: &buf)
             
         
         case .lockApp:
-            writeInt(&buf, Int32(85))
-        
-        
-        case .attemptBiometricUnlock:
             writeInt(&buf, Int32(86))
         
         
-        case let .setBiometricLoginEnabled(enabled):
+        case .attemptBiometricUnlock:
             writeInt(&buf, Int32(87))
+        
+        
+        case let .setBiometricLoginEnabled(enabled):
+            writeInt(&buf, Int32(88))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setLockTimeout(seconds):
-            writeInt(&buf, Int32(88))
+            writeInt(&buf, Int32(89))
             FfiConverterInt64.write(seconds, into: &buf)
             
         
         case let .addDirectorySource(displayName,path,bookmarkData,treeUri,exclusionGlobs):
-            writeInt(&buf, Int32(89))
+            writeInt(&buf, Int32(90))
             FfiConverterString.write(displayName, into: &buf)
             FfiConverterOptionString.write(path, into: &buf)
             FfiConverterOptionData.write(bookmarkData, into: &buf)
@@ -6480,7 +6642,7 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .syncDirectoryFiles(sourceId,files,removedPaths,isFinalBatch):
-            writeInt(&buf, Int32(90))
+            writeInt(&buf, Int32(91))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceTypeDirectoryFileEntry.write(files, into: &buf)
             FfiConverterSequenceString.write(removedPaths, into: &buf)
@@ -6488,54 +6650,54 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             
         
         case let .removeDirectorySource(sourceId):
-            writeInt(&buf, Int32(91))
+            writeInt(&buf, Int32(92))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .setDirectoryExclusions(sourceId,globs):
-            writeInt(&buf, Int32(92))
+            writeInt(&buf, Int32(93))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterSequenceString.write(globs, into: &buf)
             
         
         case let .triggerDirectorySync(sourceId):
-            writeInt(&buf, Int32(93))
+            writeInt(&buf, Int32(94))
             FfiConverterString.write(sourceId, into: &buf)
             
         
         case let .updateDirectorySourceBookmark(sourceId,bookmarkData):
-            writeInt(&buf, Int32(94))
+            writeInt(&buf, Int32(95))
             FfiConverterString.write(sourceId, into: &buf)
             FfiConverterData.write(bookmarkData, into: &buf)
             
         
         case .discoverContextvmTools:
-            writeInt(&buf, Int32(95))
+            writeInt(&buf, Int32(96))
         
         
         case let .setContextvmToolEnabled(toolId,enabled):
-            writeInt(&buf, Int32(96))
+            writeInt(&buf, Int32(97))
             FfiConverterString.write(toolId, into: &buf)
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case let .setAutoDiscoverTools(enabled):
-            writeInt(&buf, Int32(97))
+            writeInt(&buf, Int32(98))
             FfiConverterBool.write(enabled, into: &buf)
             
         
         case .retryContextvmDiscovery:
-            writeInt(&buf, Int32(98))
+            writeInt(&buf, Int32(99))
         
         
         case let .addTrustedProvider(pubkey,label):
-            writeInt(&buf, Int32(99))
+            writeInt(&buf, Int32(100))
             FfiConverterString.write(pubkey, into: &buf)
             FfiConverterOptionString.write(label, into: &buf)
             
         
         case let .removeTrustedProvider(pubkey):
-            writeInt(&buf, Int32(100))
+            writeInt(&buf, Int32(101))
             FfiConverterString.write(pubkey, into: &buf)
             
         }
@@ -7580,6 +7742,79 @@ public func FfiConverterTypeHealthStatus_lower(_ value: HealthStatus) -> RustBuf
 
 
 
+
+public enum InferenceRoute: Equatable, Hashable {
+    
+    case cloud
+    case hybrid
+    case onDevice
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension InferenceRoute: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeInferenceRoute: FfiConverterRustBuffer {
+    typealias SwiftType = InferenceRoute
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> InferenceRoute {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .cloud
+        
+        case 2: return .hybrid
+        
+        case 3: return .onDevice
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: InferenceRoute, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .cloud:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .hybrid:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .onDevice:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInferenceRoute_lift(_ buf: RustBuffer) throws -> InferenceRoute {
+    return try FfiConverterTypeInferenceRoute.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeInferenceRoute_lower(_ value: InferenceRoute) -> RustBuffer {
+    return FfiConverterTypeInferenceRoute.lower(value)
+}
+
+
+
 /**
  * Error taxonomy for LLM operations -- crosses UniFFI boundary as exception type.
  * Per D-10: 5 variants mapping HTTP/network conditions to human-readable messages.
@@ -8416,6 +8651,14 @@ public enum Screen: Equatable, Hashable {
      */
     case settingsSecurity
     /**
+     * App lock sub-screen: PIN, lock timeout, biometrics, duress PIN (Android settings redesign).
+     */
+    case settingsAppLock
+    /**
+     * Data & retention sub-screen: retention, archived chats, delete chats/data (Android settings redesign).
+     */
+    case settingsDataRetention
+    /**
      * Tools settings sub-screen (Phase 30).
      */
     case settingsTools
@@ -8499,22 +8742,26 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
         
         case 13: return .settingsSecurity
         
-        case 14: return .settingsTools
+        case 14: return .settingsAppLock
         
-        case 15: return .settingsLocalModels
+        case 15: return .settingsDataRetention
         
-        case 16: return .settingsHybridRouting
+        case 16: return .settingsTools
         
-        case 17: return .toolDiscovery
+        case 17: return .settingsLocalModels
         
-        case 18: return .contextvmToolDetail(toolId: try FfiConverterString.read(from: &buf)
+        case 18: return .settingsHybridRouting
+        
+        case 19: return .toolDiscovery
+        
+        case 20: return .contextvmToolDetail(toolId: try FfiConverterString.read(from: &buf)
         )
         
-        case 19: return .trustedProviders
+        case 21: return .trustedProviders
         
-        case 20: return .locked
+        case 22: return .locked
         
-        case 21: return .pinSetup
+        case 23: return .pinSetup
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -8578,37 +8825,45 @@ public struct FfiConverterTypeScreen: FfiConverterRustBuffer {
             writeInt(&buf, Int32(13))
         
         
-        case .settingsTools:
+        case .settingsAppLock:
             writeInt(&buf, Int32(14))
         
         
-        case .settingsLocalModels:
+        case .settingsDataRetention:
             writeInt(&buf, Int32(15))
         
         
-        case .settingsHybridRouting:
+        case .settingsTools:
             writeInt(&buf, Int32(16))
         
         
-        case .toolDiscovery:
+        case .settingsLocalModels:
             writeInt(&buf, Int32(17))
         
         
-        case let .contextvmToolDetail(toolId):
+        case .settingsHybridRouting:
             writeInt(&buf, Int32(18))
+        
+        
+        case .toolDiscovery:
+            writeInt(&buf, Int32(19))
+        
+        
+        case let .contextvmToolDetail(toolId):
+            writeInt(&buf, Int32(20))
             FfiConverterString.write(toolId, into: &buf)
             
         
         case .trustedProviders:
-            writeInt(&buf, Int32(19))
+            writeInt(&buf, Int32(21))
         
         
         case .locked:
-            writeInt(&buf, Int32(20))
+            writeInt(&buf, Int32(22))
         
         
         case .pinSetup:
-            writeInt(&buf, Int32(21))
+            writeInt(&buf, Int32(23))
         
         }
     }
@@ -10313,6 +10568,30 @@ fileprivate struct FfiConverterOptionTypeBackendRole: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeBackendRole.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeTeeType: FfiConverterRustBuffer {
+    typealias SwiftType = TeeType?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeTeeType.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeTeeType.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

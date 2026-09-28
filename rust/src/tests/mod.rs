@@ -22,6 +22,7 @@ mod enrollment_recovery;
 mod error_mapping;
 mod fork_conversation;
 mod hpke_key_hygiene;
+mod inference_route_actor;
 mod live_brave;
 mod live_ppq_private;
 mod live_redpill;

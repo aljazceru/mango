@@ -55,7 +55,7 @@ struct ContentView: View {
             case .settingsAppearance:
                 SettingsAppearanceView()
                     .environmentObject(appManager)
-            case .settingsSecurity:
+            case .settingsSecurity, .settingsAppLock, .settingsDataRetention:
                 SettingsSecurityView()
                     .environmentObject(appManager)
             case .settingsTools:

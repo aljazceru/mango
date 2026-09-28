@@ -579,6 +579,10 @@ pub struct AppState {
     /// True when the current turn hit (or would hit) a model context overflow
     /// and compaction would help. Chat UI offers "Compact & retry".
     pub compaction_offered: bool,
+
+    /// Settings status card: what new chats use and where they run. Derived by
+    /// `refresh_inference_status`; never persisted.
+    pub inference_status: routing::route_mode::InferenceStatus,
 }
 
 impl Default for AppState {
@@ -644,6 +648,7 @@ impl Default for AppState {
             local_models_error: None,
             compaction: None,
             compaction_offered: false,
+            inference_status: routing::route_mode::InferenceStatus::default(),
         }
     }
 }
@@ -723,6 +728,10 @@ pub enum Screen {
     SettingsAppearance,
     /// Security settings sub-screen (Phase 30).
     SettingsSecurity,
+    /// App lock sub-screen: PIN, lock timeout, biometrics, duress PIN (Android settings redesign).
+    SettingsAppLock,
+    /// Data & retention sub-screen: retention, archived chats, delete chats/data (Android settings redesign).
+    SettingsDataRetention,
     /// Tools settings sub-screen (Phase 30).
     SettingsTools,
     /// Local models management sub-screen -- pushed from Settings (model catalog, download, delete).
@@ -933,6 +942,11 @@ pub enum AppAction {
     /// Enable or disable on-device local inference globally.
     SetLocalInferenceEnabled {
         enabled: bool,
+    },
+    /// Switch where new chats run (settings status card). The core picks the
+    /// concrete backend/model; blocked switches toast and open the setup screen.
+    SetInferenceRoute {
+        route: routing::route_mode::InferenceRoute,
     },
     /// Download and verify a built-in local model.
     DownloadLocalModel {
@@ -4088,6 +4102,7 @@ fn refresh_backend_summaries(actor_state: &mut ActorState) {
             )
         })
         .collect();
+    refresh_inference_status(actor_state);
 }
 
 /// Reload actor_state.backends from SQLite + keychain.
@@ -4132,8 +4147,8 @@ fn reload_backends(actor_state: &mut ActorState) {
 
 /// Apply per-backend model prefix filtering.
 ///
-/// Some backends (e.g. PPQ.AI) expose hundreds of models via /v1/models but only a
-/// small subset run inside a TEE. This function enforces the correct subset at read
+/// Some backends (e.g. PPQ.AI) expose hundreds of models via /v1/models but only
+/// a small subset run inside a TEE. This function enforces the correct subset at read
 /// time so stale SQLite rows never surface wrong models in the UI.
 fn filter_models_for_backend(backend_id: &str, models: Vec<String>) -> Vec<String> {
     match backend_id {
@@ -4225,6 +4240,78 @@ fn default_backend_and_model(actor_state: &ActorState) -> (String, String) {
             .find(|b| !b.models.is_empty() && backend_is_user_configured(b))
             .map(|b| (b.id.clone(), b.models[0].clone()))
             .unwrap_or((preferred_backend, String::new())),
+    }
+}
+
+/// Recompute `app_state.inference_status` from the same resolution
+/// `NewConversation` uses, so the settings card always matches reality.
+fn refresh_inference_status(actor_state: &mut ActorState) {
+    let (backend_id, model_id) = default_backend_and_model(actor_state);
+    let s = &actor_state.app_state;
+    let status = routing::route_mode::inference_status(
+        &s.backends,
+        &s.hybrid_profiles,
+        &s.local_models,
+        s.local_device_capability.is_supported(),
+        &backend_id,
+        &model_id,
+    );
+    actor_state.app_state.inference_status = status;
+}
+
+/// Persist `backend_id` as the default/active backend and restart attestation
+/// for it. Body moved verbatim from the `SetDefaultBackend` arm so
+/// `SetInferenceRoute` can reuse it.
+fn apply_default_backend(
+    actor_state: &mut ActorState,
+    backend_id: &str,
+    core_tx: flume::Sender<CoreMsg>,
+) {
+    let _ = persistence::queries::set_setting(
+        actor_state.db.as_ref().expect("db unlocked").conn(),
+        "default_backend_id",
+        backend_id,
+    );
+    actor_state.app_state.active_backend_id = Some(backend_id.to_string());
+    refresh_backend_summaries(actor_state);
+    // Spawn attestation for the new default so the settings row
+    // shows attestation status without requiring SetActiveBackend.
+    if let Some(b) = actor_state.backends.iter().find(|b| b.id == backend_id) {
+        let backend = b.clone();
+        spawn_attestation_if_required(actor_state, &backend, core_tx.clone());
+    }
+    // Reset the periodic timer so the next tick is relative
+    // to this backend switch, not the old schedule.
+    if let Some(token) = actor_state.attestation_timer_token.take() {
+        token.cancel();
+    }
+    let interval = actor_state.app_state.attestation_interval_minutes;
+    actor_state.attestation_timer_token =
+        spawn_attestation_timer(&actor_state.runtime, interval, core_tx);
+}
+
+/// Make a hybrid profile the active/default conversation target. Body moved
+/// verbatim from the `SetActiveHybridProfile` arm so `SetInferenceRoute` can
+/// reuse it.
+fn apply_active_hybrid_profile(
+    actor_state: &mut ActorState,
+    profile_id: &str,
+    core_tx: flume::Sender<CoreMsg>,
+) {
+    if actor_state
+        .app_state
+        .hybrid_profiles
+        .iter()
+        .any(|profile| profile.id == profile_id)
+    {
+        let backend_id = routing::hybrid_backend_id(profile_id);
+        let _ = persistence::queries::set_setting(
+            actor_state.db.as_ref().expect("db unlocked").conn(),
+            "default_backend_id",
+            &backend_id,
+        );
+        actor_state.app_state.active_backend_id = Some(backend_id.clone());
+        spawn_attestation_for_preferred(actor_state, &backend_id, core_tx);
     }
 }
 
@@ -4994,6 +5081,7 @@ fn reconcile_local_model_backends(actor_state: &mut ActorState) {
     reload_backends(actor_state);
     refresh_backend_summaries(actor_state);
     refresh_local_model_state(actor_state);
+    refresh_inference_status(actor_state);
 }
 
 fn remove_backend_row_and_reassign(actor_state: &mut ActorState, backend_id: &str) {
@@ -7982,6 +8070,7 @@ fn refresh_hybrid_profiles(actor_state: &mut ActorState) {
     };
     actor_state.app_state.hybrid_profiles =
         persistence::queries::list_hybrid_profiles(db.conn()).unwrap_or_default();
+    refresh_inference_status(actor_state);
 }
 
 fn auto_discovery_requires_trusted_providers() -> bool {
@@ -11099,36 +11188,12 @@ impl FfiApp {
                             }
 
                             AppAction::SetDefaultBackend { backend_id } => {
-                                let _ = persistence::queries::set_setting(
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                    "default_backend_id",
+                                apply_default_backend(
+                                    &mut actor_state,
                                     &backend_id,
-                                );
-                                actor_state.app_state.active_backend_id = Some(backend_id.clone());
-                                refresh_backend_summaries(&mut actor_state);
-                                // Spawn attestation for the new default so the settings row
-                                // shows attestation status without requiring SetActiveBackend.
-                                if let Some(b) =
-                                    actor_state.backends.iter().find(|b| b.id == backend_id)
-                                {
-                                    let backend = b.clone();
-                                    spawn_attestation_if_required(
-                                        &actor_state,
-                                        &backend,
-                                        core_tx_for_thread.clone(),
-                                    );
-                                }
-                                // Reset the periodic timer so the next tick is relative
-                                // to this backend switch, not the old schedule.
-                                if let Some(token) = actor_state.attestation_timer_token.take() {
-                                    token.cancel();
-                                }
-                                let interval = actor_state.app_state.attestation_interval_minutes;
-                                actor_state.attestation_timer_token = spawn_attestation_timer(
-                                    &actor_state.runtime,
-                                    interval,
                                     core_tx_for_thread.clone(),
                                 );
+                                refresh_inference_status(&mut actor_state);
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
@@ -11140,6 +11205,7 @@ impl FfiApp {
                                     &model_id,
                                 );
                                 actor_state.app_state.default_model_id = Some(model_id);
+                                refresh_inference_status(&mut actor_state);
                                 actor_state.app_state.toast =
                                     Some("Default model saved".to_string());
                                 actor_state.app_state.rev += 1;
@@ -11178,26 +11244,12 @@ impl FfiApp {
                             }
 
                             AppAction::SetActiveHybridProfile { profile_id } => {
-                                if actor_state
-                                    .app_state
-                                    .hybrid_profiles
-                                    .iter()
-                                    .any(|profile| profile.id == profile_id)
-                                {
-                                    let backend_id = routing::hybrid_backend_id(&profile_id);
-                                    let _ = persistence::queries::set_setting(
-                                        actor_state.db.as_ref().expect("db unlocked").conn(),
-                                        "default_backend_id",
-                                        &backend_id,
-                                    );
-                                    actor_state.app_state.active_backend_id =
-                                        Some(backend_id.clone());
-                                    spawn_attestation_for_preferred(
-                                        &actor_state,
-                                        &backend_id,
-                                        core_tx_for_thread.clone(),
-                                    );
-                                }
+                                apply_active_hybrid_profile(
+                                    &mut actor_state,
+                                    &profile_id,
+                                    core_tx_for_thread.clone(),
+                                );
+                                refresh_inference_status(&mut actor_state);
                             }
 
                             AppAction::SetLocalInferenceEnabled { enabled } => {
@@ -11249,6 +11301,130 @@ impl FfiApp {
                                     actor_state.local_llm_provider.unload();
                                 }
                                 reconcile_local_model_backends(&mut actor_state);
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
+                            AppAction::SetInferenceRoute { route } => {
+                                use routing::route_mode::{
+                                    self, InferenceRoute, RouteInputs, RouteTarget,
+                                };
+                                let current = actor_state.app_state.inference_status.clone();
+                                let resolved = {
+                                    let conn =
+                                        actor_state.db.as_ref().expect("db unlocked").conn();
+                                    // Remember what we leave so switching back restores it.
+                                    match current.route {
+                                        InferenceRoute::Cloud
+                                            if !current.backend_id.is_empty() =>
+                                        {
+                                            let _ = persistence::queries::set_setting(
+                                                conn,
+                                                "last_cloud_backend_id",
+                                                &current.backend_id,
+                                            );
+                                            let _ = persistence::queries::set_setting(
+                                                conn,
+                                                "last_cloud_model_id",
+                                                &current.model_id,
+                                            );
+                                        }
+                                        InferenceRoute::OnDevice => {
+                                            let _ = persistence::queries::set_setting(
+                                                conn,
+                                                "last_local_backend_id",
+                                                &current.backend_id,
+                                            );
+                                        }
+                                        _ => {}
+                                    }
+                                    let remembered = |key: &str| {
+                                        persistence::queries::get_setting(conn, key).ok().flatten()
+                                    };
+                                    let cloud_b = remembered("last_cloud_backend_id");
+                                    let cloud_m = remembered("last_cloud_model_id");
+                                    let local_b = remembered("last_local_backend_id");
+                                    let s = &actor_state.app_state;
+                                    route_mode::resolve_route_target(
+                                        route,
+                                        &RouteInputs {
+                                            backends: &s.backends,
+                                            hybrid_profiles: &s.hybrid_profiles,
+                                            local_models: &s.local_models,
+                                            local_supported: s
+                                                .local_device_capability
+                                                .is_supported(),
+                                            current_backend_id: &current.backend_id,
+                                            current_model_id: &current.model_id,
+                                            remembered_cloud_backend_id: cloud_b.as_deref(),
+                                            remembered_cloud_model_id: cloud_m.as_deref(),
+                                            remembered_local_backend_id: local_b.as_deref(),
+                                        },
+                                    )
+                                };
+                                match resolved {
+                                    Ok(RouteTarget::HybridProfile { profile_id }) => {
+                                        apply_active_hybrid_profile(
+                                            &mut actor_state,
+                                            &profile_id,
+                                            core_tx_for_thread.clone(),
+                                        );
+                                    }
+                                    Ok(RouteTarget::Backend { backend_id, model_id }) => {
+                                        if route == InferenceRoute::OnDevice
+                                            && !actor_state.app_state.local_inference_enabled
+                                        {
+                                            let _ = persistence::queries::set_setting(
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
+                                                "local_inference_enabled",
+                                                "1",
+                                            );
+                                            actor_state.app_state.local_inference_enabled = true;
+                                            actor_state.app_state.local_models_error = None;
+                                            reconcile_local_model_backends(&mut actor_state);
+                                        }
+                                        let _ = persistence::queries::set_setting(
+                                            actor_state
+                                                .db
+                                                .as_ref()
+                                                .expect("db unlocked")
+                                                .conn(),
+                                            "default_model_id",
+                                            &model_id,
+                                        );
+                                        actor_state.app_state.default_model_id = Some(model_id);
+                                        apply_default_backend(
+                                            &mut actor_state,
+                                            &backend_id,
+                                            core_tx_for_thread.clone(),
+                                        );
+                                    }
+                                    Err(blocker) => {
+                                        let msg = route_mode::blocker_message(&blocker);
+                                        actor_state.app_state.toast = Some(match &blocker {
+                                            route_mode::RouteBlocker::LocalUnsupported => {
+                                                actor_state
+                                                    .app_state
+                                                    .local_device_capability
+                                                    .blocked_reason_or_default(msg)
+                                            }
+                                            _ => msg.to_string(),
+                                        });
+                                        if let Some(screen) =
+                                            route_mode::blocker_setup_screen(&blocker)
+                                        {
+                                            push_nav_history(
+                                                &mut actor_state.app_state.router,
+                                            );
+                                            actor_state.app_state.router.current_screen = screen;
+                                        }
+                                    }
+                                }
+                                refresh_backend_summaries(&mut actor_state); // also refreshes inference_status
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }

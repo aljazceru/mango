@@ -242,7 +242,7 @@ fun MainApp(
                 onFontSizeChanged = onFontSizeChanged,
             )
         }
-        is Screen.SettingsSecurity -> {
+        is Screen.SettingsSecurity, is Screen.SettingsAppLock, is Screen.SettingsDataRetention -> {
             SettingsSecurityScreen(
                 appState = state,
                 onDispatch = { action -> manager.dispatch(action) },
