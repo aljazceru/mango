@@ -242,12 +242,14 @@ fun MainApp(
                 onFontSizeChanged = onFontSizeChanged,
             )
         }
-        is Screen.SettingsSecurity, is Screen.SettingsAppLock, is Screen.SettingsDataRetention -> {
-            SettingsSecurityScreen(
-                appState = state,
-                onDispatch = { action -> manager.dispatch(action) },
-                onBack = { manager.dispatch(AppAction.PopScreen) }
-            )
+        is Screen.SettingsSecurity -> {
+            SettingsSecurityScreen(appState = state, onDispatch = { action -> manager.dispatch(action) }, onBack = { manager.dispatch(AppAction.PopScreen) })
+        }
+        is Screen.SettingsAppLock -> {
+            SettingsAppLockScreen(appState = state, onDispatch = { action -> manager.dispatch(action) }, onBack = { manager.dispatch(AppAction.PopScreen) })
+        }
+        is Screen.SettingsDataRetention -> {
+            SettingsDataRetentionScreen(appState = state, onDispatch = { action -> manager.dispatch(action) }, onBack = { manager.dispatch(AppAction.PopScreen) })
         }
         is Screen.SettingsTools -> {
             SettingsToolsScreen(
