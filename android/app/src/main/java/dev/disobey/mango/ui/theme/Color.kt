@@ -87,3 +87,21 @@ val LightAgentFailed    = Color(0xFFB71C1C) // dark red
 // -- Onboarding --
 val DarkOnboardingSuccess  = Color(0xFF22BE59)  // green
 val LightOnboardingSuccess = Color(0xFF1B7A3A)  // darker green for light bg
+
+// -- Settings status card (container = user-bubble blue) --
+val StatusCardBgLight = LightUserBubble            // #DDEEFF
+val StatusCardOnLight = Color(0xFF0B3A75)
+val StatusCardBgDark = DarkUserBubble              // #2E4A7A
+val StatusCardOnDark = Color(0xFFDDEEFF)
+
+// -- Settings group icon tints (bg / fg) --
+val TintModelsBgLight = Color(0xFFDDEEFF);    val TintModelsFgLight = Color(0xFF1A6FD4)
+val TintKnowledgeBgLight = Color(0xFFFFF0D4); val TintKnowledgeFgLight = Color(0xFF8A5A00)
+val TintToolsBgLight = Color(0xFFDDF4E6);     val TintToolsFgLight = Color(0xFF1B6B3A)
+val TintPrivacyBgLight = Color(0xFFF3E3FF);   val TintPrivacyFgLight = Color(0xFF6A2FA0)
+val TintAppBgLight = Color(0xFFFFE2EC);       val TintAppFgLight = Color(0xFFA3224F)
+val TintModelsBgDark = Color(0xFF1E3553);     val TintModelsFgDark = Color(0xFF8EC2FF)
+val TintKnowledgeBgDark = Color(0xFF3A2E14);  val TintKnowledgeFgDark = Color(0xFFF5C66B)
+val TintToolsBgDark = Color(0xFF173524);      val TintToolsFgDark = Color(0xFF7BD9A0)
+val TintPrivacyBgDark = Color(0xFF33224A);    val TintPrivacyFgDark = Color(0xFFD2A8FF)
+val TintAppBgDark = Color(0xFF3E1E2A);        val TintAppFgDark = Color(0xFFFF9EC0)
