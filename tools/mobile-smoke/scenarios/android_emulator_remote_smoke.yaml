@@ -46,7 +46,7 @@ steps:
       text: Settings
       label: settings
   - assert_text: Providers
-  - assert_text: Defaults
+  - assert_text: Default instructions
 
   - tap_text: Providers
   - wait_for_text:

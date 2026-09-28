@@ -35,29 +35,39 @@ steps:
   - wait_for_text:
       text: Settings
       label: settings
+  - assert_text: New chats use
+  - assert_text: Models
   - assert_text: Providers
-  - assert_text: Defaults
-  - assert_text: Memory
-  - assert_text: Security
-  - assert_text: Tools
   - tap_text: Providers
   - wait_for_text: Providers
   - back: {}
   - wait_for_text: Settings
-  - tap_text: Defaults
+  - scroll_to_text:
+      text: Default instructions
+      tries: 8
+  - tap_text: Default instructions
   - wait_for_text: Defaults
   - back: {}
   - wait_for_text: Settings
+  - scroll_to_text:
+      text: Memory
+      tries: 8
   - tap_text: Memory
   - wait_for_text: Memory
   - back: {}
   - wait_for_text: Settings
-  - tap_text: Security
-  - wait_for_text: Security
+  - scroll_to_text:
+      text: Tools & web search
+      tries: 8
+  - tap_text: Tools & web search
+  - wait_for_text: Tools
   - back: {}
   - wait_for_text: Settings
-  - tap_text: Tools
-  - wait_for_text: Tools
+  - scroll_to_text:
+      text: App lock
+      tries: 8
+  - tap_text: App lock
+  - wait_for_text: App lock
   - back: {}
   - wait_for_text: Settings
   - scroll_to_text:
