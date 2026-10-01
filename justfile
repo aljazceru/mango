@@ -153,7 +153,8 @@ build-llama-android: fetch-llama-cpp
     -DBUILD_SHARED_LIBS=ON \
     -DLLAMA_BUILD_EXAMPLES=OFF \
     -DLLAMA_BUILD_SERVER=OFF \
-    -DLLAMA_BUILD_TESTS=OFF
+    -DLLAMA_BUILD_TESTS=OFF \
+    -DGGML_OPENMP=OFF
   cmake --build "$LLAMA_CPP_DIR/build-android-arm64" --config Release --parallel \
     --target ggml-base ggml-cpu ggml llama llama-common
   scripts/check_llama_versions.sh
