@@ -297,7 +297,7 @@ private fun HybridSelectorRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = options.size > 1) { expanded = true }
+            .clickable { expanded = true }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -309,7 +309,6 @@ private fun HybridSelectorRow(
             )
             Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
         }
-        if (options.size > 1) {
             Spacer(Modifier.width(12.dp))
             Box {
                 Text(
@@ -327,7 +326,6 @@ private fun HybridSelectorRow(
                     }
                 }
             }
-        }
     }
     if (!last) {
         androidx.compose.material3.HorizontalDivider(
