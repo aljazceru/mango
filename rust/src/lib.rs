@@ -5030,22 +5030,20 @@ fn clear_bypass_dek(keychain: &dyn KeychainProvider) {
     keychain.delete("mango".to_string(), KEYCHAIN_BYPASS_DEK_KEY.to_string());
 }
 
-/// One-time split of the legacy shared "dek" slot, which served biometric
-/// login, "Never" auto-lock and no-lock alike (its mere presence also meant
-/// "biometric enabled"). Legacy behaviour is preserved: the bypass copy is
-/// kept only when a bypass mode is active, the biometric slot only when
-/// biometrics are available. Re-storing the biometric slot lets the platform
-/// wrap it (Android removes its unauthenticated copy on store).
+/// Split of the legacy shared "dek" slot, which served biometric login,
+/// "Never" auto-lock and no-lock alike (its mere presence also meant
+/// "biometric enabled"). The bypass copy is added when a bypass mode is
+/// active. The biometric part only completes while biometrics are reported
+/// available; otherwise the legacy slot is left untouched for a later start —
+/// a start that cannot see the capability (e.g. headless) must never
+/// disenroll. Re-storing the biometric slot lets the platform wrap it
+/// (Android removes its unauthenticated copy on store).
 fn migrate_shared_dek_slot(
     keychain: &dyn KeychainProvider,
     biometric_available: bool,
     needs_bypass: bool,
 ) {
-    let migrated = biometric_dek_enrolled(keychain)
-        || keychain
-            .load("mango".to_string(), KEYCHAIN_BYPASS_DEK_KEY.to_string())
-            .is_some();
-    if migrated {
+    if biometric_dek_enrolled(keychain) {
         return;
     }
     let Some(legacy) = keychain
@@ -5054,13 +5052,32 @@ fn migrate_shared_dek_slot(
     else {
         return;
     };
-    if needs_bypass {
+    if needs_bypass
+        && keychain
+            .load("mango".to_string(), KEYCHAIN_BYPASS_DEK_KEY.to_string())
+            .is_none()
+    {
         store_bypass_dek(keychain, &legacy);
     }
-    if !(biometric_available && store_biometric_dek(keychain, &legacy)) {
-        clear_biometric_dek(keychain);
+    if !biometric_available {
+        log::info!("[auth] shared DEK slot: biometric capability not visible; split deferred");
+        return;
     }
-    log::info!("[auth] migrated shared keychain DEK slot (bypass={needs_bypass}, biometric={biometric_available})");
+    // Not store_biometric_dek: its failure cleanup would delete the legacy slot.
+    let staged = keychain.store(
+        "mango".to_string(),
+        KEYCHAIN_DEK_KEY.to_string(),
+        legacy.to_string(),
+    ) && keychain.store(
+        "mango".to_string(),
+        KEYCHAIN_BIOMETRIC_FLAG_KEY.to_string(),
+        "1".to_string(),
+    );
+    if !staged {
+        log::warn!("[auth] shared DEK slot: biometric re-store failed; legacy slot kept");
+        return;
+    }
+    log::info!("[auth] migrated shared keychain DEK slot (bypass={needs_bypass})");
 }
 
 /// Recover the DEK hex for a no-lock enrollment from the keychain-held wrap
@@ -15278,6 +15295,11 @@ impl FfiApp {
                                 } else {
                                     let _ = actor_state.bootstrap.write_cold_launch_bypass(false);
                                     clear_bypass_dek(actor_state.keychain.as_ref());
+                                    // A legacy shared slot left unsplit (no biometrics on this
+                                    // device) must not stay readable once Never is off.
+                                    if !biometric_dek_enrolled(actor_state.keychain.as_ref()) {
+                                        clear_biometric_dek(actor_state.keychain.as_ref());
+                                    }
                                     log::info!("[auth] SetLockTimeout(finite): bypass DEK evicted from keychain");
                                 }
                             }

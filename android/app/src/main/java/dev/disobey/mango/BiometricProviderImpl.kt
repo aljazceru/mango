@@ -32,16 +32,25 @@ class BiometricProviderImpl(
      */
     override fun biometricStatus(): String {
         val activity = activityRef.get() ?: return "not_available"
-        val manager = BiometricManager.from(activity)
-        return when (manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)) {
-            BiometricManager.BIOMETRIC_SUCCESS -> "available"
-            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "not_enrolled"
-            BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE,
-            BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE,
-            BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED,
-            BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED -> "not_supported"
-            else -> "not_available"
-        }
+        return statusFor(activity)
+    }
+
+    companion object {
+        /**
+         * Capability needs only a Context — background starts (WorkManager)
+         * have no Activity and must still report the real device state.
+         */
+        fun statusFor(context: android.content.Context): String =
+            when (BiometricManager.from(context)
+                .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)) {
+                BiometricManager.BIOMETRIC_SUCCESS -> "available"
+                BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "not_enrolled"
+                BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE,
+                BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE,
+                BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED,
+                BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED -> "not_supported"
+                else -> "not_available"
+            }
     }
 
     /**

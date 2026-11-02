@@ -16,6 +16,7 @@ import java.lang.ref.WeakReference
  * a prompt interrupted by recreation may be retried, never auto-approved.
  */
 class RebindableBiometricProvider(
+    private val appContext: android.content.Context,
     private val dekStore: BiometricDekStore? = null,
 ) : dev.disobey.mango.rust.BiometricProvider {
     private val lock = Any()
@@ -36,13 +37,12 @@ class RebindableBiometricProvider(
         activityRef?.get()?.takeIf { !it.isFinishing && !it.isDestroyed }
     }
 
-    override fun biometricStatus(): String {
-        return try {
-            val act = currentActivity() ?: return "not_available"
-            BiometricProviderImpl(act).biometricStatus()
-        } catch (_: Exception) {
-            "not_available"
-        }
+    // Capability is a device property: answer from the application context so
+    // a headless (WorkManager) start reports the same as a foreground start.
+    override fun biometricStatus(): String = try {
+        BiometricProviderImpl.statusFor(appContext)
+    } catch (_: Exception) {
+        "not_available"
     }
 
     override fun authenticate(reason: String): Boolean {

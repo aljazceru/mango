@@ -1276,16 +1276,72 @@ fn onboarded_plaintext_dir(name: &str) -> String {
 }
 
 fn app_with(dir: &str, keychain: Box<dyn KeychainProvider>) -> Arc<FfiApp> {
+    app_with_biometric(dir, keychain, Box::new(FakeBiometricProvider::succeeding()))
+}
+
+fn app_with_biometric(
+    dir: &str,
+    keychain: Box<dyn KeychainProvider>,
+    biometric: Box<dyn BiometricProvider>,
+) -> Arc<FfiApp> {
     let app = FfiApp::new(
         dir.to_string(),
         keychain,
         Box::new(NullEmbeddingProvider),
         EmbeddingStatus::Active,
         Box::new(NullLocalLlmProvider),
-        Box::new(FakeBiometricProvider::succeeding()),
+        biometric,
     );
     app.sync();
     app
+}
+
+/// A headless first start after upgrade (WorkManager, no Activity) cannot see
+/// biometric capability; it must defer the split instead of disenrolling, and
+/// the next foreground start completes it.
+#[test]
+fn background_first_upgrade_start_keeps_legacy_biometric_enrollment() {
+    let dir = onboarded_plaintext_dir("legacy_dek_background_first");
+    let kc = MemoryKeychainProvider::default();
+    let app = app_with(&dir, Box::new(kc.clone()));
+    app.dispatch(AppAction::SetupPin {
+        pin: test_pin(),
+        duress_pin: None,
+        enable_biometric: true,
+    });
+    app.sync();
+    drop(app);
+    // Pre-split layout: the shared "dek" slot alone means "biometric enabled".
+    let dek = slot(&kc, crate::KEYCHAIN_DEK_KEY).expect("biometric slot");
+    kc.delete("mango".into(), crate::KEYCHAIN_BIOMETRIC_FLAG_KEY.into());
+
+    let headless = app_with_biometric(
+        &dir,
+        Box::new(kc.clone()),
+        Box::new(crate::NullBiometricProvider),
+    );
+    assert!(!headless.state().biometric_login_enabled);
+    drop(headless);
+    assert_eq!(
+        slot(&kc, crate::KEYCHAIN_DEK_KEY).as_deref(),
+        Some(dek.as_str()),
+        "headless start must not delete the legacy biometric DEK"
+    );
+    assert!(
+        slot(&kc, crate::KEYCHAIN_BYPASS_DEK_KEY).is_none(),
+        "no Never mode, no bypass copy"
+    );
+
+    let foreground = app_with(&dir, Box::new(kc.clone()));
+    assert!(foreground.state().biometric_login_enabled);
+    assert!(slot(&kc, crate::KEYCHAIN_BIOMETRIC_FLAG_KEY).is_some());
+    foreground.dispatch(AppAction::AttemptBiometricUnlock);
+    assert!(wait_until(
+        &foreground,
+        |s| !matches!(s.router.current_screen, Screen::Locked),
+        10_000
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn slot(kc: &MemoryKeychainProvider, key: &str) -> Option<String> {

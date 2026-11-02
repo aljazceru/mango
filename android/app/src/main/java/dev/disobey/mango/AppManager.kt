@@ -270,7 +270,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         // current activity on every onCreate, so rotation/recreation can never
         // leave Rust holding a stale weak activity reference. The initial
         // activity (if any) is attached immediately here.
-        val biometricProxy = RebindableBiometricProvider(dekStore)
+        val biometricProxy = RebindableBiometricProvider(context.applicationContext, dekStore)
         activity?.let { biometricProxy.attach(it) }
         val biometric: BiometricProvider = biometricProxy
         this.biometricProxy = biometricProxy
