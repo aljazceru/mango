@@ -51,6 +51,7 @@ fun MainApp(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val snackbarQueue = remember { Channel<String>(Channel.UNLIMITED) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(state.toast) {
         val toast = state.toast
@@ -130,23 +131,27 @@ fun MainApp(
                 onAttachDocument = { docId -> manager.dispatch(AppAction.AttachDocumentToConversation(documentId = docId)) },
                 onDetachDocument = { docId -> manager.dispatch(AppAction.DetachDocumentFromConversation(documentId = docId)) },
                 onShareConversation = { conversationId ->
-                    try {
-                        val markdown = manager.exportConversationMarkdown(conversationId)
-                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "Mango conversation")
-                            putExtra(Intent.EXTRA_TEXT, markdown)
-                        }
-                        context.startActivity(
-                            Intent.createChooser(shareIntent, "Share conversation")
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                    } catch (e: Exception) {
-                        manager.dispatch(
-                            AppAction.ShowToast(
-                                message = e.message ?: "Could not export conversation",
+                    // The markdown export round-trips through the Rust actor
+                    // (DB read) — keep it off the main thread.
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        try {
+                            val markdown = manager.exportConversationMarkdown(conversationId)
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "Mango conversation")
+                                putExtra(Intent.EXTRA_TEXT, markdown)
+                            }
+                            context.startActivity(
+                                Intent.createChooser(shareIntent, "Share conversation")
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             )
-                        )
+                        } catch (e: Exception) {
+                            manager.dispatch(
+                                AppAction.ShowToast(
+                                    message = e.message ?: "Could not export conversation",
+                                )
+                            )
+                        }
                     }
                 },
                 onDispatchAction = { action -> manager.dispatch(action) },

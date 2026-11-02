@@ -43,16 +43,21 @@ Mango can set up a PPQ account automatically inside the app, so you do not need 
 
 ### Chat
 - Streaming responses with markdown rendering, stop-generation, conversation rename, fork, and automatic titles
+- One active response per chat engine: stop cancels streaming and tool work; late results cannot enter a later turn
 - Model picker showing models available from your configured providers, with the active provider pre-selected
 - Per-conversation system instructions and tool-use controls
 - Image attachments for vision-capable models, stored encrypted at rest
 - Context windows are respected at the model's real limit (learned from the provider, or the on-device engine's budget): long chats can be compacted — older turns are summarized for the model while the full history stays on the device
+- Editing or deleting summarized turns clears the summary; deferred sends and compaction retries never follow you into another conversation
 
 ### Confidentiality & attestation
 - Remote attestation verification for AMD SEV-SNP and Intel TDX/SGX quotes, fully on-device
 - Per-provider attestation status (verified / expired / failed) in settings and the chat header
 - Per-reply route metadata records which provider, model, and TEE served each answer, and whether that turn's attestation was verified
 - Configurable re-attestation interval; TLS certificate binding to attested keys for supported transports
+- Custom OpenAI-compatible TEE providers require a fresh attestation-bound TLS pin for inference, including tools, summaries, and memory extraction
+
+PIN unlock permits one verification attempt at a time and persists an exponential cooldown after five failures. Locking or wiping invalidates pending authentication and attestation results. Genuine attestation failures remove cached trust, and cache entries dated in the future are not accepted. Data deletion reports failure rather than claiming erasure when required file or credential deletion cannot be verified.
 
 ### Hybrid local/remote routing
 - Hybrid profiles pair an on-device model with a remote confidential provider: simple turns are answered locally, sensitive turns escalate to the attested remote TEE
@@ -65,7 +70,7 @@ Mango can set up a PPQ account automatically inside the app, so you do not need 
 
 ### RAG & documents
 - Local document library with PDF/text ingestion
-- Attach documents to conversations for grounded answers
+- Attach documents to conversations for grounded answers; only that conversation's attached document chunks enter its RAG prompt
 - Directory sources: watch a folder and auto-sync new documents into your library
 - On-device embeddings and an encrypted local vector index — nothing leaves the device
 
@@ -77,6 +82,7 @@ Mango can set up a PPQ account automatically inside the app, so you do not need 
 ### Tools 
 - Discovers remote [MCP tools over Nostr](https://contextvm.org) from curated public relays — pull-on-open, no background subscriptions
 - Trust model: tools run only from providers you explicitly mark as trusted; a global auto-discover toggle and a per-conversation tools switch control exposure
+- Turning off conversation tools disables built-in local tools even with remote auto-discovery enabled; discoveries never inherit approval from a different provider with the same tool name
 - Invocations are signed JSON-RPC `tools/call` requests over Nostr using a persistent device key, with response size caps
 - Discovered tools become callable by the agent (and by models with tool use) alongside built-in Brave web search
 

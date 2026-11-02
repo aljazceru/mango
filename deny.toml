@@ -1,7 +1,6 @@
 [advisories]
 ignore = [
     # Unmaintained transitive deps with no safe upgrade — revisit periodically
-    "RUSTSEC-2025-0012",
     "RUSTSEC-2025-0141",
     "RUSTSEC-2024-0384",
     "RUSTSEC-2024-0436",
@@ -15,6 +14,26 @@ ignore = [
     # through Iced's font stack and pdf-extract; migrate when either upstream
     # adopts skrifa or another maintained font parser.
     "RUSTSEC-2026-0192",
+    # basic-toml is unmaintained; reached only via uniffi 0.32's bindgen
+    # config parsing — no replacement release to move to. Remove when uniffi
+    # drops basic-toml.
+    "RUSTSEC-2026-0374",
+    # zvariant/zvariant_derive/zbus_names unmaintained; reached via
+    # keyring -> zbus-secret-service-keyring-store -> zbus 5, whose stack has
+    # no maintained successor release yet. Remove when keyring/zbus migrate.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+    # crypto-bigint 0.5.5 — no patched 0.5.x exists (fix is >=0.7.6). Pinned
+    # by elliptic-curve 0.13 via dcap-qvl-webpki and sev. Remove when those
+    # move to elliptic-curve 0.14.
+    "RUSTSEC-2026-0387",
+    # zip 8.6.0 via docx-rs (latest release still pins zip 8; rbook is on
+    # zip 9). Advisory covers filesystem extraction APIs docx-rs never calls
+    # (it reads archives in memory). Remove when docx-rs uses zip >= 9.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
 
 [bans]

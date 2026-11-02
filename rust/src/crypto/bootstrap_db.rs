@@ -103,6 +103,17 @@ impl BootstrapDb {
             "ALTER TABLE auth_params ADD COLUMN cold_launch_bypass INTEGER NOT NULL DEFAULT 0;",
         )
         .ok(); // ignore "duplicate column" on existing DBs
+               // Failed-PIN-attempt throttle (audit fix): persisted so a process
+               // restart cannot reset the brute-force cooldown. Independent columns
+               // are preserved by the INSERT ... ON CONFLICT upserts above.
+        conn.execute_batch(
+            "ALTER TABLE auth_params ADD COLUMN pin_fail_count INTEGER NOT NULL DEFAULT 0;",
+        )
+        .ok();
+        conn.execute_batch(
+            "ALTER TABLE auth_params ADD COLUMN pin_backoff_until INTEGER NOT NULL DEFAULT 0;",
+        )
+        .ok(); // ignore "duplicate column" on existing DBs
 
         Ok(Self { conn })
     }
@@ -222,6 +233,64 @@ impl BootstrapDb {
         self.conn.execute("DELETE FROM pending_auth", [])?;
         self.conn.execute("DELETE FROM pending_first_run", [])?;
         Ok(())
+    }
+
+    // ── Failed-PIN-attempt throttle (audit fix) ───────────────────────────────
+    //
+    // A tiny (count, backoff_until_epoch_secs) pair riding on the singleton
+    // auth_params row. Persisted so restarting the process cannot reset the
+    // brute-force cooldown; `delete_all` (wipe) clears it with the auth row.
+
+    /// Read the persisted PIN failure count and the epoch-seconds timestamp
+    /// before which new PIN attempts must be rejected (0 = no backoff).
+    /// Defaults to `(0, 0)` on any error or when no auth row exists.
+    pub fn read_pin_backoff(&self) -> (u32, i64) {
+        self.conn
+            .query_row(
+                "SELECT pin_fail_count, pin_backoff_until FROM auth_params WHERE id = 1",
+                [],
+                |r| Ok((r.get::<_, u32>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .unwrap_or((0, 0))
+    }
+
+    /// Persist the current PIN failure count and backoff-until timestamp.
+    /// No-op when no auth row exists (nothing to throttle).
+    pub fn write_pin_backoff(
+        &self,
+        fail_count: u32,
+        backoff_until: i64,
+    ) -> Result<(), anyhow::Error> {
+        self.conn.execute(
+            "UPDATE auth_params SET pin_fail_count = ?1, pin_backoff_until = ?2 WHERE id = 1",
+            params![fail_count as i64, backoff_until],
+        )?;
+        Ok(())
+    }
+
+    /// Clear the throttle after a successful unlock (or PIN change).
+    pub fn clear_pin_backoff(&self) {
+        let _ = self.conn.execute(
+            "UPDATE auth_params SET pin_fail_count = 0, pin_backoff_until = 0 WHERE id = 1",
+            [],
+        );
+    }
+
+    /// Record one failed PIN attempt. Returns the new count and the
+    /// backoff-until timestamp to enforce. Exponential backoff kicks in after
+    /// 5 failures: 30s, doubling per additional failure, capped at 300s.
+    pub fn record_pin_failure(&self, now_secs: i64) -> (u32, i64) {
+        let (count, _) = self.read_pin_backoff();
+        let new_count = count.saturating_add(1);
+        // 30s << (count-5), capped: 5→30s, 6→60s, 7→120s, 8→240s, 9+→300s.
+        let backoff_until = if new_count < 5 {
+            0
+        } else {
+            let shift = (new_count - 5).min(4);
+            now_secs.saturating_add((30i64 << shift).min(300))
+        };
+        let _ = self.write_pin_backoff(new_count, backoff_until);
+        (new_count, backoff_until)
     }
 
     // ── Quick 260421-bys: cold-launch bypass flag ─────────────────────────────

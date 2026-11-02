@@ -74,7 +74,7 @@
             pkgs.just
             pkgs.cargo-ndk
             pkgs.nodejs_22
-            pkgs.python3
+            (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
             pkgs.curl
             pkgs.git
             pkgs.gradle

@@ -270,3 +270,28 @@ fn cache_pre_v19_row_returns_none_subfields() {
         }
     ));
 }
+
+#[test]
+fn future_verification_is_rejected_and_deleted_rows_stay_gone() {
+    let db = Database::open(":memory:").unwrap();
+    let mut record = make_record("clock-rollback", "IntelTdx", now_secs() + 7200);
+    record.verified_at = now_secs() + 3600;
+    let cache = AttestationCache::new(db.conn());
+    cache.put(&record).unwrap();
+    assert!(cache
+        .get_latest_for_backend("clock-rollback")
+        .unwrap()
+        .is_none());
+    record.verified_at = now_secs();
+    cache.put(&record).unwrap();
+    assert!(cache
+        .get_latest_for_backend("clock-rollback")
+        .unwrap()
+        .is_some());
+    cache.delete_for_backend("clock-rollback").unwrap();
+    let reloaded = AttestationCache::new(db.conn());
+    assert!(reloaded
+        .get_latest_for_backend("clock-rollback")
+        .unwrap()
+        .is_none());
+}

@@ -123,8 +123,9 @@ fn envelope_round_trip() {
 fn request_body_shape() {
     use crate::llm::venice::build_venice_chat_body;
     use async_openai::types::chat::{
-        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-        ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+        ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+        CreateChatCompletionRequestArgs,
     };
 
     let user_msg: ChatCompletionRequestMessage = ChatCompletionRequestUserMessageArgs::default()
@@ -138,10 +139,16 @@ fn request_body_shape() {
             .build()
             .unwrap()
             .into();
+    let assistant_msg: ChatCompletionRequestMessage =
+        ChatCompletionRequestAssistantMessageArgs::default()
+            .content("private answer")
+            .build()
+            .unwrap()
+            .into();
 
     let req = CreateChatCompletionRequestArgs::default()
         .model("e2ee-venice-uncensored-24b-p")
-        .messages(vec![system_msg, user_msg])
+        .messages(vec![system_msg, user_msg, assistant_msg])
         .build()
         .unwrap();
 
@@ -174,6 +181,12 @@ fn request_body_shape() {
 
     // Two distinct messages → distinct envelopes (fresh-nonce per seal).
     assert_ne!(sys_content, user_content);
+    let assistant_content = v["messages"][2]["content"].as_str().unwrap();
+    assert_ne!(assistant_content, "private answer");
+    assert_eq!(
+        crate::llm::venice::open_envelope(assistant_content, &aes_key).unwrap(),
+        b"private answer"
+    );
 }
 
 #[test]

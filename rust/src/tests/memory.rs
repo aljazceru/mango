@@ -463,7 +463,7 @@ async fn extraction_uses_backend_transport_with_output_budget() {
             "Noted, dark mode it is.".to_string(),
         ),
     ];
-    let memories = call_extraction_llm(&backend, &messages, "m1")
+    let memories = call_extraction_llm(&backend, &messages, "m1", None)
         .await
         .expect("extraction should succeed");
 
@@ -522,4 +522,28 @@ fn extraction_transcript_is_bounded_to_recent_window() {
         trimmed.chars().count()
     );
     assert!(trimmed.contains("[older content truncated]"));
+}
+
+#[test]
+fn extraction_for_deleted_conversation_adds_no_memories() {
+    let app = make_app();
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    app.sync();
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
+    let conversation_id = app.state().current_conversation_id.unwrap();
+    app.dispatch(AppAction::DeleteConversation {
+        id: conversation_id.clone(),
+    });
+    app.sync();
+    app.test_send_internal(crate::llm::InternalEvent::MemoryExtractionComplete {
+        conversation_id,
+        memories: vec!["Private erased fact".into()],
+    });
+    app.sync();
+    assert_eq!(app.state().memory_count, 0);
 }

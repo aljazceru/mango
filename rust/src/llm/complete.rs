@@ -11,7 +11,6 @@
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
 };
-use async_openai::{config::OpenAIConfig, Client};
 
 use super::error::LlmError;
 use super::BackendConfig;
@@ -21,12 +20,31 @@ use crate::llm::ProviderTransportKind;
 ///
 /// `max_tokens` bounds the completion output (callers keep it small: these are
 /// prepaid/summarization outputs, not chat turns).
+///
+/// `pinned_tls_public_key_fp` is the attested TLS pin used for generic
+/// OpenAI-compatible backends — the same pin streaming requests use. A
+/// TEE-typed generic backend REQUIRES a valid pin: without one this fails
+/// closed rather than sending prompt content over unattested HTTPS.
 pub async fn complete(
     backend: &BackendConfig,
     model: &str,
     messages: Vec<ChatCompletionRequestMessage>,
     max_tokens: u32,
+    pinned_tls_public_key_fp: Option<&str>,
 ) -> Result<CreateChatCompletionResponse, LlmError> {
+    // Fail closed: a TEE-typed generic endpoint without a usable attested pin
+    // must not receive prompt content over ordinary TLS. Provider-specific
+    // sealed transports (Tinfoil/PPQ/Venice/Redpill) attest inside their own
+    // handshake and don't consume the pin.
+    if backend.transport_kind() == ProviderTransportKind::OpenAiCompatible
+        && backend.tee_type != super::TeeType::Unknown
+        && pinned_tls_public_key_fp.is_none()
+    {
+        return Err(LlmError::AuthError {
+            reason: "attested TLS pin required for this TEE backend; re-verify attestation"
+                .to_string(),
+        });
+    }
     match backend.transport_kind() {
         ProviderTransportKind::PpqPrivateE2ee => {
             crate::llm::ppq_private::create_chat_completion(
@@ -74,10 +92,11 @@ pub async fn complete(
                     .to_string(),
         }),
         ProviderTransportKind::OpenAiCompatible => {
-            let config = OpenAIConfig::new()
-                .with_api_base(&backend.base_url)
-                .with_api_key(&backend.api_key);
-            let client = Client::with_config(config);
+            let (client, _) = backend.transport_kind().build_openai_client(
+                backend,
+                pinned_tls_public_key_fp,
+                std::time::Duration::from_secs(60),
+            )?;
             let request = CreateChatCompletionRequestArgs::default()
                 .model(model)
                 .max_tokens(max_tokens)

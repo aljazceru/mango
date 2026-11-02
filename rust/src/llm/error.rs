@@ -101,10 +101,14 @@ pub fn map_openai_error(e: async_openai::error::OpenAIError) -> LlmError {
             }
         }
         OpenAIError::ApiError(ae) => {
-            // API-level error parsed from JSON response body
+            // API-level error parsed from JSON response body. async-openai
+            // preserves the HTTP status on `status_code` — mapping it is what
+            // lets the actor's 400 context-overflow learning, auth and
+            // rate-limit paths fire for generic OpenAI-compatible backends.
             let msg = ae.api_error.message.clone();
             let code_str = ae.api_error.code.as_deref().unwrap_or("");
-            log::warn!(target: "llm_error", "[llm_error] api error code={} message={}", code_str, msg);
+            let status = ae.status_code.as_u16();
+            log::warn!(target: "llm_error", "[llm_error] api error status={} code={} message={}", status, code_str, msg);
             if code_str.contains("invalid_api_key") || msg.contains("Incorrect API key") {
                 LlmError::AuthError { reason: msg }
             } else if code_str.contains("model_not_found") || msg.contains("does not exist") {
@@ -112,9 +116,16 @@ pub fn map_openai_error(e: async_openai::error::OpenAIError) -> LlmError {
                     model_id: code_str.to_string(),
                 }
             } else {
-                LlmError::ApiError {
-                    status_code: 0,
-                    reason: msg,
+                match status {
+                    401 | 403 => LlmError::AuthError { reason: msg },
+                    429 => LlmError::RateLimited {
+                        reason: msg,
+                        retry_after_secs: None,
+                    },
+                    _ => LlmError::ApiError {
+                        status_code: status,
+                        reason: msg,
+                    },
                 }
             }
         }

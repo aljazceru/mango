@@ -19,7 +19,10 @@ import java.util.concurrent.CountDownLatch
  * The activity is held via WeakReference to avoid leaking it across orientation changes or
  * if the activity is destroyed while the biometric prompt is showing (T-28-21).
  */
-class BiometricProviderImpl(activity: FragmentActivity) : BiometricProvider {
+class BiometricProviderImpl(
+    activity: FragmentActivity,
+    private val dekStore: BiometricDekStore? = null,
+) : BiometricProvider {
 
     private val activityRef = WeakReference(activity)
 
@@ -57,6 +60,18 @@ class BiometricProviderImpl(activity: FragmentActivity) : BiometricProvider {
         val latch = CountDownLatch(1)
         val succeeded = AtomicBoolean(false)
 
+        // Step-up prompts do not read a DEK; app unlock must use bound crypto.
+        val protectsDek = reason == "Unlock Mango"
+        val cryptoObject: BiometricPrompt.CryptoObject? = if (protectsDek) {
+            try {
+                dekStore?.unlockCryptoObject() ?: return false
+            } catch (_: Exception) {
+                return false
+            }
+        } else {
+            null
+        }
+
         activity.runOnUiThread {
             val executor = ContextCompat.getMainExecutor(activity)
 
@@ -74,7 +89,13 @@ class BiometricProviderImpl(activity: FragmentActivity) : BiometricProvider {
                     override fun onAuthenticationSucceeded(
                         result: BiometricPrompt.AuthenticationResult
                     ) {
-                        succeeded.set(true)
+                        succeeded.set(
+                            if (protectsDek) {
+                                dekStore?.onAuthenticationSucceeded(result.cryptoObject) == true
+                            } else {
+                                true
+                            },
+                        )
                         latch.countDown()
                     }
 
@@ -90,7 +111,15 @@ class BiometricProviderImpl(activity: FragmentActivity) : BiometricProvider {
                 }
             )
 
-            biometricPrompt.authenticate(promptInfo)
+            try {
+                if (cryptoObject != null) {
+                    biometricPrompt.authenticate(promptInfo, cryptoObject)
+                } else {
+                    biometricPrompt.authenticate(promptInfo)
+                }
+            } catch (_: Exception) {
+                latch.countDown()
+            }
         }
 
         // Block the Rust actor thread until the callback fires.

@@ -90,6 +90,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/// Matches the Rust AttachImage limit (lib.rs rejects > 50 MB raw input).
+private const val MAX_IMAGE_ATTACH_BYTES: Long = 50L * 1024L * 1024L
+
 /// Full chat screen: message thread + compose bar + top bar with model picker, attestation badge, Instructions.
 /// Per CHAT-01 through CHAT-14 and UI-SPEC interaction contract.
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -274,19 +277,35 @@ fun ChatScreen(
     ) { uri: Uri? ->
         if (uri != null) {
             scope.launch(Dispatchers.IO) {
+                var staged: File? = null
                 try {
-                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: return@launch
+                    // Stream-capped read: the picker can hand us an image larger
+                    // than Rust's 50 MB attach limit — bound allocation and
+                    // surface a visible error instead of exhausting the heap.
+                    val bytes = context.contentResolver.openInputStream(uri)?.use {
+                        readBytesCapped(it, MAX_IMAGE_ATTACH_BYTES)
+                    }
+                    if (bytes == null) {
+                        withContext(Dispatchers.Main) {
+                            onDispatchAction(
+                                AppAction.ShowToast(
+                                    message = "Image exceeds the 50 MB limit or could not be read.",
+                                )
+                            )
+                        }
+                        return@launch
+                    }
                     val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
                     val normalizedMime = if (mime == "image/png") "image/png" else "image/jpeg"
                     val ext = if (normalizedMime == "image/png") "png" else "jpg"
-                    val tmp = File(context.cacheDir, "img_${System.currentTimeMillis()}.$ext")
-                    tmp.writeBytes(bytes)
+                    staged = File(context.cacheDir, "img_${System.currentTimeMillis()}.$ext")
+                    staged!!.writeBytes(bytes)
                     val name = uri.lastPathSegment?.substringAfterLast('/') ?: "image.$ext"
                     withContext(Dispatchers.Main) {
-                        onAttachImage(name, tmp.absolutePath, normalizedMime)
+                        onAttachImage(name, staged!!.absolutePath, normalizedMime)
                     }
                 } catch (_: Exception) {
+                    staged?.delete()
                     withContext(Dispatchers.Main) {
                         onDispatchAction(AppAction.ShowToast(message = "Could not read image"))
                     }

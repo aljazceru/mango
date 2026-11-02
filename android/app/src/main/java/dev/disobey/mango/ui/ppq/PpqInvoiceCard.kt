@@ -102,6 +102,10 @@ fun PpqInvoiceCard(
             now = System.currentTimeMillis() / 1000L
         }
     }
+    // Once the expiry timestamp has passed, paying is guaranteed to fail —
+    // the wallet/copy affordances stop working rather than send the user to a
+    // dead invoice. Cancel/New invoice stay reachable on the screen.
+    val expired = expiresAt > 0L && now >= expiresAt
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -127,9 +131,9 @@ fun PpqInvoiceCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "Expires in ${formatExpiryCountdown(expiresAt, now)}",
+                    text = if (expired) "Expired" else "Expires in ${formatExpiryCountdown(expiresAt, now)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (expired) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
@@ -163,12 +167,14 @@ fun PpqInvoiceCard(
                 Button(
                     onClick = { onOpenWallet(bolt11) },
                     modifier = Modifier.weight(1f),
+                    enabled = !expired,
                 ) {
                     Text("Open wallet")
                 }
                 OutlinedButton(
                     onClick = { onCopyInvoice(bolt11) },
                     modifier = Modifier.weight(1f),
+                    enabled = !expired,
                 ) {
                     Text("Copy invoice")
                 }

@@ -38,7 +38,6 @@ pub fn chunk_text(text: &str, max_tokens: usize, overlap_tokens: usize) -> Vec<C
 
     let max_chars = max_tokens * 4;
     let overlap_chars = overlap_tokens * 4;
-    let step_chars = max_chars - overlap_chars;
 
     let text_len = text.len();
 
@@ -59,15 +58,19 @@ pub fn chunk_text(text: &str, max_tokens: usize, overlap_tokens: usize) -> Vec<C
     while start < text_len {
         let raw_end = (start + max_chars).min(text_len);
 
-        // Snap to nearest whitespace boundary before raw_end (if not at end).
-        let end = if raw_end >= text_len {
+        // Snap to the nearest whitespace boundary inside the current chunk
+        // (if not at end). Falls back to a UTF-8 character boundary when the
+        // chunk contains no whitespace so mid-character slicing cannot panic.
+        let mut end = if raw_end >= text_len {
             text_len
         } else {
-            // Walk back from raw_end to find a whitespace boundary.
-            // We look in the byte string; since we're working with char boundaries,
-            // find the last whitespace at or before raw_end.
-            snap_to_whitespace(text, raw_end)
+            snap_to_whitespace(text, start + 1, raw_end)
+                .unwrap_or_else(|| snap_char_boundary(text, raw_end))
         };
+        // Safety: always emit at least one character so the loop terminates.
+        if end <= start {
+            end = advance_one_char(text, start).min(text_len);
+        }
 
         let chunk_text = &text[start..end];
         chunks.push(ChunkOutput {
@@ -79,36 +82,35 @@ pub fn chunk_text(text: &str, max_tokens: usize, overlap_tokens: usize) -> Vec<C
             break;
         }
 
-        // Next chunk starts at (start + step_chars), snapped to a char boundary.
-        let next_start_raw = start + step_chars;
-        start = snap_char_boundary(text, next_start_raw.min(text_len - 1));
-
-        // Safety: if we did not advance, force at least one char forward.
-        if start <= chunks.last().map(|c| c.char_offset).unwrap_or(0) && start < text_len {
-            start = advance_one_char(text, start);
-        }
+        // Next chunk overlaps the END of the chunk just emitted. Deriving the
+        // start from `end` (not `start`) means a whitespace-snapped chunk can
+        // never cause text to be skipped.
+        let next_start = snap_char_boundary(text, end.saturating_sub(overlap_chars));
+        start = if next_start > start { next_start } else { end };
     }
 
     chunks
 }
 
-/// Return the byte index of the last whitespace at or before `pos` in `text`.
-/// If no whitespace found, returns `pos` (no snapping possible).
-fn snap_to_whitespace(text: &str, pos: usize) -> usize {
+/// Return the byte index just after the last ASCII whitespace inside
+/// `text[from..pos]`, or `None` when the range contains no whitespace.
+/// Search is bounded to the current chunk so earlier whitespace cannot pull
+/// the chunk end before `from` (which would slice `text[start..end]` with
+/// `end < start` and panic).
+fn snap_to_whitespace(text: &str, from: usize, pos: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     let clamped = pos.min(bytes.len());
 
     // Walk backwards from clamped to find ASCII whitespace.
     let mut i = clamped;
-    while i > 0 {
+    while i > from {
         i -= 1;
         if bytes[i].is_ascii_whitespace() {
             // Return the position after the whitespace (i+1) to exclude it.
-            return i + 1;
+            return Some(i + 1);
         }
     }
-    // No whitespace found; return original pos (can't snap).
-    clamped
+    None
 }
 
 /// Ensure `pos` falls on a valid UTF-8 character boundary.
@@ -218,5 +220,41 @@ mod tests {
             text.len(),
             "Chunks should cover the entire text"
         );
+    }
+
+    #[test]
+    fn test_cjk_no_whitespace_no_panic_no_skipped_text() {
+        // 3000 bytes of 3-byte UTF-8 chars, no ASCII whitespace: the old code
+        // sliced at byte 2048 (mid-character) and panicked.
+        let text = "中".repeat(1000);
+        let chunks = chunk_text(&text, 512, 51);
+        assert!(chunks.len() > 1);
+        for w in chunks.windows(2) {
+            let prev_end = w[0].char_offset + w[0].text.len();
+            assert!(
+                w[1].char_offset <= prev_end,
+                "chunk start {} skipped past previous end {}",
+                w[1].char_offset,
+                prev_end
+            );
+            assert!(w[1].char_offset > w[0].char_offset);
+        }
+        let last = chunks.last().unwrap();
+        assert_eq!(last.char_offset + last.text.len(), text.len());
+    }
+
+    #[test]
+    fn test_early_whitespace_then_long_token_no_panic() {
+        // The only whitespace precedes the second chunk's window: the old code
+        // snapped `end` to before `start` and panicked on `text[start..end]`.
+        let text = format!(" {}", "x".repeat(5000));
+        let chunks = chunk_text(&text, 512, 51);
+        assert!(chunks.len() > 1);
+        for w in chunks.windows(2) {
+            let prev_end = w[0].char_offset + w[0].text.len();
+            assert!(w[1].char_offset <= prev_end, "no text may be skipped");
+        }
+        let last = chunks.last().unwrap();
+        assert_eq!(last.char_offset + last.text.len(), text.len());
     }
 }

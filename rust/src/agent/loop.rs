@@ -130,7 +130,20 @@ pub async fn run_agent_step_for_backend(
     model: &str,
     messages: Vec<ChatCompletionRequestMessage>,
     tools: Vec<ChatCompletionTools>,
+    pinned_tls_public_key_fp: Option<&str>,
 ) -> Result<AgentStepResult, LlmError> {
+    // Fail closed: a TEE-typed generic endpoint without a usable attested pin
+    // must not receive the prompt over ordinary TLS. Sealed transports
+    // (Tinfoil/PPQ/Venice/Redpill) attest inside their own handshake.
+    if backend.transport_kind() == ProviderTransportKind::OpenAiCompatible
+        && backend.tee_type != crate::llm::TeeType::Unknown
+        && pinned_tls_public_key_fp.is_none()
+    {
+        return Err(LlmError::AuthError {
+            reason: "attested TLS pin required for this TEE backend; re-verify attestation"
+                .to_string(),
+        });
+    }
     match backend.transport_kind() {
         ProviderTransportKind::TinfoilSecure => {
             let response = crate::llm::tinfoil_secure::create_chat_completion(
@@ -181,7 +194,7 @@ pub async fn run_agent_step_for_backend(
 
     let (client, _) = backend.transport_kind().build_openai_client(
         backend,
-        None,
+        pinned_tls_public_key_fp,
         std::time::Duration::from_secs(60),
     )?;
     let request = CreateChatCompletionRequestArgs::default()

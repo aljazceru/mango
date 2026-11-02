@@ -19,3 +19,13 @@ async fn test_verify_tdx_quote_short_input() {
         "short input should return an error, not succeed"
     );
 }
+
+#[test]
+fn stale_tcb_statuses_are_rejected() {
+    use crate::attestation::tdx::verify_acceptable_tcb_status;
+    assert!(verify_acceptable_tcb_status("UpToDate").is_ok());
+    assert!(verify_acceptable_tcb_status("SWHardeningNeeded").is_ok());
+    for status in ["OutOfDate", "ConfigurationNeeded", "Revoked", "unknown"] {
+        assert!(verify_acceptable_tcb_status(status).is_err(), "{status}");
+    }
+}

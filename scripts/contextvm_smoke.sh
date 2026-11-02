@@ -161,3 +161,14 @@ if [[ "$STATUS" -ne 0 ]]; then
     cat "$SERVER_LOG" >&2 || true
     exit "$STATUS"
 fi
+
+# The scenario can pass without a real tool call: the mock LLM answers with
+# the expected echo text even when ContextVM was bypassed. Require the echo
+# server's own invocation marker ([echo] called with: ...) before success.
+EXPECTED_CALL="${MANGO_SMOKE_ECHO_EXPECTED#Echo: }"
+if ! grep -qF "[echo] called with: $EXPECTED_CALL" "$SERVER_LOG"; then
+    echo "[smoke] scenario passed but the echo server never logged a tool call" >&2
+    echo "[smoke] echo server log:" >&2
+    cat "$SERVER_LOG" >&2 || true
+    exit 1
+fi

@@ -354,7 +354,7 @@ extern "C" JNIEXPORT jint JNICALL
 Java_dev_disobey_mango_AndroidLlamaEngine_nativeProcessPrompt(
     JNIEnv *env,
     jobject,
-    jstring messages_json,
+    jbyteArray messages_json,
     jint max_tokens
 ) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -365,13 +365,19 @@ Java_dev_disobey_mango_AndroidLlamaEngine_nativeProcessPrompt(
         return 1;
     }
 
-    const char *raw = env->GetStringUTFChars(messages_json, nullptr);
-    if (raw == nullptr) {
+    // The prompt arrives as a UTF-8 byte array, NOT a jstring: JNI's
+    // GetStringUTFChars returns *modified* UTF-8, which encodes supplementary
+    // characters (emoji) as surrogate pairs the strict JSON parser rejects.
+    const jsize json_len = env->GetArrayLength(messages_json);
+    std::string json_text(static_cast<size_t>(json_len), '\0');
+    env->GetByteArrayRegion(
+        messages_json, 0, json_len,
+        reinterpret_cast<jbyte *>(json_text.data()));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
         set_error("failed to read prompt messages");
         return 2;
     }
-    std::string json_text(raw);
-    env->ReleaseStringUTFChars(messages_json, raw);
 
     // Parse `{"messages":[{"role":"...","content":"..."}, ...]}` and apply the
     // model's embedded chat template via common_chat_templates_apply.
@@ -387,8 +393,10 @@ Java_dev_disobey_mango_AndroidLlamaEngine_nativeProcessPrompt(
                 messages.push_back(std::move(msg));
             }
         }
-    } catch (const std::exception &e) {
-        set_error(std::string("failed to parse messages JSON: ") + e.what());
+    } catch (const std::exception &) {
+        // Fixed message only: the parser's e.what() echoes input bytes, which
+        // would leak prompt content into logcat via set_error().
+        set_error("failed to parse messages JSON");
         return 2;
     }
     if (messages.empty()) {
@@ -428,9 +436,17 @@ Java_dev_disobey_mango_AndroidLlamaEngine_nativeProcessPrompt(
     const int32_t budget = std::max(1, static_cast<int32_t>(max_tokens));
     const int32_t max_prompt_tokens = std::max(1, n_ctx - budget - 8);
     if (static_cast<int32_t>(tokens.size()) > max_prompt_tokens) {
-        LOGW("Prompt has %d tokens; keeping last %d for local context",
-             static_cast<int32_t>(tokens.size()), max_prompt_tokens);
-        tokens.erase(tokens.begin(), tokens.end() - max_prompt_tokens);
+        // Never silently truncate the prompt head: that would drop the system
+        // prompt and early turns while appearing to succeed. Report an explicit
+        // context overflow in the format the Rust core parses (same shape as
+        // remote providers' 400 bodies) so the user is offered compaction.
+        set_error(
+            "local prompt exceeds maximum context length is " +
+            std::to_string(max_prompt_tokens) +
+            " tokens, input length " +
+            std::to_string(static_cast<int32_t>(tokens.size())) +
+            " tokens");
+        return 2;
     }
 
     llama_memory_clear(llama_get_memory(g_context), false);

@@ -399,7 +399,7 @@ fn no_lock_resume_survives_second_restart_after_lost_dek_slot() {
     bootstrap.delete_all().unwrap();
     bootstrap.write_pending_auth(&params).unwrap();
     let kc = SharedKeychain(keychain.clone());
-    kc.delete("mango".into(), "dek".into());
+    kc.delete("mango".into(), crate::KEYCHAIN_BYPASS_DEK_KEY.into());
 
     let app2 = make_app(&dir, &keychain);
     let state = app2.state();

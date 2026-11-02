@@ -19,7 +19,6 @@ pub mod npub;
 pub use discovery::DiscoveredTool;
 pub use dispatch::{
     build_dispatch_map, descriptors_to_chat_tools, finalise_for_turn, ContextvmToolDescriptor,
-    DESCRIPTION_CAP_CHARS,
 };
 pub use error::ContextvmError;
 pub use invocation::invoke_tool;

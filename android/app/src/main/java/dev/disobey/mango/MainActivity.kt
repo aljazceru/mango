@@ -2,6 +2,7 @@ package dev.disobey.mango
 
 import android.os.Bundle
 import android.content.Intent
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,9 +19,19 @@ import dev.disobey.mango.ui.scheduleAgentWorker
 import dev.disobey.mango.ui.syncDirectory
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import dev.disobey.mango.ui.MainApp
 import dev.disobey.mango.ui.ppq.ppqBackupFileName
 import dev.disobey.mango.ui.theme.AppTheme
@@ -29,13 +40,7 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 
-internal fun shouldLockAfterBackground(backgroundedAt: Long, now: Long, timeoutSeconds: Long): Boolean {
-    if (backgroundedAt <= 0 || timeoutSeconds < 0) {
-        return false
-    }
-    val elapsed = now - backgroundedAt
-    return elapsed >= timeoutSeconds * 1000L
-}
+
 
 /** How to react to a create-document result for a pending PPQ backup. Pure (unit-tested). */
 internal enum class PpqBackupSaveDecision {
@@ -107,14 +112,16 @@ internal fun applyPpqBackupSaveOutcome(
 }
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var manager: AppManager
+    /** Null until the heavy init (Keystore, ONNX model, native probe) finishes
+     * off the main thread; a startup failure is surfaced via [startupError]. */
+    private var manager by mutableStateOf<AppManager?>(null)
+
+    /** Non-null when AppManager construction threw — a retryable recovery state. */
+    private var startupError by mutableStateOf<Throwable?>(null)
 
     /** Identity of THIS activity instance for [PpqBackupCoordinator] hook ownership,
      * so a stale activity's onDestroy can never detach a newer activity's hooks. */
     private val safOwnerToken: Long = PpqBackupCoordinator.nextOwnerToken()
-
-    /** Timestamp (millis) when the app last moved to background (D-10). 0 = not backgrounded. */
-    private var backgroundedAt: Long = 0
 
     /** Last resume-based PPQ invoice refresh; debounce at ~2s. */
     private var lastPpqResumeCheckAt: Long = 0
@@ -183,7 +190,7 @@ class MainActivity : AppCompatActivity() {
         when (decidePpqBackupSave(hasPendingBytes = bytes != null, uriChosen = uri != null)) {
             PpqBackupSaveDecision.IGNORE -> {}
             PpqBackupSaveDecision.CANCELLED ->
-                applyPpqBackupSaveOutcome(PpqBackupSaveOutcome.CANCELLED, manager::dispatch, ::notifyPpqBackupUser)
+                applyPpqBackupSaveOutcome(PpqBackupSaveOutcome.CANCELLED, { a -> manager?.dispatch(a) }, ::notifyPpqBackupUser)
             PpqBackupSaveDecision.WRITE -> lifecycleScope.launch(Dispatchers.IO) {
                 val write = writePpqBackupBytes(bytes!!) { contentResolver.openOutputStream(uri!!) }
                 val outcome = if (write == PpqBackupWriteResult.SAVED) {
@@ -192,7 +199,7 @@ class MainActivity : AppCompatActivity() {
                     PpqBackupSaveOutcome.WRITE_FAILED
                 }
                 withContext(Dispatchers.Main) {
-                    applyPpqBackupSaveOutcome(outcome, manager::dispatch, ::notifyPpqBackupUser)
+                    applyPpqBackupSaveOutcome(outcome, { a -> manager?.dispatch(a) }, ::notifyPpqBackupUser)
                 }
             }
         }
@@ -200,12 +207,15 @@ class MainActivity : AppCompatActivity() {
 
     /** Surface a backup-save notice via app state so it is visible in the UI. */
     private fun notifyPpqBackupUser(message: String) {
-        manager.dispatch(AppAction.ShowToast(message = message))
+        manager?.dispatch(AppAction.ShowToast(message = message))
     }
 
     override fun onPause() {
         super.onPause()
-        backgroundedAt = System.currentTimeMillis()
+        // The timestamp lives in the process-wide AppManager (monotonic clock):
+        // activity recreation and back-to-launcher + relaunch can no longer
+        // reset it to zero and skip the configured lock timeout.
+        manager?.onAppBackgrounded()
     }
 
     override fun onDestroy() {
@@ -220,26 +230,22 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (backgroundedAt > 0) {
-            val now = System.currentTimeMillis()
-            val timeoutSeconds = manager.state.lockTimeoutSeconds
-            // -1 = Never. 0 = Immediately (always lock). Any positive value: lock if exceeded.
-            if (shouldLockAfterBackground(backgroundedAt, now, timeoutSeconds)) {
-                manager.dispatch(AppAction.LockApp)
-                backgroundedAt = 0
-                return
-            }
-            backgroundedAt = 0
+        val mgr = manager ?: return
+        // Enforce the process-wide deadline on EVERY resume: a recreated or
+        // re-launched activity gets the same answer instead of timestamp zero.
+        if (mgr.enforceLockDeadline()) {
+            mgr.dispatch(AppAction.LockApp)
+            return
         }
 
         // Phase PPQ: resume-based check for pending Lightning invoices.
-        if (manager.state.router.currentScreen !is Screen.Locked) {
-            val ppq = manager.state.ppq
+        if (mgr.state.router.currentScreen !is Screen.Locked) {
+            val ppq = mgr.state.ppq
             if (ppq.funding != null) {
                 val now = System.currentTimeMillis()
                 if (now - lastPpqResumeCheckAt > 2_000) {
-                    manager.dispatch(AppAction.CheckPpqTopup)
-                    manager.dispatch(AppAction.RefreshPpqAccount)
+                    mgr.dispatch(AppAction.CheckPpqTopup)
+                    mgr.dispatch(AppAction.RefreshPpqAccount)
                     lastPpqResumeCheckAt = now
                 }
             }
@@ -248,16 +254,16 @@ class MainActivity : AppCompatActivity() {
         // Phase 32 Plan 06: foreground-resume sync for all directory sources
         // (D-22 belt-and-braces alongside the 15-minute WorkManager schedule).
         // Skipped when the app is locked (matches iOS ScenePhase gating in plan 32-05).
-        if (manager.state.router.currentScreen !is Screen.Locked) {
+        if (mgr.state.router.currentScreen !is Screen.Locked) {
             val ctx = applicationContext
-            val sources = manager.state.directorySources
+            val sources = mgr.state.directorySources
             if (sources.isNotEmpty()) {
                 lifecycleScope.launch {
                     for (source in sources) {
-                        val tree = resolveTreeUri(ctx, source) ?: continue
+                        val tree = resolveTreeUri(mgr, source) ?: continue
                         try {
                             syncDirectory(ctx, source, Uri.parse(tree)) { action ->
-                                manager.dispatch(action)
+                                mgr.dispatch(action)
                             }
                         } catch (t: Throwable) {
                             android.util.Log.e(
@@ -272,11 +278,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // FLAG_SECURE before any content: covers chat, PIN and recovery
+        // screens against screenshots, recents thumbnails and recording.
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE,
+        )
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        manager = AppManager.getInstance(applicationContext, this)
-        // §7.5: rebind the biometric bridge to THIS activity every recreation.
-        manager.biometricRebindable?.attach(this)
 
         // PPQ backup SAF launchers: registered before setContent under this
         // activity's owner token; composables request via the coordinator.
@@ -292,13 +301,18 @@ class MainActivity : AppCompatActivity() {
 
         lifecycle.addObserver(LifecycleEventObserver { _, event ->
             if (FeatureFlags.AGENTS_ENABLED && event == Lifecycle.Event.ON_STOP) {
-                manager.state.agentSessions
-                    .filter { it.status == "running" }
-                    .forEach { session -> scheduleAgentWorker(applicationContext, session.id) }
+                manager?.state?.agentSessions
+                    ?.filter { it.status == "running" }
+                    ?.forEach { session -> scheduleAgentWorker(applicationContext, session.id) }
             }
         })
 
         handleAgentNotificationIntent(intent)
+
+        // Heavy startup (Keystore/EncryptedSharedPreferences, ONNX model copy,
+        // native capability probe, Rust core) runs off the main thread; the UI
+        // shows a blank frame (or the recovery screen) until it completes.
+        startManagerInit()
 
         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         var themeMode by mutableStateOf(prefs.getString("theme_mode", "system") ?: "system")
@@ -311,21 +325,56 @@ class MainActivity : AppCompatActivity() {
                 else -> isSystemInDarkTheme()
             }
             AppTheme(darkTheme = useDarkTheme) {
-                MainApp(
-                    manager = manager,
-                    themeMode = themeMode,
-                    onThemeModeChanged = { newMode ->
-                        themeMode = newMode
-                        prefs.edit().putString("theme_mode", newMode).apply()
-                    },
-                    fontSize = fontSize,
-                    onFontSizeChanged = { newSize ->
-                        fontSize = newSize
-                        prefs.edit().putString("font_size", newSize).apply()
-                    },
-                )
+                val mgr = manager
+                val error = startupError
+                when {
+                    error != null -> StartupRecovery(
+                        onRetry = { retryStartup() },
+                    )
+                    mgr != null -> MainApp(
+                        manager = mgr,
+                        themeMode = themeMode,
+                        onThemeModeChanged = { newMode ->
+                            themeMode = newMode
+                            prefs.edit().putString("theme_mode", newMode).apply()
+                        },
+                        fontSize = fontSize,
+                        onFontSizeChanged = { newSize ->
+                            fontSize = newSize
+                            prefs.edit().putString("font_size", newSize).apply()
+                        },
+                    )
+                    else -> Box(modifier = Modifier.fillMaxSize()) // init in progress
+                }
             }
         }
+    }
+
+    /** Build/reuse the singleton off the main thread; on success attach the
+     * biometric bridge to THIS activity and enforce any armed lock deadline. */
+    private fun startManagerInit() {
+        lifecycleScope.launch {
+            try {
+                val mgr = AppManager.warmInstance(applicationContext, this@MainActivity)
+                startupError = null
+                manager = mgr
+                // §7.5: rebind the biometric bridge to THIS activity every recreation.
+                mgr.biometricRebindable?.attach(this@MainActivity)
+                // A deadline armed before this activity existed (back+relaunch)
+                // still fires here.
+                if (mgr.enforceLockDeadline()) {
+                    mgr.dispatch(AppAction.LockApp)
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("MainActivity", "AppManager init failed", e)
+                startupError = e
+            }
+        }
+    }
+
+    private fun retryStartup() {
+        startupError = null
+        startManagerInit()
     }
 
     /** Start the create-document flow for the staged encrypted bytes. */
@@ -347,7 +396,33 @@ class MainActivity : AppCompatActivity() {
     private fun handleAgentNotificationIntent(intent: Intent?) {
         if (!FeatureFlags.AGENTS_ENABLED) return
         val sessionId = intent?.getStringExtra("agent_session_id") ?: return
-        manager.dispatch(AppAction.LoadAgentSession(sessionId = sessionId))
-        manager.dispatch(AppAction.PushScreen(screen = Screen.Agents))
+        manager?.dispatch(AppAction.LoadAgentSession(sessionId = sessionId))
+        manager?.dispatch(AppAction.PushScreen(screen = Screen.Agents))
+    }
+}
+
+/**
+ * Shown when Keystore/EncryptedSharedPreferences/Rust-core construction failed
+ * before any app UI existed. Retry is the only action — the failure path never
+ * touches user files or credentials, so nothing is offered to clear.
+ */
+@androidx.compose.runtime.Composable
+private fun StartupRecovery(onRetry: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                "Mango could not open its secure storage.",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                "Your data was not modified. Retry, or restart the app if this persists.",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
+            )
+            Button(onClick = onRetry) { Text("Retry") }
+        }
     }
 }

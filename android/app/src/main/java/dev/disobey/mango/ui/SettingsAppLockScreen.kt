@@ -221,7 +221,11 @@ fun LazyListScope.appLockItems(appState: AppState, onDispatch: (AppAction) -> Un
                         }
                         Button(
                             onClick = {
-                                val cur = ui.currentPin.trim()
+                                // Never trim the CURRENT PIN — the stored
+                                // credential covers it verbatim; leading/
+                                // trailing whitespace in the original PIN is
+                                // real entropy. New PINs may still be trimmed.
+                                val cur = ui.currentPin
                                 val nw = ui.newPin.trim()
                                 when {
                                     cur.isEmpty() || nw.isEmpty() -> ui.pinMessage = "Fill in all PIN fields."

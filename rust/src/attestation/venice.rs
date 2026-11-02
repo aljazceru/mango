@@ -77,6 +77,16 @@ pub struct VeniceAttestationResponse {
     pub server_verification: Option<serde_json::Value>,
 }
 
+/// Security-relevant fields read from a parsed TDX report body (version-safe
+/// for quote v4/v5 via `dcap_qvl::Quote::parse`).
+struct ParsedVeniceTdx {
+    td_attributes: [u8; 8],
+    xfam: [u8; 8],
+    tee_tcb_svn: [u8; 16],
+    mr_seam: [u8; 48],
+    report_data: [u8; 64],
+}
+
 /// Decode and verify the Venice TDX REPORTDATA against the advertised signing key.
 ///
 /// Layout: `[0..20]` = keccak256(pubkey[1..])[12..32] (Ethereum-style address);
@@ -140,7 +150,7 @@ pub fn verify_venice_report_data(
 pub async fn fetch_and_verify_venice_attestation(
     backend: &BackendConfig,
     requested_model: &str,
-    _tdx_policy: &super::policy::TdxPolicy,
+    tdx_policy: &super::policy::TdxPolicy,
 ) -> Result<VerifiedVeniceAttestation, AttestationError> {
     // 1. Fresh nonce
     let mut nonce_bytes = [0u8; 32];
@@ -240,20 +250,44 @@ pub async fn fetch_and_verify_venice_attestation(
         }
     })?;
 
-    let (td_attributes, report_data): ([u8; 8], [u8; 64]) = match &parsed.report {
-        dcap_qvl::quote::Report::TD10(td) => (td.td_attributes, td.report_data),
-        dcap_qvl::quote::Report::TD15(td) => (td.base.td_attributes, td.base.report_data),
+    let parsed_tdx: ParsedVeniceTdx = match &parsed.report {
+        dcap_qvl::quote::Report::TD10(td) => ParsedVeniceTdx {
+            td_attributes: td.td_attributes,
+            xfam: td.xfam,
+            tee_tcb_svn: td.tee_tcb_svn,
+            mr_seam: td.mr_seam,
+            report_data: td.report_data,
+        },
+        dcap_qvl::quote::Report::TD15(td) => ParsedVeniceTdx {
+            td_attributes: td.base.td_attributes,
+            xfam: td.base.xfam,
+            tee_tcb_svn: td.base.tee_tcb_svn,
+            mr_seam: td.base.mr_seam,
+            report_data: td.base.report_data,
+        },
         dcap_qvl::quote::Report::SgxEnclave(_) => {
             return Err(AttestationError::QuoteVerification {
                 reason: "Venice quote is not a TDX TD10/TD15 report".into(),
             })
         }
     };
+    let (td_attributes, report_data) = (parsed_tdx.td_attributes, parsed_tdx.report_data);
     if td_attributes[0] & 0x01 != 0 {
         return Err(AttestationError::QuoteVerification {
             reason: "Venice TDX is in debug mode (td_attributes[0] & 0x01 != 0)".into(),
         });
     }
+
+    // 6b. Apply the configured TdxPolicy (min TEE TCB SVN, MRSEAM allowlist,
+    // fixed TD attributes/XFAM) -- the same gate the custom endpoint applies,
+    // so a single policy governs every TDX path (closes RED/policy drift).
+    super::endpoint::verify_tdx_policy(
+        &parsed_tdx.tee_tcb_svn,
+        &parsed_tdx.mr_seam,
+        &parsed_tdx.td_attributes,
+        &parsed_tdx.xfam,
+        tdx_policy,
+    )?;
 
     // 7. REPORTDATA decoder — address binding + zero pad + nonce echo
     verify_venice_report_data(&report_data, &resp.signing_key, &nonce_bytes)?;

@@ -684,6 +684,14 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
     func getDirectoryBookmark(sourceId: String) throws  -> Data?
     
     /**
+     * Return the persisted SAF tree URI for a directory source, or None if the
+     * source doesn't exist or has no tree URI (Desktop/iOS sources). Errors
+     * while the database is locked. Used by the Android sync pipeline to
+     * resolve the exact persistable grant for a source id.
+     */
+    func getDirectoryTreeUri(sourceId: String) throws  -> String?
+    
+    /**
      * Return the raw attestation report blob for `backend_id`, if available.
      *
      * Per D-12: raw blobs are not carried in AppState (too large for frequent snapshots).
@@ -901,6 +909,22 @@ open func getDirectoryBookmark(sourceId: String)throws  -> Data?  {
     return try  FfiConverterOptionData.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
         uniffiCallStatus in
     uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sourceId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Return the persisted SAF tree URI for a directory source, or None if the
+     * source doesn't exist or has no tree URI (Desktop/iOS sources). Errors
+     * while the database is locked. Used by the Android sync pipeline to
+     * resolve the exact persistable grant for a source id.
+     */
+open func getDirectoryTreeUri(sourceId: String)throws  -> String?  {
+    return try  FfiConverterOptionString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_mango_core_fn_method_ffiapp_get_directory_tree_uri(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(sourceId),uniffiCallStatus
     )
@@ -11257,6 +11281,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() != 13014) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mango_core_checksum_method_ffiapp_get_directory_tree_uri() != 52302) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 38325) {

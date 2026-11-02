@@ -1033,7 +1033,7 @@ fn test_migration_v21_backfills_contextvm_provider_profile_columns() {
             ..fixture_contextvm_row("pkA:echo", "echo", true, 1_700_000_010)
         };
         queries::upsert_contextvm_tool(conn, &row).unwrap();
-        let fetched = queries::get_contextvm_tool_by_name(conn, "echo")
+        let fetched = queries::get_contextvm_tool_by_id(conn, "pkA:echo")
             .unwrap()
             .unwrap();
         assert_eq!(fetched.provider_name.as_deref(), Some("Echo Provider"));
@@ -1072,26 +1072,148 @@ fn test_migration_v20_adds_tool_origin_to_agent_steps() {
 }
 
 #[test]
-fn test_unique_index_on_tool_name() {
+fn test_unique_index_only_restricts_enabled_tool_names() {
     let db = Database::open(":memory:").unwrap();
     let now = 1_700_000_000_i64;
     let conn = db.conn();
     conn.execute(
         "INSERT INTO contextvm_tools \
          (id, tool_name, description, provider_pubkey, schema_json, enabled, last_seen_at) \
-         VALUES ('p1:foo', 'foo', '', 'pk1', '{}', 0, ?1)",
+         VALUES ('p1:foo', 'foo', '', 'pk1', '{}', 1, ?1)",
         [now],
     )
     .unwrap();
-    let res = conn.execute(
+    conn.execute(
         "INSERT INTO contextvm_tools \
          (id, tool_name, description, provider_pubkey, schema_json, enabled, last_seen_at) \
          VALUES ('p2:foo', 'foo', '', 'pk2', '{}', 0, ?1)",
         [now],
+    )
+    .unwrap();
+    let res = conn.execute(
+        "UPDATE contextvm_tools SET enabled = 1 WHERE id = 'p2:foo'",
+        [],
     );
     assert!(
         res.is_err(),
-        "duplicate tool_name should violate unique index"
+        "only one provider may be enabled for a tool name"
+    );
+}
+
+#[test]
+fn test_migration_v29_preserves_approval_and_allows_disabled_collisions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("v28.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in crate::persistence::schema::MIGRATIONS.iter().take(28) {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 28i32).unwrap();
+        conn.execute(
+            "INSERT INTO contextvm_tools \
+             (id, tool_name, provider_pubkey, schema_json, enabled, last_seen_at) \
+             VALUES ('pkA:foo', 'foo', 'pkA', '{}', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let approved = fixture_contextvm_row("pkA:foo", "foo", true, 1);
+    {
+        let db = Database::open(path.to_str().unwrap()).unwrap();
+        let original = queries::get_contextvm_tool_by_id(db.conn(), &approved.id)
+            .unwrap()
+            .unwrap();
+        assert!(original.enabled);
+        assert_eq!(original.provider_pubkey, "pkA");
+        queries::upsert_contextvm_tool(
+            db.conn(),
+            &fixture_contextvm_row("pkB:foo", "foo", false, 2),
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(crate::persistence::schema::MIGRATION_V29)
+            .unwrap();
+        assert_eq!(
+            queries::get_contextvm_tool_by_id(db.conn(), &approved.id).unwrap(),
+            Some(original)
+        );
+        assert_eq!(
+            queries::list_all_contextvm_tools(db.conn()).unwrap().len(),
+            2
+        );
+    }
+    let db = Database::open(path.to_str().unwrap()).unwrap();
+    let enabled = queries::list_enabled_contextvm_tools(db.conn()).unwrap();
+    assert_eq!(enabled.len(), 1);
+    assert_eq!(enabled[0].id, approved.id);
+    assert_eq!(
+        queries::list_all_contextvm_tools(db.conn()).unwrap().len(),
+        2
+    );
+    let version: i32 = db
+        .conn()
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, crate::persistence::schema::MIGRATIONS.len() as i32);
+}
+
+#[test]
+fn test_explicit_tool_enable_atomically_switches_provider_without_deleting_rows() {
+    let db = Database::open(":memory:").unwrap();
+    let conn = db.conn();
+    let approved = fixture_contextvm_row("pkA:foo", "foo", true, 1);
+    let mut competing = fixture_contextvm_row("pkB:foo", "foo", false, 2);
+    queries::upsert_contextvm_tool(conn, &approved).unwrap();
+    queries::upsert_contextvm_tool(conn, &competing).unwrap();
+    assert_eq!(
+        queries::list_enabled_contextvm_tools(conn).unwrap(),
+        vec![approved.clone()]
+    );
+
+    competing.enabled = true;
+    assert!(queries::upsert_contextvm_tool(conn, &competing).is_err());
+    assert_eq!(
+        queries::get_contextvm_tool_by_id(conn, &approved.id).unwrap(),
+        Some(approved)
+    );
+    assert!(
+        !queries::get_contextvm_tool_by_id(conn, &competing.id)
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+
+    queries::update_contextvm_tool_enabled(conn, &competing.id, true).unwrap();
+    assert_eq!(
+        queries::list_enabled_contextvm_tools(conn).unwrap(),
+        vec![competing.clone()]
+    );
+    assert!(
+        !queries::get_contextvm_tool_by_id(conn, "pkA:foo")
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    assert_eq!(
+        queries::get_contextvm_tool_by_id(conn, &competing.id).unwrap(),
+        Some(competing.clone())
+    );
+    assert_eq!(queries::list_all_contextvm_tools(conn).unwrap().len(), 2);
+
+    queries::update_contextvm_tool_enabled(conn, "missing:foo", true).unwrap();
+    assert_eq!(
+        queries::list_enabled_contextvm_tools(conn).unwrap(),
+        vec![competing.clone()]
+    );
+    queries::update_contextvm_tool_enabled(conn, &competing.id, false).unwrap();
+    competing.enabled = false;
+    assert!(queries::list_enabled_contextvm_tools(conn)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        queries::get_contextvm_tool_by_id(conn, &competing.id).unwrap(),
+        Some(competing)
     );
 }
 
@@ -1144,7 +1266,7 @@ fn test_round_trip_enabled_contextvm_tool() {
     let row = fixture_contextvm_row("pkA:get_weather", "get_weather", true, 1_700_000_010);
     queries::upsert_contextvm_tool(conn, &row).unwrap();
 
-    let fetched = queries::get_contextvm_tool_by_name(conn, "get_weather")
+    let fetched = queries::get_contextvm_tool_by_id(conn, "pkA:get_weather")
         .unwrap()
         .unwrap();
     assert_eq!(fetched, row);
@@ -1196,7 +1318,7 @@ fn test_update_contextvm_tool_enabled_persists_after_reopen() {
     }
     // Reopen and verify enabled persists across handles.
     let db = Database::open(path.to_str().unwrap()).unwrap();
-    let row = queries::get_contextvm_tool_by_name(db.conn(), "foo")
+    let row = queries::get_contextvm_tool_by_id(db.conn(), "pkA:foo")
         .unwrap()
         .unwrap();
     assert!(row.enabled, "enabled flag must persist across DB reopens");

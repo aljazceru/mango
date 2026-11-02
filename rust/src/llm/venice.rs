@@ -205,10 +205,12 @@ pub fn open_envelope(envelope_hex: &str, aes_key: &[u8; 32]) -> Result<Vec<u8>, 
 
 // ── Request body builder ─────────────────────────────────────────────────────
 
-/// Serialize a chat completion request, encrypt every user/system/tool message
-/// `content` field with the session AES key, and set `enable_e2ee: true` +
-/// `stream: true` at the top level. Assistant messages stay plaintext on
-/// outbound (the model emits them encrypted on inbound; we don't re-encrypt).
+/// Serialize a chat completion request, encrypt every message `content` field
+/// with the session AES key, and set `enable_e2ee: true` + `stream: true` at
+/// the top level. Assistant history is encrypted too: the protocol envelope is
+/// symmetric (the TEE decrypts sealed string content by role), and sending a
+/// previously-protected reply back in plaintext would leak it to the gateway
+/// on every turn after the first.
 ///
 /// Multipart `Array` content (vision parts) is rejected — D9 deferred to a
 /// later phase. All other top-level fields (`model`, `temperature`, `tools`,
@@ -237,7 +239,10 @@ pub(crate) fn build_venice_chat_body(
                 .and_then(|r| r.as_str())
                 .unwrap_or("")
                 .to_string();
-            if !matches!(role.as_str(), "user" | "system" | "tool") {
+            // Every string content is sealed: an assistant reply was itself
+            // protected by the enclave on the previous turn, so it must not
+            // leave this device as plaintext on the next one.
+            if !matches!(role.as_str(), "user" | "system" | "tool" | "assistant") {
                 continue;
             }
             match m.get("content").cloned() {
@@ -719,21 +724,17 @@ async fn create_chat_completion_inner(
             reason: format!("Venice non-stream response JSON: {e}"),
         })?;
 
-    // Decrypt each choice.message.content (server returns hex envelopes).
+    // Every present content value must authenticate as an E2EE envelope --
+    // a gateway that never possessed the ECDH key can return plausible
+    // plaintext or short/invalid hex that must NOT be accepted (streaming
+    // already requires open_envelope unconditionally; T-33-13 fail-closed).
     for choice in parsed.choices.iter_mut() {
         if let Some(envelope_hex) = choice.message.content.as_deref() {
-            // If the body looks like hex of correct minimum length, attempt decrypt.
-            let trimmed = envelope_hex.trim();
-            let looks_hex = !trimmed.is_empty()
-                && trimmed.len() >= 2 * (EPH_PUB_LEN + AES_NONCE_LEN + AES_GCM_TAG_LEN)
-                && trimmed.chars().all(|c| c.is_ascii_hexdigit());
-            if looks_hex {
-                let pt_bytes = open_envelope(trimmed, &aes_key)?;
-                let pt = String::from_utf8(pt_bytes).map_err(|e| LlmError::NetworkError {
-                    reason: format!("Venice plaintext not UTF-8: {e}"),
-                })?;
-                choice.message.content = Some(pt);
-            }
+            let pt_bytes = open_envelope(envelope_hex.trim(), &aes_key)?;
+            let pt = String::from_utf8(pt_bytes).map_err(|e| LlmError::NetworkError {
+                reason: format!("Venice plaintext not UTF-8: {e}"),
+            })?;
+            choice.message.content = Some(pt);
         }
     }
 

@@ -44,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -86,12 +87,9 @@ fun DirectorySourcesScreen(
     var editingSource by remember { mutableStateOf<DirectorySourceSummary?>(null) }
     var confirmRemoveSource by remember { mutableStateOf<DirectorySourceSummary?>(null) }
 
-    // Newly-picked URIs cached by display name so the first Sync Now can resolve
-    // the URI even before the source re-appears in AppState.
-    val pickedUrisByName = remember { mutableStateOf<Map<String, Uri>>(emptyMap()) }
+    val manager = remember { dev.disobey.mango.AppManager.getInstance(context.applicationContext) }
 
     val openPicker = rememberDirectoryPicker { uri, displayName ->
-        pickedUrisByName.value = pickedUrisByName.value + (displayName to uri)
         onDispatch(
             AppAction.AddDirectorySource(
                 displayName = displayName,
@@ -103,15 +101,14 @@ fun DirectorySourcesScreen(
         )
     }
 
-    // Kick a sync for any newly-added source whose URI is cached but whose
-    // file_count is still 0 (the actor just inserted the row, no sync yet — D-02).
+    // Kick a sync for any newly-added source whose file_count is still 0 (the
+    // actor just inserted the row, no sync yet — D-02). The URI resolves by
+    // source id via get_directory_tree_uri, so same-named folders never cross.
     LaunchedEffect(appState.directorySources.map { it.id to it.fileCount }) {
         for (source in appState.directorySources) {
             if (source.fileCount > 0L) continue
-            val uri = pickedUrisByName.value[source.displayName] ?: continue
-            scope.launch {
-                syncDirectory(context, source, uri) { action -> onDispatch(action) }
-            }
+            val uri = resolveTreeUri(manager, source)?.let(Uri::parse) ?: continue
+            syncDirectory(context, source, uri) { action -> onDispatch(action) }
         }
     }
 
@@ -157,10 +154,12 @@ fun DirectorySourcesScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     items(appState.directorySources, key = { it.id }) { source ->
-                        // Resolve the tree URI string once per row so we can derive
-                        // both the human-readable path and the URI for the open-in-files intent.
-                        val treeUriString = resolveTreeUri(context, source)
-                            ?: pickedUrisByName.value[source.displayName]?.toString()
+                        // Resolve the stored tree URI by source id (FFI getter)
+                        // — never by display name, which is not unique.
+                        val treeUriString by produceState<String?>(
+                            initialValue = null,
+                            key1 = source.id,
+                        ) { value = resolveTreeUri(manager, source) }
                         // Derive a human-readable relative path from the tree URI document ID
                         // (e.g. "primary:Download/test" → "Download/test"). Falls back to
                         // displayName when the URI is not yet resolved.

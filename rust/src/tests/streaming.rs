@@ -19,6 +19,7 @@ fn make_app() -> std::sync::Arc<FfiApp> {
     );
     // Phase 8: VectorIndex init + document list load adds overhead; 150ms is stable in parallel test load.
     app.sync();
+    app.test_verify_backend_attestation("tinfoil", "AmdSevSnp");
     app
 }
 
@@ -203,6 +204,8 @@ fn test_qvac_local_server_streams_openai_compatible_chat() {
 #[test]
 fn test_stream_chunk_accumulates() {
     let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Hello".into(),
     });
@@ -218,6 +221,8 @@ fn test_stream_chunk_accumulates() {
 #[test]
 fn test_stream_done_sets_idle() {
     let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Done test".into(),
     });
@@ -238,6 +243,8 @@ fn test_stream_done_sets_idle() {
 #[test]
 fn test_stream_error_preserves_partial() {
     let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Partial".into(),
     });
@@ -268,6 +275,8 @@ fn test_stop_generation_cancels_active_stream() {
     // Tinfoil HPKE transport: dispatching StopGeneration during active streaming,
     // followed by the StreamCancelled event, transitions to BusyState::Idle.
     let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
 
     // Inject a chunk to simulate an in-progress stream
     app.test_send_internal(InternalEvent::StreamChunk {
@@ -283,12 +292,9 @@ fn test_stop_generation_cancels_active_stream() {
         );
     }
 
-    // Dispatch StopGeneration -- exercises the active_stream_token.cancel() path.
-    // BusyState must NOT go Idle here; we wait for StreamCancelled.
+    // Stop invalidates the turn immediately, before late results can dispatch.
     app.dispatch(AppAction::StopGeneration);
 
-    // Simulate what the Tinfoil transport sends after cancel_token fires
-    app.test_send_internal(InternalEvent::StreamCancelled);
     app.sync();
 
     let state = app.state();
@@ -309,6 +315,8 @@ fn test_stop_generation_cancels_ppq_stream() {
     // PPQ AES-GCM transport uses the same StreamCancelled event as Tinfoil HPKE (per D-03).
     // This test documents PPQ coverage of the same cancellation path.
     let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
 
     // Inject a chunk that distinguishes this test from the Tinfoil test
     app.test_send_internal(InternalEvent::StreamChunk {
@@ -316,9 +324,8 @@ fn test_stop_generation_cancels_ppq_stream() {
     });
     app.sync();
 
-    // Dispatch StopGeneration, then inject StreamCancelled as the PPQ transport would
+    // The actor cancels and invalidates the PPQ producer immediately.
     app.dispatch(AppAction::StopGeneration);
-    app.test_send_internal(InternalEvent::StreamCancelled);
     app.sync();
 
     let state = app.state();
@@ -331,4 +338,111 @@ fn test_stop_generation_cancels_ppq_stream() {
         state.streaming_text.is_some(),
         "streaming_text must be preserved after cancel (PPQ path)"
     );
+}
+
+#[test]
+fn stale_chunks_and_tool_calls_cannot_mutate_a_later_turn() {
+    use crate::llm::streaming::ScopedStreamEvent;
+    let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
+    let conv_id = app.state().current_conversation_id.unwrap();
+    app.test_send_internal(InternalEvent::StreamChunk {
+        token: "old".into(),
+    });
+    let (reply, rx) = flume::bounded(1);
+    app.core_tx
+        .send(CoreMsg::GetChatTurn {
+            start: false,
+            reply,
+        })
+        .unwrap();
+    let old_turn = rx.recv().unwrap();
+    app.dispatch(AppAction::StopGeneration);
+    app.sync();
+    app.test_send_internal(InternalEvent::StreamChunk {
+        token: "new".into(),
+    });
+    app.test_send_internal(InternalEvent::TurnScoped {
+        turn_id: old_turn,
+        event: ScopedStreamEvent::Chunk {
+            token: "stale".into(),
+        },
+    });
+    app.test_send_internal(InternalEvent::ChatToolCallsReady {
+        turn_id: old_turn,
+        conv_id,
+        tool_calls: vec![],
+        pre_tool_messages: vec![],
+        backend_id: "missing-backend".into(),
+        model: "missing-model".into(),
+        allowed_tools: vec![],
+    });
+    app.sync();
+    assert_eq!(app.state().streaming_text.as_deref(), Some("new"));
+    assert!(app.state().last_error.is_none());
+}
+
+#[test]
+fn conversation_navigation_hydrates_only_the_targets_attached_documents() {
+    let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
+    let source = app.state().current_conversation_id.unwrap();
+    app.dispatch(AppAction::AttachDocumentToConversation {
+        document_id: "source-doc".into(),
+    });
+    app.sync();
+    assert_eq!(
+        app.state().current_conversation_attached_docs,
+        vec!["source-doc"]
+    );
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
+    assert!(app.state().current_conversation_attached_docs.is_empty());
+    app.dispatch(AppAction::LoadConversation {
+        conversation_id: source.clone(),
+    });
+    app.sync();
+    assert_eq!(
+        app.state().current_conversation_attached_docs,
+        vec!["source-doc"]
+    );
+    app.dispatch(AppAction::ForkConversation { id: source });
+    app.sync();
+    assert!(app.state().current_conversation_attached_docs.is_empty());
+}
+
+#[test]
+fn active_turn_rejects_send_retry_and_edit_before_mutating_messages() {
+    let app = make_app();
+    app.dispatch(AppAction::NewConversation);
+    app.sync();
+    app.test_send_internal(InternalEvent::StreamChunk {
+        token: "in flight".into(),
+    });
+    app.sync();
+    assert!(app.state().messages.is_empty());
+    for action in [
+        AppAction::SendMessage {
+            text: "do not append".into(),
+            force_role: None,
+        },
+        AppAction::RetryLastMessage,
+        AppAction::EditMessage {
+            message_id: "missing".into(),
+            new_text: "do not replace".into(),
+        },
+    ] {
+        app.dispatch(action);
+        app.sync();
+        assert!(app.state().messages.is_empty());
+        assert_eq!(app.state().streaming_text.as_deref(), Some("in flight"));
+        assert!(app
+            .state()
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("current response"));
+    }
 }

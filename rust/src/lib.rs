@@ -1610,24 +1610,36 @@ pub enum PinUnlockOutcome {
     WrongPin,
     /// Any other failure (KDF error, DB open error, index error).
     Failed(String),
-    /// Verified and opened; install into ActorState and hydrate.
-    Ready {
-        dek: Zeroizing<[u8; 32]>,
-        db: persistence::Database,
-        vector_index: rag::VectorIndex,
-    },
+    /// Verified PIN; database opening stays on the actor after generation validation.
+    Ready { dek: Zeroizing<[u8; 32]> },
 }
 
 /// Internal actor messages -- not UniFFI-exported
 pub enum CoreMsg {
     /// Wraps user-dispatched actions
     Action(AppAction),
+    /// Queued action that must still belong to the visible conversation.
+    ConversationAction {
+        conversation_id: String,
+        action: AppAction,
+    },
     /// Delivers async LLM streaming events into the synchronous actor loop
     InternalEvent(Box<llm::InternalEvent>),
+    #[cfg(test)]
+    GetChatTurn {
+        start: bool,
+        reply: flume::Sender<u64>,
+    },
     /// Event-driven PIN unlock continuation (#5): Argon2 KEK derivation, DEK
     /// unwrap, encrypted DB open, and VectorIndex load run on a blocking thread
     /// so the actor (and its emits) stay responsive during the KDF.
-    PinUnlockContinued { outcome: PinUnlockOutcome },
+    /// `generation` is the auth generation the work was issued under; the
+    /// actor drops the outcome when a lock/wipe/credential replacement
+    /// bumped it since.
+    PinUnlockContinued {
+        outcome: PinUnlockOutcome,
+        generation: u64,
+    },
     /// Decrypt the encrypted image for `message_id` and return raw JPEG bytes.
     ///
     /// The actor looks up the message row, reads the MGO1 file, decrypts with the DEK,
@@ -1651,6 +1663,14 @@ pub enum CoreMsg {
     GetDirectoryBookmark {
         source_id: String,
         reply: flume::Sender<Result<Option<Vec<u8>>, String>>,
+    },
+    /// Return the persisted SAF tree URI for a single directory source (Android).
+    /// Like the bookmark accessor, `tree_uri` stays out of DirectorySourceSummary
+    /// per T-32-I2; this targeted read lets the Android sync pipeline resolve the
+    /// exact grant for a source id instead of matching on display names.
+    GetDirectoryTreeUri {
+        source_id: String,
+        reply: flume::Sender<Result<Option<String>, String>>,
     },
     /// Render the conversation's messages as a Markdown string (quick/260421-tg6).
     /// Read-only: actor does not mutate state, the native layer handles file I/O.
@@ -1685,30 +1705,55 @@ pub enum CoreMsg {
     /// never UniFFI/FFI).
     PpqEvent(PpqTaskResult),
     CreatePpqRecoveryBackup {
-        backup_password: String,
-        auth: SensitiveActionAuth,
+        // Audit (zeroize): passwords enter the actor channel already
+        // wrapped — a dropped/cancelled message still wipes the copy.
+        backup_password: Zeroizing<String>,
+        auth: ActorSensitiveAuth,
         reply: flume::Sender<Result<Zeroizing<Vec<u8>>, String>>,
     },
     RestorePpqRecoveryBackup {
         encrypted_bytes: Vec<u8>,
-        backup_password: String,
-        auth: SensitiveActionAuth,
+        backup_password: Zeroizing<String>,
+        auth: ActorSensitiveAuth,
         /// Required when the restore would REPLACE an existing managed
         /// account (threat review high): the UI must show the conflict
         /// preflight and pass true only after explicit confirmation.
         replace_acknowledged: bool,
+        /// Completed only when the spawned validation task's result has
+        /// been applied (or cancelled) on the actor — the FFI caller
+        /// waits OFF the actor thread.
         reply: flume::Sender<Result<PpqRecoveryResult, String>>,
     },
     ConfirmDeleteAllData {
-        auth: SensitiveActionAuth,
+        auth: ActorSensitiveAuth,
         backup_risk_acknowledged: bool,
         reply: flume::Sender<Result<ResetResult, String>>,
     },
     ConfirmForgetManagedPpq {
-        auth: SensitiveActionAuth,
+        auth: ActorSensitiveAuth,
         backup_risk_acknowledged: bool,
         reply: flume::Sender<Result<ForgetResult, String>>,
     },
+}
+
+/// Actor-internal copy of `SensitiveActionAuth` with the PIN zeroized on
+/// drop (audit finding). UniFFI keeps the plain `String` variant at the
+/// FFI boundary; FFI entry points convert immediately so no plain copy
+/// survives inside the actor message queue.
+pub enum ActorSensitiveAuth {
+    Biometric,
+    MainPin { pin: Zeroizing<String> },
+}
+
+impl From<SensitiveActionAuth> for ActorSensitiveAuth {
+    fn from(auth: SensitiveActionAuth) -> Self {
+        match auth {
+            SensitiveActionAuth::Biometric => ActorSensitiveAuth::Biometric,
+            SensitiveActionAuth::MainPin { pin } => ActorSensitiveAuth::MainPin {
+                pin: Zeroizing::new(pin),
+            },
+        }
+    }
 }
 
 /// Actor-internal PPQ async task results (never crosses UniFFI).
@@ -1724,9 +1769,13 @@ pub enum PpqTaskEvent {
         uncertain: bool,
     },
     BalanceRefreshed {
+        /// Monotonically increasing request id (audit: ordering): an
+        /// older in-flight refresh can never overwrite a newer result.
+        request_id: u64,
         balance: String,
     },
     BalanceFailed {
+        request_id: u64,
         code: &'static str,
     },
     InvoiceCreated {
@@ -1736,7 +1785,17 @@ pub enum PpqTaskEvent {
         created_at: i64,
         expires_at: i64,
     },
+    /// Invoice creation failed (no invoice identity exists yet — kept
+    /// distinct from per-invoice status failures, audit finding).
     InvoiceFailed {
+        code: &'static str,
+        uncertain: bool,
+    },
+    /// A status check for `invoice_id` failed: carries invoice identity
+    /// so a late failure can only error out the invoice it was issued
+    /// for, never a settled/replaced one (audit finding).
+    StatusCheckFailed {
+        invoice_id: String,
         code: &'static str,
         uncertain: bool,
     },
@@ -1748,6 +1807,23 @@ pub enum PpqTaskEvent {
         /// "pending" | "settled" | "expired" | "unknown"
         outcome: &'static str,
         next_poll_at: i64,
+    },
+    /// Remote restore validation succeeded (audit: restore must not
+    /// block the actor). Applied on the actor under the epoch gate; the
+    /// FFI reply is completed only after the result is applied.
+    RestoreValidated {
+        credit_id: Zeroizing<String>,
+        api_key: Zeroizing<String>,
+        /// Balance observed during validation — persisted immediately so
+        /// a restart never shows the PREVIOUS account's saved balance.
+        validated_balance: Option<String>,
+        account_created_at: Option<String>,
+        is_replacement: bool,
+        reply: flume::Sender<Result<PpqRecoveryResult, String>>,
+    },
+    RestoreFailed {
+        code: &'static str,
+        reply: flume::Sender<Result<PpqRecoveryResult, String>>,
     },
 }
 
@@ -1884,6 +1960,10 @@ struct PendingImageAttachment {
 
 #[derive(Clone, Debug)]
 struct PendingAttestedSend {
+    /// Conversation the deferred send belongs to. If the user navigates away
+    /// before attestation completes, the pending send is cancelled or resumed
+    /// only into this conversation — never into whatever is visible.
+    conversation_id: String,
     backend_id: String,
     text: String,
     force_role: Option<BackendRole>,
@@ -1898,6 +1978,18 @@ struct PendingAttestedSend {
 }
 
 const MAX_PENDING_ATTESTATION_TRANSIENT_RETRIES: u32 = 2;
+
+/// Actor-tracked attestation request (audit fix): the config captured when the
+/// task was spawned. A result is applied only while it is still the latest
+/// request for a backend whose base_url/api_key is unchanged; the entry map is
+/// cleared on lock, wipe, unlock hydration, and backend reload so results from
+/// dead sessions or superseded configs can never apply.
+#[derive(Clone)]
+struct AttestationRequest {
+    request_id: u64,
+    base_url: String,
+    api_key: String,
+}
 
 /// Actor-internal state -- holds secrets and Tokio types that must NOT enter AppState.
 /// Per Pitfall 3: BackendConfig (with api_key) and CancellationToken never cross FFI.
@@ -1944,6 +2036,16 @@ struct ActorState {
     /// copy): the mixed credentials must not be hydrated for chat nor
     /// provisioned over — only explicit recovery may run.
     ppq_recovery_required: bool,
+    /// True while a restore's remote validation runs off-actor (audit:
+    /// restore no longer blocks the actor). New restore requests are
+    /// refused while set; cleared when the task result is applied or
+    /// cancelled.
+    ppq_restore_in_flight: bool,
+    /// Balance-request ordering (audit finding): the next id handed out
+    /// by `spawn_ppq_balance_refresh` and the highest id whose result has
+    /// been applied. Results older than the latest applied are dropped.
+    ppq_balance_next_id: u64,
+    ppq_balance_latest_applied: u64,
     backends: Vec<llm::BackendConfig>,
     /// Latest attested TLS leaf public key fingerprint per backend.
     /// Used to opportunistically pin transport to the attested endpoint.
@@ -2044,6 +2146,25 @@ struct ActorState {
     /// Data Encryption Key for VectorIndex file encryption (Phase 29, ENC-02).
     /// None until unlock; zeroed on drop via Zeroizing wrapper.
     dek: Option<Zeroizing<[u8; 32]>>,
+    /// Auth session generation (audit fix): bumped on every boundary that must
+    /// invalidate in-flight authentication work — LockApp, wipe, credential
+    /// changes, and each successful unlock. PIN/biometric continuations carry
+    /// the generation they were spawned with and are dropped when stale. The
+    /// off-actor PIN worker also reads it right before opening the database so
+    /// a superseded attempt cannot create DB files after a wipe.
+    auth_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// One in-flight PIN unlock at a time: Argon2 jobs cost 64 MiB each.
+    pin_unlock_pending: bool,
+    /// One in-flight biometric prompt at a time.
+    biometric_unlock_pending: bool,
+    /// Monotonic issuer for attestation request ids.
+    attestation_request_counter: std::cell::Cell<u64>,
+    /// Latest attestation request per backend (see AttestationRequest).
+    attestation_requests: std::cell::RefCell<HashMap<String, AttestationRequest>>,
+    /// Backend keychain ids whose deletion could not be verified during a
+    /// wipe: they must never hydrate a later session (load_backend_api_key
+    /// returns None for these ids).
+    wipe_tainted_secret_ids: std::collections::HashSet<String>,
     /// Phase 35 — descriptors for tools enabled in the active conversation,
     /// hydrated from `contextvm_tools` table at LoadConversation /
     /// NewConversation, plus auto-discovered descriptors when
@@ -2054,8 +2175,35 @@ struct ActorState {
     /// contextvm operation via load_or_create_secret_key. Empty string until
     /// then; the dispatch path treats empty as "load on demand".
     contextvm_secret_key: String,
+
+    /// Monotonic source of stream turn identities. Every accepted chat turn
+    /// takes `next_turn_id`; stream/tool events stamped with any other id are
+    /// dropped before they can mutate stream state.
+    next_turn_id: u64,
+    /// Turn identity of the currently active turn (stream, tool detection
+    /// round, or deferred discovery continuation). 0 means no live turn.
+    current_turn_id: u64,
+    /// Cancellation token for the off-actor leg of the current tool round
+    /// (network tool dispatch or auto-discovery). StopGeneration cancels it
+    /// so late results are dropped rather than mutating state.
+    active_tool_round_token: Option<CancellationToken>,
+    /// When a turn deferred its send for contextvm auto-discovery, the
+    /// captured send state waits here for `ContextvmAutoDiscoverForTurn`.
+    pending_discover_turn: Option<PendingDeferredSend>,
 }
 
+/// Send state captured while a turn waits for off-actor contextvm
+/// auto-discovery. `ContextvmAutoDiscoverForTurn` merges the discovered tools
+/// then resumes the prepared request without persisting another user message.
+struct PendingDeferredSend {
+    conv_id: String,
+    /// Turn assigned to this send; the deferred continuation re-checks it
+    /// against `current_turn_id`.
+    turn_id: u64,
+    backend: llm::BackendConfig,
+    model: String,
+    chat_messages: Vec<llm::streaming::ChatMessage>,
+}
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Parse a TeeType string stored in the backends table into the TeeType enum.
@@ -2071,21 +2219,25 @@ fn parse_tee_type(s: &str) -> llm::TeeType {
     }
 }
 
-fn remove_file_if_exists(path: &str) {
+fn remove_file_if_exists(path: &str) -> Result<(), std::io::Error> {
     if path.is_empty() || path == ":memory:" {
-        return;
+        return Ok(());
     }
-    if let Err(e) = std::fs::remove_file(path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
             log::warn!("[reset] failed to remove file {}: {}", path, e);
+            Err(e)
         }
     }
 }
 
-fn remove_sqlite_files(base_path: &str) {
-    remove_file_if_exists(base_path);
-    remove_file_if_exists(&format!("{base_path}-wal"));
-    remove_file_if_exists(&format!("{base_path}-shm"));
+fn remove_sqlite_files(base_path: &str) -> Result<(), std::io::Error> {
+    remove_file_if_exists(base_path)?;
+    remove_file_if_exists(&format!("{base_path}-wal"))?;
+    remove_file_if_exists(&format!("{base_path}-shm"))?;
+    Ok(())
 }
 
 fn collect_keychain_secret_ids(actor_state: &ActorState) -> Vec<String> {
@@ -2374,6 +2526,10 @@ fn ppq_invalidate_tasks(actor_state: &mut ActorState) {
     // with preserved credentials after duress/lock/forget/restore/cancel.
     actor_state.ppq_session_token.cancel();
     actor_state.ppq_session_token = CancellationToken::new();
+    // Audit (async restore): a validation task cancelled mid-flight is
+    // no longer the blocker for a NEW restore attempt; its late result
+    // completes its own reply via the stale-drop path.
+    actor_state.ppq_restore_in_flight = false;
 }
 
 /// Cancel an active chat stream running on the managed PPQ backend
@@ -2395,6 +2551,11 @@ fn cancel_ppq_backend_streams(actor_state: &mut ActorState) {
 /// must show `has_api_key=false`. Every backend-key load (startup, reload,
 /// chat/agent stream fallbacks) goes through this choke point.
 fn load_backend_api_key(actor_state: &ActorState, backend_id: &str) -> Option<String> {
+    if actor_state.wipe_tainted_secret_ids.contains(backend_id) {
+        // Deletion of this pre-wipe credential could not be verified — never
+        // hydrate a fresh session from a survivor.
+        return None;
+    }
     if backend_id == ppq::secret_store::API_KEY_KEY
         && (ppq_decoy_active(actor_state) || actor_state.ppq_recovery_required)
     {
@@ -2407,11 +2568,62 @@ fn load_backend_api_key(actor_state: &ActorState, backend_id: &str) -> Option<St
         .load("mango".to_string(), backend_id.to_string())
 }
 
+/// Reclassify the PPQ account summary from the live keychain + settings
+/// marker — the same classification startup runs (audit finding: a ppq-ai
+/// key stored via BYOK paths must flip the mode to ExternalKey so
+/// automatic provisioning is refused). Only mode/phase/error are
+/// refreshed; balance/funding display fields belong to the account and
+/// are untouched.
+fn ppq_refresh_classification(actor_state: &mut ActorState) {
+    if actor_state.db.is_none() || ppq_decoy_active(actor_state) {
+        return;
+    }
+    ppq_invalidate_tasks(actor_state);
+    cancel_ppq_backend_streams(actor_state);
+    if actor_state.ppq_recovery_required {
+        actor_state.app_state.ppq.error = Some("recovery_required".to_string());
+        return;
+    }
+    let settings_mode =
+        ppq_setting(actor_state, ppq::account::SETTING_MODE).filter(|v| !v.is_empty());
+    let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+    // Reclassification clears any stale PPQ error except the terminal
+    // recovery-required one.
+    actor_state.app_state.ppq.error = None;
+    match ppq::account::classify_startup(&store, settings_mode.as_deref()) {
+        ppq::account::StartupMode::None => {
+            actor_state.app_state.ppq.mode = PpqAccountMode::None;
+            actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Idle;
+        }
+        ppq::account::StartupMode::ExternalKey => {
+            actor_state.app_state.ppq.mode = PpqAccountMode::ExternalKey;
+            actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
+        }
+        ppq::account::StartupMode::Managed => {
+            actor_state.app_state.ppq.mode = PpqAccountMode::Managed;
+            actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
+        }
+        ppq::account::StartupMode::RecoverablePartialState => {
+            actor_state.app_state.ppq.mode = PpqAccountMode::Managed;
+            actor_state.app_state.ppq.setup_phase = PpqSetupPhase::RecoverablePartialState;
+        }
+        ppq::account::StartupMode::RecoveryRequired => {
+            actor_state.app_state.ppq.mode = PpqAccountMode::Managed;
+            actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Error;
+            actor_state.app_state.ppq.error = Some("recovery_required".to_string());
+        }
+    }
+}
+
 fn handle_ppq_provision(actor_state: &mut ActorState, core_tx: &flume::Sender<CoreMsg>) {
     // Review follow-up 1: no PPQ request may START while the DB is
     // unavailable (locked) — mode summaries are hidden and single-flight
     // flags die with the session.
-    if actor_state.db.is_none() || ppq_decoy_active(actor_state) || actor_state.ppq_provisioning {
+    if actor_state.db.is_none()
+        || ppq_decoy_active(actor_state)
+        || actor_state.ppq_provisioning
+        || actor_state.ppq_restore_in_flight
+    {
         return;
     }
     // B integration: never provision over unresolved mixed credentials —
@@ -2430,6 +2642,23 @@ fn handle_ppq_provision(actor_state: &mut ActorState, core_tx: &flume::Sender<Co
     if actor_state.app_state.ppq.mode == PpqAccountMode::ExternalKey {
         actor_state.app_state.ppq.error = Some("external_key_present".to_string());
         return;
+    }
+    // Audit (BYOK overwrite): never trust the summary alone — check the
+    // stored credentials directly before minting. A stale mode summary
+    // (e.g. a key stored before the classification refresh) must not let
+    // provisioning overwrite an existing BYOK key or account.
+    {
+        let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
+        let has_credit = matches!(store.load_credit_id(), Ok(Some(_)));
+        let has_key = matches!(store.load_api_key(), Ok(Some(_)));
+        if has_credit {
+            actor_state.app_state.ppq.error = Some("already_managed".to_string());
+            return;
+        }
+        if has_key {
+            actor_state.app_state.ppq.error = Some("external_key_present".to_string());
+            return;
+        }
     }
     actor_state.ppq_provisioning = true;
     actor_state.ppq_provisioning_epoch = actor_state.ppq_task_epoch;
@@ -2487,6 +2716,10 @@ fn spawn_ppq_balance_refresh(actor_state: &mut ActorState, core_tx: &flume::Send
         Ok(Some(k)) => k,
         _ => return,
     };
+    // Audit (ordering): each request gets a fresh monotonically
+    // increasing id; results older than the latest applied are dropped.
+    let request_id = actor_state.ppq_balance_next_id.wrapping_add(1);
+    actor_state.ppq_balance_next_id = request_id;
     let tx = core_tx.clone();
     let epoch = actor_state.ppq_task_epoch;
     let cancel = actor_state.ppq_session_token.clone();
@@ -2494,19 +2727,23 @@ fn spawn_ppq_balance_refresh(actor_state: &mut ActorState, core_tx: &flume::Send
         let event = tokio::select! {
             biased;
             _ = cancel.cancelled() => PpqTaskEvent::BalanceFailed {
+                request_id,
                 code: "cancelled",
             },
             r = async {
                 match ppq_production_client() {
                     Ok(client) => match client.balance(&api_key).await {
                         Ok(balance) => PpqTaskEvent::BalanceRefreshed {
+                            request_id,
                             balance: balance.as_str().to_string(),
                         },
                         Err(e) => PpqTaskEvent::BalanceFailed {
+                            request_id,
                             code: ppq_error_code(&e),
                         },
                     },
                     Err(e) => PpqTaskEvent::BalanceFailed {
+                        request_id,
                         code: ppq_error_code(&e),
                     },
                 }
@@ -2604,7 +2841,12 @@ fn handle_ppq_create_invoice(
 }
 
 fn handle_ppq_check_topup(actor_state: &mut ActorState, core_tx: &flume::Sender<CoreMsg>) {
-    if ppq_decoy_active(actor_state) {
+    if ppq_decoy_active(actor_state) || actor_state.ppq_recovery_required {
+        // Audit: while credentials may be mixed, status checks on the
+        // current key are as unsafe as balance reads — refuse loudly.
+        if actor_state.ppq_recovery_required {
+            actor_state.app_state.ppq.error = Some("recovery_required".to_string());
+        }
         return;
     }
     let pending = match actor_state.ppq_pending.clone() {
@@ -2612,7 +2854,10 @@ fn handle_ppq_check_topup(actor_state: &mut ActorState, core_tx: &flume::Sender<
         None => return,
     };
     let now = ppq_now_secs();
-    // Retry-After deadline applies to timer, manual, AND resume checks (§6.9 step 6).
+    // Retry-After deadline applies to timer, manual, AND resume checks
+    // (§6.9 step 6). After `expires_at` a final reconciliation check is
+    // still permitted; only a poll that is still disallowed (e.g. a
+    // rate-limit deadline outliving the invoice) marks it expired.
     if !ppq::account::poll_allowed(&pending, now) {
         if now >= pending.expires_at
             && actor_state.app_state.ppq.funding_phase == PpqFundingPhase::AwaitingPayment
@@ -2636,7 +2881,8 @@ fn handle_ppq_check_topup(actor_state: &mut ActorState, core_tx: &flume::Sender<
     actor_state.runtime.spawn(async move {
         let event = tokio::select! {
             biased;
-            _ = cancel.cancelled() => PpqTaskEvent::InvoiceFailed {
+            _ = cancel.cancelled() => PpqTaskEvent::StatusCheckFailed {
+                invoice_id: invoice_id.clone(),
                 code: "cancelled",
                 uncertain: false,
             },
@@ -2669,12 +2915,17 @@ fn handle_ppq_check_topup(actor_state: &mut ActorState, core_tx: &flume::Sender<
                             outcome: "rate_limited",
                             next_poll_at: retry_after_seconds.unwrap_or(30).max(1),
                         },
-                        Err(e) => PpqTaskEvent::InvoiceFailed {
+                        // Audit: status failures carry the invoice
+                        // identity — a late failure must not error out a
+                        // different (e.g. already settled) invoice.
+                        Err(e) => PpqTaskEvent::StatusCheckFailed {
+                            invoice_id: invoice_id.clone(),
                             code: ppq_error_code(&e),
                             uncertain: false,
                         },
                     },
-                    Err(e) => PpqTaskEvent::InvoiceFailed {
+                    Err(e) => PpqTaskEvent::StatusCheckFailed {
+                        invoice_id: invoice_id.clone(),
                         code: ppq_error_code(&e),
                         uncertain: false,
                     },
@@ -2696,9 +2947,18 @@ fn handle_ppq_event(
     // restore/replacement, or invoice cancellation/replacement is dropped
     // BEFORE touching account state — no balance display, no provisioning
     // transitions, no invoice updates, no keychain writes.
+    // Restore task results are exempt from the decoy check: file-based
+    // restore is the sanctioned reactivation path (§4.6) — its task was
+    // deliberately spawned while the decoy flag is set, and its apply
+    // step clears the flag itself. Results from a session that ENDED by
+    // decoy activation still die with their epoch.
+    let is_restore_event = matches!(
+        result.event,
+        PpqTaskEvent::RestoreValidated { .. } | PpqTaskEvent::RestoreFailed { .. }
+    );
     if result.epoch != actor_state.ppq_task_epoch
         || actor_state.db.is_none()
-        || ppq_decoy_active(actor_state)
+        || (ppq_decoy_active(actor_state) && !is_restore_event)
     {
         // Never get stuck (finding 2): release the single-flight
         // provisioning latch only for results from the owning session.
@@ -2714,6 +2974,19 @@ fn handle_ppq_event(
         {
             actor_state.ppq_provisioning = false;
             actor_state.ppq_provisioning_epoch = 0;
+        }
+        // Audit (async restore): a dropped restore result must still
+        // complete the FFI reply — the caller waits off-actor and must
+        // never hang, and the restore latch must release.
+        match result.event {
+            PpqTaskEvent::RestoreValidated { reply, .. }
+            | PpqTaskEvent::RestoreFailed { reply, .. } => {
+                let _ = reply.send(Ok(PpqRecoveryResult {
+                    success: false,
+                    error_code: Some("cancelled".to_string()),
+                }));
+            }
+            _ => {}
         }
         log::debug!("[ppq] dropped stale task result (session epoch changed)");
         return;
@@ -2777,10 +3050,18 @@ fn handle_ppq_event(
                 code.to_string()
             });
         }
-        PpqTaskEvent::BalanceRefreshed { balance } => {
-            // Capture the pre-refresh snapshot first: unknown invoice
-            // statuses reconcile against it (plan §6.9 step 11).
-            let prior_balance = ppq_setting(actor_state, ppq::account::SETTING_LAST_BALANCE);
+        PpqTaskEvent::BalanceRefreshed {
+            request_id,
+            balance,
+        } => {
+            // Audit (ordering): a result older than the newest applied
+            // balance request must not roll back the displayed/persisted
+            // balance to a pre-payment snapshot.
+            if request_id < actor_state.ppq_balance_latest_applied {
+                log::debug!("[ppq] dropped superseded balance result");
+                return;
+            }
+            actor_state.ppq_balance_latest_applied = request_id;
             ppq_set_setting(actor_state, ppq::account::SETTING_LAST_BALANCE, &balance);
             ppq_set_setting(
                 actor_state,
@@ -2794,25 +3075,20 @@ fn handle_ppq_event(
                 actor_state.ppq_provisioning = false;
                 actor_state.ppq_provisioning_epoch = 0;
                 actor_state.app_state.ppq.setup_phase = PpqSetupPhase::NeedsBackup;
-            } else if actor_state.app_state.ppq.funding_phase == PpqFundingPhase::UnknownAfterCreate
-            {
-                // Unknown status (unfrozen PPQ vocabulary or 404-after-GC):
-                // reconcile as funded when the balance rose (§6.9 step 11).
-                let reconciled =
-                    ppq::account::reconcile_unknown_by_balance(prior_balance.as_deref(), &balance)
-                        == ppq::account::FundingOutcome::Settled;
-                if reconciled {
-                    clear_settled_invoice(actor_state);
-                    if actor_state.app_state.ppq.setup_phase == PpqSetupPhase::NeedsFunds {
-                        actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
-                    }
-                }
             } else if actor_state.app_state.ppq.funding_phase == PpqFundingPhase::Confirmed {
                 actor_state.app_state.ppq.funding_phase = PpqFundingPhase::Idle;
                 actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Ready;
             }
+            // Audit: an unknown-status invoice stays UnknownAfterCreate —
+            // an account-wide balance rise does not prove THIS invoice
+            // was paid (another payment may have moved the balance).
         }
-        PpqTaskEvent::BalanceFailed { code } => {
+        PpqTaskEvent::BalanceFailed { request_id, code } => {
+            if request_id < actor_state.ppq_balance_latest_applied {
+                log::debug!("[ppq] dropped superseded balance failure");
+                return;
+            }
+            actor_state.ppq_balance_latest_applied = request_id;
             if actor_state.ppq_provisioning {
                 actor_state.ppq_provisioning = false;
                 actor_state.ppq_provisioning_epoch = 0;
@@ -2861,6 +3137,62 @@ fn handle_ppq_event(
             } else {
                 code.to_string()
             });
+        }
+        PpqTaskEvent::StatusCheckFailed {
+            invoice_id,
+            code,
+            uncertain,
+        } => {
+            // Same current-invoice gate as StatusChecked (audit): a late
+            // failure for a cancelled/replaced/already-settled invoice
+            // must not error out the current funding state.
+            let current_invoice = actor_state
+                .ppq_pending
+                .as_ref()
+                .map(|p| p.invoice_id.clone());
+            if current_invoice.as_deref() != Some(invoice_id.as_str()) {
+                log::debug!("[ppq] dropped status failure for non-current invoice");
+                return;
+            }
+            actor_state.app_state.ppq.funding_phase = if uncertain {
+                PpqFundingPhase::UnknownAfterCreate
+            } else {
+                PpqFundingPhase::Error
+            };
+            actor_state.app_state.ppq.error = Some(if uncertain {
+                format!("{code}_uncertain")
+            } else {
+                code.to_string()
+            });
+        }
+        PpqTaskEvent::RestoreValidated {
+            credit_id,
+            api_key,
+            validated_balance,
+            account_created_at,
+            is_replacement,
+            reply,
+        } => {
+            actor_state.ppq_restore_in_flight = false;
+            apply_ppq_restore_validated(
+                actor_state,
+                core_tx,
+                RestoreApply {
+                    credit_id,
+                    api_key,
+                    validated_balance,
+                    account_created_at,
+                    is_replacement,
+                },
+                reply,
+            );
+        }
+        PpqTaskEvent::RestoreFailed { code, reply } => {
+            actor_state.ppq_restore_in_flight = false;
+            let _ = reply.send(Ok(PpqRecoveryResult {
+                success: false,
+                error_code: Some(code.to_string()),
+            }));
         }
     }
 }
@@ -2921,10 +3253,10 @@ fn handle_ppq_status_checked(
 /// that the duress PIN matched or that credentials were preserved.
 fn verify_sensitive_auth(
     actor_state: &ActorState,
-    auth: &SensitiveActionAuth,
+    auth: &ActorSensitiveAuth,
 ) -> Result<(), &'static str> {
     match auth {
-        SensitiveActionAuth::Biometric => {
+        ActorSensitiveAuth::Biometric => {
             if actor_state
                 .biometric_provider
                 .authenticate("Authorize PPQ account action".into())
@@ -2934,7 +3266,7 @@ fn verify_sensitive_auth(
                 Err("sensitive_authentication_failed")
             }
         }
-        SensitiveActionAuth::MainPin { pin } => {
+        ActorSensitiveAuth::MainPin { pin } => {
             match crypto::key_derivation::verify_pin_auth(pin, &actor_state.bootstrap) {
                 Ok(result) if !result.is_duress => Ok(()),
                 Ok(_) => Err("duress"),
@@ -2960,7 +3292,7 @@ fn handle_ppq_backup_export(
     actor_state: &mut ActorState,
     core_tx: &flume::Sender<CoreMsg>,
     backup_password: &str,
-    auth: &SensitiveActionAuth,
+    auth: &ActorSensitiveAuth,
 ) -> Result<Vec<u8>, String> {
     if let Err(code) = verify_sensitive_auth(actor_state, auth) {
         if code == "duress" {
@@ -3016,27 +3348,48 @@ fn handle_ppq_backup_export(
     Ok(bytes)
 }
 
+/// Stage 1 (actor, synchronous): auth, decoy/consent, credential probe,
+/// replacement acknowledgement. Only the remote validation + device-key
+/// mint moves into a spawned task (audit: `rt.block_on` here stalled the
+/// single actor thread for up to two request timeouts, delaying LockApp
+/// and duress). The FFI reply is completed ONLY when the spawned result
+/// is applied back on the actor (or cancelled) — `reply` rides inside
+/// the task event so lock/wipe can run meanwhile.
 fn handle_ppq_backup_restore(
     actor_state: &mut ActorState,
     core_tx: &flume::Sender<CoreMsg>,
     encrypted_bytes: &[u8],
-    backup_password: &str,
-    auth: &SensitiveActionAuth,
+    backup_password: &Zeroizing<String>,
+    auth: &ActorSensitiveAuth,
     replace_acknowledged: bool,
-) -> Result<PpqRecoveryResult, String> {
+    reply: flume::Sender<Result<PpqRecoveryResult, String>>,
+) {
+    macro_rules! fail {
+        ($code:expr) => {{
+            let _ = reply.send(Ok(PpqRecoveryResult {
+                success: false,
+                error_code: Some($code.to_string()),
+            }));
+            return;
+        }};
+    }
     if let Err(code) = verify_sensitive_auth(actor_state, auth) {
         if code == "duress" {
-            return Err(ppq_duress_response(actor_state, core_tx));
+            let _ = reply.send(Err(ppq_duress_response(actor_state, core_tx)));
+        } else {
+            let _ = reply.send(Err(code.to_string()));
         }
-        return Err(code.to_string());
+        return;
     }
     // Follow-up 1: restoring touches credentials and account state — it
     // must not run while the DB is unavailable (locked).
     if actor_state.db.is_none() {
-        return Ok(PpqRecoveryResult {
-            success: false,
-            error_code: Some("locked".to_string()),
-        });
+        fail!("locked");
+    }
+    // Audit: a second restore while validation is in flight would race
+    // the credential commit — refuse rather than interleave.
+    if actor_state.ppq_restore_in_flight {
+        fail!("restore_in_progress");
     }
     // §4.6 decoy reactivation (file-based only): restoring from a .mppq the
     // user POSSESSES leaks nothing about dormant credentials — an attacker
@@ -3046,32 +3399,19 @@ fn handle_ppq_backup_restore(
     // On success the decoy flag is cleared: the reattached account becomes
     // the visible managed account again.
     if encrypted_bytes.len() > ppq::recovery::RECOVERY_FILE_MAX_BYTES {
-        return Ok(PpqRecoveryResult {
-            success: false,
-            error_code: Some("invalid_file".to_string()),
-        });
+        fail!("invalid_file");
     }
-    let doc = match ppq::recovery::decrypt_recovery_document(encrypted_bytes, backup_password) {
-        Ok(doc) => doc,
-        Err(e) => {
-            return Ok(PpqRecoveryResult {
-                success: false,
-                error_code: Some(
-                    match e {
-                        ppq::recovery::RecoveryError::WrongPasswordOrCorruptFile => {
-                            "wrong_password_or_corrupt_file"
-                        }
-                        ppq::recovery::RecoveryError::UnsupportedBackupVersion => {
-                            "unsupported_version"
-                        }
-                        ppq::recovery::RecoveryError::InvalidFile => "invalid_file",
-                    }
-                    .to_string(),
-                ),
-            })
-        }
-    };
-
+    let doc =
+        match ppq::recovery::decrypt_recovery_document(encrypted_bytes, backup_password.as_str()) {
+            Ok(doc) => doc,
+            Err(e) => fail!(match e {
+                ppq::recovery::RecoveryError::WrongPasswordOrCorruptFile => {
+                    "wrong_password_or_corrupt_file"
+                }
+                ppq::recovery::RecoveryError::UnsupportedBackupVersion => "unsupported_version",
+                ppq::recovery::RecoveryError::InvalidFile => "invalid_file",
+            }),
+        };
     // Review follow-up 2 (threat fix): in decoy mode the generic
     // replacement/re-attach consent is required UNCONDITIONALLY — and it is
     // checked BEFORE any keychain inspection. A holder of a valid backup
@@ -3081,10 +3421,7 @@ fn handle_ppq_backup_restore(
     // consent for NONE-mode restores, so decoy and non-decoy UIs are
     // indistinguishable.)
     if ppq_decoy_active(actor_state) && !replace_acknowledged {
-        return Ok(PpqRecoveryResult {
-            success: false,
-            error_code: Some("replacement_confirmation_required".to_string()),
-        });
+        fail!("replacement_confirmation_required");
     }
 
     // Pretag D: probe the existing credentials BEFORE any remote validation
@@ -3102,10 +3439,7 @@ fn handle_ppq_backup_restore(
             let probe = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
             if probe.recover_interrupted().is_err() {
                 actor_state.ppq_recovery_required = true;
-                return Ok(PpqRecoveryResult {
-                    success: false,
-                    error_code: Some("recovery_required".to_string()),
-                });
+                fail!("recovery_required");
             }
             actor_state.ppq_recovery_required = false;
         }
@@ -3123,58 +3457,124 @@ fn handle_ppq_backup_restore(
     // BYOK key — requires an explicit UI-confirmed acknowledgement, and
     // (pretag D) it must be refused BEFORE a fresh device key is minted.
     if is_replacement && !replace_acknowledged {
-        return Ok(PpqRecoveryResult {
-            success: false,
-            error_code: Some("replacement_confirmation_required".to_string()),
-        });
+        fail!("replacement_confirmation_required");
     }
 
-    // Remote validation before committing local credentials (§4.5 step 4):
-    // reuse the stored key; if revoked, mint a fresh device key via the root
-    // credential (flow verified live, approval artifact §2.3). Pretag D:
-    // mint names carry real Unix seconds so repeated mints are distinct.
-    let client = match ppq_production_client() {
-        Ok(c) => c,
-        Err(_) => {
-            return Ok(PpqRecoveryResult {
-                success: false,
-                error_code: Some("offline".to_string()),
-            })
-        }
-    };
-    let mut final_key = doc.api_key.clone();
-    let rt = &actor_state.runtime;
-    let validated = rt.block_on(async {
-        match client.balance(&doc.api_key).await {
-            Ok(_) => Ok(()),
-            Err(ppq::client::PpqError::AuthenticationExpired) => {
-                match client
-                    .create_device_key(&doc.credit_id, &format!("mango-device-{}", ppq_now_secs()))
-                    .await
-                {
-                    Ok(created) => {
-                        final_key = created.api_key;
-                        Ok(())
+    // Audit (actor must not block): remote validation + device-key mint
+    // run in a spawned task under the session epoch/cancellation token,
+    // exactly like every other PPQ request. The reply sender travels with
+    // the event so the FFI caller is answered only when the result is
+    // applied — lock/duress processing stays responsive meanwhile.
+    ppq_invalidate_tasks(actor_state);
+    actor_state.ppq_restore_in_flight = true;
+    let tx = core_tx.clone();
+    let epoch = actor_state.ppq_task_epoch;
+    let cancel = actor_state.ppq_session_token.clone();
+    actor_state.runtime.spawn(async move {
+        let cancelled_reply = reply.clone();
+        let event = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => PpqTaskEvent::RestoreFailed {
+                code: "cancelled",
+                reply: cancelled_reply,
+            },
+            r = async move {
+                let client = match ppq_production_client() {
+                    Ok(c) => c,
+                    Err(_) => {
+                        return PpqTaskEvent::RestoreFailed {
+                            code: "offline",
+                            reply,
+                        };
                     }
-                    Err(e) => Err(ppq_error_code(&e)),
+                };
+                match client.balance(&doc.api_key).await {
+                    Ok(balance) => PpqTaskEvent::RestoreValidated {
+                        credit_id: doc.credit_id,
+                        api_key: doc.api_key,
+                        validated_balance: Some(balance.as_str().to_string()),
+                        account_created_at: doc.account_created_at,
+                        is_replacement,
+                        reply,
+                    },
+                    Err(ppq::client::PpqError::AuthenticationExpired) => {
+                        // Stored key revoked: mint a fresh device key via
+                        // the root credential (approval artifact §2.3).
+                        // Mint names carry real Unix seconds so repeated
+                        // mints are distinct.
+                        match client
+                            .create_device_key(
+                                &doc.credit_id,
+                                &format!("mango-device-{}", ppq_now_secs()),
+                            )
+                            .await
+                        {
+                            Ok(created) => PpqTaskEvent::RestoreValidated {
+                                credit_id: doc.credit_id,
+                                api_key: created.api_key,
+                                // The minted key was not balance-checked;
+                                // the post-apply refresh fills it in.
+                                validated_balance: None,
+                                account_created_at: doc.account_created_at,
+                                is_replacement,
+                                reply,
+                            },
+                            Err(e) => PpqTaskEvent::RestoreFailed {
+                                code: ppq_error_code(&e),
+                                reply,
+                            },
+                        }
+                    }
+                    Err(e) => PpqTaskEvent::RestoreFailed {
+                        code: ppq_error_code(&e),
+                        reply,
+                    },
                 }
-            }
-            Err(e) => Err(ppq_error_code(&e)),
-        }
+            } => r,
+        };
+        let _ = tx.send(CoreMsg::PpqEvent(PpqTaskResult { epoch, event }));
     });
-    if let Err(code) = validated {
-        return Ok(PpqRecoveryResult {
-            success: false,
-            error_code: Some(code.to_string()),
-        });
-    }
+}
 
+/// Payload of a remotely validated restore, committed by the actor.
+struct RestoreApply {
+    credit_id: Zeroizing<String>,
+    api_key: Zeroizing<String>,
+    validated_balance: Option<String>,
+    account_created_at: Option<String>,
+    is_replacement: bool,
+}
+
+/// Stage 2 (actor): commit a validated restore. Runs under the epoch
+/// gate inside `handle_ppq_event`; completes the FFI reply.
+fn apply_ppq_restore_validated(
+    actor_state: &mut ActorState,
+    core_tx: &flume::Sender<CoreMsg>,
+    apply: RestoreApply,
+    reply: flume::Sender<Result<PpqRecoveryResult, String>>,
+) {
     let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
-    if let Err(e) = store.store_provisioned(&doc.credit_id, &final_key) {
-        return Ok(PpqRecoveryResult {
+    if let Err(e) = store.store_provisioned(&apply.credit_id, &apply.api_key) {
+        // Audit (mixed credentials): a failed replacement write can leave
+        // the canonical pair ambiguous. Reconcile; if the journal is
+        // still unresolved, suppress the mixed credentials everywhere —
+        // recovery-required state, no chat key, no in-flight PPQ work,
+        // no PPQ streams — until explicit recovery settles them.
+        actor_state.ppq_recovery_required = store.recover_interrupted().is_err();
+        if actor_state.ppq_recovery_required {
+            actor_state.app_state.ppq.setup_phase = PpqSetupPhase::Error;
+            actor_state.app_state.ppq.error = Some("recovery_required".to_string());
+        }
+        ppq_invalidate_tasks(actor_state);
+        cancel_ppq_backend_streams(actor_state);
+        ppq_refresh_classification(actor_state);
+        reload_backends(actor_state);
+        refresh_backend_summaries(actor_state);
+        let _ = reply.send(Ok(PpqRecoveryResult {
             success: false,
             error_code: Some(ppq_error_code(&e).to_string()),
-        });
+        }));
+        return;
     }
     // store_provisioned succeeded: any interrupted replacement was
     // resolved by B's write path.
@@ -3185,17 +3585,56 @@ fn handle_ppq_backup_restore(
         let _ = persistence::queries::set_setting(db.conn(), "duress_decoy_mode", "false");
     }
     ppq_set_setting(actor_state, ppq::account::SETTING_MODE, "managed");
-    if is_replacement {
+    if apply.is_replacement {
+        // Audit (replacement): reset every account-specific setting so the
+        // previous account's balance, creation time, first-funding flag,
+        // backup marker, and pending invoice cannot bleed into the new
+        // account.
         ppq_set_setting(actor_state, ppq::account::SETTING_BACKUP_AT, "");
+        ppq_set_setting(actor_state, ppq::account::SETTING_FIRST_FUNDING_REMIND, "");
         ppq_set_setting(actor_state, ppq::account::SETTING_PENDING_INVOICE, "");
+        ppq_set_setting(actor_state, ppq::account::SETTING_CREATED_AT, "");
         actor_state.ppq_pending = None;
+    }
+    if let Some(created) = apply.account_created_at.as_deref() {
+        // Prefer the document's creation time (accepts epoch seconds or
+        // RFC3339, matching the export path).
+        if created.parse::<i64>().is_ok() {
+            ppq_set_setting(actor_state, ppq::account::SETTING_CREATED_AT, created);
+        } else if let Ok(t) = chrono::DateTime::parse_from_rfc3339(created) {
+            ppq_set_setting(
+                actor_state,
+                ppq::account::SETTING_CREATED_AT,
+                &t.timestamp().to_string(),
+            );
+        }
+    }
+    // Audit (balance snapshot): persist the balance observed during
+    // validation with its timestamp — a restart must show THIS account's
+    // funds, never the previous account's saved snapshot. When no
+    // balance was observed, clear whatever the previous account left.
+    match apply.validated_balance.as_deref() {
+        Some(balance) => {
+            ppq_set_setting(actor_state, ppq::account::SETTING_LAST_BALANCE, balance);
+            ppq_set_setting(
+                actor_state,
+                ppq::account::SETTING_BALANCE_AT,
+                &ppq_now_secs().to_string(),
+            );
+        }
+        None => {
+            ppq_set_setting(actor_state, ppq::account::SETTING_LAST_BALANCE, "");
+            ppq_set_setting(actor_state, ppq::account::SETTING_BALANCE_AT, "");
+        }
     }
     actor_state.app_state.ppq = PpqAccountSummary {
         mode: PpqAccountMode::Managed,
         setup_phase: PpqSetupPhase::Ready,
+        balance_display: apply.validated_balance.clone(),
+        balance_updated_at: apply.validated_balance.as_ref().map(|_| ppq_now_secs()),
         ..PpqAccountSummary::default()
     };
-    actor_state.app_state.ppq.backup_confirmed = !is_replacement
+    actor_state.app_state.ppq.backup_confirmed = !apply.is_replacement
         && ppq_setting(actor_state, ppq::account::SETTING_BACKUP_AT)
             .map(|v| !v.is_empty())
             .unwrap_or(false);
@@ -3210,17 +3649,19 @@ fn handle_ppq_backup_restore(
     actor_state.ppq_backup_export_credit = None;
     reload_backends(actor_state);
     refresh_backend_summaries(actor_state);
-    spawn_ppq_balance_refresh(actor_state, core_tx);
-    Ok(PpqRecoveryResult {
+    if apply.validated_balance.is_none() {
+        spawn_ppq_balance_refresh(actor_state, core_tx);
+    }
+    let _ = reply.send(Ok(PpqRecoveryResult {
         success: true,
         error_code: None,
-    })
+    }));
 }
 
 fn handle_confirm_delete_all(
     actor_state: &mut ActorState,
     core_tx: &flume::Sender<CoreMsg>,
-    auth: &SensitiveActionAuth,
+    auth: &ActorSensitiveAuth,
     backup_risk_acknowledged: bool,
 ) -> Result<ResetResult, String> {
     if let Err(code) = verify_sensitive_auth(actor_state, auth) {
@@ -3249,7 +3690,7 @@ fn handle_confirm_delete_all(
 fn handle_confirm_forget(
     actor_state: &mut ActorState,
     core_tx: &flume::Sender<CoreMsg>,
-    auth: &SensitiveActionAuth,
+    auth: &ActorSensitiveAuth,
     backup_risk_acknowledged: bool,
 ) -> Result<ForgetResult, String> {
     if let Err(code) = verify_sensitive_auth(actor_state, auth) {
@@ -3331,8 +3772,6 @@ enum WipeMode {
 /// unwrap, encrypted DB open, and VectorIndex load. Runs via `spawn_blocking`
 /// so the actor thread never freezes behind the memory-hard KDF.
 fn run_pin_unlock_work(
-    db_path: &str,
-    data_dir: &str,
     pin: &Zeroizing<String>,
     params: &crypto::bootstrap_db::AuthParams,
 ) -> PinUnlockOutcome {
@@ -3359,24 +3798,7 @@ fn run_pin_unlock_work(
             Ok(d) => Zeroizing::new(d),
             Err(_) => return PinUnlockOutcome::WrongPin, // AES-GCM tag mismatch
         };
-    let dek_hex: Zeroizing<String> =
-        Zeroizing::new(dek.iter().map(|b| format!("{:02x}", b)).collect());
-    let db = match persistence::Database::open_encrypted(db_path, &dek_hex) {
-        Ok(db) => db,
-        Err(e) => return PinUnlockOutcome::Failed(format!("open_encrypted failed: {e}")),
-    };
-    // Phase 29 (D-01, D-04): open the VectorIndex with the DEK; fall back to an
-    // empty in-memory index exactly like the old inline path did.
-    let dek_ref: &[u8; 32] = &dek;
-    let vector_index = rag::VectorIndex::new(data_dir, Some(dek_ref)).unwrap_or_else(|e| {
-        log::warn!("[auth] PIN unlock: VectorIndex open with DEK failed: {e}");
-        rag::VectorIndex::new("", None).expect("empty fallback")
-    });
-    PinUnlockOutcome::Ready {
-        dek,
-        db,
-        vector_index,
-    }
+    PinUnlockOutcome::Ready { dek }
 }
 
 fn wipe_local_install(
@@ -3394,6 +3816,29 @@ fn wipe_local_install(
     if let Some(token) = actor_state.attestation_timer_token.take() {
         token.cancel();
     }
+    // Credential boundary (audit fix): every wipe invalidates in-flight
+    // PIN/biometric work and tracked attestation requests spawned by the
+    // erased session — stale results must never reopen or mutate the fresh
+    // one.
+    actor_state
+        .auth_generation
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    actor_state.attestation_requests.borrow_mut().clear();
+
+    if actor_state.db_path != ":memory:"
+        && !wipe_data_dir_allowed(
+            &actor_state.data_dir,
+            &actor_state.db_path,
+            &actor_state.bootstrap_path,
+        )
+    {
+        // Refuse BEFORE touching credentials — a rejected path means no
+        // deletion at all.
+        return Err(format!(
+            "refusing to wipe unexpected data directory: {}",
+            actor_state.data_dir
+        ));
+    }
 
     let mut preserve_ppq_ids: Vec<String> = Vec::new();
     if matches!(
@@ -3406,15 +3851,44 @@ fn wipe_local_install(
         // authenticated generic recovery reattaches them.
         preserve_ppq_ids.push("ppq-ai".to_string());
     }
-    for backend_id in collect_keychain_secret_ids(actor_state) {
-        if preserve_ppq_ids.contains(&backend_id) {
-            continue;
+    // Verified keychain deletion (audit fix): a backend credential, the DEK,
+    // or the no-lock secret that survives its delete must never hydrate a
+    // fresh session. Any survivor is recorded as tainted and fails the wipe.
+    let mut deletion_failed = false;
+    let mut secret_ids = collect_keychain_secret_ids(actor_state);
+    secret_ids.retain(|id| !preserve_ppq_ids.contains(id));
+    for backend_id in secret_ids {
+        let _ = actor_state
+            .keychain
+            .delete("mango".to_string(), backend_id.clone());
+        if actor_state
+            .keychain
+            .load("mango".to_string(), backend_id.clone())
+            .is_some()
+        {
+            log::error!("[reset] keychain secret {backend_id} survived deletion");
+            actor_state.wipe_tainted_secret_ids.insert(backend_id);
+            deletion_failed = true;
         }
-        actor_state.keychain.delete("mango".to_string(), backend_id);
     }
-    actor_state
-        .keychain
-        .delete("mango".to_string(), "dek".to_string());
+    for fixed_key in [
+        KEYCHAIN_DEK_KEY,
+        KEYCHAIN_BYPASS_DEK_KEY,
+        KEYCHAIN_BIOMETRIC_FLAG_KEY,
+        KEYCHAIN_NO_LOCK_SECRET_KEY,
+    ] {
+        let _ = actor_state
+            .keychain
+            .delete("mango".to_string(), fixed_key.to_string());
+        if actor_state
+            .keychain
+            .load("mango".to_string(), fixed_key.to_string())
+            .is_some()
+        {
+            log::error!("[reset] keychain secret {fixed_key} survived deletion");
+            deletion_failed = true;
+        }
+    }
     if matches!(mode, WipeMode::UserRequestedFullReset) {
         // Verified deletion of both PPQ credentials (§6.2): duress never
         // reaches this branch. A failed verified delete FAILS the wipe —
@@ -3422,9 +3896,54 @@ fn wipe_local_install(
         let store = ppq::secret_store::PpqSecretStore::new(actor_state.keychain.as_ref());
         if let Err(e) = store.delete_all_verified() {
             log::error!("[reset] PPQ credential verified-delete failed: {e}");
-            return Err("PPQ credential deletion could not be verified".to_string());
+            actor_state
+                .wipe_tainted_secret_ids
+                .insert(ppq::secret_store::API_KEY_KEY.to_string());
+            deletion_failed = true;
         }
     }
+
+    // Duress/lock boundary (audit fix): the deferred attested send must not
+    // carry pre-wipe text or attachments into the fresh session, and the
+    // pending plaintext image must be deleted through its audited path.
+    cancel_pending_attested_send(actor_state, String::new());
+    clear_pending_image_attachment(actor_state);
+    drop_pending_attachment(actor_state);
+    actor_state.db = None;
+    actor_state.dek = None;
+    // File deletion (audit fix): every non-NotFound failure aborts the wipe —
+    // the erased claim is only made after required deletion succeeds.
+    if actor_state.db_path != ":memory:" {
+        if let Err(e) = std::fs::remove_dir_all(&actor_state.data_dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                deletion_failed = true;
+                log::error!("[reset] remove_dir_all failed: {e}");
+            }
+        }
+        if remove_sqlite_files(&actor_state.db_path).is_err()
+            || remove_sqlite_files(&actor_state.bootstrap_path).is_err()
+        {
+            deletion_failed = true;
+        }
+    }
+
+    if deletion_failed {
+        // Fail closed: never report an erasure that did not complete, and
+        // leave the pre-wipe session locked rather than readable.
+        actor_state.db = None;
+        actor_state.dek = None;
+        actor_state.vector_index =
+            rag::VectorIndex::new("", None).expect("empty fallback VectorIndex");
+        let rev = actor_state.app_state.rev;
+        let biometric_available = actor_state.app_state.biometric_available;
+        actor_state.app_state = AppState::default();
+        actor_state.app_state.rev = rev;
+        actor_state.app_state.biometric_available = biometric_available;
+        actor_state.app_state.auth_initialized = actor_state.bootstrap.has_auth_params();
+        actor_state.app_state.router.current_screen = Screen::Locked;
+        return Err("reset incomplete: some data could not be deleted".to_string());
+    }
+
     // Both modes clear actor-memory PPQ state and pending invoice metadata
     // (the latter dies with the DB wipe below). A pending backup-export
     // scope cannot outlive its account (follow-up 4), and the fresh
@@ -3439,7 +3958,6 @@ fn wipe_local_install(
     actor_state.db = None;
     actor_state.dek = None;
     actor_state.pre_lock_screen = None;
-    drop_pending_attachment(actor_state);
     actor_state.active_agent_sessions.clear();
     actor_state.current_streaming_backend_id = None;
     actor_state.current_streaming_model_id = None;
@@ -3463,23 +3981,8 @@ fn wipe_local_install(
                 .map_err(|e| format!("failed to reset database: {e}"))?,
         );
     } else {
-        if !wipe_data_dir_allowed(
-            &actor_state.data_dir,
-            &actor_state.db_path,
-            &actor_state.bootstrap_path,
-        ) {
-            return Err(format!(
-                "refusing to wipe unexpected data directory: {}",
-                actor_state.data_dir
-            ));
-        }
-
-        let _ = actor_state.bootstrap.delete_all();
-        let _ = std::fs::remove_dir_all(&actor_state.data_dir);
         std::fs::create_dir_all(&actor_state.data_dir)
             .map_err(|e| format!("failed to recreate app data directory: {e}"))?;
-        remove_sqlite_files(&actor_state.db_path);
-        remove_sqlite_files(&actor_state.bootstrap_path);
 
         actor_state.bootstrap =
             crypto::bootstrap_db::BootstrapDb::open(&actor_state.bootstrap_path)
@@ -3519,6 +4022,80 @@ fn wipe_local_install(
     }
 
     Ok(())
+}
+
+/// Re-embed chunk rows whose vectors are missing from the VectorIndex.
+///
+/// A crash or a discarded index-save error can leave `chunks` rows without a
+/// corresponding index key: the document then appears indexed but retrieval
+/// can never hit it (audit fix). Called once per unlock from
+/// `load_post_unlock` — after lock the index is an empty in-memory fallback
+/// so every persisted chunk is a candidate; `contains` keeps the work
+/// proportional to actual misses.
+fn reconcile_missing_chunk_vectors(actor_state: &mut ActorState) {
+    let Some(db) = actor_state.db.as_ref() else {
+        return;
+    };
+    let rows: Vec<(i64, String)> = db
+        .conn()
+        .prepare("SELECT id, text FROM chunks ORDER BY id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map(|mapped| mapped.filter_map(Result::ok).collect())
+        })
+        .unwrap_or_default();
+
+    let missing: Vec<(i64, String)> = rows
+        .into_iter()
+        .filter(|(rowid, _)| !actor_state.vector_index.contains(*rowid as u64))
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+
+    // Re-embed in batches through the same provider ingestion uses (the
+    // synchronous on-device path — identical to directory sync).
+    let mut repaired = 0usize;
+    for batch in missing.chunks(64) {
+        let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
+        let embeddings = actor_state.embedding_provider.embed(texts);
+        let dim = crate::embedding::EMBEDDING_DIM;
+        if embeddings.len() != batch.len() * dim {
+            log::warn!(
+                "[rag] index reconciliation: provider returned {} floats for {} chunks",
+                embeddings.len(),
+                batch.len()
+            );
+            break;
+        }
+        for (i, (rowid, _)) in batch.iter().enumerate() {
+            let emb = &embeddings[i * dim..(i + 1) * dim];
+            if actor_state.vector_index.add(*rowid as u64, emb).is_ok() {
+                repaired += 1;
+            }
+        }
+    }
+    if repaired > 0 {
+        if let Err(e) = actor_state.vector_index.save(actor_state.dek.as_deref()) {
+            log::warn!("[rag] index reconciliation: save failed: {e}");
+            actor_state.app_state.toast = Some(
+                "Search index could not be saved — some documents may not be searchable.".into(),
+            );
+        }
+        log::info!("[rag] index reconciliation: re-embedded {repaired} missing chunk vectors");
+    }
+}
+
+/// Lowercase + whitespace-collapse for memory dedupe (audit fix): extracted
+/// facts that differ only in casing/spacing are the same memory.
+fn normalize_memory_text(content: &str) -> String {
+    content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Return the current time as Unix milliseconds (i64).
@@ -3811,6 +4388,7 @@ fn refresh_conversations(actor_state: &mut ActorState) {
 /// and their messages. No-op while mode is Off or days is 0. Called from
 /// load_post_unlock (startup/unlock) and the SetConversationRetention handler
 /// so a settings change takes effect immediately.
+/// Conversation timestamps and archive times use Unix milliseconds.
 fn apply_conversation_retention(actor_state: &ActorState) {
     let mode = actor_state.app_state.conversation_retention_mode;
     if mode == ConversationRetentionMode::Off
@@ -3821,8 +4399,8 @@ fn apply_conversation_retention(actor_state: &ActorState) {
     let Some(db) = actor_state.db.as_ref() else {
         return;
     };
-    let now = chrono::Utc::now().timestamp();
-    let cutoff = now - (actor_state.app_state.conversation_retention_days as i64) * 86_400;
+    let now = now_secs();
+    let cutoff = now - (actor_state.app_state.conversation_retention_days as i64) * 86_400_000;
     let result = match mode {
         ConversationRetentionMode::Archive => {
             persistence::queries::archive_conversations_older_than(db.conn(), cutoff, now)
@@ -4114,6 +4692,10 @@ fn reload_backends(actor_state: &mut ActorState) {
         log::debug!("[state] reload_backends skipped while DB is locked");
         return;
     };
+    // Backend reload invalidates tracked attestation requests (audit fix):
+    // a result must never apply against a config snapshot it was not issued
+    // for — even a same-id reload is a fresh request generation.
+    actor_state.attestation_requests.borrow_mut().clear();
     let rows = persistence::queries::list_backends(db.conn()).unwrap_or_default();
     actor_state.backends = rows
         .iter()
@@ -4202,26 +4784,25 @@ fn default_backend_and_model(actor_state: &ActorState) -> (String, String) {
         .or(actor_state.app_state.active_backend_id.clone())
         .unwrap_or_default();
     // Hybrid virtual backend ids name user-created profiles; always configured.
-    let preferred_is_configured =
-        routing::profile_id_from_backend_id(&preferred_backend).is_some()
-            || actor_state
-                .backends
-                .iter()
-                .find(|b| b.id == preferred_backend)
-                .map(backend_is_user_configured)
-                .unwrap_or(false);
+    let preferred_is_configured = routing::profile_id_from_backend_id(&preferred_backend).is_some()
+        || actor_state
+            .backends
+            .iter()
+            .find(|b| b.id == preferred_backend)
+            .map(backend_is_user_configured)
+            .unwrap_or(false);
     // A persisted default model may reference a provider the user never (or no
     // longer) configured — earlier builds offered seeded models in the Defaults
-    // picker. Only honor it while a configured provider actually serves it.
+    // picker. Only honor it while the preferred configured provider serves it.
     let default_model_setting = persistence::queries::get_setting(db, "default_model_id")
         .ok()
         .flatten()
         .filter(|m| {
             !m.is_empty()
                 && actor_state.backends.iter().any(|b| {
-                    backend_is_user_configured(b)
-                        && b
-                            .models
+                    b.id == preferred_backend
+                        && backend_is_user_configured(b)
+                        && b.models
                             .iter()
                             .any(|candidate| llm::BackendConfig::same_model_id(candidate, m))
                 })
@@ -4241,6 +4822,48 @@ fn default_backend_and_model(actor_state: &ActorState) -> (String, String) {
             .map(|b| (b.id.clone(), b.models[0].clone()))
             .unwrap_or((preferred_backend, String::new())),
     }
+}
+
+fn compaction_backend_and_model(
+    actor_state: &ActorState,
+    preferred_id: Option<&str>,
+    conversation_model: Option<&str>,
+    core_tx: flume::Sender<CoreMsg>,
+) -> Option<(llm::BackendConfig, String)> {
+    let preferred_id = preferred_id?;
+    if let Some(profile_id) = routing::profile_id_from_backend_id(preferred_id) {
+        let profile = actor_state
+            .app_state
+            .hybrid_profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)?;
+        let remote = actor_state
+            .backends
+            .iter()
+            .find(|backend| backend.id == profile.remote_backend_id);
+        // Compaction may send the entire history only to an attested remote leg.
+        if let Some(remote) = remote.filter(|backend| {
+            backend_requires_attestation(backend)
+                && retry_backend_satisfies_preflight(actor_state, backend, core_tx)
+        }) {
+            return Some((remote.clone(), profile.remote_model_id.clone()));
+        }
+        let local = actor_state
+            .backends
+            .iter()
+            .find(|backend| backend.id == profile.local_backend_id)?;
+        return Some((local.clone(), profile.local_model_id.clone()));
+    }
+    let backend = actor_state
+        .backends
+        .iter()
+        .find(|backend| backend.id == preferred_id)?;
+    let model = conversation_model
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
+        .or_else(|| backend.models.first().cloned())
+        .unwrap_or_default();
+    Some((backend.clone(), model))
 }
 
 /// Recompute `app_state.inference_status` from the same resolution
@@ -4348,12 +4971,97 @@ fn action_safe_while_locked(action: &AppAction) -> bool {
     )
 }
 
-/// Keychain slot for the raw DEK (biometric login, "Never" auto-lock,
-/// no-lock mode). Service "mango".
+/// Dropped actions may contain PINs, keys, or prompts; never format their payload.
+fn dropped_action_log(_action: &AppAction) -> &'static str {
+    "[actor] dropped action while DB locked"
+}
+
+/// Keychain slot for the biometric-unlock DEK. Service "mango". Platforms may
+/// gate reads behind fresh user authentication (Android: a CryptoObject-bound
+/// Keystore key), so enrollment is tracked by [`KEYCHAIN_BIOMETRIC_FLAG_KEY`],
+/// never by reading this slot.
 pub const KEYCHAIN_DEK_KEY: &str = "dek";
+/// Unauthenticated DEK copy for the cold-launch bypass ("Never" auto-lock and
+/// no-lock mode). Exists only while one of those modes is active, so a
+/// PIN+biometric install keeps no DEK readable without authentication.
+pub const KEYCHAIN_BYPASS_DEK_KEY: &str = "dek-bypass";
+/// Non-secret marker: biometric unlock is enrolled.
+pub const KEYCHAIN_BIOMETRIC_FLAG_KEY: &str = "biometric-enabled";
 /// Keychain slot holding the random no-lock wrap secret. Losing it (and the
-/// DEK slot) is equivalent to forgetting a PIN: data is unrecoverable.
+/// bypass DEK slot) is equivalent to forgetting a PIN: data is unrecoverable.
 pub const KEYCHAIN_NO_LOCK_SECRET_KEY: &str = "nolock-secret";
+
+fn store_biometric_dek(keychain: &dyn KeychainProvider, dek_hex: &str) -> bool {
+    let ok = keychain.store(
+        "mango".to_string(),
+        KEYCHAIN_DEK_KEY.to_string(),
+        dek_hex.to_string(),
+    ) && keychain.store(
+        "mango".to_string(),
+        KEYCHAIN_BIOMETRIC_FLAG_KEY.to_string(),
+        "1".to_string(),
+    );
+    if !ok {
+        clear_biometric_dek(keychain);
+    }
+    ok
+}
+
+fn clear_biometric_dek(keychain: &dyn KeychainProvider) {
+    keychain.delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+    keychain.delete("mango".to_string(), KEYCHAIN_BIOMETRIC_FLAG_KEY.to_string());
+}
+
+fn biometric_dek_enrolled(keychain: &dyn KeychainProvider) -> bool {
+    keychain
+        .load("mango".to_string(), KEYCHAIN_BIOMETRIC_FLAG_KEY.to_string())
+        .is_some()
+}
+
+fn store_bypass_dek(keychain: &dyn KeychainProvider, dek_hex: &str) -> bool {
+    keychain.store(
+        "mango".to_string(),
+        KEYCHAIN_BYPASS_DEK_KEY.to_string(),
+        dek_hex.to_string(),
+    )
+}
+
+fn clear_bypass_dek(keychain: &dyn KeychainProvider) {
+    keychain.delete("mango".to_string(), KEYCHAIN_BYPASS_DEK_KEY.to_string());
+}
+
+/// One-time split of the legacy shared "dek" slot, which served biometric
+/// login, "Never" auto-lock and no-lock alike (its mere presence also meant
+/// "biometric enabled"). Legacy behaviour is preserved: the bypass copy is
+/// kept only when a bypass mode is active, the biometric slot only when
+/// biometrics are available. Re-storing the biometric slot lets the platform
+/// wrap it (Android removes its unauthenticated copy on store).
+fn migrate_shared_dek_slot(
+    keychain: &dyn KeychainProvider,
+    biometric_available: bool,
+    needs_bypass: bool,
+) {
+    let migrated = biometric_dek_enrolled(keychain)
+        || keychain
+            .load("mango".to_string(), KEYCHAIN_BYPASS_DEK_KEY.to_string())
+            .is_some();
+    if migrated {
+        return;
+    }
+    let Some(legacy) = keychain
+        .load("mango".to_string(), KEYCHAIN_DEK_KEY.to_string())
+        .map(zeroize::Zeroizing::new)
+    else {
+        return;
+    };
+    if needs_bypass {
+        store_bypass_dek(keychain, &legacy);
+    }
+    if !(biometric_available && store_biometric_dek(keychain, &legacy)) {
+        clear_biometric_dek(keychain);
+    }
+    log::info!("[auth] migrated shared keychain DEK slot (bypass={needs_bypass}, biometric={biometric_available})");
+}
 
 /// Recover the DEK hex for a no-lock enrollment from the keychain-held wrap
 /// secret and the given (pending or active) auth params. Returns None when
@@ -4457,6 +5165,84 @@ fn reject_chat_action_while_attestation_pending(actor_state: &mut ActorState) ->
     actor_state.app_state.last_error =
         Some("Remote attestation is still being verified. Wait for that turn to finish before sending another message.".to_string());
     true
+}
+
+/// Start a new chat turn. Returns the turn's identity; every stream/tool
+/// producer for this turn must stamp its events with it.
+fn begin_turn(actor_state: &mut ActorState) -> u64 {
+    let turn_id = actor_state.next_turn_id;
+    actor_state.next_turn_id = actor_state.next_turn_id.saturating_add(1).max(1);
+    actor_state.current_turn_id = turn_id;
+    turn_id
+}
+
+/// End the current turn: drop the turn identity and any pending deferred
+/// state so no stale producer can still be accepted as current.
+fn end_turn(actor_state: &mut ActorState) {
+    actor_state.current_turn_id = 0;
+    actor_state.pending_discover_turn = None;
+    if let Some(token) = actor_state.active_tool_round_token.take() {
+        token.cancel();
+    }
+}
+
+fn stop_chat_turn(actor_state: &mut ActorState) {
+    if let Some(token) = actor_state.active_stream_token.take() {
+        token.cancel();
+    }
+    if turn_active(actor_state) {
+        sync_visible_streaming_text(actor_state);
+        actor_state.current_streaming_backend_id = None;
+        actor_state.current_streaming_model_id = None;
+        actor_state.current_streaming_conversation_id = None;
+        actor_state.current_streaming_text.clear();
+        actor_state.current_streaming_turn_not_retryable = false;
+        actor_state.failover_exclude.clear();
+        actor_state.app_state.busy_state = BusyState::Idle;
+    }
+    end_turn(actor_state);
+}
+
+/// A turn is live while a stream, tool round, or deferred discovery
+/// continuation is in flight for some conversation.
+fn turn_active(actor_state: &ActorState) -> bool {
+    actor_state.current_turn_id != 0 && actor_state.current_streaming_conversation_id.is_some()
+}
+
+/// Reject Send/Retry/Edit while a stream or tool round is live — the UI
+/// already stops sending while busy; this is the actor-side guard that makes
+/// a racing call deterministic instead of interleaving a second turn's
+/// stream events with the first.
+fn reject_chat_action_while_turn_active(actor_state: &mut ActorState) -> bool {
+    if !turn_active(actor_state) {
+        return false;
+    }
+    actor_state.app_state.last_error = Some(
+        "Wait for the current response to finish (or stop it) before sending another message."
+            .to_string(),
+    );
+    true
+}
+
+#[cfg(test)]
+fn adopt_test_stream_turn(actor_state: &mut ActorState) {
+    if actor_state.current_streaming_conversation_id.is_none() {
+        actor_state.current_streaming_conversation_id =
+            actor_state.app_state.current_conversation_id.clone();
+    }
+    if actor_state.current_streaming_conversation_id.is_some() && actor_state.current_turn_id == 0 {
+        begin_turn(actor_state);
+    }
+}
+
+/// Stamp this turn's identity onto a producer channel: returned sender wraps
+/// every stream event in `TurnScoped` before it reaches the actor loop.
+fn turn_scope_tx(
+    runtime: &tokio::runtime::Runtime,
+    core_tx: flume::Sender<CoreMsg>,
+    turn_id: u64,
+) -> flume::Sender<CoreMsg> {
+    llm::streaming::spawn_turn_scoped_forwarder(runtime, core_tx, turn_id)
 }
 
 fn restore_pending_attested_send_snapshot(
@@ -4804,12 +5590,26 @@ fn spawn_attestation_if_required(
         log::warn!(target: "attestation", "Failed to load TEE policy, using defaults: {e}");
         crate::attestation::TeePolicy::default()
     });
+    // Track this request (audit fix): only the latest request for a backend
+    // whose config is still current may apply its result. Request ids are
+    // issued from 1 — 0 marks untracked/test results.
+    let request_id = actor_state.attestation_request_counter.get() + 1;
+    actor_state.attestation_request_counter.set(request_id);
+    actor_state.attestation_requests.borrow_mut().insert(
+        backend.id.clone(),
+        AttestationRequest {
+            request_id,
+            base_url: backend.base_url.clone(),
+            api_key: backend.api_key.clone(),
+        },
+    );
     attestation::spawn_attestation_task(
         &actor_state.runtime,
         backend,
         core_tx,
         Arc::clone(&actor_state.vcek_cache),
         tee_policy,
+        request_id,
     );
 }
 
@@ -4866,6 +5666,20 @@ fn handle_pending_attested_send_after_attestation(
 
     if status_is_verified || backend_attestation_verified(actor_state, backend_id) {
         if let Some(pending) = actor_state.pending_attested_send.take() {
+            // Deferred continuations resume only into the conversation that
+            // captured them. If the user navigated away, the turn is
+            // cancelled rather than sent into the visible conversation.
+            if actor_state.app_state.current_conversation_id.as_deref()
+                != Some(pending.conversation_id.as_str())
+            {
+                log::info!(
+                    "[actor] pending attested send cancelled: user left conversation {}",
+                    pending.conversation_id
+                );
+                restore_pending_attested_send_snapshot(actor_state, pending);
+                actor_state.app_state.busy_state = BusyState::Idle;
+                return;
+            }
             restore_pending_attested_send_snapshot(actor_state, pending.clone());
             // Retry-origin sends replace their restored stand-in rows rather
             // than duplicating the exchange — but only once the resumed send
@@ -4897,7 +5711,7 @@ fn handle_pending_attested_send_after_attestation(
                 .iter()
                 .map(|m| m.id.clone())
                 .collect();
-            let conv_id_for_restore = actor_state.app_state.current_conversation_id.clone();
+            let conv_id_for_restore = Some(pending.conversation_id.clone());
             actor_state.app_state.busy_state = BusyState::Idle;
             actor_state.app_state.last_error = None;
             do_send_message(actor_state, pending.text, pending.force_role, core_tx);
@@ -5003,6 +5817,38 @@ fn ensure_local_model_is_downloadable(
     Ok(())
 }
 
+/// Keep free space after a model install: matches the platform providers'
+/// `LOCAL_STORAGE_RESERVE_BYTES` (512 MiB) so the download pre-check and the
+/// capability probe agree.
+const LOCAL_STORAGE_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Fresh-free-space gate for STARTING a model download.
+///
+/// Download-only: installed models are never re-checked against free space
+/// (loading maps the existing file), so this helper is deliberately separate
+/// from `ensure_local_model_is_downloadable`, which also reconciles installed
+/// models and picks turn backends. The provider reports a fresh
+/// `available_storage_bytes` on each `device_capability()` call, and the
+/// download arm refreshes the capability snapshot right before calling this.
+fn ensure_local_model_download_storage(
+    capability: &DeviceCapability,
+    preset: &llm::LocalModelPreset,
+) -> Result<(), String> {
+    let required = preset
+        .size_bytes
+        .saturating_add(LOCAL_STORAGE_RESERVE_BYTES);
+    if capability.available_storage_bytes < required {
+        return Err(format!(
+            "Not enough free storage to download {}: needs {} bytes plus a {} MiB reserve, only {} bytes available.",
+            preset.id,
+            preset.size_bytes,
+            LOCAL_STORAGE_RESERVE_BYTES / (1024 * 1024),
+            capability.available_storage_bytes
+        ));
+    }
+    Ok(())
+}
+
 fn local_inference_disabled_message() -> String {
     "Local inference is turned off. Enable it in settings to use this model.".to_string()
 }
@@ -5092,13 +5938,13 @@ fn remove_backend_row_and_reassign(actor_state: &mut ActorState, backend_id: &st
         .map(|b| (b.id.clone(), b.models.first().cloned().unwrap_or_default()));
 
     if let Some((repl_id, repl_model)) = replacement.as_ref() {
-        let conv_ids: Vec<String> = actor_state
-            .app_state
-            .conversations
-            .iter()
-            .filter(|c| c.backend_id == backend_id)
-            .map(|c| c.id.clone())
-            .collect();
+        let conv_ids = persistence::queries::list_conversations(
+            actor_state.db.as_ref().expect("db unlocked").conn(),
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| c.backend_id == backend_id)
+        .map(|c| c.id);
         for cid in conv_ids {
             let _ = persistence::queries::update_conversation_backend_and_model(
                 actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -5171,13 +6017,13 @@ fn reassign_virtual_backend_references_excluding(
         });
 
     if let Some((repl_id, repl_model)) = replacement.as_ref() {
-        let conv_ids: Vec<String> = actor_state
-            .app_state
-            .conversations
-            .iter()
-            .filter(|conversation| conversation.backend_id == virtual_id)
-            .map(|conversation| conversation.id.clone())
-            .collect();
+        let conv_ids = persistence::queries::list_conversations(
+            actor_state.db.as_ref().expect("db unlocked").conn(),
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|conversation| conversation.backend_id == virtual_id)
+        .map(|conversation| conversation.id);
         for conv_id in conv_ids {
             let _ = persistence::queries::update_conversation_backend_and_model(
                 actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -6019,6 +6865,41 @@ fn spawn_attestation_timer(
     Some(token)
 }
 
+/// Retrieve only attached-document chunks, preserving each row's vector score.
+fn retrieve_attached_chunks(
+    conn: &rusqlite::Connection,
+    index: &rag::VectorIndex,
+    query: &[f32],
+    document_ids: &[String],
+) -> anyhow::Result<Vec<rag::ChunkResult>> {
+    let allowed_rowids: std::collections::HashSet<i64> =
+        persistence::queries::get_chunk_rowids_for_documents(conn, document_ids)?
+            .into_iter()
+            .collect();
+    if allowed_rowids.is_empty() || query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let hits: Vec<(u64, f32)> = index
+        .search(query, allowed_rowids.len().max(rag::DEFAULT_TOP_K))?
+        .into_iter()
+        .filter(|(key, _)| allowed_rowids.contains(&(*key as i64)))
+        .take(rag::DEFAULT_TOP_K)
+        .collect();
+    let rowids: Vec<i64> = hits.iter().map(|(key, _)| *key as i64).collect();
+    let mut texts: HashMap<i64, String> =
+        persistence::queries::get_chunk_text_by_rowids(conn, &rowids)?
+            .into_iter()
+            .collect();
+    Ok(hits
+        .into_iter()
+        .filter_map(|(key, score)| {
+            texts
+                .remove(&(key as i64))
+                .map(|text| rag::ChunkResult { text, score })
+        })
+        .collect())
+}
+
 /// Core send-message logic called by both SendMessage and RetryLastMessage/EditMessage.
 ///
 /// Looks up the active backend, builds the full message history with system prompt,
@@ -6031,6 +6912,12 @@ fn do_send_message(
     core_tx: &flume::Sender<CoreMsg>,
 ) {
     if reject_chat_action_while_attestation_pending(actor_state) {
+        return;
+    }
+    // A live stream or tool round owns the turn: send is rejected rather than
+    // interleaving a second turn's events (deterministic; matches the UI which
+    // disables Send while busy).
+    if reject_chat_action_while_turn_active(actor_state) {
         return;
     }
 
@@ -6130,6 +7017,7 @@ fn do_send_message(
         Ok(resolved) => resolved,
         Err(TurnResolutionError::AttestationPending { backend_id }) => {
             actor_state.pending_attested_send = Some(PendingAttestedSend {
+                conversation_id: conv_id.clone(),
                 backend_id,
                 text,
                 force_role,
@@ -6320,6 +7208,10 @@ fn do_send_message(
         )
     });
 
+    // Stream turn identity: this send owns a new turn; every producer spawned
+    // for it stamps events with this id and stale ones are dropped upstream.
+    begin_turn(actor_state);
+
     // Track which backend is streaming for failover
     actor_state.current_streaming_backend_id = Some(backend.id.clone());
     actor_state.current_streaming_model_id = Some(model.clone());
@@ -6367,42 +7259,23 @@ fn do_send_message(
         .is_empty()
     {
         if !query_emb.is_empty() {
-            // Search the vector index for top-k chunks
-            match actor_state
-                .vector_index
-                .search(&query_emb, rag::DEFAULT_TOP_K)
-            {
-                Ok(results) => {
-                    // Filter results to chunks belonging to attached documents.
-                    // We need to map usearch rowids back to their document -- look up in SQLite.
-                    let all_rowids: Vec<i64> = results.iter().map(|(k, _)| *k as i64).collect();
-                    let chunk_texts = persistence::queries::get_chunk_text_by_rowids(
-                        actor_state.db.as_ref().expect("db unlocked").conn(),
-                        &all_rowids,
-                    )
-                    .unwrap_or_default();
-
-                    let chunk_results: Vec<rag::ChunkResult> = chunk_texts
-                        .into_iter()
-                        .zip(results.iter())
-                        .map(|((_, text), (_, score))| rag::ChunkResult {
-                            text,
-                            score: *score,
-                        })
-                        .collect();
-
-                    if !chunk_results.is_empty() {
-                        let doc_count = actor_state
-                            .app_state
-                            .current_conversation_attached_docs
-                            .len() as u32;
-                        rag_doc_count = Some(doc_count);
-                        rag::build_system_with_context(&base_system_prompt, &chunk_results)
-                    } else {
-                        base_system_prompt
-                    }
-                }
-                Err(_) => base_system_prompt,
+            let chunk_results = retrieve_attached_chunks(
+                actor_state.db.as_ref().expect("db unlocked").conn(),
+                &actor_state.vector_index,
+                &query_emb,
+                &actor_state.app_state.current_conversation_attached_docs,
+            )
+            .unwrap_or_default();
+            if !chunk_results.is_empty() {
+                rag_doc_count = Some(
+                    actor_state
+                        .app_state
+                        .current_conversation_attached_docs
+                        .len() as u32,
+                );
+                rag::build_system_with_context(&base_system_prompt, &chunk_results)
+            } else {
+                base_system_prompt
             }
         } else {
             base_system_prompt
@@ -6490,10 +7363,37 @@ fn do_send_message(
         actor_state.current_streaming_model_id = None;
         actor_state.current_streaming_conversation_id = None;
         actor_state.current_streaming_text.clear();
+        end_turn(actor_state);
         refresh_backend_summaries(actor_state);
         return;
     }
 
+    start_prepared_chat_turn(
+        actor_state,
+        conv_id,
+        backend,
+        model,
+        chat_messages,
+        api_text,
+        has_image_attachment,
+        true,
+        core_tx,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_prepared_chat_turn(
+    actor_state: &mut ActorState,
+    conv_id: String,
+    backend: llm::BackendConfig,
+    model: String,
+    chat_messages: Vec<llm::streaming::ChatMessage>,
+    api_text: String,
+    has_image_attachment: bool,
+    allow_discovery: bool,
+    core_tx: &flume::Sender<CoreMsg>,
+) {
+    let turn_id = actor_state.current_turn_id;
     // Phase 27/35: Chat tool use branch.
     // Per-conversation tools enable the normal local tool set. Global
     // ContextVM auto-discovery is also allowed to enter this branch so a fresh
@@ -6539,140 +7439,84 @@ fn do_send_message(
         }
 
         // Phase 35 auto-discover hook (CTX-04 / CTX-05): if the user has the
-        // toggle on and the per-conversation dispatch map is empty, run a
-        // single blocking discovery sweep, persist new announcements, build
-        // a turn-only dispatch map combining persisted-enabled + auto-
-        // discovered descriptors. Failure degrades silently.
-        if contextvm_auto_discover_for_turn && actor_state.current_conv_contextvm_tools.is_empty() {
-            let conn = actor_state.db.as_ref().expect("db unlocked").conn();
+        // toggle on and the per-conversation dispatch map is empty, discovery
+        // runs OFF the actor thread — this send defers to
+        // `ContextvmAutoDiscoverForTurn`, which merges the announcements and
+        // then resumes the captured prepared request.
+        if allow_discovery
+            && contextvm_auto_discover_for_turn
+            && actor_state.current_conv_contextvm_tools.is_empty()
+        {
             let relays = crate::contextvm::default_relays_owned();
             let trusted_provider_pubkeys = trusted_provider_pubkey_filter(&actor_state.app_state);
-            let discovery_res = if let Some(trusted_pubkeys) = trusted_provider_pubkeys.as_ref() {
-                if trusted_pubkeys.is_empty() {
-                    Ok(Vec::new())
+            actor_state.pending_discover_turn = Some(PendingDeferredSend {
+                conv_id: conv_id.clone(),
+                turn_id,
+                backend,
+                model,
+                chat_messages,
+            });
+            let cancel = tokio_util::sync::CancellationToken::new();
+            actor_state.active_tool_round_token = Some(cancel.clone());
+            let core_tx_clone = core_tx.clone();
+            let conv_id_clone = conv_id.clone();
+            actor_state.app_state.busy_state = BusyState::Loading {
+                message: "Discovering tools...".to_string(),
+            };
+            actor_state.runtime.spawn(async move {
+                let discovery_res = if let Some(trusted_pubkeys) = trusted_provider_pubkeys.as_ref()
+                {
+                    if trusted_pubkeys.is_empty() {
+                        Ok(Vec::new())
+                    } else {
+                        tokio::select! {
+                            res = tokio::time::timeout(
+                                std::time::Duration::from_secs(
+                                    CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS,
+                                ),
+                                crate::contextvm::discovery::discover_all_for_providers(
+                                    &relays,
+                                    trusted_pubkeys,
+                                ),
+                            ) => res.unwrap_or_else(|_| {
+                                Err(crate::contextvm::ContextvmError::Timeout {
+                                    tool_name: "auto-discovery".to_string(),
+                                    secs: CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS,
+                                })
+                            }),
+                            _ = cancel.cancelled() => {
+                                return;
+                            }
+                        }
+                    }
                 } else {
-                    actor_state.runtime.block_on(async {
-                        tokio::time::timeout(
-                            std::time::Duration::from_secs(CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS),
-                            crate::contextvm::discovery::discover_all_for_providers(
-                                &relays,
-                                trusted_pubkeys,
+                    tokio::select! {
+                        res = tokio::time::timeout(
+                            std::time::Duration::from_secs(
+                                CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS,
                             ),
-                        )
-                        .await
-                        .unwrap_or_else(|_| {
+                            crate::contextvm::discovery::discover_all(&relays),
+                        ) => res.unwrap_or_else(|_| {
                             Err(crate::contextvm::ContextvmError::Timeout {
                                 tool_name: "auto-discovery".to_string(),
                                 secs: CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS,
                             })
-                        })
-                    })
-                }
-            } else {
-                actor_state.runtime.block_on(async {
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS),
-                        crate::contextvm::discovery::discover_all(&relays),
-                    )
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(crate::contextvm::ContextvmError::Timeout {
-                            tool_name: "auto-discovery".to_string(),
-                            secs: CONTEXTVM_AUTO_DISCOVERY_TIMEOUT_SECS,
-                        })
-                    })
-                })
-            };
-            if let Err(e) = &discovery_res {
-                log::warn!("contextvm auto-discovery failed: {}", e);
-            }
-            if let Ok(discovered) = discovery_res {
-                let now = now_secs();
-                for t in &discovered {
-                    let id = format!("{}:{}", t.provider_pubkey_hex, t.tool_name);
-                    let preserved_enabled =
-                        persistence::queries::get_contextvm_tool_by_name(conn, &t.tool_name)
-                            .ok()
-                            .flatten()
-                            .map(|r| r.enabled)
-                            .unwrap_or(false);
-
-                    let _ = persistence::queries::upsert_contextvm_tool(
-                        conn,
-                        &persistence::queries::ContextvmToolRow {
-                            id,
-                            tool_name: t.tool_name.clone(),
-                            display_name: None,
-                            description: t.description.clone(),
-                            provider_pubkey: t.provider_pubkey_hex.clone(),
-                            provider_display_name: t.provider_display_name.clone(),
-                            provider_name: t.provider_name.clone(),
-                            provider_about: t.provider_about.clone(),
-                            provider_picture: t.provider_picture.clone(),
-                            provider_nip05: t.provider_nip05.clone(),
-                            schema_json: t.schema_json.clone(),
-                            enabled: preserved_enabled,
-                            last_seen_at: now,
-                        },
-                    );
-                }
-                // Build a turn-only dispatch map: enabled rows + the
-                // auto-discovered descriptors, dedup by tool_name (enabled
-                // wins on tie since iterated first).
-                let mut combined: Vec<_> = persistence::queries::list_enabled_contextvm_tools(conn)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter(|r| {
-                        contextvm_row_allowed_by_trust_filter(r, trusted_provider_pubkeys.as_ref())
-                    })
-                    .filter_map(|r| crate::contextvm::ContextvmToolDescriptor::from_row(r).ok())
-                    .collect();
-                for t in discovered {
-                    if combined.iter().any(|d| d.tool_name == t.tool_name) {
-                        continue;
+                        }),
+                        _ = cancel.cancelled() => {
+                            return;
+                        }
                     }
-                    let schema = serde_json::from_str(&t.schema_json)
-                        .unwrap_or(serde_json::json!({"type": "object"}));
-                    let chars: String = t
-                        .description
-                        .chars()
-                        .take(crate::contextvm::DESCRIPTION_CAP_CHARS)
-                        .collect();
-                    let description = if chars.chars().count() < t.description.chars().count() {
-                        format!("{}…", chars)
-                    } else {
-                        chars
-                    };
-                    combined.push(crate::contextvm::ContextvmToolDescriptor {
-                        tool_name: t.tool_name,
-                        description,
-                        schema,
-                        provider_pubkey_hex: t.provider_pubkey_hex,
-                        provider_display_name: t.provider_display_name,
-                        provider_name: t.provider_name,
-                        provider_about: t.provider_about,
-                        provider_picture: t.provider_picture,
-                        provider_nip05: t.provider_nip05,
-                        last_seen_at: now,
-                    });
-                }
-                let finalised = crate::contextvm::finalise_for_turn(combined);
-                actor_state.current_conv_contextvm_tools =
-                    crate::contextvm::build_dispatch_map(&finalised);
-                // Refresh AppState.contextvm_tools so any UI bound to the
-                // list reflects newly-seen announcements.
-                if let Ok(rows) = persistence::queries::list_all_contextvm_tools(conn) {
-                    let usage_map = aggregate_contextvm_tool_usage(conn);
-                    let now_secs_proj = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    actor_state.app_state.contextvm_tools = rows
-                        .into_iter()
-                        .map(|r| row_to_discoverable_tool(r, &usage_map, now_secs_proj))
-                        .collect();
-                }
-            }
+                };
+                let result = discovery_res.map_err(|e| e.to_string());
+                let _ = core_tx_clone.send(CoreMsg::InternalEvent(Box::new(
+                    llm::InternalEvent::ContextvmAutoDiscoverForTurn {
+                        turn_id,
+                        conv_id: conv_id_clone,
+                        result,
+                    },
+                )));
+            });
+            return;
         }
 
         // Phase 35: append remote contextvm descriptors to the OpenAI tools array.
@@ -6682,6 +7526,7 @@ fn do_send_message(
             .cloned()
             .collect();
         let tools = agent::build_chat_tools_with_contextvm(
+            actor_state.current_conv_tools_enabled,
             has_docs && actor_state.current_conv_tools_enabled,
             brave_key_set && actor_state.current_conv_tools_enabled,
             &remote_descriptors,
@@ -6729,15 +7574,18 @@ fn do_send_message(
             actor_state.app_state.streaming_text = Some(String::new());
             actor_state.app_state.last_error = None;
 
-            spawn_chat_tool_round(
+            let cancel = spawn_chat_tool_round(
                 &actor_state.runtime,
                 &backend,
                 &model,
                 api_messages,
                 tools,
                 conv_id.clone(),
+                turn_id,
+                pinned_tls_public_key_fp_for_backend(actor_state, &backend.id),
                 core_tx.clone(),
             );
+            actor_state.active_tool_round_token = Some(cancel);
 
             refresh_backend_summaries(actor_state);
             return; // Don't fall through to normal streaming
@@ -6760,7 +7608,7 @@ fn do_send_message(
             &backend,
             &model,
             chat_messages,
-            core_tx.clone(),
+            turn_scope_tx(&actor_state.runtime, core_tx.clone(), turn_id),
             actor_state.router.get_semaphore(&backend.id),
         );
         actor_state.active_stream_token = Some(token);
@@ -6812,6 +7660,7 @@ fn do_send_message(
                 Err(e) => {
                     actor_state.app_state.last_error = Some(format!("Image prepare failed: {}", e));
                     clear_pending_image_attachment(actor_state);
+                    stop_chat_turn(actor_state);
                     actor_state.app_state.busy_state = BusyState::Idle;
                     actor_state.app_state.streaming_text = None;
                     refresh_backend_summaries(actor_state);
@@ -6828,7 +7677,7 @@ fn do_send_message(
             &model,
             api_messages,
             pinned_tls_public_key_fp_for_backend(actor_state, &backend.id),
-            core_tx.clone(),
+            turn_scope_tx(&actor_state.runtime, core_tx.clone(), turn_id),
             actor_state.router.get_semaphore(&backend.id),
         );
         actor_state.active_stream_token = Some(token);
@@ -6839,7 +7688,7 @@ fn do_send_message(
             &model,
             chat_messages,
             pinned_tls_public_key_fp_for_backend(actor_state, &backend.id),
-            core_tx.clone(),
+            turn_scope_tx(&actor_state.runtime, core_tx.clone(), turn_id),
             actor_state.router.get_semaphore(&backend.id),
         );
         actor_state.active_stream_token = Some(token);
@@ -6854,10 +7703,9 @@ fn do_send_message(
 /// Calls run_agent_step_for_backend with the chat-specific tool set, then sends
 /// ChatToolCallsReady or ChatToolNone back to the actor loop.
 ///
-/// CRITICAL: Tool dispatch (dispatch_tools) MUST happen on the actor thread, not inside
-/// this async task. dispatch_tools calls runtime.block_on internally, which panics when
-/// called from within a Tokio task. This function only runs the LLM non-streaming round;
-/// the actor handles tool dispatch in the ChatToolCallsReady handler.
+/// DB-dependent tools are dispatched on the actor; network tools run in
+/// cancellable background tasks after this detection round completes.
+#[allow(clippy::too_many_arguments)]
 fn spawn_chat_tool_round(
     runtime: &tokio::runtime::Runtime,
     backend: &llm::BackendConfig,
@@ -6865,38 +7713,69 @@ fn spawn_chat_tool_round(
     messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage>,
     tools: Vec<async_openai::types::chat::ChatCompletionTools>,
     conv_id: String,
+    turn_id: u64,
+    pinned_tls_public_key_fp: Option<String>,
     core_tx: flume::Sender<CoreMsg>,
-) {
+) -> CancellationToken {
     let backend = backend.clone();
     let model = model.to_string();
+    let cancel = CancellationToken::new();
+    let task_cancel = cancel.clone();
     runtime.spawn(async move {
-        let result =
-            agent::run_agent_step_for_backend(&backend, &model, messages.clone(), tools).await;
+        let result = tokio::select! {
+            result = agent::run_agent_step_for_backend(
+                &backend,
+                &model,
+                messages.clone(),
+                tools.clone(),
+                pinned_tls_public_key_fp.as_deref(),
+            ) => result,
+            _ = task_cancel.cancelled() => return,
+        };
         match result {
             Ok(agent::AgentStepResult::ToolCalls(calls)) => {
+                let allowed_tools = tools
+                    .iter()
+                    .filter_map(|t| match t {
+                        async_openai::types::chat::ChatCompletionTools::Function(f) => {
+                            Some(f.function.name.clone())
+                        }
+                        async_openai::types::chat::ChatCompletionTools::Custom(_) => None,
+                    })
+                    .collect::<Vec<_>>();
                 let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
                     llm::InternalEvent::ChatToolCallsReady {
+                        turn_id,
                         conv_id,
                         tool_calls: calls,
                         pre_tool_messages: messages,
                         backend_id: backend.id.clone(),
                         model,
+                        allowed_tools,
                     },
                 )));
             }
             Ok(agent::AgentStepResult::FinalAnswer(text))
             | Ok(agent::AgentStepResult::FinishTool(text)) => {
                 let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
-                    llm::InternalEvent::ChatToolNone { conv_id, text },
+                    llm::InternalEvent::ChatToolNone {
+                        turn_id,
+                        conv_id,
+                        text,
+                    },
                 )));
             }
             Err(e) => {
                 let _ = core_tx.send(CoreMsg::InternalEvent(Box::new(
-                    llm::InternalEvent::StreamError { error: e },
+                    llm::InternalEvent::TurnScoped {
+                        turn_id,
+                        event: llm::streaming::ScopedStreamEvent::Error { error: e },
+                    },
                 )));
             }
         }
     });
+    cancel
 }
 
 // ── Phase 9: Agent helpers ────────────────────────────────────────────────────
@@ -7044,13 +7923,20 @@ fn handle_launch_agent_session(
         api_key,
         ..backend.clone()
     };
+    let pinned_tls_public_key_fp = pinned_tls_public_key_fp_for_backend(actor_state, &backend.id);
     let tools = agent::build_agent_tools();
     let sid = session_id.clone();
     let core_tx_clone = core_tx.clone();
 
     actor_state.runtime.spawn(async move {
-        let result =
-            agent::run_agent_step_for_backend(&backend_for_client, &model, messages, tools).await;
+        let result = agent::run_agent_step_for_backend(
+            &backend_for_client,
+            &model,
+            messages,
+            tools,
+            pinned_tls_public_key_fp.as_deref(),
+        )
+        .await;
         let _ = core_tx_clone.send(CoreMsg::InternalEvent(Box::new(
             llm::InternalEvent::AgentStepComplete {
                 session_id: sid,
@@ -7074,280 +7960,225 @@ fn handle_agent_step_complete(
     update_tx: &flume::Sender<AppUpdate>,
 ) {
     use async_openai::types::chat::{
-        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
-        ChatCompletionRequestToolMessageArgs,
+        ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessageArgs,
+        ChatCompletionRequestMessage, ChatCompletionRequestToolMessageArgs,
     };
-
-    // If session was cancelled/paused, ignore stale events
+    // If session was cancelled/paused, ignore stale events.
     if !actor_state.active_agent_sessions.contains_key(&session_id) {
         return;
     }
-    let Some(db) = actor_state.db.as_ref() else {
-        log::warn!("[agent] AgentStepComplete received while DB locked; dropping active session");
-        actor_state.active_agent_sessions.remove(&session_id);
-        actor_state.app_state.rev += 1;
-        emit_state(&actor_state.app_state, shared, update_tx);
-        return;
-    };
-    let conn = db.conn();
-
     let now = now_secs();
-
-    match result {
-        Ok(agent::AgentStepResult::ToolCalls(calls)) => {
-            // Checkpoint tool call step to SQLite
-            let step_id = new_uuid();
-            let payload = serde_json::to_string(
-                &calls
-                    .iter()
-                    .map(|c| {
-                        serde_json::json!({
-                            "id": c.id,
-                            "name": c.function.name,
-                            "arguments": c.function.arguments,
+    let outcome = (|| -> Result<(), String> {
+        let db = actor_state.db.as_ref().ok_or("Database is locked")?;
+        let conn = db.conn();
+        match result.map_err(|error| error.display_message())? {
+            agent::AgentStepResult::ToolCalls(calls) => {
+                let payload = serde_json::to_string(
+                    &calls
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "id": c.id,
+                                "name": c.function.name,
+                                "arguments": c.function.arguments,
+                            })
                         })
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap_or_else(|_| "[]".to_string());
-
-            // Phase 35 (CTX-10): tag step with tool_origin. If any of the
-            // tool calls in this step targets a name in the current
-            // conversation's contextvm dispatch map, mark the whole step
-            // as "contextvm". Otherwise, mark it "local".
-            let tool_origin = if calls.iter().any(|c| {
-                actor_state
-                    .current_conv_contextvm_tools
-                    .contains_key(c.function.name.as_str())
-            }) {
-                Some("contextvm".to_string())
-            } else {
-                Some("local".to_string())
-            };
-
-            let step_row = persistence::queries::AgentStepRow {
-                id: step_id.clone(),
-                session_id: session_id.clone(),
-                step_number,
-                action_type: "tool_call".to_string(),
-                action_payload: payload,
-                result: None,
-                status: "completed".to_string(),
-                created_at: now,
-                tool_origin,
-            };
-            let _ = persistence::queries::insert_agent_step(conn, &step_row);
-
-            // Phase 36 (CTX36-USED-01): if this step recorded a contextvm
-            // tool call, re-aggregate usage and re-project AppState.contextvm_tools
-            // so the "Used N×" badge updates without waiting for the next
-            // discovery refresh.
-            if step_row.tool_origin.as_deref() == Some("contextvm") {
-                let usage_map = aggregate_contextvm_tool_usage(conn);
-                let now_secs_proj = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                let refreshed: Vec<DiscoverableTool> =
-                    persistence::queries::list_all_contextvm_tools(conn)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|r| row_to_discoverable_tool(r, &usage_map, now_secs_proj))
-                        .collect();
-                actor_state.app_state.contextvm_tools = refreshed;
-                emit_state(&actor_state.app_state, shared, update_tx);
-            }
-
-            // Check step limit (max 20 steps per D-02)
-            let current_count =
-                persistence::queries::count_agent_steps(conn, &session_id).unwrap_or(0);
-            if current_count >= 20 {
-                // Step limit reached
-                let _ = persistence::queries::update_agent_session_status(
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(|e| e.to_string())?;
+                let tool_origin = if calls.iter().any(|c| {
+                    actor_state
+                        .current_conv_contextvm_tools
+                        .contains_key(c.function.name.as_str())
+                }) {
+                    Some("contextvm".to_string())
+                } else {
+                    Some("local".to_string())
+                };
+                let step_row = persistence::queries::AgentStepRow {
+                    id: new_uuid(),
+                    session_id: session_id.clone(),
+                    step_number,
+                    action_type: "tool_call".to_string(),
+                    action_payload: payload,
+                    result: None,
+                    status: "running".to_string(),
+                    created_at: now,
+                    tool_origin,
+                };
+                // A crash during dispatch must not leave a falsely completed checkpoint.
+                persistence::queries::insert_agent_step(conn, &step_row)
+                    .map_err(|e| e.to_string())?;
+                let current_count = persistence::queries::count_agent_steps(conn, &session_id)
+                    .map_err(|e| e.to_string())?;
+                if current_count >= 20 {
+                    return Err("step limit reached (20 steps)".into());
+                }
+                let brave_api_key = persistence::queries::get_setting(conn, "brave_api_key")
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or_default();
+                let tool_results = agent::dispatch_tools(
+                    &calls,
+                    conn,
+                    &actor_state.vector_index,
+                    actor_state.embedding_provider.as_ref(),
+                    &actor_state.runtime,
+                    &actor_state.data_dir,
+                    &brave_api_key,
+                    &actor_state.current_conv_contextvm_tools,
+                    &actor_state.contextvm_secret_key,
+                );
+                let results_json =
+                    serde_json::to_string(&tool_results).map_err(|e| e.to_string())?;
+                persistence::queries::complete_agent_tool_step(conn, &step_row.id, &results_json)
+                    .map_err(|e| e.to_string())?;
+                persistence::queries::update_agent_session_status(
                     conn,
                     &session_id,
-                    "failed",
+                    "running",
                     now,
-                );
+                )
+                .map_err(|e| e.to_string())?;
+
+                if step_row.tool_origin.as_deref() == Some("contextvm") {
+                    let usage_map = aggregate_contextvm_tool_usage(conn);
+                    actor_state.app_state.contextvm_tools =
+                        persistence::queries::list_all_contextvm_tools(conn)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|r| row_to_discoverable_tool(r, &usage_map, now))
+                            .collect();
+                }
+                let exec_state = actor_state
+                    .active_agent_sessions
+                    .get_mut(&session_id)
+                    .ok_or("Agent session is no longer active")?;
+                exec_state.messages.push(ChatCompletionRequestMessage::from(
+                    ChatCompletionRequestAssistantMessageArgs::default()
+                        .tool_calls(
+                            calls
+                                .into_iter()
+                                .map(ChatCompletionMessageToolCalls::Function)
+                                .collect::<Vec<_>>(),
+                        )
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                ));
+                for (tool_call_id, result_text) in tool_results {
+                    exec_state.messages.push(ChatCompletionRequestMessage::from(
+                        ChatCompletionRequestToolMessageArgs::default()
+                            .tool_call_id(tool_call_id)
+                            .content(result_text)
+                            .build()
+                            .map_err(|e| e.to_string())?,
+                    ));
+                }
+                exec_state.step_number += 1;
+                let next_step = exec_state.step_number;
+                let messages = exec_state.messages.clone();
+                let model = exec_state.model.clone();
+                let backend_id = exec_state.backend_id.clone();
+                let backend = actor_state
+                    .backends
+                    .iter()
+                    .find(|b| b.id == backend_id)
+                    .cloned()
+                    .ok_or("Agent backend is unavailable")?;
+                let api_key = if backend.api_key.is_empty() {
+                    load_backend_api_key(actor_state, &backend_id).unwrap_or_default()
+                } else {
+                    backend.api_key.clone()
+                };
+                let pinned_tls_public_key_fp =
+                    pinned_tls_public_key_fp_for_backend(actor_state, &backend.id);
+                let backend_for_client = llm::BackendConfig { api_key, ..backend };
+                let tools = agent::build_agent_tools();
+                let sid = session_id.clone();
+                let core_tx_clone = core_tx.clone();
+                actor_state.runtime.spawn(async move {
+                    let result = agent::run_agent_step_for_backend(
+                        &backend_for_client,
+                        &model,
+                        messages,
+                        tools,
+                        pinned_tls_public_key_fp.as_deref(),
+                    )
+                    .await;
+                    let _ = core_tx_clone.send(CoreMsg::InternalEvent(Box::new(
+                        llm::InternalEvent::AgentStepComplete {
+                            session_id: sid,
+                            step_number: next_step,
+                            result,
+                        },
+                    )));
+                });
+            }
+            agent::AgentStepResult::FinishTool(text)
+            | agent::AgentStepResult::FinalAnswer(text) => {
+                let step_row = persistence::queries::AgentStepRow {
+                    id: new_uuid(),
+                    session_id: session_id.clone(),
+                    step_number,
+                    action_type: "final_answer".to_string(),
+                    action_payload: "{}".to_string(),
+                    result: Some(text),
+                    status: "completed".to_string(),
+                    created_at: now,
+                    tool_origin: None,
+                };
+                persistence::queries::insert_agent_step(conn, &step_row)
+                    .map_err(|e| e.to_string())?;
+                persistence::queries::update_agent_session_status(
+                    conn,
+                    &session_id,
+                    "completed",
+                    now,
+                )
+                .map_err(|e| e.to_string())?;
                 actor_state.active_agent_sessions.remove(&session_id);
-                actor_state.app_state.toast =
-                    Some("Agent session stopped: step limit reached (20 steps)".into());
-                refresh_agent_sessions(actor_state);
-                actor_state.app_state.rev += 1;
-                emit_state(&actor_state.app_state, shared, update_tx);
-                return;
+                actor_state.app_state.toast = Some("Agent session completed".into());
             }
-
-            // Dispatch tools synchronously on the actor thread
-            let brave_api_key = persistence::queries::get_setting(conn, "brave_api_key")
-                .unwrap_or(None)
-                .unwrap_or_default();
-
-            // Phase 35: route remote (contextvm) tool calls through the
-            // dispatch fallback in agent::dispatch_tools.
-            let tool_results = agent::dispatch_tools(
-                &calls,
-                conn,
-                &actor_state.vector_index,
-                actor_state.embedding_provider.as_ref(),
-                &actor_state.runtime,
-                &actor_state.data_dir,
-                &brave_api_key,
-                &actor_state.current_conv_contextvm_tools,
-                &actor_state.contextvm_secret_key,
-            );
-
-            // Get mutable exec_state
-            let exec_state = match actor_state.active_agent_sessions.get_mut(&session_id) {
-                Some(s) => s,
-                None => return,
-            };
-
-            // Append assistant message (with tool_calls) to history
-            let assistant_tool_calls: Vec<
-                async_openai::types::chat::ChatCompletionMessageToolCalls,
-            > = calls
-                .iter()
-                .map(|c| {
-                    async_openai::types::chat::ChatCompletionMessageToolCalls::Function(c.clone())
-                })
-                .collect();
-
-            if let Ok(assistant_msg) = ChatCompletionRequestAssistantMessageArgs::default()
-                .tool_calls(assistant_tool_calls)
-                .build()
-                .map(ChatCompletionRequestMessage::from)
-            {
-                exec_state.messages.push(assistant_msg);
-            }
-
-            // Append tool result messages
-            for (tool_call_id, result_text) in &tool_results {
-                if let Ok(tool_msg) = ChatCompletionRequestToolMessageArgs::default()
-                    .tool_call_id(tool_call_id.as_str())
-                    .content(result_text.as_str())
-                    .build()
-                    .map(ChatCompletionRequestMessage::from)
-                {
-                    exec_state.messages.push(tool_msg);
-                }
-            }
-
-            exec_state.step_number += 1;
-            let next_step = exec_state.step_number;
-            let messages = exec_state.messages.clone();
-            let model = exec_state.model.clone();
-            let backend_id = exec_state.backend_id.clone();
-
-            // Look up backend config for the API call
-            let backend = actor_state
-                .backends
-                .iter()
-                .find(|b| b.id == backend_id)
-                .cloned();
-            let backend = match backend {
-                Some(b) => b,
-                None => {
-                    let _ = persistence::queries::update_agent_session_status(
-                        conn,
-                        &session_id,
-                        "failed",
-                        now,
-                    );
-                    actor_state.active_agent_sessions.remove(&session_id);
-                    refresh_agent_sessions(actor_state);
-                    actor_state.app_state.rev += 1;
-                    emit_state(&actor_state.app_state, shared, update_tx);
-                    return;
-                }
-            };
-            let api_key = if backend.api_key.is_empty() {
-                load_backend_api_key(actor_state, &backend_id).unwrap_or_default()
-            } else {
-                backend.api_key.clone()
-            };
-
-            let backend_for_client = llm::BackendConfig {
-                api_key,
-                ..backend.clone()
-            };
-            let tools = agent::build_agent_tools();
-            let sid = session_id.clone();
-            let core_tx_clone = core_tx.clone();
-
-            actor_state.runtime.spawn(async move {
-                let result =
-                    agent::run_agent_step_for_backend(&backend_for_client, &model, messages, tools)
-                        .await;
-                let _ = core_tx_clone.send(CoreMsg::InternalEvent(Box::new(
-                    llm::InternalEvent::AgentStepComplete {
-                        session_id: sid,
-                        step_number: next_step,
-                        result,
-                    },
-                )));
-            });
-
-            // Update session status timestamp
-            let _ = persistence::queries::update_agent_session_status(
-                conn,
-                &session_id,
-                "running",
-                now,
-            );
-            refresh_agent_sessions(actor_state);
-            actor_state.app_state.rev += 1;
-            emit_state(&actor_state.app_state, shared, update_tx);
         }
+        Ok(())
+    })();
+    if let Err(error) = outcome {
+        fail_agent_session(
+            actor_state,
+            &session_id,
+            format!("Agent step failed: {error}"),
+        );
+    } else {
+        refresh_agent_sessions(actor_state);
+    }
+    if actor_state.app_state.current_agent_session_id.as_deref() == Some(&session_id) {
+        handle_load_agent_session(actor_state, &session_id);
+    }
+    actor_state.app_state.rev += 1;
+    emit_state(&actor_state.app_state, shared, update_tx);
+}
 
-        Ok(agent::AgentStepResult::FinishTool(text))
-        | Ok(agent::AgentStepResult::FinalAnswer(text)) => {
-            // Session completed
-            let step_id = new_uuid();
-            let step_row = persistence::queries::AgentStepRow {
-                id: step_id,
-                session_id: session_id.clone(),
-                step_number,
-                action_type: "final_answer".to_string(),
-                action_payload: "{}".to_string(),
-                result: Some(text.clone()),
-                status: "completed".to_string(),
-                created_at: now,
-                // Phase 35: final_answer is not a tool call; tool_origin = None.
-                tool_origin: None,
-            };
-            let _ = persistence::queries::insert_agent_step(conn, &step_row);
-            let _ = persistence::queries::update_agent_session_status(
-                conn,
-                &session_id,
-                "completed",
-                now,
-            );
-            actor_state.active_agent_sessions.remove(&session_id);
-            actor_state.app_state.toast = Some("Agent session completed".into());
-            refresh_agent_sessions(actor_state);
-
-            // Update current_agent_steps if this session is loaded
-            if actor_state.app_state.current_agent_session_id.as_deref() == Some(&session_id) {
-                handle_load_agent_session(actor_state, &session_id);
-            }
-
-            actor_state.app_state.rev += 1;
-            emit_state(&actor_state.app_state, shared, update_tx);
-        }
-
-        Err(error) => {
-            // Mark session as failed
-            let _ =
-                persistence::queries::update_agent_session_status(conn, &session_id, "failed", now);
-            actor_state.active_agent_sessions.remove(&session_id);
-            actor_state.app_state.toast =
-                Some(format!("Agent step failed: {}", error.display_message()));
-            refresh_agent_sessions(actor_state);
-            actor_state.app_state.rev += 1;
-            emit_state(&actor_state.app_state, shared, update_tx);
+fn fail_agent_session(actor_state: &mut ActorState, session_id: &str, mut message: String) {
+    actor_state.active_agent_sessions.remove(session_id);
+    if let Some(db) = actor_state.db.as_ref() {
+        if let Err(error) = persistence::queries::update_agent_session_status(
+            db.conn(),
+            session_id,
+            "failed",
+            now_secs(),
+        ) {
+            message.push_str(&format!("; could not persist failed status: {error}"));
         }
     }
+    refresh_agent_sessions(actor_state);
+    if let Some(session) = actor_state
+        .app_state
+        .agent_sessions
+        .iter_mut()
+        .find(|s| s.id == session_id)
+    {
+        session.status = "failed".into();
+    }
+    actor_state.app_state.toast = Some(message);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -7365,6 +8196,44 @@ impl TurnResolutionError {
             }
         }
     }
+}
+
+/// Attestation/pin preflight shared by hybrid-remote and single-backend turn
+/// resolution. A backend that declares TEE attestation must never receive
+/// prompt content before it is verified: an unverified backend returns
+/// `AttestationPending` and kicks off the verification task.
+fn attestation_preflight_for_turn(
+    actor_state: &ActorState,
+    backend: &llm::BackendConfig,
+    core_tx: &flume::Sender<CoreMsg>,
+) -> Result<(), TurnResolutionError> {
+    if !backend_requires_attestation(backend) {
+        return Ok(());
+    }
+    let pending = || TurnResolutionError::AttestationPending {
+        backend_id: backend.id.clone(),
+    };
+    if backend_uses_inline_secure_attestation(backend) {
+        if backend_attestation_verified(actor_state, &backend.id) {
+            return Ok(());
+        }
+        spawn_attestation_if_required(actor_state, backend, core_tx.clone());
+        return Err(pending());
+    }
+    // Generic TEE backends: the attested TLS pin is what binds the sealed
+    // conversation to the verified endpoint — without it the request would
+    // silently ride ordinary HTTPS.
+    if backend.transport_kind() == llm::ProviderTransportKind::OpenAiCompatible
+        && pinned_tls_public_key_fp_for_backend(actor_state, &backend.id).is_none()
+    {
+        spawn_attestation_if_required(actor_state, backend, core_tx.clone());
+        return Err(pending());
+    }
+    if !backend_attestation_verified(actor_state, &backend.id) {
+        spawn_attestation_if_required(actor_state, backend, core_tx.clone());
+        return Err(pending());
+    }
+    Ok(())
 }
 
 fn resolve_turn_backend_and_model(
@@ -7486,32 +8355,7 @@ fn resolve_turn_backend_and_model(
                 ));
             }
 
-            if backend_requires_attestation(backend) {
-                if backend_uses_inline_secure_attestation(backend) {
-                    if !backend_attestation_verified(actor_state, &backend.id) {
-                        spawn_attestation_if_required(actor_state, backend, core_tx.clone());
-                        return Err(TurnResolutionError::AttestationPending {
-                            backend_id: backend.id.clone(),
-                        });
-                    }
-                } else {
-                    if backend.transport_kind() == llm::ProviderTransportKind::OpenAiCompatible
-                        && pinned_tls_public_key_fp_for_backend(actor_state, &backend.id).is_none()
-                    {
-                        spawn_attestation_if_required(actor_state, backend, core_tx.clone());
-                        return Err(TurnResolutionError::AttestationPending {
-                            backend_id: backend.id.clone(),
-                        });
-                    }
-
-                    if !backend_attestation_verified(actor_state, &backend.id) {
-                        spawn_attestation_if_required(actor_state, backend, core_tx.clone());
-                        return Err(TurnResolutionError::AttestationPending {
-                            backend_id: backend.id.clone(),
-                        });
-                    }
-                }
-            }
+            attestation_preflight_for_turn(actor_state, backend, core_tx)?;
         }
 
         return Ok((
@@ -7552,6 +8396,10 @@ fn resolve_turn_backend_and_model(
             .map_err(TurnResolutionError::UserFacing)?;
     }
 
+    // Same preflight as the hybrid remote leg: a TEE-typed backend must not
+    // receive prompt content before attestation verifies.
+    attestation_preflight_for_turn(actor_state, backend, core_tx)?;
+
     Ok((
         hydrate_backend_api_key(actor_state, backend),
         model.to_string(),
@@ -7591,6 +8439,79 @@ fn handle_pause_agent_session(actor_state: &mut ActorState, session_id: String) 
     refresh_agent_sessions(actor_state);
 }
 
+/// Replay only durable tool exchanges; never rerun tools with unknown side effects.
+fn restore_agent_tool_messages(
+    steps: &[persistence::queries::AgentStepRow],
+) -> Result<Vec<async_openai::types::chat::ChatCompletionRequestMessage>, String> {
+    use async_openai::types::chat::{
+        ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
+        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+        ChatCompletionRequestToolMessageArgs, FunctionCall,
+    };
+    #[derive(serde::Deserialize)]
+    struct StoredToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    }
+    let mut messages = Vec::new();
+    for step in steps.iter().filter(|step| step.action_type == "tool_call") {
+        let invalid = || {
+            format!(
+                "Agent step {} has an incomplete or invalid tool checkpoint; cannot safely resume",
+                step.step_number,
+            )
+        };
+        if step.status != "completed" {
+            return Err(invalid());
+        }
+        let calls: Vec<StoredToolCall> =
+            serde_json::from_str(&step.action_payload).map_err(|_| invalid())?;
+        let results: Vec<(String, String)> =
+            serde_json::from_str(step.result.as_deref().ok_or_else(invalid)?)
+                .map_err(|_| invalid())?;
+        if calls.is_empty() || calls.len() != results.len() {
+            return Err(invalid());
+        }
+        let mut results: std::collections::HashMap<_, _> = results.into_iter().collect();
+        if calls.len() != results.len() {
+            return Err(invalid());
+        }
+        let mut tool_calls = Vec::with_capacity(calls.len());
+        let mut tool_messages = Vec::with_capacity(calls.len());
+        for call in calls {
+            if call.id.is_empty() {
+                return Err(invalid());
+            }
+            let result = results.remove(&call.id).ok_or_else(invalid)?;
+            tool_messages.push(ChatCompletionRequestMessage::from(
+                ChatCompletionRequestToolMessageArgs::default()
+                    .tool_call_id(call.id.as_str())
+                    .content(result)
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ));
+            tool_calls.push(ChatCompletionMessageToolCalls::Function(
+                ChatCompletionMessageToolCall {
+                    id: call.id,
+                    function: FunctionCall {
+                        name: call.name,
+                        arguments: call.arguments,
+                    },
+                },
+            ));
+        }
+        messages.push(ChatCompletionRequestMessage::from(
+            ChatCompletionRequestAssistantMessageArgs::default()
+                .tool_calls(tool_calls)
+                .build()
+                .map_err(|e| e.to_string())?,
+        ));
+        messages.extend(tool_messages);
+    }
+    Ok(messages)
+}
+
 /// Resume a paused agent session by rebuilding message history from SQLite.
 fn handle_resume_agent_session(
     actor_state: &mut ActorState,
@@ -7598,160 +8519,112 @@ fn handle_resume_agent_session(
     core_tx: &flume::Sender<CoreMsg>,
 ) {
     use async_openai::types::chat::{
-        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
-        ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+        ChatCompletionRequestUserMessageArgs,
     };
-
-    // Idempotent: if already running, return
     if actor_state.active_agent_sessions.contains_key(&session_id) {
         return;
     }
-
-    let now = now_secs();
-
-    // Load session from SQLite
-    let session_row = persistence::queries::list_agent_sessions(
-        actor_state.db.as_ref().expect("db unlocked").conn(),
-    )
-    .unwrap_or_default()
-    .into_iter()
-    .find(|r| r.id == session_id);
-    let session_row = match session_row {
-        Some(r) => r,
-        None => return,
-    };
-
-    // Load steps
-    let steps = persistence::queries::list_agent_steps(
-        actor_state.db.as_ref().expect("db unlocked").conn(),
-        &session_id,
-    )
-    .unwrap_or_default();
-
-    // Rebuild message history
-    let mut messages: Vec<ChatCompletionRequestMessage> = Vec::new();
-
-    // System + user message (title is the original task description)
-    let system_content = format!(
-        "You are an autonomous agent. You have the following tools: search_documents, read_document, \
-         web_search, fetch_url, file, calculate, finish. \
-         Use search_documents to search your document library, read_document to read full documents, \
-         web_search to search the web via Brave Search, fetch_url to read a webpage's text content, \
-         file to read/write/append files in your sandbox, calculate to evaluate math expressions, \
-         and finish to provide your final answer. The user's task is: {}",
-        session_row.title
-    );
-    if let Ok(msg) = ChatCompletionRequestSystemMessageArgs::default()
-        .content(system_content)
-        .build()
-        .map(ChatCompletionRequestMessage::from)
-    {
-        messages.push(msg);
-    }
-    if let Ok(msg) = ChatCompletionRequestUserMessageArgs::default()
-        .content(session_row.title.clone())
-        .build()
-        .map(ChatCompletionRequestMessage::from)
-    {
-        messages.push(msg);
-    }
-
-    // Replay completed steps into message history
-    for step in &steps {
-        if step.action_type == "tool_call" {
-            if let Ok(payload) =
-                serde_json::from_str::<Vec<serde_json::Value>>(&step.action_payload)
-            {
-                let tool_calls: Vec<async_openai::types::chat::ChatCompletionMessageToolCalls> =
-                    payload
-                        .iter()
-                        .filter_map(|v| {
-                            Some(
-                                async_openai::types::chat::ChatCompletionMessageToolCalls::Function(
-                                    async_openai::types::chat::ChatCompletionMessageToolCall {
-                                        id: v.get("id")?.as_str()?.to_string(),
-                                        function: async_openai::types::chat::FunctionCall {
-                                            name: v.get("name")?.as_str()?.to_string(),
-                                            arguments: v.get("arguments")?.as_str()?.to_string(),
-                                        },
-                                    },
-                                ),
-                            )
-                        })
-                        .collect();
-                if !tool_calls.is_empty() {
-                    if let Ok(msg) = ChatCompletionRequestAssistantMessageArgs::default()
-                        .tool_calls(tool_calls)
-                        .build()
-                        .map(ChatCompletionRequestMessage::from)
-                    {
-                        messages.push(msg);
-                    }
-                }
-            }
+    let outcome = (|| -> Result<(), String> {
+        let db = actor_state.db.as_ref().ok_or("Database is locked")?;
+        let conn = db.conn();
+        let session_row = persistence::queries::list_agent_sessions(conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|r| r.id == session_id)
+            .ok_or("Agent session not found")?;
+        let steps =
+            persistence::queries::list_agent_steps(conn, &session_id).map_err(|e| e.to_string())?;
+        let system_content = format!(
+            "You are an autonomous agent. You have the following tools: search_documents, read_document, \
+             web_search, fetch_url, file, calculate, finish. \
+             Use search_documents to search your document library, read_document to read full documents, \
+             web_search to search the web via Brave Search, fetch_url to read a webpage's text content, \
+             file to read/write/append files in your sandbox, calculate to evaluate math expressions, \
+             and finish to provide your final answer. The user's task is: {}",
+            session_row.title
+        );
+        let mut messages = vec![
+            ChatCompletionRequestMessage::from(
+                ChatCompletionRequestSystemMessageArgs::default()
+                    .content(system_content)
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ),
+            ChatCompletionRequestMessage::from(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(session_row.title)
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ),
+        ];
+        messages.extend(restore_agent_tool_messages(&steps)?);
+        let next_step = steps.iter().map(|step| step.step_number).max().unwrap_or(0) + 1;
+        if next_step > 20 {
+            return Err("step limit reached (20 steps)".into());
         }
-    }
-
-    let next_step = (steps.len() as i64) + 1;
-    let backend = actor_state
-        .backends
-        .iter()
-        .find(|b| b.id == session_row.backend_id)
-        .cloned();
-    let backend = match backend {
-        Some(b) => b,
-        None => return,
-    };
-    let api_key = if backend.api_key.is_empty() {
-        load_backend_api_key(actor_state, &backend.id).unwrap_or_default()
+        let backend = actor_state
+            .backends
+            .iter()
+            .find(|b| b.id == session_row.backend_id)
+            .cloned()
+            .ok_or("Agent backend is unavailable")?;
+        let api_key = if backend.api_key.is_empty() {
+            load_backend_api_key(actor_state, &backend.id).unwrap_or_default()
+        } else {
+            backend.api_key.clone()
+        };
+        let model = backend
+            .models
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "meta-llama/Llama-3.3-70B-Instruct".to_string());
+        persistence::queries::update_agent_session_status(conn, &session_id, "running", now_secs())
+            .map_err(|e| e.to_string())?;
+        let exec_state = agent::AgentExecutionState {
+            session_id: session_id.clone(),
+            messages: messages.clone(),
+            step_number: next_step,
+            backend_id: backend.id.clone(),
+            model: model.clone(),
+        };
+        actor_state
+            .active_agent_sessions
+            .insert(session_id.clone(), exec_state);
+        let pinned_tls_public_key_fp =
+            pinned_tls_public_key_fp_for_backend(actor_state, &backend.id);
+        let backend_for_client = llm::BackendConfig { api_key, ..backend };
+        let tools = agent::build_agent_tools();
+        let sid = session_id.clone();
+        let core_tx_clone = core_tx.clone();
+        actor_state.runtime.spawn(async move {
+            let result = agent::run_agent_step_for_backend(
+                &backend_for_client,
+                &model,
+                messages,
+                tools,
+                pinned_tls_public_key_fp.as_deref(),
+            )
+            .await;
+            let _ = core_tx_clone.send(CoreMsg::InternalEvent(Box::new(
+                llm::InternalEvent::AgentStepComplete {
+                    session_id: sid,
+                    step_number: next_step,
+                    result,
+                },
+            )));
+        });
+        Ok(())
+    })();
+    if let Err(error) = outcome {
+        fail_agent_session(
+            actor_state,
+            &session_id,
+            format!("Agent resume failed: {error}"),
+        );
     } else {
-        backend.api_key.clone()
-    };
-    let model = backend
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "meta-llama/Llama-3.3-70B-Instruct".to_string());
-
-    let exec_state = agent::AgentExecutionState {
-        session_id: session_id.clone(),
-        messages: messages.clone(),
-        step_number: next_step,
-        backend_id: backend.id.clone(),
-        model: model.clone(),
-    };
-    actor_state
-        .active_agent_sessions
-        .insert(session_id.clone(), exec_state);
-
-    let _ = persistence::queries::update_agent_session_status(
-        actor_state.db.as_ref().expect("db unlocked").conn(),
-        &session_id,
-        "running",
-        now,
-    );
-
-    let backend_for_client = llm::BackendConfig {
-        api_key,
-        ..backend.clone()
-    };
-    let tools = agent::build_agent_tools();
-    let sid = session_id.clone();
-    let core_tx_clone = core_tx.clone();
-
-    actor_state.runtime.spawn(async move {
-        let result =
-            agent::run_agent_step_for_backend(&backend_for_client, &model, messages, tools).await;
-        let _ = core_tx_clone.send(CoreMsg::InternalEvent(Box::new(
-            llm::InternalEvent::AgentStepComplete {
-                session_id: sid,
-                step_number: next_step,
-                result,
-            },
-        )));
-    });
-
-    refresh_agent_sessions(actor_state);
+        refresh_agent_sessions(actor_state);
+    }
 }
 
 /// Cancel an agent session.
@@ -7986,6 +8859,38 @@ pub(crate) fn row_to_discoverable_tool(
         npub,
         schema_pretty,
     }
+}
+
+/// Refresh announcements without transferring a user's approval to another provider.
+fn merge_discovered_contextvm_tools(
+    conn: &rusqlite::Connection,
+    discovered: Vec<crate::contextvm::DiscoveredTool>,
+) -> Result<(), PersistenceError> {
+    let now = now_secs();
+    for tool in discovered {
+        let id = format!("{}:{}", tool.provider_pubkey_hex, tool.tool_name);
+        let existing = persistence::queries::get_contextvm_tool_by_id(conn, &id)?;
+        let enabled = existing
+            .as_ref()
+            .is_some_and(|row| row.enabled && row.provider_pubkey == tool.provider_pubkey_hex);
+        let row = persistence::queries::ContextvmToolRow {
+            id,
+            tool_name: tool.tool_name,
+            display_name: None,
+            description: tool.description,
+            provider_pubkey: tool.provider_pubkey_hex,
+            provider_display_name: tool.provider_display_name,
+            provider_name: tool.provider_name,
+            provider_about: tool.provider_about,
+            provider_picture: tool.provider_picture,
+            provider_nip05: tool.provider_nip05,
+            schema_json: tool.schema_json,
+            enabled,
+            last_seen_at: now,
+        };
+        persistence::queries::upsert_contextvm_tool(conn, &row)?;
+    }
+    Ok(())
 }
 
 /// Phase 35 — load + finalise the dispatch descriptor list from SQLite.
@@ -8552,6 +9457,9 @@ fn load_post_unlock(
         .db
         .as_ref()
         .expect("db must be open before load_post_unlock");
+    // Session boundary (audit fix): every tracked attestation request was
+    // issued by the previous session/config — none may apply its result.
+    actor_state.attestation_requests.borrow_mut().clear();
 
     // B integration (review resume): resolve any interrupted credential
     // replacement BEFORE backend key hydration and classification. Never in
@@ -8852,15 +9760,32 @@ fn load_post_unlock(
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(300);
-    let biometric_login_enabled = if actor_state.app_state.biometric_available {
-        actor_state
+    let biometric_login_enabled = actor_state.app_state.biometric_available
+        && biometric_dek_enrolled(actor_state.keychain.as_ref());
+    // Never/no-lock installs whose bypass copy is missing (lost slot, or an
+    // unlock that predates the slot split) re-cache it from the live DEK.
+    let bypass_mode = actor_state
+        .bootstrap
+        .read_cold_launch_bypass()
+        .unwrap_or(false)
+        || actor_state
+            .bootstrap
+            .read_auth_params()
+            .ok()
+            .flatten()
+            .is_some_and(|params| params.no_lock);
+    if bypass_mode
+        && actor_state
             .keychain
-            .load("mango".to_string(), "dek".to_string())
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    } else {
-        false
-    };
+            .load("mango".to_string(), KEYCHAIN_BYPASS_DEK_KEY.to_string())
+            .is_none()
+    {
+        if let Some(dek) = actor_state.dek.as_ref() {
+            let dek_hex: Zeroizing<String> =
+                Zeroizing::new(dek.iter().map(|b| format!("{:02x}", b)).collect());
+            store_bypass_dek(actor_state.keychain.as_ref(), &dek_hex);
+        }
+    }
     let duress_pin_configured = actor_state
         .bootstrap
         .read_auth_params()
@@ -8955,22 +9880,27 @@ fn load_post_unlock(
                 .filter(|v| !v.is_empty())
                 {
                     if let Ok(p) = serde_json::from_str::<ppq::account::PendingInvoice>(&json) {
-                        if ppq_now_secs() < p.expires_at {
-                            summary.funding = Some(PpqFundingSummary {
-                                amount_sats: p.amount_sats,
-                                bolt11: p.bolt11.clone(),
-                                expires_at: p.expires_at,
-                                status: "New".to_string(),
-                            });
-                            summary.funding_phase = PpqFundingPhase::AwaitingPayment;
-                            actor_state.ppq_pending = Some(p);
+                        // Audit (expiry): keep the pending invoice identity
+                        // until its outcome is resolved — an invoice paid
+                        // just before its deadline still gets a final
+                        // status check instead of being discarded.
+                        let still_payable = ppq_now_secs() < p.expires_at;
+                        summary.funding_phase = if still_payable {
+                            PpqFundingPhase::AwaitingPayment
                         } else {
-                            let _ = persistence::queries::set_setting(
-                                db.conn(),
-                                ppq::account::SETTING_PENDING_INVOICE,
-                                "",
-                            );
-                        }
+                            PpqFundingPhase::Expired
+                        };
+                        summary.funding = Some(PpqFundingSummary {
+                            amount_sats: p.amount_sats,
+                            bolt11: p.bolt11.clone(),
+                            expires_at: p.expires_at,
+                            status: if still_payable {
+                                "New".to_string()
+                            } else {
+                                "Expired".to_string()
+                            },
+                        });
+                        actor_state.ppq_pending = Some(p);
                     }
                 }
             }
@@ -9029,6 +9959,38 @@ fn load_post_unlock(
     // Apply a pending first-run continuation exactly once, as soon as auth is
     // committed and the DB is open. This runs both immediately after SetupPin
     // and on the first unlock after a crash between the auth commit and the
+
+    // Audit fix: restoring Screen::Chat must also restore its conversation —
+    // messages, attached docs, and tools state were reset by LockApp, and
+    // Android renders ChatScreen without dispatching LoadConversation. If the
+    // conversation no longer exists (retention swept it, or the id is stale),
+    // fall back to Home instead of stranding the user on an empty chat.
+    if let Screen::Chat {
+        conversation_id: ref conv_id,
+    } = post_screen
+    {
+        let exists = conversations.iter().any(|c| &c.id == conv_id);
+        if exists {
+            refresh_messages(actor_state, conv_id);
+            actor_state.app_state.current_conversation_id = Some(conv_id.clone());
+            actor_state.app_state.current_conversation_attached_docs =
+                persistence::queries::get_conversation_attached_docs(
+                    actor_state.db.as_ref().expect("db open").conn(),
+                    conv_id,
+                )
+                .unwrap_or_default();
+            actor_state.current_conv_tools_enabled =
+                persistence::queries::get_conversation_tools_enabled(
+                    actor_state.db.as_ref().expect("db open").conn(),
+                    conv_id,
+                )
+                .ok()
+                .flatten()
+                .unwrap_or(false);
+        } else {
+            post_screen = Screen::Home;
+        }
+    }
     // continuation. It is idempotent: the conversation and setting are committed
     // in a single transaction, and the marker is only cleared after the commit
     // succeeds.
@@ -9236,6 +10198,12 @@ fn load_post_unlock(
     actor_state.vcek_cache = new_vcek_cache.clone();
     reconcile_local_model_backends(actor_state);
 
+    // Audit fix: a crash or failed index save can leave SQLite chunk rows
+    // whose vectors never landed in the index — those documents look indexed
+    // but are unreachable. Re-embed the survivors through the same provider
+    // ingestion uses, then persist the repaired index.
+    reconcile_missing_chunk_vectors(actor_state);
+
     // Initialize per-backend concurrency semaphores.
     for backend in &actor_state.backends {
         actor_state
@@ -9389,14 +10357,18 @@ impl FfiApp {
             // Phase 28: Check biometric availability at startup (D-20).
             let biometric_status = biometric_provider.biometric_status();
             let biometric_available = biometric_status == "available";
-            let biometric_login_enabled = if biometric_available {
-                keychain
-                    .load("mango".to_string(), "dek".to_string())
-                    .map(|v| !v.trim().is_empty())
-                    .unwrap_or(false)
-            } else {
-                false
-            };
+            migrate_shared_dek_slot(
+                keychain.as_ref(),
+                biometric_available,
+                bootstrap.read_cold_launch_bypass().unwrap_or(false)
+                    || bootstrap
+                        .read_auth_params()
+                        .ok()
+                        .flatten()
+                        .is_some_and(|params| params.no_lock),
+            );
+            let biometric_login_enabled =
+                biometric_available && biometric_dek_enrolled(keychain.as_ref());
             let duress_pin_configured = bootstrap
                 .read_auth_params()
                 .ok()
@@ -9481,14 +10453,13 @@ impl FfiApp {
                                     // bypass (promotion deletes pending auth, after which
                                     // the secret alone can no longer recover the DEK).
                                     if keychain
-                                        .load("mango".to_string(), KEYCHAIN_DEK_KEY.to_string())
+                                        .load(
+                                            "mango".to_string(),
+                                            KEYCHAIN_BYPASS_DEK_KEY.to_string(),
+                                        )
                                         .is_none()
                                     {
-                                        let stored = keychain.store(
-                                            "mango".to_string(),
-                                            KEYCHAIN_DEK_KEY.to_string(),
-                                            (*dek_hex).clone(),
-                                        );
+                                        let stored = store_bypass_dek(keychain.as_ref(), &dek_hex);
                                         log::info!(
                                             "[auth] startup: no-lock resume re-stored keychain DEK slot: {stored}"
                                         );
@@ -9558,7 +10529,8 @@ impl FfiApp {
             // leftover from an interrupted enrollment. Pending auth still represents
             // recoverable credentials — never delete alongside it.
             if !has_auth && !bootstrap.has_pending_auth() {
-                keychain.delete("mango".to_string(), "dek".to_string());
+                clear_biometric_dek(keychain.as_ref());
+                clear_bypass_dek(keychain.as_ref());
                 keychain.delete("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string());
             }
 
@@ -9570,7 +10542,7 @@ impl FfiApp {
                 || no_lock_resume_dek_hex.is_some()
             {
                 keychain
-                        .load("mango".to_string(), "dek".to_string())
+                        .load("mango".to_string(), KEYCHAIN_BYPASS_DEK_KEY.to_string())
                         .map(zeroize::Zeroizing::new)
                         .or(no_lock_resume_dek_hex)
                         .or_else(|| {
@@ -9581,17 +10553,12 @@ impl FfiApp {
                                 return None;
                             }
                             let params = bootstrap.read_auth_params().ok().flatten()?;
-                            no_lock_dek_from_keychain_secret(keychain.as_ref(), &params).map(
+                            no_lock_dek_from_keychain_secret(keychain.as_ref(), &params).inspect(
                                 |dek_hex| {
-                                    let restored = keychain.store(
-                                        "mango".to_string(),
-                                        "dek".to_string(),
-                                        (*dek_hex).clone(),
-                                    );
+                                    let restored = store_bypass_dek(keychain.as_ref(), dek_hex);
                                     log::info!(
                                         "[auth] cold start: recovered keychain DEK from no-lock secret (re-stored: {restored})"
                                     );
-                                    dek_hex
                                 },
                             )
                         })
@@ -9738,6 +10705,9 @@ impl FfiApp {
                 ppq_backup_export_credit: None,
                 ppq_backup_save_pending_confirm: false,
                 ppq_recovery_required: false,
+                ppq_restore_in_flight: false,
+                ppq_balance_next_id: 0,
+                ppq_balance_latest_applied: 0,
                 router: llm::FailoverRouter::new(),
                 current_streaming_backend_id: None,
                 current_streaming_model_id: None,
@@ -9764,6 +10734,16 @@ impl FfiApp {
                 // Phase 35: contextvm dispatch state.
                 current_conv_contextvm_tools: std::collections::HashMap::new(),
                 contextvm_secret_key: String::new(),
+                auth_generation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+                pin_unlock_pending: false,
+                biometric_unlock_pending: false,
+                attestation_request_counter: std::cell::Cell::new(0),
+                attestation_requests: std::cell::RefCell::new(HashMap::new()),
+                wipe_tainted_secret_ids: std::collections::HashSet::new(),
+                next_turn_id: 1,
+                current_turn_id: 0,
+                active_tool_round_token: None,
+                pending_discover_turn: None,
             };
 
             // If DB is available (auto-open path), load all state from it.
@@ -9786,15 +10766,25 @@ impl FfiApp {
             emit(&actor_state.app_state, &shared_for_core, &update_tx);
 
             while let Ok(msg) = core_rx.recv() {
+                if let CoreMsg::ConversationAction {
+                    conversation_id, ..
+                } = &msg
+                {
+                    if actor_state.app_state.current_conversation_id.as_deref()
+                        != Some(conversation_id.as_str())
+                    {
+                        continue;
+                    }
+                }
                 match msg {
-                    CoreMsg::Action(action) => {
+                    CoreMsg::Action(action) | CoreMsg::ConversationAction { action, .. } => {
                         // Locked/wiped session: only allow-listed actions may run.
                         // Everything else would hit one of the many
                         // `expect("db unlocked")` call sites below and abort the
                         // process (panic=abort) when a UI action races the
                         // async LockApp dispatch (Android onResume auto-lock).
                         if actor_state.db.is_none() && !action_safe_while_locked(&action) {
-                            log::warn!("[actor] dropped action while DB locked: {:?}", action);
+                            log::warn!("{}", dropped_action_log(&action));
                             continue;
                         }
                         // D-14 mandatory enrollment: block navigation/chat actions while a
@@ -9873,7 +10863,9 @@ impl FfiApp {
                                 // Proof-of-life: no state mutation, just increment rev below
                             }
                             AppAction::SendMessage { text, force_role } => {
-                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state)
+                                    || reject_chat_action_while_turn_active(&mut actor_state)
+                                {
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
@@ -9882,6 +10874,11 @@ impl FfiApp {
                                 actor_state.app_state.show_first_chat_placeholder = false;
                                 // If no active conversation, create one first (auto-create per D-04)
                                 if actor_state.app_state.current_conversation_id.is_none() {
+                                    actor_state
+                                        .app_state
+                                        .current_conversation_attached_docs
+                                        .clear();
+                                    actor_state.current_conv_tools_enabled = false;
                                     let conv_id = new_uuid();
                                     let now = now_secs();
                                     // Auto-title from first 50 chars of the user message
@@ -9942,20 +10939,12 @@ impl FfiApp {
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
                             AppAction::StopGeneration => {
-                                // Signal the streaming task to stop cooperatively.
-                                // Do NOT set BusyState::Idle here -- wait for the
-                                // StreamCancelled InternalEvent to confirm the task exited.
-                                if let Some(token) = actor_state.active_stream_token.take() {
-                                    token.cancel();
-                                } else if cancel_pending_attested_send(
+                                stop_chat_turn(&mut actor_state);
+                                cancel_pending_attested_send(
                                     &mut actor_state,
                                     "Remote attestation was cancelled. The message was not sent."
-                                        .to_string(),
-                                ) {
-                                    actor_state.app_state.rev += 1;
-                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                                    continue;
-                                }
+                                        .into(),
+                                );
                             }
                             AppAction::SetActiveBackend { backend_id } => {
                                 if actor_state.backends.iter().any(|b| b.id == backend_id)
@@ -10015,6 +11004,13 @@ impl FfiApp {
                                     );
                                     continue;
                                 }
+                                if actor_state.active_tool_round_token.is_some() {
+                                    stop_chat_turn(&mut actor_state);
+                                }
+                                cancel_pending_attested_send(
+                                    &mut actor_state,
+                                    "Deferred send cancelled: conversation changed.".into(),
+                                );
                                 let conv_id = new_uuid();
                                 let now = now_secs();
                                 let (default_backend, default_model) =
@@ -10037,6 +11033,10 @@ impl FfiApp {
                                 actor_state.app_state.current_conversation_id =
                                     Some(conv_id.clone());
                                 actor_state.app_state.messages = vec![];
+                                actor_state
+                                    .app_state
+                                    .current_conversation_attached_docs
+                                    .clear();
                                 push_nav_history(&mut actor_state.app_state.router);
                                 actor_state.app_state.router.current_screen = Screen::Chat {
                                     conversation_id: conv_id,
@@ -10049,6 +11049,17 @@ impl FfiApp {
                             }
 
                             AppAction::LoadConversation { conversation_id } => {
+                                if actor_state.app_state.current_conversation_id.as_deref()
+                                    != Some(conversation_id.as_str())
+                                {
+                                    if actor_state.active_tool_round_token.is_some() {
+                                        stop_chat_turn(&mut actor_state);
+                                    }
+                                    cancel_pending_attested_send(
+                                        &mut actor_state,
+                                        "Deferred send cancelled: conversation changed.".into(),
+                                    );
+                                }
                                 refresh_messages(&mut actor_state, &conversation_id);
                                 actor_state.app_state.current_conversation_id =
                                     Some(conversation_id.clone());
@@ -10119,10 +11130,28 @@ impl FfiApp {
                                 );
                                 match result {
                                     Ok(()) => {
+                                        if actor_state.active_tool_round_token.is_some() {
+                                            stop_chat_turn(&mut actor_state);
+                                        }
+                                        cancel_pending_attested_send(
+                                            &mut actor_state,
+                                            "Deferred send cancelled: conversation changed.".into(),
+                                        );
                                         refresh_conversations(&mut actor_state);
                                         refresh_messages(&mut actor_state, &new_id);
                                         actor_state.app_state.current_conversation_id =
                                             Some(new_id.clone());
+                                        actor_state.app_state.current_conversation_attached_docs =
+                                            persistence::queries::get_conversation_attached_docs(
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
+                                                &new_id,
+                                            )
+                                            .unwrap_or_default();
+                                        refresh_current_contextvm_dispatch(&mut actor_state);
                                         // Inherit tools_enabled from the newly-persisted row.
                                         actor_state.current_conv_tools_enabled = actor_state
                                             .app_state
@@ -10146,6 +11175,22 @@ impl FfiApp {
                             }
 
                             AppAction::DeleteConversation { id } => {
+                                if actor_state
+                                    .pending_attested_send
+                                    .as_ref()
+                                    .is_some_and(|p| p.conversation_id == id)
+                                {
+                                    cancel_pending_attested_send(
+                                        &mut actor_state,
+                                        "Chat deleted. The pending message was not sent."
+                                            .to_string(),
+                                    );
+                                }
+                                if actor_state.current_streaming_conversation_id.as_deref()
+                                    == Some(id.as_str())
+                                {
+                                    stop_chat_turn(&mut actor_state);
+                                }
                                 let _ = persistence::queries::delete_conversation(
                                     actor_state.db.as_ref().expect("db unlocked").conn(),
                                     &id,
@@ -10156,24 +11201,33 @@ impl FfiApp {
                                 {
                                     actor_state.app_state.current_conversation_id = None;
                                     actor_state.app_state.messages = vec![];
+                                    actor_state
+                                        .app_state
+                                        .current_conversation_attached_docs
+                                        .clear();
                                     actor_state.app_state.router.current_screen = Screen::Home;
                                 }
                             }
 
                             AppAction::DeleteAllConversations => {
-                                let ids: Vec<String> = actor_state
-                                    .app_state
-                                    .conversations
-                                    .iter()
-                                    .map(|c| c.id.clone())
-                                    .collect();
+                                stop_chat_turn(&mut actor_state);
+                                cancel_pending_attested_send(
+                                    &mut actor_state,
+                                    "Chats deleted. The pending message was not sent.".to_string(),
+                                );
+                                let ids = persistence::queries::list_conversations(
+                                    actor_state.db.as_ref().expect("db unlocked").conn(),
+                                )
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|c| c.id);
                                 for id in ids {
                                     let _ = persistence::queries::delete_conversation(
                                         actor_state.db.as_ref().expect("db unlocked").conn(),
                                         &id,
                                     );
                                 }
-                                actor_state.app_state.conversations = vec![];
+                                refresh_conversations(&mut actor_state);
                                 actor_state.app_state.current_conversation_id = None;
                                 actor_state.app_state.messages = vec![];
                                 actor_state.app_state.current_conversation_attached_docs = vec![];
@@ -10393,7 +11447,9 @@ impl FfiApp {
                             }
 
                             AppAction::RetryLastMessage => {
-                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state)
+                                    || reject_chat_action_while_turn_active(&mut actor_state)
+                                {
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
@@ -10636,7 +11692,7 @@ impl FfiApp {
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
                                 }
-                                if actor_state.active_stream_token.is_some() {
+                                if turn_active(&actor_state) {
                                     actor_state.app_state.toast = Some(
                                         "Wait for the current response before compacting."
                                             .to_string(),
@@ -10657,6 +11713,8 @@ impl FfiApp {
                                         .iter()
                                         .map(|row| (row.role.clone(), row.content.clone()))
                                         .collect();
+                                    let message_ids: Vec<String> =
+                                        rows.iter().map(|row| row.id.clone()).collect();
                                     let compaction =
                                         persistence::queries::get_conversation_compaction(
                                             conn,
@@ -10669,9 +11727,9 @@ impl FfiApp {
                                         .map(|row| row.covered_count.max(0) as usize)
                                         .unwrap_or(0);
                                     let prior_summary = compaction.map(|row| row.summary);
-                                    (transcript, already_covered, prior_summary)
+                                    (transcript, message_ids, already_covered, prior_summary)
                                 });
-                                let Some((transcript, already_covered, prior_summary)) =
+                                let Some((transcript, message_ids, already_covered, prior_summary)) =
                                     plan_inputs
                                 else {
                                     actor_state.app_state.toast =
@@ -10704,24 +11762,19 @@ impl FfiApp {
                                     .map(|c| c.backend_id.clone())
                                     .filter(|id| !id.is_empty())
                                     .or_else(|| actor_state.app_state.active_backend_id.clone());
-                                let backend = preferred_id.and_then(|id| {
-                                    actor_state.backends.iter().find(|b| b.id == id).cloned()
-                                });
-                                let Some(backend) = backend else {
+                                let target = compaction_backend_and_model(
+                                    &actor_state,
+                                    preferred_id.as_deref(),
+                                    conv.as_ref().map(|c| c.model_id.as_str()),
+                                    core_tx_for_thread.clone(),
+                                );
+                                let Some((backend, model)) = target else {
                                     actor_state.app_state.last_error =
                                         Some("No backend available for compaction.".to_string());
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
                                 };
-                                let model = conv
-                                    .as_ref()
-                                    .map(|c| c.model_id.clone())
-                                    .filter(|m| !m.is_empty())
-                                    .unwrap_or_else(|| {
-                                        default_model_for_preferred(&actor_state, Some(&backend.id))
-                                            .unwrap_or_default()
-                                    });
                                 if model.is_empty() {
                                     actor_state.app_state.last_error =
                                         Some("No model configured for compaction.".to_string());
@@ -10736,6 +11789,8 @@ impl FfiApp {
                                 } else {
                                     hydrate_backend_api_key(&actor_state, &backend)
                                 };
+                                let pinned_tls_public_key_fp =
+                                    pinned_tls_public_key_fp_for_backend(&actor_state, &backend.id);
                                 let semaphore = actor_state.router.get_semaphore(&backend.id);
                                 let known_limit =
                                     model_input_token_limit(&actor_state, &backend, &model);
@@ -10744,6 +11799,8 @@ impl FfiApp {
                                 let core_tx_clone = core_tx_for_thread.clone();
                                 let covered = plan.covered.clone();
                                 let covered_count = plan.covered_count as u64;
+                                let expected_covered_ids =
+                                    message_ids.into_iter().take(plan.covered_count).collect();
                                 let model_for_task = model.clone();
                                 let conv_id_for_task = conversation_id.clone();
 
@@ -10769,6 +11826,8 @@ impl FfiApp {
                                         llm::compact::CompletionTarget::Remote {
                                             backend: &backend_for_task,
                                             model: &model_for_task,
+                                            pinned_tls_public_key_fp: pinned_tls_public_key_fp
+                                                .as_deref(),
                                         }
                                     };
                                     let result = llm::compact::summarize_for_compaction(
@@ -10783,6 +11842,7 @@ impl FfiApp {
                                         llm::InternalEvent::ConversationCompactionComplete {
                                             conversation_id: conv_id_for_task,
                                             covered_count,
+                                            expected_covered_ids,
                                             retry_after,
                                             result,
                                         },
@@ -10797,7 +11857,9 @@ impl FfiApp {
                                 message_id,
                                 new_text,
                             } => {
-                                if reject_chat_action_while_attestation_pending(&mut actor_state) {
+                                if reject_chat_action_while_attestation_pending(&mut actor_state)
+                                    || reject_chat_action_while_turn_active(&mut actor_state)
+                                {
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
@@ -10840,7 +11902,7 @@ impl FfiApp {
                                         at,
                                     );
                                     // Delete the edited message itself
-                                    let _ = persistence::queries::delete_message(
+                                    let _ = persistence::queries::delete_message_with_image_cleanup(
                                         actor_state.db.as_ref().expect("db unlocked").conn(),
                                         &message_id,
                                     );
@@ -10992,6 +12054,13 @@ impl FfiApp {
                                     } else {
                                         // Clear any pending text attachment — one slot.
                                         drop_pending_attachment(&mut actor_state);
+                                        if actor_state
+                                            .pending_image_attachment
+                                            .as_ref()
+                                            .is_some_and(|image| image.file_path != file_path)
+                                        {
+                                            clear_pending_image_attachment(&mut actor_state);
+                                        }
                                         actor_state.pending_image_attachment =
                                             Some(PendingImageAttachment {
                                                 filename: filename.clone(),
@@ -11311,13 +12380,10 @@ impl FfiApp {
                                 };
                                 let current = actor_state.app_state.inference_status.clone();
                                 let resolved = {
-                                    let conn =
-                                        actor_state.db.as_ref().expect("db unlocked").conn();
+                                    let conn = actor_state.db.as_ref().expect("db unlocked").conn();
                                     // Remember what we leave so switching back restores it.
                                     match current.route {
-                                        InferenceRoute::Cloud
-                                            if !current.backend_id.is_empty() =>
-                                        {
+                                        InferenceRoute::Cloud if !current.backend_id.is_empty() => {
                                             let _ = persistence::queries::set_setting(
                                                 conn,
                                                 "last_cloud_backend_id",
@@ -11370,7 +12436,10 @@ impl FfiApp {
                                             core_tx_for_thread.clone(),
                                         );
                                     }
-                                    Ok(RouteTarget::Backend { backend_id, model_id }) => {
+                                    Ok(RouteTarget::Backend {
+                                        backend_id,
+                                        model_id,
+                                    }) => {
                                         if route == InferenceRoute::OnDevice
                                             && !actor_state.app_state.local_inference_enabled
                                         {
@@ -11388,11 +12457,7 @@ impl FfiApp {
                                             reconcile_local_model_backends(&mut actor_state);
                                         }
                                         let _ = persistence::queries::set_setting(
-                                            actor_state
-                                                .db
-                                                .as_ref()
-                                                .expect("db unlocked")
-                                                .conn(),
+                                            actor_state.db.as_ref().expect("db unlocked").conn(),
                                             "default_model_id",
                                             &model_id,
                                         );
@@ -11417,9 +12482,7 @@ impl FfiApp {
                                         if let Some(screen) =
                                             route_mode::blocker_setup_screen(&blocker)
                                         {
-                                            push_nav_history(
-                                                &mut actor_state.app_state.router,
-                                            );
+                                            push_nav_history(&mut actor_state.app_state.router);
                                             actor_state.app_state.router.current_screen = screen;
                                         }
                                     }
@@ -11471,6 +12534,25 @@ impl FfiApp {
                                     actor_state.app_state.local_models_error = Some(
                                         cap.blocked_reason().unwrap_or(reason.as_str()).to_string(),
                                     );
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
+
+                                // Pre-flight the download itself: the provider
+                                // reports fresh free storage, so a device that
+                                // cannot hold the model plus reserve fails here
+                                // instead of writing until the disk is full.
+                                if let Err(reason) =
+                                    ensure_local_model_download_storage(cap, &preset)
+                                {
+                                    log::warn!(
+                                        "[local-model] download rejected: available_storage={} required={} reason={:?}",
+                                        cap.available_storage_bytes,
+                                        preset.size_bytes.saturating_add(LOCAL_STORAGE_RESERVE_BYTES),
+                                        reason
+                                    );
+                                    actor_state.app_state.local_models_error = Some(reason);
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
@@ -11644,6 +12726,13 @@ impl FfiApp {
                                     );
                                     reload_backends(&mut actor_state);
                                     refresh_backend_summaries(&mut actor_state);
+                                    // Audit (BYOK overwrite): a ppq-ai key
+                                    // store must reclassify the account
+                                    // (ExternalKey when no credit id) so
+                                    // automatic provisioning is refused.
+                                    if backend_id == ppq::secret_store::API_KEY_KEY {
+                                        ppq_refresh_classification(&mut actor_state);
+                                    }
                                 }
                             }
 
@@ -11867,6 +12956,16 @@ impl FfiApp {
                                         );
                                     }
                                     refresh_backend_summaries(&mut actor_state);
+                                    // Audit (BYOK overwrite): a ppq-ai key
+                                    // store must reclassify the account
+                                    // (ExternalKey when no credit id) so
+                                    // automatic provisioning is refused.
+                                    if preset_id == ppq::secret_store::API_KEY_KEY
+                                        && !api_key.is_empty()
+                                        && !ppq_decoy_active(&actor_state)
+                                    {
+                                        ppq_refresh_classification(&mut actor_state);
+                                    }
                                     if !already {
                                         actor_state.app_state.toast =
                                             Some(format!("Enabled: {}", preset.name));
@@ -12830,15 +13929,15 @@ impl FfiApp {
                                             }
                                         }
                                         actor_state.db = None;
-                                        remove_file_if_exists(&format!(
+                                        let _ = remove_file_if_exists(&format!(
                                             "{}-wal",
                                             actor_state.db_path
                                         ));
-                                        remove_file_if_exists(&format!(
+                                        let _ = remove_file_if_exists(&format!(
                                             "{}-shm",
                                             actor_state.db_path
                                         ));
-                                        remove_file_if_exists(&format!(
+                                        let _ = remove_file_if_exists(&format!(
                                             "{}-journal",
                                             actor_state.db_path
                                         ));
@@ -12899,10 +13998,9 @@ impl FfiApp {
                                     // enable a dead unlock path.
                                     if enable_biometric && actor_state.app_state.biometric_available
                                     {
-                                        let staged = actor_state.keychain.store(
-                                            "mango".to_string(),
-                                            KEYCHAIN_DEK_KEY.to_string(),
-                                            (*dek_hex).clone(),
+                                        let staged = store_biometric_dek(
+                                            actor_state.keychain.as_ref(),
+                                            &dek_hex,
                                         );
                                         actor_state.app_state.biometric_login_enabled = staged;
                                         if !staged {
@@ -13231,10 +14329,9 @@ impl FfiApp {
                                 //    failed keychain write must not enable a dead unlock path.
                                 let mut dek_staged = false;
                                 if enable_biometric && actor_state.app_state.biometric_available {
-                                    dek_staged = actor_state.keychain.store(
-                                        "mango".to_string(),
-                                        KEYCHAIN_DEK_KEY.to_string(),
-                                        (*dek_hex).clone(),
+                                    dek_staged = store_biometric_dek(
+                                        actor_state.keychain.as_ref(),
+                                        &dek_hex,
                                     );
                                     if dek_staged {
                                         log::info!("[auth] SetupPin: DEK stored in platform keychain for biometric unlock");
@@ -13324,20 +14421,15 @@ impl FfiApp {
                                 // Keychain entries FIRST: without them the install could
                                 // never unlock (no user secret exists). Nothing is persisted
                                 // on failure.
-                                let dek_staged = actor_state.keychain.store(
-                                    "mango".to_string(),
-                                    KEYCHAIN_DEK_KEY.to_string(),
-                                    (*dek_hex).clone(),
-                                );
+                                let dek_staged =
+                                    store_bypass_dek(actor_state.keychain.as_ref(), &dek_hex);
                                 let secret_staged = actor_state.keychain.store(
                                     "mango".to_string(),
                                     KEYCHAIN_NO_LOCK_SECRET_KEY.to_string(),
                                     (*secret_hex).clone(),
                                 );
                                 if !dek_staged || !secret_staged {
-                                    actor_state
-                                        .keychain
-                                        .delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+                                    clear_bypass_dek(actor_state.keychain.as_ref());
                                     actor_state.keychain.delete(
                                         "mango".to_string(),
                                         KEYCHAIN_NO_LOCK_SECRET_KEY.to_string(),
@@ -13365,9 +14457,7 @@ impl FfiApp {
                                     log::error!(
                                         "[auth] SetupNoLock: write_pending_auth failed: {e}"
                                     );
-                                    actor_state
-                                        .keychain
-                                        .delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+                                    clear_bypass_dek(actor_state.keychain.as_ref());
                                     actor_state.keychain.delete(
                                         "mango".to_string(),
                                         KEYCHAIN_NO_LOCK_SECRET_KEY.to_string(),
@@ -13412,7 +14502,7 @@ impl FfiApp {
                                                 // clear must leave the resume path intact.
                                                 match actor_state.bootstrap.clear_pending_auth() {
                                                     Ok(()) => {
-                                                        actor_state.keychain.delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+                                                        clear_bypass_dek(actor_state.keychain.as_ref());
                                                         actor_state.keychain.delete("mango".to_string(), KEYCHAIN_NO_LOCK_SECRET_KEY.to_string());
                                                         if let Ok(db) = persistence::Database::open(&actor_state.db_path) {
                                                             actor_state.db = Some(db);
@@ -13638,21 +14728,20 @@ impl FfiApp {
                                 let dek_hex: Zeroizing<String> = Zeroizing::new(
                                     dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                 );
+                                // Leaving no-lock: the unauthenticated bypass copy must go.
+                                clear_bypass_dek(actor_state.keychain.as_ref());
                                 let mut biometric_on = false;
                                 if enable_biometric && actor_state.app_state.biometric_available {
-                                    biometric_on = actor_state.keychain.store(
-                                        "mango".to_string(),
-                                        KEYCHAIN_DEK_KEY.to_string(),
-                                        (*dek_hex).clone(),
+                                    biometric_on = store_biometric_dek(
+                                        actor_state.keychain.as_ref(),
+                                        &dek_hex,
                                     );
                                     if !biometric_on {
                                         log::warn!("[auth] EnablePinLock: keychain DEK store failed; biometric not enabled");
                                     }
                                 }
                                 if !biometric_on {
-                                    actor_state
-                                        .keychain
-                                        .delete("mango".to_string(), KEYCHAIN_DEK_KEY.to_string());
+                                    clear_biometric_dek(actor_state.keychain.as_ref());
                                 }
                                 if let Some(db) = actor_state.db.as_ref() {
                                     let _ = persistence::queries::set_setting(
@@ -13783,8 +14872,9 @@ impl FfiApp {
                                 // Verify the CURRENT main PIN by unwrapping against the live
                                 // DEK. A wrong PIN — and the duress PIN, which wraps nothing —
                                 // fails here as a plain "incorrect" (no duress wipe, no leak).
-                                if !pin_matches_primary_pin(&params, Some(dek), current_pin.trim())
-                                {
+                                // Audit fix: do NOT trim the current PIN — leading/trailing
+                                // whitespace is part of the credential (derive_kek is exact).
+                                if !pin_matches_primary_pin(&params, Some(dek), &current_pin) {
                                     fail(&mut actor_state, "Current PIN is incorrect.");
                                     continue;
                                 }
@@ -13796,7 +14886,7 @@ impl FfiApp {
                                     );
                                     continue;
                                 }
-                                if new_trimmed == current_pin.trim() {
+                                if new_trimmed == current_pin {
                                     fail(
                                         &mut actor_state,
                                         "New PIN must be different from the current PIN.",
@@ -13883,6 +14973,12 @@ impl FfiApp {
                                         }
                                     }
                                 }
+                                // New authenticated session: invalidate any
+                                // PIN/biometric work spawned under the old one.
+                                actor_state
+                                    .auth_generation
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                actor_state.bootstrap.clear_pin_backoff();
                                 actor_state.app_state.encryption_enabled =
                                     actor_state.db_path != ":memory:";
                                 load_post_unlock(
@@ -13899,6 +14995,30 @@ impl FfiApp {
                             }
 
                             AppAction::UnlockWithPin { pin } => {
+                                // Audit fix: one in-flight PIN attempt only —
+                                // each Argon2 job costs ~64 MiB; concurrent
+                                // submissions exhaust memory.
+                                if actor_state.pin_unlock_pending {
+                                    log::info!(
+                                        "[auth] UnlockWithPin ignored: attempt already in flight"
+                                    );
+                                    continue;
+                                }
+                                // Audit fix: persisted failed-attempt throttle.
+                                // Exponential backoff kicks in after 5 wrong
+                                // PINs (30s, doubling, capped at 5 minutes).
+                                let (_fail_count, backoff_until) =
+                                    actor_state.bootstrap.read_pin_backoff();
+                                let now_i64 = unix_time_secs() as i64;
+                                if backoff_until > now_i64 {
+                                    actor_state.app_state.toast = Some(format!(
+                                        "Too many failed attempts. Try again in {}s.",
+                                        backoff_until - now_i64
+                                    ));
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 // Read auth params from bootstrap DB.
                                 let params = match actor_state.bootstrap.read_auth_params() {
                                     Ok(Some(p)) => p,
@@ -13938,14 +15058,21 @@ impl FfiApp {
 
                                 let runtime = &actor_state.runtime;
                                 let tx = core_tx_for_thread.clone();
-                                let db_path = actor_state.db_path.clone();
-                                let data_dir = actor_state.data_dir.clone();
                                 let pin = Zeroizing::new(pin);
+                                // Audit fix: the continuation carries the auth
+                                // generation it was issued under — LockApp or a
+                                // wipe bumps it so stale results are dropped.
+                                let generation = actor_state
+                                    .auth_generation
+                                    .load(std::sync::atomic::Ordering::SeqCst);
+                                actor_state.pin_unlock_pending = true;
                                 actor_state.off_actor_work_pending += 1;
                                 runtime.spawn_blocking(move || {
-                                    let outcome =
-                                        run_pin_unlock_work(&db_path, &data_dir, &pin, &params);
-                                    let _ = tx.send(CoreMsg::PinUnlockContinued { outcome });
+                                    let outcome = run_pin_unlock_work(&pin, &params);
+                                    let _ = tx.send(CoreMsg::PinUnlockContinued {
+                                        outcome,
+                                        generation,
+                                    });
                                 });
                             }
 
@@ -13969,14 +15096,27 @@ impl FfiApp {
                                     continue;
                                 }
                                 // T-28-10: Clear sensitive state from AppState.
+                                // Audit fix: never save Screen::Locked as the
+                                // restore target — a repeated LockApp (cold
+                                // lock screen + auto-lock) would otherwise
+                                // overwrite the real destination and unlock
+                                // into an open DB behind a lock screen.
                                 let current_screen =
                                     actor_state.app_state.router.current_screen.clone();
-                                actor_state.pre_lock_screen = Some(current_screen);
-                                // Finding 2: PPQ tasks die with the locked
-                                // session — their late replies are dropped,
-                                // and actor-internal invoice/provisioning
-                                // state stays hidden until re-unlock reloads
-                                // it from the encrypted DB.
+                                if !matches!(current_screen, Screen::Locked) {
+                                    actor_state.pre_lock_screen = Some(current_screen);
+                                }
+                                // Auth boundary: stale PIN/biometric results
+                                // are dropped; a deferred attested send and
+                                // any pending plaintext attachment/image die
+                                // with the locked session.
+                                actor_state
+                                    .auth_generation
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                actor_state.attestation_requests.borrow_mut().clear();
+                                cancel_pending_attested_send(&mut actor_state, String::new());
+                                clear_pending_image_attachment(&mut actor_state);
+                                drop_pending_attachment(&mut actor_state);
                                 ppq_invalidate_tasks(&mut actor_state);
                                 actor_state.ppq_pending = None;
                                 actor_state.ppq_provisioning = false;
@@ -14023,6 +15163,18 @@ impl FfiApp {
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
                                 }
+                                // One in-flight biometric prompt only; the
+                                // result carries the auth generation it was
+                                // issued under so a lock/wipe in between
+                                // invalidates it (audit fix).
+                                if actor_state.biometric_unlock_pending {
+                                    log::info!("[auth] AttemptBiometricUnlock ignored: prompt already in flight");
+                                    continue;
+                                }
+                                actor_state.biometric_unlock_pending = true;
+                                let generation = actor_state
+                                    .auth_generation
+                                    .load(std::sync::atomic::Ordering::SeqCst);
                                 // Dispatch biometric authentication to a blocking thread so the
                                 // actor loop remains responsive during the platform prompt (CR-03).
                                 // The result is delivered back as InternalEvent::BiometricResult.
@@ -14031,23 +15183,16 @@ impl FfiApp {
                                 actor_state.runtime.spawn_blocking(move || {
                                     let success = provider.authenticate("Unlock Mango".to_string());
                                     let _ = tx.send(CoreMsg::InternalEvent(Box::new(
-                                        llm::InternalEvent::BiometricResult { success },
+                                        llm::InternalEvent::BiometricResult {
+                                            success,
+                                            generation,
+                                        },
                                     )));
                                 });
                                 // Actor loop continues processing messages immediately.
                             }
 
                             AppAction::SetBiometricLoginEnabled { enabled } => {
-                                // Disabling in no-lock mode would evict the keychain DEK
-                                // and strand the install on an unlockable lock screen.
-                                if actor_state.app_state.no_lock_mode && !enabled {
-                                    actor_state.app_state.toast = Some(
-                                        "Biometric login is required for no-lock mode. Set a PIN first.".to_string(),
-                                    );
-                                    actor_state.app_state.rev += 1;
-                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                                    continue;
-                                }
                                 if enabled {
                                     if !actor_state.app_state.biometric_available {
                                         actor_state.app_state.toast = Some(
@@ -14069,17 +15214,21 @@ impl FfiApp {
                                         continue;
                                     };
 
-                                    let dek_hex: String =
-                                        dek.iter().map(|b| format!("{:02x}", b)).collect();
-                                    actor_state.keychain.store(
-                                        "mango".to_string(),
-                                        KEYCHAIN_DEK_KEY.to_string(),
-                                        dek_hex,
+                                    let dek_hex: Zeroizing<String> = Zeroizing::new(
+                                        dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                     );
+                                    if !store_biometric_dek(actor_state.keychain.as_ref(), &dek_hex)
+                                    {
+                                        actor_state.app_state.toast = Some(
+                                            "Could not enable biometric login: secure storage unavailable."
+                                                .to_string(),
+                                        );
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
                                 } else {
-                                    actor_state
-                                        .keychain
-                                        .delete("mango".to_string(), "dek".to_string());
+                                    clear_biometric_dek(actor_state.keychain.as_ref());
                                 }
 
                                 actor_state.app_state.biometric_login_enabled = enabled;
@@ -14108,19 +15257,14 @@ impl FfiApp {
                                     );
                                 }
 
-                                // Never mode reuses the biometric DEK-cache path, but the
-                                // cold-launch bypass flag must only be set while the timeout is
-                                // Never. Returning to any finite timeout restores the lock screen
-                                // on next process start, even when biometric login remains enabled.
+                                // The bypass copy is unauthenticated, so it exists only while
+                                // the timeout is Never; the biometric slot is independent.
                                 if seconds == -1 {
                                     if let Some(dek) = actor_state.dek.as_ref() {
-                                        let dek_hex: String =
-                                            dek.iter().map(|b| format!("{:02x}", b)).collect();
-                                        actor_state.keychain.store(
-                                            "mango".to_string(),
-                                            KEYCHAIN_DEK_KEY.to_string(),
-                                            dek_hex,
+                                        let dek_hex: Zeroizing<String> = Zeroizing::new(
+                                            dek.iter().map(|b| format!("{:02x}", b)).collect(),
                                         );
+                                        store_bypass_dek(actor_state.keychain.as_ref(), &dek_hex);
                                         let _ =
                                             actor_state.bootstrap.write_cold_launch_bypass(true);
                                         log::info!("[auth] SetLockTimeout(Never): DEK cached in keychain for cold-launch bypass");
@@ -14133,14 +15277,8 @@ impl FfiApp {
                                     actor_state.app_state.rev += 1;
                                 } else {
                                     let _ = actor_state.bootstrap.write_cold_launch_bypass(false);
-                                    if !actor_state.app_state.biometric_login_enabled {
-                                        actor_state
-                                            .keychain
-                                            .delete("mango".to_string(), "dek".to_string());
-                                        log::info!("[auth] SetLockTimeout(finite) + biometric off: DEK evicted from keychain");
-                                    } else {
-                                        log::info!("[auth] SetLockTimeout(finite): cold-launch bypass disabled; biometric cache retained");
-                                    }
+                                    clear_bypass_dek(actor_state.keychain.as_ref());
+                                    log::info!("[auth] SetLockTimeout(finite): bypass DEK evicted from keychain");
                                 }
                             }
 
@@ -14207,6 +15345,18 @@ impl FfiApp {
                                 removed_paths,
                                 is_final_batch,
                             } => {
+                                // A removed source must not be resurrected by a queued batch.
+                                if !actor_state
+                                    .app_state
+                                    .directory_sources
+                                    .iter()
+                                    .any(|s| s.id == source_id)
+                                {
+                                    log::info!(
+                                        "[dir] dropping batch for removed source {source_id}"
+                                    );
+                                    continue;
+                                }
                                 // Enforce 50-file ceiling per D-25 (T-32-DoS1).
                                 if files.len() > 50 {
                                     actor_state.app_state.last_error = Some(format!(
@@ -14225,6 +15375,7 @@ impl FfiApp {
                                             document_name: "Syncing directory".into(),
                                             stage: "syncing".into(),
                                         });
+
                                     actor_state.app_state.rev += 1;
                                     emit(&actor_state.app_state, &shared_for_core, &update_tx);
 
@@ -14357,6 +15508,21 @@ impl FfiApp {
                                             ingestion_date: now_ts,
                                             chunk_count: 0,
                                         };
+                                        let transaction = match actor_state
+                                            .db
+                                            .as_ref()
+                                            .expect("db unlocked")
+                                            .conn()
+                                            .unchecked_transaction()
+                                        {
+                                            Ok(tx) => tx,
+                                            Err(e) => {
+                                                batch_errors.push(format!(
+                                                    "begin ingestion transaction failed: {e}"
+                                                ));
+                                                continue;
+                                            }
+                                        };
                                         if let Err(e) = persistence::queries::insert_document(
                                             actor_state.db.as_ref().expect("db unlocked").conn(),
                                             &doc_row,
@@ -14460,15 +15626,56 @@ impl FfiApp {
                                         }
 
                                         // Track fingerprint in directory_files.
-                                        let _ = persistence::queries::upsert_directory_file(
+                                        // On failure roll back this file's new
+                                        // document/chunks/vectors (audit fix):
+                                        // an untracked row would look synced
+                                        // but never be picked up again.
+                                        if let Err(e) = persistence::queries::upsert_directory_file(
                                             actor_state.db.as_ref().expect("db unlocked").conn(),
                                             &source_id,
                                             &entry.relative_path,
                                             entry.mtime_secs,
                                             entry.size_bytes,
                                             Some(&document_id),
-                                        );
+                                        ) {
+                                            let rollback_rowids =
+                                                persistence::queries::delete_chunks_for_document(
+                                                    actor_state
+                                                        .db
+                                                        .as_ref()
+                                                        .expect("db unlocked")
+                                                        .conn(),
+                                                    &document_id,
+                                                )
+                                                .unwrap_or_default();
+                                            for rid in &rollback_rowids {
+                                                let _ =
+                                                    actor_state.vector_index.remove(*rid as u64);
+                                            }
+                                            let _ = persistence::queries::delete_document(
+                                                actor_state
+                                                    .db
+                                                    .as_ref()
+                                                    .expect("db unlocked")
+                                                    .conn(),
+                                                &document_id,
+                                            );
+                                            batch_errors.push(format!(
+                                                "fingerprint upsert failed for {}: {e}",
+                                                entry.relative_path
+                                            ));
+                                            continue;
+                                        }
 
+                                        if let Err(e) = transaction.commit() {
+                                            for rid in &rowids {
+                                                let _ =
+                                                    actor_state.vector_index.remove(*rid as u64);
+                                            }
+                                            batch_errors
+                                                .push(format!("commit ingestion failed: {e}"));
+                                            continue;
+                                        }
                                         // Push DocumentSummary into AppState.
                                         actor_state.app_state.documents.push(DocumentSummary {
                                             id: document_id.clone(),
@@ -14481,8 +15688,12 @@ impl FfiApp {
                                     }
 
                                     // Flush VectorIndex after the batch (D-27, T-32-DoS1).
-                                    let _ =
-                                        actor_state.vector_index.save(actor_state.dek.as_deref());
+                                    if let Err(e) =
+                                        actor_state.vector_index.save(actor_state.dek.as_deref())
+                                    {
+                                        log::warn!("[dir] index save failed: {e}");
+                                        batch_errors.push(format!("search index save failed: {e}"));
+                                    }
 
                                     // Update source bookkeeping.
                                     if is_final_batch {
@@ -14640,6 +15851,7 @@ impl FfiApp {
                         // text in the decoy state. One guard, no queue.
                         let drop_late_result = match &*event {
                             llm::InternalEvent::StreamChunk { .. }
+                            | llm::InternalEvent::TurnScoped { .. }
                             | llm::InternalEvent::StreamDone
                             // StreamError's handler persists backend health
                             // (expect("db unlocked")) — a failover-class error
@@ -14650,15 +15862,20 @@ impl FfiApp {
                             | llm::InternalEvent::MemoryExtractionComplete { .. }
                             | llm::InternalEvent::ConversationCompactionComplete { .. }
                             | llm::InternalEvent::ChatToolCallsReady { .. }
+                            | llm::InternalEvent::ChatToolResults { .. }
+                            | llm::InternalEvent::ContextvmAutoDiscoverForTurn { .. }
                             | llm::InternalEvent::AgentStepComplete { .. }
                             | llm::InternalEvent::HealthCheckResult { .. }
-                            | llm::InternalEvent::AttestationResult(_) => {
+                            | llm::InternalEvent::AttestationResult(..)
+                            | llm::InternalEvent::EmbeddingComplete { .. }
+                            | llm::InternalEvent::BraveApiKeyValidationResult { .. } => {
                                 actor_state.db.is_none()
                                     || (ppq_decoy_active(&actor_state)
                                         && match &*event {
                                             llm::InternalEvent::HealthCheckResult { .. }
-                                            | llm::InternalEvent::AttestationResult(_) => true,
+                                            | llm::InternalEvent::AttestationResult(..) => true,
                                             llm::InternalEvent::StreamChunk { .. }
+                                            | llm::InternalEvent::TurnScoped { .. }
                                             | llm::InternalEvent::StreamDone => {
                                                 actor_state
                                                     .current_streaming_conversation_id
@@ -14680,7 +15897,37 @@ impl FfiApp {
                             );
                             continue;
                         }
-                        match *event {
+
+                        let event = match *event {
+                            llm::InternalEvent::TurnScoped { turn_id, event }
+                                if turn_id != 0
+                                    && turn_id == actor_state.current_turn_id
+                                    && actor_state.current_streaming_conversation_id.is_some() =>
+                            {
+                                match event {
+                                    llm::streaming::ScopedStreamEvent::Chunk { token } => {
+                                        llm::InternalEvent::StreamChunk { token }
+                                    }
+                                    llm::streaming::ScopedStreamEvent::Done => {
+                                        llm::InternalEvent::StreamDone
+                                    }
+                                    llm::streaming::ScopedStreamEvent::Error { error } => {
+                                        llm::InternalEvent::StreamError { error }
+                                    }
+                                    llm::streaming::ScopedStreamEvent::Cancelled => {
+                                        llm::InternalEvent::StreamCancelled
+                                    }
+                                }
+                            }
+                            llm::InternalEvent::TurnScoped { .. }
+                            | llm::InternalEvent::StreamChunk { .. }
+                            | llm::InternalEvent::StreamDone
+                            | llm::InternalEvent::StreamError { .. }
+                            | llm::InternalEvent::StreamCancelled => continue,
+                            event => event,
+                        };
+                        match event {
+                            llm::InternalEvent::TurnScoped { .. } => unreachable!(),
                             llm::InternalEvent::StreamChunk { token } => {
                                 let now = std::time::Instant::now();
                                 // Coalesce token emissions (~30 ms): each FullState send
@@ -14694,14 +15941,6 @@ impl FfiApp {
                                     if emit_due {
                                         sync_visible_streaming_text(&mut actor_state);
                                     }
-                                } else {
-                                    // Tests and legacy internal producers can inject stream
-                                    // events without first registering an owning conversation.
-                                    let text = actor_state
-                                        .app_state
-                                        .streaming_text
-                                        .get_or_insert_with(String::new);
-                                    text.push_str(&token);
                                 }
                                 if emit_due {
                                     actor_state.last_stream_emit = Some(now);
@@ -14730,19 +15969,11 @@ impl FfiApp {
                                 actor_state.last_stream_emit = None;
                                 let stream_conv_id =
                                     actor_state.current_streaming_conversation_id.take();
-                                let content = if stream_conv_id.is_some() {
-                                    std::mem::take(&mut actor_state.current_streaming_text)
-                                } else {
-                                    actor_state
-                                        .app_state
-                                        .streaming_text
-                                        .take()
-                                        .unwrap_or_default()
-                                };
+                                let content =
+                                    std::mem::take(&mut actor_state.current_streaming_text);
+                                end_turn(&mut actor_state);
 
-                                let target_conv_id = stream_conv_id.or_else(|| {
-                                    actor_state.app_state.current_conversation_id.clone()
-                                });
+                                let target_conv_id = stream_conv_id;
                                 let completed_conv_id = target_conv_id.clone();
 
                                 // A cleanly finished stream IS the inline-attestation proof
@@ -14956,6 +16187,11 @@ impl FfiApp {
                                                             .cloned()
                                                             .unwrap_or_default()
                                                     });
+                                                let extraction_pin =
+                                                    pinned_tls_public_key_fp_for_backend(
+                                                        &actor_state,
+                                                        &backend.id,
+                                                    );
                                                 let core_tx_clone = core_tx_for_thread.clone();
 
                                                 actor_state.runtime.spawn(async move {
@@ -14979,6 +16215,7 @@ impl FfiApp {
                                                             &backend,
                                                             &messages_snapshot,
                                                             &model,
+                                                            extraction_pin.as_deref(),
                                                         )
                                                         .await
                                                         .unwrap_or_else(|e| {
@@ -15250,7 +16487,11 @@ impl FfiApp {
                                                     &next_backend,
                                                     &next_model,
                                                     chat_messages,
-                                                    core_tx_for_thread.clone(),
+                                                    turn_scope_tx(
+                                                        &actor_state.runtime,
+                                                        core_tx_for_thread.clone(),
+                                                        actor_state.current_turn_id,
+                                                    ),
                                                     actor_state
                                                         .router
                                                         .get_semaphore(&next_backend.id),
@@ -15265,7 +16506,11 @@ impl FfiApp {
                                                         &actor_state,
                                                         &next_backend.id,
                                                     ),
-                                                    core_tx_for_thread.clone(),
+                                                    turn_scope_tx(
+                                                        &actor_state.runtime,
+                                                        core_tx_for_thread.clone(),
+                                                        actor_state.current_turn_id,
+                                                    ),
                                                     actor_state
                                                         .router
                                                         .get_semaphore(&next_backend.id),
@@ -15349,6 +16594,7 @@ impl FfiApp {
                                 actor_state.current_streaming_text.clear();
                                 actor_state.current_streaming_turn_not_retryable = false;
                                 actor_state.failover_exclude.clear();
+                                end_turn(&mut actor_state);
                                 refresh_backend_summaries(&mut actor_state);
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
@@ -15375,11 +16621,12 @@ impl FfiApp {
                                 actor_state.current_streaming_text.clear();
                                 actor_state.current_streaming_turn_not_retryable = false;
                                 actor_state.failover_exclude.clear();
+                                end_turn(&mut actor_state);
                                 refresh_backend_summaries(&mut actor_state);
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
-                            llm::InternalEvent::AttestationResult(att_event) => {
+                            llm::InternalEvent::AttestationResult(att_event, request_id) => {
                                 let now_secs = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_secs())
@@ -15394,6 +16641,43 @@ impl FfiApp {
                                     attestation::map_event_to_record_and_status(
                                         att_event, now_secs,
                                     );
+
+                                // Request identity (audit fix): only apply a
+                                // result that is the latest tracked request for
+                                // a backend whose base_url/api-key fingerprint
+                                // still matches what the request was issued
+                                // for. Backend removal, reload, or a session
+                                // boundary (lock/unlock/wipe) clears the map
+                                // and thus invalidates in-flight results.
+                                if request_id != 0 {
+                                    let current = actor_state
+                                        .attestation_requests
+                                        .borrow()
+                                        .get(&backend_id)
+                                        .cloned();
+                                    let backend_now =
+                                        actor_state.backends.iter().find(|b| b.id == backend_id);
+                                    let valid = matches!(current.as_ref(), Some(req) if req.request_id == request_id)
+                                        && matches!(backend_now, Some(b) if {
+                                            let req = current.as_ref().expect("request checked");
+                                            b.base_url == req.base_url
+                                                && b.api_key == req.api_key
+                                        });
+                                    if !valid {
+                                        log::info!(
+                                            target: "attestation",
+                                            "[attestation] dropping stale result for backend={} (request_id={})",
+                                            backend_id,
+                                            request_id
+                                        );
+                                        continue;
+                                    }
+                                    actor_state
+                                        .attestation_requests
+                                        .borrow_mut()
+                                        .remove(&backend_id);
+                                }
+
                                 let status_is_verified =
                                     matches!(status, AttestationStatus::Verified { .. });
                                 let failure_reason = match &status {
@@ -15525,6 +16809,22 @@ impl FfiApp {
                                     if !failed_is_transient {
                                         actor_state.attested_tls_public_keys.remove(&backend_id);
                                         actor_state.attestation_expires_at.remove(&backend_id);
+                                        // Genuine verification failure: purge
+                                        // the persisted row too — otherwise a
+                                        // restart/unlock would resurrect the
+                                        // stale Verified status (audit fix).
+                                        if let Some(db) = actor_state.db.as_ref() {
+                                            let cache = attestation::cache::AttestationCache::new(
+                                                db.conn(),
+                                            );
+                                            if let Err(e) = cache.delete_for_backend(&backend_id) {
+                                                log::warn!(
+                                                    target: "attestation",
+                                                    "[attestation] failed to purge cache for backend={}: {}",
+                                                    backend_id, e
+                                                );
+                                            }
+                                        }
                                     }
                                     // Failed attestation: also clear attestation_stage for onboarding
                                     if matches!(
@@ -15719,10 +17019,43 @@ impl FfiApp {
                             }
 
                             llm::InternalEvent::EmbeddingComplete {
-                                document_id: _,
+                                document_id,
                                 chunk_rowids,
                                 embeddings,
                             } => {
+                                // Late-result guard (audit fix): apply the
+                                // vectors only when the document still exists
+                                // and the chunk rows still belong to it — a
+                                // delete/re-ingest in between would otherwise
+                                // index vectors under recycled rowids.
+                                let still_valid = actor_state.db.as_ref().is_some_and(|db| {
+                                    let doc_exists = db
+                                        .conn()
+                                        .query_row(
+                                            "SELECT 1 FROM documents WHERE id = ?1",
+                                            rusqlite::params![document_id],
+                                            |_| Ok(()),
+                                        )
+                                        .is_ok();
+                                    doc_exists && chunk_rowids.iter().all(|rowid| {
+                                        db.conn()
+                                            .query_row(
+                                                "SELECT 1 FROM chunks WHERE id = ?1 AND document_id = ?2",
+                                                rusqlite::params![rowid, document_id],
+                                                |_| Ok(()),
+                                            )
+                                            .is_ok()
+                                    })
+                                });
+                                if !still_valid {
+                                    log::info!(
+                                        "[rag] dropping EmbeddingComplete for gone/rewritten document {document_id}"
+                                    );
+                                    actor_state.app_state.ingestion_progress = None;
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    continue;
+                                }
                                 // Add each chunk's embedding to the HNSW index.
                                 // Embeddings are a flat Vec<f32> of length chunk_rowids.len() * EMBEDDING_DIM.
                                 let dim = embedding::EMBEDDING_DIM;
@@ -15735,15 +17068,26 @@ impl FfiApp {
                                             .add(*rowid as u64, &embeddings[start..end]);
                                     }
                                 }
-                                if !chunk_rowids.is_empty() {
-                                    let _ =
-                                        actor_state.vector_index.save(actor_state.dek.as_deref());
-                                }
+                                // A failed save means the vectors vanish on the
+                                // next unlock while the chunks stay "indexed" —
+                                // surface it instead of claiming success.
+                                let save_failed = !chunk_rowids.is_empty()
+                                    && actor_state
+                                        .vector_index
+                                        .save(actor_state.dek.as_deref())
+                                        .map_err(|e| {
+                                            log::warn!("[rag] index save failed: {e}");
+                                        })
+                                        .is_err();
 
-                                // Clear ingestion progress and show success toast
+                                // Clear ingestion progress and show result toast
                                 actor_state.app_state.ingestion_progress = None;
-                                actor_state.app_state.toast =
-                                    Some("Document indexed successfully".into());
+                                actor_state.app_state.toast = Some(if save_failed {
+                                    "Indexed in memory only — search index could not be saved."
+                                        .into()
+                                } else {
+                                    "Document indexed successfully".into()
+                                });
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
@@ -15767,10 +17111,48 @@ impl FfiApp {
                                 conversation_id,
                                 memories,
                             } => {
+                                // Drop results whose source conversation no
+                                // longer exists in THIS database — a late
+                                // extraction finishing after a wipe/decoy swap
+                                // must not restore private facts (audit fix).
+                                let conv_exists = actor_state
+                                    .db
+                                    .as_ref()
+                                    .map(|db| {
+                                        db.conn()
+                                            .query_row(
+                                                "SELECT 1 FROM conversations WHERE id = ?1",
+                                                rusqlite::params![conversation_id],
+                                                |_| Ok(()),
+                                            )
+                                            .is_ok()
+                                    })
+                                    .unwrap_or(false);
+                                if !conv_exists {
+                                    log::info!(
+                                        "[memory] dropping extraction for deleted conversation {conversation_id}"
+                                    );
+                                    continue;
+                                }
+                                // Dedupe: normalized content that already
+                                // exists is skipped before embedding.
+                                let mut existing: std::collections::HashSet<String> = actor_state
+                                    .db
+                                    .as_ref()
+                                    .and_then(|db| {
+                                        persistence::queries::list_memories(db.conn()).ok()
+                                    })
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(|m| normalize_memory_text(&m.content))
+                                    .collect();
                                 if !memories.is_empty() {
                                     let now = now_secs();
                                     let mut added_count = 0u32;
                                     for content in &memories {
+                                        if !existing.insert(normalize_memory_text(content)) {
+                                            continue;
+                                        }
                                         let id = new_uuid();
                                         let usearch_key = uuid::Uuid::new_v4().as_u128() as i64;
 
@@ -15829,10 +17211,46 @@ impl FfiApp {
                             llm::InternalEvent::ConversationCompactionComplete {
                                 conversation_id,
                                 covered_count,
+                                expected_covered_ids,
                                 retry_after,
                                 result,
                             } => {
-                                actor_state.app_state.busy_state = BusyState::Idle;
+                                let is_visible =
+                                    actor_state.app_state.current_conversation_id.as_deref()
+                                        == Some(conversation_id.as_str());
+                                let prefix_matches = actor_state
+                                    .db
+                                    .as_ref()
+                                    .and_then(|db| {
+                                        persistence::queries::list_messages(
+                                            db.conn(),
+                                            &conversation_id,
+                                        )
+                                        .ok()
+                                    })
+                                    .is_some_and(|rows| {
+                                        expected_covered_ids.len() as u64 == covered_count
+                                            && rows
+                                                .iter()
+                                                .take(covered_count as usize)
+                                                .map(|row| &row.id)
+                                                .eq(expected_covered_ids.iter())
+                                    });
+                                if !prefix_matches {
+                                    if is_visible
+                                        && matches!(
+                                            &actor_state.app_state.busy_state,
+                                            BusyState::Loading { message } if message == "Compacting chat…"
+                                        )
+                                    {
+                                        actor_state.app_state.busy_state = BusyState::Idle;
+                                        actor_state.app_state.toast =
+                                            Some("Chat changed; compact again.".to_string());
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                    }
+                                    continue;
+                                }
                                 match result {
                                     Ok(summary) => {
                                         if let Some(db) = actor_state.db.as_ref() {
@@ -15843,6 +17261,15 @@ impl FfiApp {
                                                     Some(&summary),
                                                     covered_count as i64,
                                                 );
+                                        }
+                                        if !is_visible {
+                                            continue;
+                                        }
+                                        if matches!(
+                                            &actor_state.app_state.busy_state,
+                                            BusyState::Loading { message } if message == "Compacting chat…"
+                                        ) {
+                                            actor_state.app_state.busy_state = BusyState::Idle;
                                         }
                                         refresh_compaction_state(
                                             &mut actor_state,
@@ -15866,12 +17293,25 @@ impl FfiApp {
                                             // Re-send the pending turn with the
                                             // compacted prompt (single retry
                                             // semantics live in the action handler).
-                                            let _ = core_tx_for_thread
-                                                .send(CoreMsg::Action(AppAction::RetryLastMessage));
+                                            let _ = core_tx_for_thread.send(
+                                                CoreMsg::ConversationAction {
+                                                    conversation_id,
+                                                    action: AppAction::RetryLastMessage,
+                                                },
+                                            );
                                         }
                                         continue;
                                     }
                                     Err(message) => {
+                                        if !is_visible {
+                                            continue;
+                                        }
+                                        if matches!(
+                                            &actor_state.app_state.busy_state,
+                                            BusyState::Loading { message } if message == "Compacting chat…"
+                                        ) {
+                                            actor_state.app_state.busy_state = BusyState::Idle;
+                                        }
                                         actor_state.app_state.last_error = Some(message);
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
@@ -15881,27 +17321,27 @@ impl FfiApp {
                             }
 
                             llm::InternalEvent::ChatToolCallsReady {
+                                turn_id,
                                 conv_id,
                                 tool_calls,
                                 pre_tool_messages,
                                 backend_id,
                                 model,
+                                allowed_tools,
                             } => {
-                                // RACE GUARD: if user switched conversations during the async tool
-                                // detection round, drop the stale event.
-                                if actor_state.app_state.current_conversation_id.as_deref()
-                                    != Some(&conv_id)
+                                // TURN GUARD: the detection round must still be
+                                // the actor's current turn in its owning
+                                // conversation — stale results (retry, cancel,
+                                // or a later turn) never mutate stream state.
+                                if turn_id != actor_state.current_turn_id
+                                    || actor_state.current_streaming_conversation_id.as_deref()
+                                        != Some(conv_id.as_str())
                                 {
                                     log::warn!(
-                                        "ChatToolCallsReady for conv {} but current is {:?}, dropping",
-                                        conv_id, actor_state.app_state.current_conversation_id
+                                        target: "actor",
+                                        "[actor] dropping stale tool round result turn={} conv={}",
+                                        turn_id, conv_id
                                     );
-                                    actor_state.app_state.busy_state = BusyState::Idle;
-                                    actor_state.current_streaming_conversation_id = None;
-                                    actor_state.current_streaming_text.clear();
-                                    sync_visible_streaming_text(&mut actor_state);
-                                    actor_state.app_state.rev += 1;
-                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                     continue;
                                 }
 
@@ -15912,9 +17352,6 @@ impl FfiApp {
                                     ChatCompletionRequestToolMessageArgs,
                                 };
 
-                                // Dispatch tools SYNCHRONOUSLY on actor thread.
-                                // dispatch_tools uses runtime.block_on() for async network calls,
-                                // which would panic if called from inside a Tokio task.
                                 let brave_api_key = persistence::queries::get_setting(
                                     actor_state.db.as_ref().expect("db unlocked").conn(),
                                     "brave_api_key",
@@ -15922,58 +17359,56 @@ impl FfiApp {
                                 .unwrap_or(None)
                                 .unwrap_or_default();
 
-                                // Phase 35: route remote (contextvm) tool calls through
-                                // the dispatch fallback in agent::dispatch_tools.
-                                let tool_results = agent::dispatch_tools(
-                                    &tool_calls,
-                                    actor_state.db.as_ref().expect("db unlocked").conn(),
-                                    &actor_state.vector_index,
-                                    actor_state.embedding_provider.as_ref(),
-                                    &actor_state.runtime,
-                                    &actor_state.data_dir,
-                                    &brave_api_key,
-                                    &actor_state.current_conv_contextvm_tools,
-                                    &actor_state.contextvm_secret_key,
-                                );
-
-                                // Build full message history: original messages + assistant
-                                // tool_calls turn + tool result messages.
-                                let mut messages = pre_tool_messages;
-
-                                // Wrap tool calls in ChatCompletionMessageToolCalls::Function
-                                // as required by the assistant message builder.
-                                let assistant_tool_calls: Vec<ChatCompletionMessageToolCalls> =
-                                    tool_calls
-                                        .iter()
-                                        .map(|c| {
-                                            ChatCompletionMessageToolCalls::Function(c.clone())
-                                        })
-                                        .collect();
-
-                                // Append assistant message with the tool_calls field set.
-                                if let Ok(assistant_msg) =
-                                    ChatCompletionRequestAssistantMessageArgs::default()
-                                        .tool_calls(assistant_tool_calls)
-                                        .build()
-                                        .map(ChatCompletionRequestMessage::from)
-                                {
-                                    messages.push(assistant_msg);
-                                }
-
-                                // Append one tool-result message per dispatched call.
-                                for (tool_call_id, result_text) in &tool_results {
-                                    if let Ok(tool_msg) =
-                                        ChatCompletionRequestToolMessageArgs::default()
-                                            .tool_call_id(tool_call_id.as_str())
-                                            .content(result_text.as_str())
-                                            .build()
-                                            .map(ChatCompletionRequestMessage::from)
-                                    {
-                                        messages.push(tool_msg);
+                                // Only tools the model was actually offered may run:
+                                // hallucinated/unadvertised names get an error
+                                // result (never a dispatch). Network-bound calls
+                                // are collected for the off-actor dispatch task.
+                                let mut results_by_id: HashMap<String, String> = HashMap::new();
+                                let mut local_calls: Vec<agent::ChatCompletionMessageToolCall> =
+                                    Vec::new();
+                                let mut network_calls: Vec<agent::ChatCompletionMessageToolCall> =
+                                    Vec::new();
+                                for call in &tool_calls {
+                                    let name = call.function.name.as_str();
+                                    if !allowed_tools.iter().any(|n| n == name) {
+                                        results_by_id.insert(
+                                            call.id.clone(),
+                                            format!(
+                                                "Error: tool '{}' was not offered this turn",
+                                                name
+                                            ),
+                                        );
+                                        continue;
+                                    }
+                                    let is_network = name == "web_search"
+                                        || name == "fetch_url"
+                                        || actor_state
+                                            .current_conv_contextvm_tools
+                                            .contains_key(name);
+                                    if is_network {
+                                        network_calls.push(call.clone());
+                                    } else {
+                                        local_calls.push(call.clone());
                                     }
                                 }
 
-                                // Look up the backend for the streaming follow-up.
+                                // DB/index-dependent tools stay on the actor thread.
+                                if !local_calls.is_empty() {
+                                    let local_results = agent::dispatch_tools(
+                                        &local_calls,
+                                        actor_state.db.as_ref().expect("db unlocked").conn(),
+                                        &actor_state.vector_index,
+                                        actor_state.embedding_provider.as_ref(),
+                                        &actor_state.runtime,
+                                        &actor_state.data_dir,
+                                        &brave_api_key,
+                                        &actor_state.current_conv_contextvm_tools,
+                                        &actor_state.contextvm_secret_key,
+                                    );
+                                    results_by_id.extend(local_results);
+                                }
+
+                                // Look up + hydrate the backend for the streaming follow-up.
                                 let backend = actor_state
                                     .backends
                                     .iter()
@@ -15985,13 +17420,12 @@ impl FfiApp {
                                         actor_state.app_state.busy_state = BusyState::Idle;
                                         actor_state.app_state.last_error =
                                             Some("Backend not found for tool follow-up".into());
+                                        end_turn(&mut actor_state);
                                         actor_state.app_state.rev += 1;
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
                                     }
                                 };
-
-                                // Resolve API key (keychain or inline).
                                 let api_key = if backend.api_key.is_empty() {
                                     load_backend_api_key(&actor_state, &backend_id)
                                         .unwrap_or_default()
@@ -16003,12 +17437,139 @@ impl FfiApp {
                                     ..backend.clone()
                                 };
 
-                                // Transition to streaming state.
+                                if !network_calls.is_empty() {
+                                    // Network-bound execution runs off the
+                                    // actor thread in a cancellable task;
+                                    // ChatToolResults delivers the merged
+                                    // results tagged with this turn.
+                                    let cancel = tokio_util::sync::CancellationToken::new();
+                                    actor_state.active_tool_round_token = Some(cancel.clone());
+                                    let contextvm_map =
+                                        actor_state.current_conv_contextvm_tools.clone();
+                                    let secret_key = actor_state.contextvm_secret_key.clone();
+                                    let core_tx_clone = core_tx_for_thread.clone();
+                                    let conv_id_clone = conv_id.clone();
+                                    actor_state.runtime.spawn({
+                                        let cancel = cancel.clone();
+                                        async move {
+                                            for call in &network_calls {
+                                                if cancel.is_cancelled() {
+                                                    break;
+                                                }
+                                                let name = call.function.name.as_str();
+                                                let args_str = call.function.arguments.as_str();
+                                                let result = tokio::select! {
+                                                    result = async { match name {
+                                                    "web_search" => {
+                                                        agent::tools::dispatch_web_search_async(
+                                                            args_str,
+                                                            &brave_api_key,
+                                                        )
+                                                        .await
+                                                    }
+                                                    "fetch_url" => {
+                                                        agent::tools::dispatch_fetch_url_async(
+                                                            args_str,
+                                                        )
+                                                        .await
+                                                    }
+                                                    _ => {
+                                                        let provider = contextvm_map
+                                                            .get(name)
+                                                            .map(|d| {
+                                                                d.provider_pubkey_hex.clone()
+                                                            });
+                                                        match provider {
+                                                            Some(pk) => {
+                                                                crate::contextvm::invoke_tool(
+                                                                    &secret_key,
+                                                                    &pk,
+                                                                    name,
+                                                                    args_str,
+                                                                )
+                                                                .await
+                                                            }
+                                                            None => format!(
+                                                                "Error: unknown tool '{}'",
+                                                                name
+                                                            ),
+                                                        }
+                                                    }
+                                                    }} => result,
+                                                    _ = cancel.cancelled() => return,
+                                                };
+                                                results_by_id.insert(call.id.clone(), result);
+                                            }
+                                            // Emit results in the model's call order.
+                                            let ordered: Vec<(String, String)> = tool_calls
+                                                .iter()
+                                                .map(|c| {
+                                                    (
+                                                        c.id.clone(),
+                                                        results_by_id.remove(&c.id).unwrap_or_else(
+                                                            || {
+                                                                "Error: tool call cancelled"
+                                                                    .to_string()
+                                                            },
+                                                        ),
+                                                    )
+                                                })
+                                                .collect();
+                                            let _ = core_tx_clone.send(CoreMsg::InternalEvent(
+                                                Box::new(llm::InternalEvent::ChatToolResults {
+                                                    turn_id,
+                                                    conv_id: conv_id_clone,
+                                                    tool_calls,
+                                                    results: ordered,
+                                                    pre_tool_messages,
+                                                    backend_id,
+                                                    model,
+                                                }),
+                                            ));
+                                        }
+                                    });
+                                    // Follow-up stream starts when ChatToolResults lands.
+                                    continue;
+                                }
+
+                                // All-local path: finish the turn's message history
+                                // and spawn the follow-up stream now.
+                                let mut messages = pre_tool_messages;
+                                let assistant_tool_calls: Vec<ChatCompletionMessageToolCalls> =
+                                    tool_calls
+                                        .iter()
+                                        .map(|c| {
+                                            ChatCompletionMessageToolCalls::Function(c.clone())
+                                        })
+                                        .collect();
+                                if !assistant_tool_calls.is_empty() {
+                                    if let Ok(assistant_msg) =
+                                        ChatCompletionRequestAssistantMessageArgs::default()
+                                            .tool_calls(assistant_tool_calls)
+                                            .build()
+                                            .map(ChatCompletionRequestMessage::from)
+                                    {
+                                        messages.push(assistant_msg);
+                                    }
+                                }
+                                for call in &tool_calls {
+                                    let result_text = results_by_id
+                                        .remove(&call.id)
+                                        .unwrap_or_else(|| "Error: tool call failed".to_string());
+                                    if let Ok(tool_msg) =
+                                        ChatCompletionRequestToolMessageArgs::default()
+                                            .tool_call_id(call.id.as_str())
+                                            .content(result_text.as_str())
+                                            .build()
+                                            .map(ChatCompletionRequestMessage::from)
+                                    {
+                                        messages.push(tool_msg);
+                                    }
+                                }
+
                                 actor_state.app_state.busy_state = BusyState::Streaming {
                                     model: model.clone(),
                                 };
-
-                                // Spawn the follow-up streaming request with full API message history.
                                 // Using spawn_streaming_task_from_api_messages avoids lossy conversion
                                 // of Tool and Assistant-with-tool-calls messages through ChatMessage.
                                 let token = llm::spawn_streaming_task_from_api_messages(
@@ -16017,22 +17578,144 @@ impl FfiApp {
                                     &model,
                                     messages,
                                     pinned_tls_public_key_fp_for_backend(&actor_state, &backend.id),
-                                    core_tx_for_thread.clone(),
+                                    turn_scope_tx(
+                                        &actor_state.runtime,
+                                        core_tx_for_thread.clone(),
+                                        actor_state.current_turn_id,
+                                    ),
                                     actor_state.router.get_semaphore(&backend.id),
                                 );
                                 actor_state.active_stream_token = Some(token);
+                                actor_state.active_tool_round_token = None;
 
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
-                            llm::InternalEvent::ChatToolNone { conv_id, text } => {
-                                if actor_state.current_streaming_conversation_id.as_deref()
-                                    != Some(conv_id.as_str())
+                            llm::InternalEvent::ChatToolResults {
+                                turn_id,
+                                conv_id,
+                                tool_calls,
+                                results,
+                                pre_tool_messages,
+                                backend_id,
+                                model,
+                            } => {
+                                // Turn guard: off-actor dispatch results only
+                                // belong to the turn that spawned them.
+                                if turn_id != actor_state.current_turn_id
+                                    || actor_state.current_streaming_conversation_id.as_deref()
+                                        != Some(conv_id.as_str())
                                 {
                                     log::warn!(
-                                        "ChatToolNone for conv {} but active stream is {:?}, dropping",
-                                        conv_id, actor_state.current_streaming_conversation_id
+                                        target: "actor",
+                                        "[actor] dropping stale tool results turn={} conv={}",
+                                        turn_id, conv_id
+                                    );
+                                    continue;
+                                }
+
+                                use async_openai::types::chat::{
+                                    ChatCompletionMessageToolCalls,
+                                    ChatCompletionRequestAssistantMessageArgs,
+                                    ChatCompletionRequestMessage,
+                                    ChatCompletionRequestToolMessageArgs,
+                                };
+
+                                let backend = actor_state
+                                    .backends
+                                    .iter()
+                                    .find(|b| b.id == backend_id)
+                                    .cloned();
+                                let backend = match backend {
+                                    Some(b) => b,
+                                    None => {
+                                        actor_state.app_state.busy_state = BusyState::Idle;
+                                        actor_state.app_state.last_error =
+                                            Some("Backend not found for tool follow-up".into());
+                                        end_turn(&mut actor_state);
+                                        actor_state.app_state.rev += 1;
+                                        emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                        continue;
+                                    }
+                                };
+                                let api_key = if backend.api_key.is_empty() {
+                                    load_backend_api_key(&actor_state, &backend_id)
+                                        .unwrap_or_default()
+                                } else {
+                                    backend.api_key.clone()
+                                };
+                                let backend_for_stream = llm::BackendConfig {
+                                    api_key,
+                                    ..backend.clone()
+                                };
+
+                                let mut messages = pre_tool_messages;
+                                let assistant_tool_calls: Vec<ChatCompletionMessageToolCalls> =
+                                    tool_calls
+                                        .iter()
+                                        .map(|c| {
+                                            ChatCompletionMessageToolCalls::Function(c.clone())
+                                        })
+                                        .collect();
+                                if !assistant_tool_calls.is_empty() {
+                                    if let Ok(assistant_msg) =
+                                        ChatCompletionRequestAssistantMessageArgs::default()
+                                            .tool_calls(assistant_tool_calls)
+                                            .build()
+                                            .map(ChatCompletionRequestMessage::from)
+                                    {
+                                        messages.push(assistant_msg);
+                                    }
+                                }
+                                for (tool_call_id, result_text) in &results {
+                                    if let Ok(tool_msg) =
+                                        ChatCompletionRequestToolMessageArgs::default()
+                                            .tool_call_id(tool_call_id.as_str())
+                                            .content(result_text.as_str())
+                                            .build()
+                                            .map(ChatCompletionRequestMessage::from)
+                                    {
+                                        messages.push(tool_msg);
+                                    }
+                                }
+
+                                actor_state.app_state.busy_state = BusyState::Streaming {
+                                    model: model.clone(),
+                                };
+                                let token = llm::spawn_streaming_task_from_api_messages(
+                                    &actor_state.runtime,
+                                    &backend_for_stream,
+                                    &model,
+                                    messages,
+                                    pinned_tls_public_key_fp_for_backend(&actor_state, &backend.id),
+                                    turn_scope_tx(
+                                        &actor_state.runtime,
+                                        core_tx_for_thread.clone(),
+                                        actor_state.current_turn_id,
+                                    ),
+                                    actor_state.router.get_semaphore(&backend.id),
+                                );
+                                actor_state.active_stream_token = Some(token);
+                                actor_state.active_tool_round_token = None;
+
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
+                            llm::InternalEvent::ChatToolNone {
+                                turn_id,
+                                conv_id,
+                                text,
+                            } => {
+                                if turn_id != actor_state.current_turn_id
+                                    || actor_state.current_streaming_conversation_id.as_deref()
+                                        != Some(conv_id.as_str())
+                                {
+                                    log::warn!(
+                                        target: "actor",
+                                        "[actor] dropping stale tool-none result turn={} conv={}",
+                                        turn_id, conv_id
                                     );
                                     continue;
                                 }
@@ -16042,14 +17725,96 @@ impl FfiApp {
                                 actor_state.current_streaming_text.push_str(&text);
                                 sync_visible_streaming_text(&mut actor_state);
                                 let _ = core_tx_for_thread.send(CoreMsg::InternalEvent(Box::new(
-                                    llm::InternalEvent::StreamDone,
+                                    llm::InternalEvent::TurnScoped {
+                                        turn_id,
+                                        event: llm::streaming::ScopedStreamEvent::Done,
+                                    },
                                 )));
                                 actor_state.app_state.rev += 1;
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
+                            llm::InternalEvent::ContextvmAutoDiscoverForTurn {
+                                turn_id,
+                                conv_id,
+                                result,
+                            } => {
+                                // Turn guard: discovery ran before this turn's
+                                // send; a stale result must not alter tools.
+                                if turn_id != actor_state.current_turn_id
+                                    || actor_state.current_streaming_conversation_id.as_deref()
+                                        != Some(conv_id.as_str())
+                                {
+                                    continue;
+                                }
+                                let pending = actor_state.pending_discover_turn.take();
+                                match result {
+                                    Ok(discovered) => {
+                                        if let Some(db) = actor_state.db.as_ref() {
+                                            if let Err(err) = merge_discovered_contextvm_tools(
+                                                db.conn(),
+                                                discovered,
+                                            ) {
+                                                log::warn!(
+                                                    target: "contextvm",
+                                                    "[contextvm] auto-discovery merge failed: {}",
+                                                    err
+                                                );
+                                            }
+                                            if let Ok(rows) =
+                                                persistence::queries::list_all_contextvm_tools(
+                                                    db.conn(),
+                                                )
+                                            {
+                                                let usage =
+                                                    aggregate_contextvm_tool_usage(db.conn());
+                                                let now = now_secs();
+                                                actor_state.app_state.contextvm_tools = rows
+                                                    .into_iter()
+                                                    .map(|row| {
+                                                        row_to_discoverable_tool(row, &usage, now)
+                                                    })
+                                                    .collect();
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        log::warn!(
+                                            target: "contextvm",
+                                            "[contextvm] auto-discovery failed: {}",
+                                            err
+                                        );
+                                    }
+                                }
+                                refresh_current_contextvm_dispatch(&mut actor_state);
+                                if let Some(deferred) = pending {
+                                    if deferred.turn_id == actor_state.current_turn_id
+                                        && actor_state.app_state.current_conversation_id.as_deref()
+                                            == Some(deferred.conv_id.as_str())
+                                    {
+                                        actor_state.active_tool_round_token = None;
+                                        start_prepared_chat_turn(
+                                            &mut actor_state,
+                                            deferred.conv_id,
+                                            deferred.backend,
+                                            deferred.model,
+                                            deferred.chat_messages,
+                                            String::new(),
+                                            false,
+                                            false,
+                                            &core_tx_for_thread,
+                                        );
+                                    } else {
+                                        end_turn(&mut actor_state);
+                                        actor_state.app_state.busy_state = BusyState::Idle;
+                                    }
+                                }
+                                actor_state.app_state.rev += 1;
+                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                            }
+
                             llm::InternalEvent::BraveApiKeyValidationResult {
-                                api_key: _,
+                                api_key,
                                 success,
                                 error_message,
                             } => {
@@ -16063,7 +17828,20 @@ impl FfiApp {
                                     let msg = error_message
                                         .unwrap_or_else(|| "Could not verify API key.".to_string());
                                     let is_invalid_key = msg.contains("Invalid API key");
-                                    if is_invalid_key {
+                                    // Only clear the stored key when it is
+                                    // still the one this result validated — a
+                                    // stale result must not wipe a key the
+                                    // user re-entered meanwhile (audit fix).
+                                    let stored = actor_state.db.as_ref().and_then(|db| {
+                                        persistence::queries::get_setting(
+                                            db.conn(),
+                                            "brave_api_key",
+                                        )
+                                        .ok()
+                                        .flatten()
+                                    });
+                                    if is_invalid_key && stored.as_deref() == Some(api_key.as_str())
+                                    {
                                         // Actually invalid — remove the saved key
                                         let _ = persistence::queries::set_setting(
                                             actor_state.db.as_ref().expect("db unlocked").conn(),
@@ -16081,8 +17859,23 @@ impl FfiApp {
                                 emit(&actor_state.app_state, &shared_for_core, &update_tx);
                             }
 
-                            llm::InternalEvent::BiometricResult { success } => {
+                            llm::InternalEvent::BiometricResult {
+                                success,
+                                generation,
+                            } => {
                                 // Delivered from the spawn_blocking task started by AttemptBiometricUnlock.
+                                actor_state.biometric_unlock_pending = false;
+                                // Drop stale results: a lock/wipe/UnlockWithDek
+                                // after dispatch bumped the generation — this
+                                // outcome must not reopen the session.
+                                if generation
+                                    != actor_state
+                                        .auth_generation
+                                        .load(std::sync::atomic::Ordering::SeqCst)
+                                {
+                                    log::info!("[auth] dropping stale BiometricResult (generation changed)");
+                                    continue;
+                                }
                                 if success {
                                     // Emit "Unlocking..." immediately so the user sees feedback
                                     // while the heavy DB open + load_post_unlock runs.
@@ -16144,6 +17937,10 @@ impl FfiApp {
                                                 }
                                             }
                                         }
+                                        actor_state
+                                            .auth_generation
+                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                        actor_state.bootstrap.clear_pin_backoff();
                                         actor_state.app_state.encryption_enabled =
                                             actor_state.db_path != ":memory:";
                                         load_post_unlock(
@@ -16159,9 +17956,15 @@ impl FfiApp {
                                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                         continue;
                                     } else {
-                                        // No DEK in keychain (biometric was not enabled during setup,
-                                        // or keychain was cleared). Fall back to PIN input.
-                                        log::info!("[auth] Biometric succeeded but no DEK in keychain — falling back to PIN");
+                                        // Authenticated, yet the platform released no DEK (wrapping
+                                        // key invalidated by an enrollment change, or slot lost):
+                                        // disenroll so the toggle reflects reality; PIN still works.
+                                        log::info!("[auth] Biometric succeeded but no DEK released — disenrolling, falling back to PIN");
+                                        clear_biometric_dek(actor_state.keychain.as_ref());
+                                        actor_state.app_state.biometric_login_enabled = false;
+                                        actor_state.app_state.toast = Some(
+                                            "Biometric unlock needs to be re-enabled. Unlock with your PIN.".to_string(),
+                                        );
                                         actor_state.app_state.biometric_authenticated = true;
                                     }
                                 } else {
@@ -16179,46 +17982,11 @@ impl FfiApp {
                                 // active conversation's dispatch map.
                                 if let Some(db) = actor_state.db.as_ref() {
                                     let conn = db.conn();
-                                    match result {
-                                        Ok(discovered) => {
-                                            let now = now_secs();
-                                            for tool in &discovered {
-                                                let id = format!(
-                                                    "{}:{}",
-                                                    tool.provider_pubkey_hex, tool.tool_name
-                                                );
-                                                let preserved_enabled =
-                                                    persistence::queries::get_contextvm_tool_by_name(
-                                                        conn,
-                                                        &tool.tool_name,
-                                                    )
-                                                    .ok()
-                                                    .flatten()
-                                                    .map(|r| r.enabled)
-                                                    .unwrap_or(false);
-                                                let row = persistence::queries::ContextvmToolRow {
-                                                    id,
-                                                    tool_name: tool.tool_name.clone(),
-                                                    display_name: None,
-                                                    description: tool.description.clone(),
-                                                    provider_pubkey: tool
-                                                        .provider_pubkey_hex
-                                                        .clone(),
-                                                    provider_display_name: tool
-                                                        .provider_display_name
-                                                        .clone(),
-                                                    provider_name: tool.provider_name.clone(),
-                                                    provider_about: tool.provider_about.clone(),
-                                                    provider_picture: tool.provider_picture.clone(),
-                                                    provider_nip05: tool.provider_nip05.clone(),
-                                                    schema_json: tool.schema_json.clone(),
-                                                    enabled: preserved_enabled,
-                                                    last_seen_at: now,
-                                                };
-                                                let _ = persistence::queries::upsert_contextvm_tool(
-                                                    conn, &row,
-                                                );
-                                            }
+                                    match result.and_then(|discovered| {
+                                        merge_discovered_contextvm_tools(conn, discovered)
+                                            .map_err(|err| err.to_string())
+                                    }) {
+                                        Ok(()) => {
                                             if let Ok(rows) =
                                                 persistence::queries::list_all_contextvm_tools(conn)
                                             {
@@ -16289,6 +18057,20 @@ impl FfiApp {
                                 persistence::queries::get_directory_source(db.conn(), &source_id)
                                     .map_err(|e| format!("get_directory_source failed: {e}"))?;
                             Ok(row.and_then(|r| r.bookmark_data))
+                        })();
+                        let _ = reply.send(result);
+                    }
+
+                    CoreMsg::GetDirectoryTreeUri { source_id, reply } => {
+                        let result: Result<Option<String>, String> = (|| {
+                            let db = actor_state
+                                .db
+                                .as_ref()
+                                .ok_or_else(|| "database locked".to_string())?;
+                            let row =
+                                persistence::queries::get_directory_source(db.conn(), &source_id)
+                                    .map_err(|e| format!("get_directory_source failed: {e}"))?;
+                            Ok(row.and_then(|r| r.tree_uri))
                         })();
                         let _ = reply.send(result);
                     }
@@ -16376,7 +18158,7 @@ impl FfiApp {
                         let result = handle_ppq_backup_export(
                             &mut actor_state,
                             &core_tx_for_thread,
-                            &backup_password,
+                            backup_password.as_str(),
                             &auth,
                         );
                         let _ = reply.send(result.map(Zeroizing::new));
@@ -16384,6 +18166,13 @@ impl FfiApp {
                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                     }
 
+                    #[cfg(test)]
+                    CoreMsg::GetChatTurn { start, reply } => {
+                        if start {
+                            adopt_test_stream_turn(&mut actor_state);
+                        }
+                        let _ = reply.send(actor_state.current_turn_id);
+                    }
                     CoreMsg::RestorePpqRecoveryBackup {
                         encrypted_bytes,
                         backup_password,
@@ -16391,15 +18180,15 @@ impl FfiApp {
                         replace_acknowledged,
                         reply,
                     } => {
-                        let result = handle_ppq_backup_restore(
+                        handle_ppq_backup_restore(
                             &mut actor_state,
                             &core_tx_for_thread,
                             &encrypted_bytes,
                             &backup_password,
                             &auth,
                             replace_acknowledged,
+                            reply,
                         );
-                        let _ = reply.send(result);
                         actor_state.app_state.rev += 1;
                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                     }
@@ -16436,60 +18225,126 @@ impl FfiApp {
                         emit(&actor_state.app_state, &shared_for_core, &update_tx);
                     }
 
-                    CoreMsg::PinUnlockContinued { outcome } => {
+                    CoreMsg::PinUnlockContinued {
+                        outcome,
+                        generation,
+                    } => {
                         actor_state.off_actor_work_pending =
                             actor_state.off_actor_work_pending.saturating_sub(1);
-                        match outcome {
-                            PinUnlockOutcome::Duress => {
-                                // Duress PIN entered: wipe Mango data but
-                                // PRESERVE both PPQ credentials (user
-                                // override on the Pi review; plan §6.2).
-                                log::warn!("[auth] Duress PIN detected — wiping Mango data, preserving dormant PPQ credentials");
-                                if let Err(e) = wipe_local_install(
-                                    &mut actor_state,
-                                    core_tx_for_thread.clone(),
-                                    WipeMode::DuressPreservePpq,
-                                ) {
-                                    log::error!("[auth] Duress wipe: failed to reset install: {e}");
-                                    actor_state.app_state.toast = Some(
-                                        "All data erased, but setup could not restart.".to_string(),
-                                    );
+                        actor_state.pin_unlock_pending = false;
+                        // Drop stale outcomes (audit fix): a LockApp, wipe, or
+                        // credential replacement after this work was spawned
+                        // bumped the auth generation — accepting the result
+                        // would reopen a session the user already closed.
+                        if generation
+                            != actor_state
+                                .auth_generation
+                                .load(std::sync::atomic::Ordering::SeqCst)
+                        {
+                            log::info!(
+                                "[auth] dropping stale PinUnlockContinued (generation changed)"
+                            );
+                        } else {
+                            match outcome {
+                                PinUnlockOutcome::Duress => {
+                                    // Duress PIN entered: wipe Mango data but
+                                    // PRESERVE both PPQ credentials (user
+                                    // override on the Pi review; plan §6.2).
+                                    log::warn!("[auth] Duress PIN detected — wiping Mango data, preserving dormant PPQ credentials");
+                                    if let Err(e) = wipe_local_install(
+                                        &mut actor_state,
+                                        core_tx_for_thread.clone(),
+                                        WipeMode::DuressPreservePpq,
+                                    ) {
+                                        log::error!(
+                                            "[auth] Duress wipe: failed to reset install: {e}"
+                                        );
+                                        actor_state.app_state.toast = Some(
+                                            "Wipe could not complete — some data may remain."
+                                                .to_string(),
+                                        );
+                                    }
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
                                 }
-                                actor_state.app_state.rev += 1;
-                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                            }
-                            PinUnlockOutcome::WrongPin => {
-                                actor_state.app_state.toast =
-                                    Some("Incorrect PIN. Please try again.".to_string());
-                                actor_state.app_state.rev += 1;
-                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                            }
-                            PinUnlockOutcome::Failed(e) => {
-                                log::error!("[auth] PIN unlock failed: {e}");
-                                actor_state.app_state.toast =
-                                    Some("Unlock failed. Please try again.".to_string());
-                                actor_state.app_state.rev += 1;
-                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
-                            }
-                            PinUnlockOutcome::Ready {
-                                dek,
-                                db,
-                                vector_index,
-                            } => {
-                                actor_state.db = Some(db);
-                                actor_state.dek = Some(dek);
-                                actor_state.vector_index = vector_index;
-                                actor_state.app_state.encryption_enabled = true;
-                                load_post_unlock(
-                                    &mut actor_state,
-                                    core_tx_for_thread.clone(),
-                                    true,
-                                );
-                                // load_post_unlock cannot emit (no emit handle) —
-                                // without this the lock screen only clears when some
-                                // later event happens to emit.
-                                actor_state.app_state.rev += 1;
-                                emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                PinUnlockOutcome::WrongPin => {
+                                    let now = unix_time_secs() as i64;
+                                    let (_count, backoff_until) =
+                                        actor_state.bootstrap.record_pin_failure(now);
+                                    let toast = if backoff_until > now {
+                                        format!(
+                                            "Too many failed attempts. Try again in {}s.",
+                                            backoff_until - now
+                                        )
+                                    } else {
+                                        "Incorrect PIN. Please try again.".to_string()
+                                    };
+                                    actor_state.app_state.toast = Some(toast);
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                }
+                                PinUnlockOutcome::Failed(e) => {
+                                    log::error!("[auth] PIN unlock failed: {e}");
+                                    actor_state.app_state.toast =
+                                        Some("Unlock failed. Please try again.".to_string());
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                }
+                                PinUnlockOutcome::Ready { dek } => {
+                                    // Opening on the actor closes the check/open race with wipe.
+                                    let dek_hex = Zeroizing::new(hex::encode(dek.as_slice()));
+                                    let db = persistence::Database::open_encrypted(
+                                        &actor_state.db_path,
+                                        &dek_hex,
+                                    );
+                                    match db {
+                                        Ok(db) => {
+                                            actor_state.db = Some(db);
+                                            actor_state.vector_index = rag::VectorIndex::new(
+                                                &actor_state.data_dir,
+                                                Some(&dek),
+                                            )
+                                            .unwrap_or_else(|e| {
+                                                log::warn!("[auth] index open failed: {e}");
+                                                rag::VectorIndex::new("", None)
+                                                    .expect("empty fallback")
+                                            });
+                                            actor_state.dek = Some(dek);
+                                        }
+                                        Err(e) => {
+                                            log::error!("[auth] PIN database open failed: {e}");
+                                            actor_state.app_state.toast =
+                                                Some("Unlock failed. Please try again.".into());
+                                            actor_state.app_state.rev += 1;
+                                            emit(
+                                                &actor_state.app_state,
+                                                &shared_for_core,
+                                                &update_tx,
+                                            );
+                                            if actor_state.off_actor_work_pending == 0 {
+                                                for waiter in actor_state.sync_waiters.drain(..) {
+                                                    let _ = waiter.send(());
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    actor_state
+                                        .auth_generation
+                                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                    actor_state.bootstrap.clear_pin_backoff();
+                                    actor_state.app_state.encryption_enabled = true;
+                                    load_post_unlock(
+                                        &mut actor_state,
+                                        core_tx_for_thread.clone(),
+                                        true,
+                                    );
+                                    // load_post_unlock cannot emit (no emit handle) —
+                                    // without this the lock screen only clears when some
+                                    // later event happens to emit.
+                                    actor_state.app_state.rev += 1;
+                                    emit(&actor_state.app_state, &shared_for_core, &update_tx);
+                                }
                             }
                         }
                         // Off-actor work settled — release any Sync barriers that
@@ -16642,8 +18497,10 @@ impl FfiApp {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.core_tx
             .send(CoreMsg::CreatePpqRecoveryBackup {
-                backup_password,
-                auth,
+                // Audit (zeroize): wrap secrets at the FFI boundary so the
+                // copy inside the actor queue is wiped on drop.
+                backup_password: Zeroizing::new(backup_password),
+                auth: auth.into(),
                 reply: reply_tx,
             })
             .map_err(|e| FfiError::Internal {
@@ -16669,8 +18526,8 @@ impl FfiApp {
         self.core_tx
             .send(CoreMsg::RestorePpqRecoveryBackup {
                 encrypted_bytes,
-                backup_password,
-                auth,
+                backup_password: Zeroizing::new(backup_password),
+                auth: auth.into(),
                 replace_acknowledged,
                 reply: reply_tx,
             })
@@ -16695,7 +18552,7 @@ impl FfiApp {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.core_tx
             .send(CoreMsg::ConfirmDeleteAllData {
-                auth,
+                auth: auth.into(),
                 backup_risk_acknowledged,
                 reply: reply_tx,
             })
@@ -16718,7 +18575,7 @@ impl FfiApp {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.core_tx
             .send(CoreMsg::ConfirmForgetManagedPpq {
-                auth,
+                auth: auth.into(),
                 backup_risk_acknowledged,
                 reply: reply_tx,
             })
@@ -16780,6 +18637,28 @@ impl FfiApp {
             .map_err(|reason| FfiError::Internal { reason })
     }
 
+    /// Return the persisted SAF tree URI for a directory source, or None if the
+    /// source doesn't exist or has no tree URI (Desktop/iOS sources). Errors
+    /// while the database is locked. Used by the Android sync pipeline to
+    /// resolve the exact persistable grant for a source id.
+    pub fn get_directory_tree_uri(&self, source_id: String) -> Result<Option<String>, FfiError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.core_tx
+            .send(CoreMsg::GetDirectoryTreeUri {
+                source_id,
+                reply: reply_tx,
+            })
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor channel error: {e}"),
+            })?;
+        reply_rx
+            .recv()
+            .map_err(|e| FfiError::Internal {
+                reason: format!("actor reply error: {e}"),
+            })?
+            .map_err(|reason| FfiError::Internal { reason })
+    }
+
     /// Return the raw attestation report blob for `backend_id`, if available.
     ///
     /// Per D-12: raw blobs are not carried in AppState (too large for frequent snapshots).
@@ -16814,6 +18693,25 @@ impl FfiApp {
 
 #[cfg(test)]
 impl FfiApp {
+    pub fn test_verify_backend_attestation(&self, backend_id: &str, tee_type: &str) {
+        self.test_send_internal(llm::InternalEvent::AttestationResult(
+            attestation::AttestationEvent::Verified {
+                backend_id: backend_id.to_string(),
+                tee_type: tee_type.to_string(),
+                report_blob: vec![1],
+                expires_at: unix_time_secs() + 3600,
+                tls_public_key_fp: Some("ab".repeat(32)),
+                vcek_url: None,
+                vcek_der: None,
+                shape: None,
+                freshness: None,
+                orchestrated_components: None,
+            },
+            0,
+        ));
+        self.sync();
+    }
+
     /// Inject an InternalEvent directly into the actor loop for testing.
     /// This bypasses the HTTP/streaming layer and tests the actor's
     /// event processing logic in isolation.
@@ -16875,7 +18773,32 @@ impl FfiApp {
     }
 
     pub fn test_send_internal(&self, event: llm::InternalEvent) {
-        let _ = self.core_tx.send(CoreMsg::InternalEvent(Box::new(event)));
+        let event = match event {
+            llm::InternalEvent::StreamChunk { token } => {
+                llm::streaming::ScopedStreamEvent::Chunk { token }
+            }
+            llm::InternalEvent::StreamDone => llm::streaming::ScopedStreamEvent::Done,
+            llm::InternalEvent::StreamError { error } => {
+                llm::streaming::ScopedStreamEvent::Error { error }
+            }
+            llm::InternalEvent::StreamCancelled => llm::streaming::ScopedStreamEvent::Cancelled,
+            event => {
+                let _ = self.core_tx.send(CoreMsg::InternalEvent(Box::new(event)));
+                return;
+            }
+        };
+        let (reply, rx) = flume::bounded(1);
+        let start = matches!(
+            event,
+            llm::streaming::ScopedStreamEvent::Chunk { .. }
+                | llm::streaming::ScopedStreamEvent::Error { .. }
+        );
+        let _ = self.core_tx.send(CoreMsg::GetChatTurn { start, reply });
+        if let Ok(turn_id) = rx.recv() {
+            let _ = self.core_tx.send(CoreMsg::InternalEvent(Box::new(
+                llm::InternalEvent::TurnScoped { turn_id, event },
+            )));
+        }
     }
 }
 
@@ -17252,6 +19175,20 @@ mod image_red_tests {
             max_concurrent_requests: 1,
             supports_tool_use: false,
         }];
+        actor_state
+            .app_state
+            .attestation_statuses
+            .push(AttestationStatusEntry {
+                backend_id: "ppq-ai".to_string(),
+                status: AttestationStatus::Verified {
+                    shape: None,
+                    freshness: None,
+                    orchestrated_components: None,
+                },
+            });
+        actor_state
+            .attestation_expires_at
+            .insert("ppq-ai".to_string(), unix_time_secs() + 3600);
         actor_state.app_state.current_conversation_id = Some("conv-1".to_string());
         actor_state
             .app_state
@@ -18189,6 +20126,77 @@ mod image_red_tests {
     }
 
     #[test]
+    fn single_tee_backend_requires_a_fresh_attested_pin() {
+        for (has_pin, expiry_offset) in [
+            (false, None),
+            (false, Some(60_i64)),
+            (true, None),
+            (true, Some(-1)),
+            (true, Some(60)),
+        ] {
+            let mut actor_state = test_build_actor_state_for_image_tests();
+            actor_state.backends = vec![llm::BackendConfig {
+                id: "custom-tee".to_string(),
+                name: "Custom TEE".to_string(),
+                base_url: "http://127.0.0.1:9/v1/".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["test-model".to_string()],
+                tee_type: llm::TeeType::IntelTdx,
+                max_concurrent_requests: 1,
+                supports_tool_use: false,
+            }];
+            actor_state
+                .app_state
+                .attestation_statuses
+                .push(AttestationStatusEntry {
+                    backend_id: "custom-tee".to_string(),
+                    status: AttestationStatus::Verified {
+                        shape: None,
+                        freshness: None,
+                        orchestrated_components: None,
+                    },
+                });
+            if has_pin {
+                actor_state
+                    .attested_tls_public_keys
+                    .insert("custom-tee".to_string(), "ab".repeat(32));
+            }
+            if let Some(offset) = expiry_offset {
+                actor_state.attestation_expires_at.insert(
+                    "custom-tee".to_string(),
+                    (unix_time_secs() as i64 + offset) as u64,
+                );
+            }
+            let (tx, _rx) = flume::unbounded();
+            let result = resolve_turn_backend_and_model(
+                &mut actor_state,
+                Some("custom-tee"),
+                "test-model",
+                "private prompt",
+                false,
+                None,
+                &tx,
+            );
+
+            if has_pin && expiry_offset == Some(60) {
+                let (backend, model, route) = result.expect("fresh pin permits the turn");
+                assert_eq!(backend.id, "custom-tee");
+                assert_eq!(model, "test-model");
+                assert_eq!(route.backend_id, "custom-tee");
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(TurnResolutionError::AttestationPending { backend_id })
+                            if backend_id == "custom-tee"
+                    ),
+                    "TEE turn must wait for a fresh pin: has_pin={has_pin}, expiry={expiry_offset:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn deleting_hybrid_profile_reassigns_virtual_conversations() {
         let mut actor_state = test_build_actor_state_for_image_tests();
         actor_state.backends = vec![llm::BackendConfig {
@@ -18559,6 +20567,7 @@ mod image_red_tests {
     fn pending_attestation_blocks_new_send_without_replacing_pending_turn() {
         let mut actor_state = test_build_actor_state_for_image_tests();
         actor_state.pending_attested_send = Some(PendingAttestedSend {
+            conversation_id: "conv-local".to_string(),
             backend_id: "tinfoil".to_string(),
             text: "first remote turn".to_string(),
             force_role: Some(BackendRole::Remote),
@@ -18605,6 +20614,7 @@ mod image_red_tests {
     fn pending_attestation_blocks_attachment_mutation() {
         let mut actor_state = test_build_actor_state_for_image_tests();
         actor_state.pending_attested_send = Some(PendingAttestedSend {
+            conversation_id: "conv-local".to_string(),
             backend_id: "tinfoil".to_string(),
             text: "remote turn".to_string(),
             force_role: Some(BackendRole::Remote),
@@ -18651,6 +20661,7 @@ mod image_red_tests {
     fn cancelling_pending_attestation_restores_attachment_snapshot() {
         let mut actor_state = test_build_actor_state_for_image_tests();
         actor_state.pending_attested_send = Some(PendingAttestedSend {
+            conversation_id: "conv-local".to_string(),
             backend_id: "tinfoil".to_string(),
             text: "remote turn".to_string(),
             force_role: Some(BackendRole::Remote),
@@ -18799,6 +20810,7 @@ mod image_red_tests {
         // The resumed send carries an image, so the text-only conversation
         // model trips the send-time vision gate.
         actor_state.pending_attested_send = Some(PendingAttestedSend {
+            conversation_id: "conv-switch".to_string(),
             backend_id: "tinfoil".to_string(),
             text: "describe".to_string(),
             force_role: None,
@@ -18856,6 +20868,20 @@ mod image_red_tests {
             max_concurrent_requests: 1,
             supports_tool_use: false,
         }];
+        actor_state
+            .app_state
+            .attestation_statuses
+            .push(AttestationStatusEntry {
+                backend_id: "tinfoil".to_string(),
+                status: AttestationStatus::Verified {
+                    shape: None,
+                    freshness: None,
+                    orchestrated_components: None,
+                },
+            });
+        actor_state
+            .attestation_expires_at
+            .insert("tinfoil".to_string(), unix_time_secs() + 3600);
         actor_state.app_state.active_backend_id = Some("tinfoil".to_string());
 
         // Rows the retry restored while the send was deferred.
@@ -18935,6 +20961,7 @@ mod image_red_tests {
             },
         ];
         actor_state.pending_attested_send = Some(PendingAttestedSend {
+            conversation_id: "conv-deferred".to_string(),
             backend_id: "tinfoil".to_string(),
             text: "describe".to_string(),
             force_role: None,
@@ -18985,6 +21012,7 @@ mod image_red_tests {
     fn transient_attestation_failures_retry_then_release_pending_turn() {
         let mut actor_state = test_build_actor_state_for_image_tests();
         actor_state.pending_attested_send = Some(PendingAttestedSend {
+            conversation_id: "conv-local".to_string(),
             backend_id: "tinfoil".to_string(),
             text: "remote turn".to_string(),
             force_role: Some(BackendRole::Remote),
@@ -19153,6 +21181,58 @@ mod image_red_tests {
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 
+    #[test]
+    fn stopping_tool_detection_cancels_and_invalidates_its_turn() {
+        let mut state = test_build_actor_state_for_image_tests();
+        state.app_state.current_conversation_id = Some("tools".into());
+        state.current_streaming_conversation_id = Some("tools".into());
+        let old_turn = begin_turn(&mut state);
+        let cancel = CancellationToken::new();
+        state.active_tool_round_token = Some(cancel.clone());
+        state.app_state.busy_state = BusyState::Loading {
+            message: "Running tools".into(),
+        };
+        assert!(reject_chat_action_while_turn_active(&mut state));
+        let (tx, rx) = flume::unbounded();
+        do_send_message(&mut state, "must not persist".into(), None, &tx);
+        assert!(state.app_state.messages.is_empty());
+        assert!(rx.is_empty());
+        stop_chat_turn(&mut state);
+        assert!(cancel.is_cancelled());
+        assert_eq!(state.current_turn_id, 0);
+        assert!(state.current_streaming_conversation_id.is_none());
+        assert_eq!(state.app_state.busy_state, BusyState::Idle);
+        assert_ne!(begin_turn(&mut state), old_turn);
+    }
+
+    #[test]
+    fn attested_continuation_cannot_resume_in_another_conversation() {
+        let mut state = test_build_actor_state_for_image_tests();
+        state.app_state.current_conversation_id = Some("new".into());
+        state.pending_attested_send = Some(PendingAttestedSend {
+            conversation_id: "original".into(),
+            backend_id: "remote".into(),
+            text: "never send here".into(),
+            force_role: None,
+            pending_attachment: None,
+            pending_image_attachment: None,
+            app_pending_attachment: None,
+            attestation_attempts: 0,
+            replaced_message_ids: vec![],
+        });
+        let (tx, rx) = flume::unbounded();
+        handle_pending_attested_send_after_attestation(
+            &mut state, "remote", true, false, None, &tx,
+        );
+        assert!(state.pending_attested_send.is_none());
+        assert!(state.app_state.messages.is_empty());
+        assert!(rx.is_empty());
+        assert_eq!(
+            state.app_state.current_conversation_id.as_deref(),
+            Some("new")
+        );
+    }
+
     // --- Test-only helpers. These exist so the test file compiles as far as
     // possible; the assertions still depend on symbols introduced in 31-01.
 
@@ -19167,7 +21247,7 @@ mod image_red_tests {
     // Plan 31-01: real test helpers replacing the 31-00 `unimplemented!()` stubs.
     // They build a minimal in-memory ActorState and dispatch AttachImage via the
     // same validation + state-mutation code the actor loop runs.
-    fn default_actor_state_for_image_tests() -> ActorState {
+    pub(crate) fn default_actor_state_for_image_tests() -> ActorState {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_time()
@@ -19190,6 +21270,9 @@ mod image_red_tests {
             ppq_backup_export_credit: None,
             ppq_backup_save_pending_confirm: false,
             ppq_recovery_required: false,
+            ppq_restore_in_flight: false,
+            ppq_balance_next_id: 0,
+            ppq_balance_latest_applied: 0,
             backends: vec![],
             attested_tls_public_keys: HashMap::new(),
             attestation_expires_at: HashMap::new(),
@@ -19227,6 +21310,16 @@ mod image_red_tests {
             dek: None,
             current_conv_contextvm_tools: HashMap::new(),
             contextvm_secret_key: String::new(),
+            auth_generation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            pin_unlock_pending: false,
+            biometric_unlock_pending: false,
+            attestation_request_counter: std::cell::Cell::new(0),
+            attestation_requests: std::cell::RefCell::new(HashMap::new()),
+            wipe_tainted_secret_ids: std::collections::HashSet::new(),
+            next_turn_id: 1,
+            current_turn_id: 0,
+            active_tool_round_token: None,
+            pending_discover_turn: None,
         }
     }
 
@@ -19285,5 +21378,86 @@ mod image_red_tests {
                 other
             ),
         }
+    }
+    #[test]
+    fn dropped_action_log_contains_no_payload() {
+        assert_eq!(
+            dropped_action_log(&AppAction::UnlockWithPin {
+                pin: "SECRET-PIN".into()
+            }),
+            "[actor] dropped action while DB locked",
+        );
+        assert_eq!(
+            dropped_action_log(&AppAction::SendMessage {
+                text: "SECRET-TEXT".into(),
+                force_role: None
+            }),
+            "[actor] dropped action while DB locked",
+        );
+    }
+
+    #[test]
+    fn wipe_clears_pending_image() {
+        let mut state = default_actor_state_for_image_tests();
+        state.pending_image_attachment = Some(PendingImageAttachment {
+            filename: "photo.jpg".into(),
+            file_path: "/not-an-owned-image.jpg".into(),
+        });
+        let (tx, _rx) = flume::unbounded();
+        wipe_local_install(&mut state, tx, WipeMode::DuressPreservePpq).unwrap();
+        assert!(state.pending_image_attachment.is_none());
+        assert!(state.pending_attested_send.is_none());
+    }
+
+    #[test]
+    fn memory_normalization_collapses_case_and_whitespace() {
+        assert_eq!(
+            normalize_memory_text("  User  LIKES\nRust "),
+            "user likes rust"
+        );
+    }
+
+    #[test]
+    fn stale_pin_and_brave_results_after_lock_are_dropped() {
+        let app = FfiApp::new(
+            String::new(),
+            Box::new(NullKeychainProvider),
+            Box::new(NullEmbeddingProvider),
+            EmbeddingStatus::Active,
+            Box::new(NullLocalLlmProvider),
+            Box::new(NullBiometricProvider),
+        );
+        app.sync();
+        app.dispatch(AppAction::SetupPin {
+            pin: "1234".into(),
+            duress_pin: None,
+            enable_biometric: false,
+        });
+        app.sync();
+        app.dispatch(AppAction::LockApp);
+        app.sync();
+        app.core_tx
+            .send(CoreMsg::PinUnlockContinued {
+                outcome: PinUnlockOutcome::Ready {
+                    dek: Zeroizing::new([7; 32]),
+                },
+                generation: 0,
+            })
+            .unwrap();
+        app.test_send_internal(llm::InternalEvent::BraveApiKeyValidationResult {
+            api_key: "OLD-KEY".into(),
+            success: false,
+            error_message: Some("Invalid API key".into()),
+        });
+        app.sync();
+        assert!(matches!(app.state().router.current_screen, Screen::Locked));
+        app.core_tx
+            .send(CoreMsg::PinUnlockContinued {
+                outcome: PinUnlockOutcome::Duress,
+                generation: 0,
+            })
+            .unwrap();
+        app.sync();
+        assert!(matches!(app.state().router.current_screen, Screen::Locked));
     }
 }

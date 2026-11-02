@@ -35,8 +35,9 @@ impl VectorIndex {
     /// in-memory index with cosine distance and f32 scalar quantisation.
     ///
     /// When `dek` is `Some`, the on-disk file is expected to be encrypted with
-    /// `crypto::file_crypto::encrypt_file`. Legacy unencrypted files (no MGO1 header)
-    /// are loaded transparently regardless of whether `dek` is provided.
+    /// `crypto::file_crypto::encrypt_file`. A legacy unencrypted file (no MGO1
+    /// header) loads transparently and, when `dek` is `Some`, is immediately
+    /// re-persisted encrypted so no plaintext copy remains on disk.
     pub fn new(data_dir: &str, dek: Option<&[u8; 32]>) -> anyhow::Result<Self> {
         let path = format!("{}/{}", data_dir, INDEX_FILENAME);
 
@@ -52,6 +53,7 @@ impl VectorIndex {
 
         let index = Index::new(&options)?;
 
+        let mut loaded_legacy_plaintext = false;
         if std::path::Path::new(&path).exists() {
             let file_bytes = std::fs::read(&path)?;
 
@@ -61,13 +63,10 @@ impl VectorIndex {
             if is_encrypted {
                 match dek {
                     Some(key) => {
-                        // Decrypt to a temp file, load, then delete (T-28-15)
+                        // Decrypt in memory; never write plaintext index bytes
+                        // to disk (T-28-15: no plaintext temp file).
                         let plaintext = file_crypto::decrypt_file(key, &file_bytes)?;
-                        let tmp_path = format!("{}.tmp", path);
-                        write_restricted(&tmp_path, &plaintext)?;
-                        let load_result = index.load(&tmp_path);
-                        let _ = std::fs::remove_file(&tmp_path);
-                        load_result?;
+                        index.load_from_buffer(&plaintext)?;
                     }
                     None => {
                         anyhow::bail!(
@@ -79,10 +78,20 @@ impl VectorIndex {
             } else {
                 // Legacy unencrypted file -- load directly
                 index.load(&path)?;
+                loaded_legacy_plaintext = dek.is_some();
             }
         }
 
-        Ok(Self { inner: index, path })
+        let index = Self { inner: index, path };
+
+        // Opening a legacy plaintext index with a DEK must not leave the
+        // plaintext on disk: immediately persist it encrypted (atomic write)
+        // so the only copy left at `path` has the MGO1 header.
+        if loaded_legacy_plaintext {
+            index.save(dek)?;
+        }
+
+        Ok(index)
     }
 
     /// Add a single vector with the given key.
@@ -114,38 +123,30 @@ impl VectorIndex {
         Ok(())
     }
 
+    /// True when the index currently holds a vector for `key`.
+    ///
+    /// Used by the unlock-time reconciliation pass to find SQLite chunk rows
+    /// whose vectors never made it into the persisted index.
+    pub fn contains(&self, key: u64) -> bool {
+        self.inner.contains(key)
+    }
+
     /// Persist the index to `{data_dir}/embeddings.usearch`.
     ///
-    /// When `dek` is `Some`, saves to a temp file, reads bytes, encrypts with
-    /// AES-256-GCM (MGO1 format), then writes the encrypted blob to `self.path`.
-    /// The temp file is deleted immediately after encryption (T-28-15).
-    ///
-    /// When `dek` is `None`, saves directly (backwards-compatible unencrypted).
+    /// Serializes in memory via `save_to_buffer` so plaintext index bytes
+    /// never touch the filesystem. When `dek` is `Some` the buffer is
+    /// encrypted with AES-256-GCM (MGO1 format); both encrypted and plaintext
+    /// writes land through a durable temp file + fsync + atomic rename, so a
+    /// crash mid-save cannot truncate the previous index.
     pub fn save(&self, dek: Option<&[u8; 32]>) -> anyhow::Result<()> {
-        match dek {
-            Some(key) => {
-                let tmp_path = format!("{}.tmp", self.path);
-                // Save unencrypted to temp file (T-28-15: restrictive permissions)
-                self.inner.save(&tmp_path)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ =
-                        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
-                }
-                let plaintext = std::fs::read(&tmp_path);
-                let _ = std::fs::remove_file(&tmp_path);
-                let plaintext = plaintext?;
+        let mut buffer = vec![0u8; self.inner.serialized_length()];
+        self.inner.save_to_buffer(&mut buffer)?;
 
-                // Encrypt and write final file
-                let ciphertext = file_crypto::encrypt_file(key, &plaintext);
-                std::fs::write(&self.path, &ciphertext)?;
-            }
-            None => {
-                self.inner.save(&self.path)?;
-            }
-        }
-        Ok(())
+        let bytes = match dek {
+            Some(key) => file_crypto::encrypt_file(key, &buffer),
+            None => buffer,
+        };
+        write_atomic(&self.path, &bytes)
     }
 
     /// Number of vectors currently in the index.
@@ -159,26 +160,35 @@ impl VectorIndex {
     }
 }
 
-/// Write `data` to `path` with restricted permissions (0600 on Unix).
-///
-/// Used for temp files holding decrypted index bytes (T-28-15).
-fn write_restricted(path: &str, data: &[u8]) -> anyhow::Result<()> {
-    #[cfg(unix)]
+/// Write `data` to `path` durably: restricted-permission temp file, fsync,
+/// then atomic rename over `path`. A crash mid-write leaves the previous
+/// contents intact rather than a truncated file.
+fn write_atomic(path: &str, data: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let tmp_path = format!("{}.tmp", path);
     {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(data)?;
+        let mut file = {
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            opts.open(&tmp_path)?
+        };
+        let write_result = file.write_all(data).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
     }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, data)?;
-    }
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        anyhow::Error::from(e)
+    })?;
     Ok(())
 }
 
@@ -359,6 +369,19 @@ mod tests {
         let index =
             VectorIndex::new(&dir, Some(&dek)).expect("Legacy file should load transparently");
         assert_eq!(index.size(), 1, "Legacy index should load with 1 vector");
+
+        // Loading with a DEK must immediately re-persist encrypted: the file
+        // now carries the MGO1 header and no plaintext copy remains.
+        let file_bytes = std::fs::read(&file_path).unwrap();
+        assert_eq!(
+            &file_bytes[..4],
+            MAGIC,
+            "Legacy plaintext index must be rewritten encrypted on DEK load"
+        );
+
+        // And it still round-trips on the next open.
+        let reloaded = VectorIndex::new(&dir, Some(&dek)).expect("Encrypted index should load");
+        assert_eq!(reloaded.size(), 1);
     }
 
     /// Encrypted file with no DEK returns error.

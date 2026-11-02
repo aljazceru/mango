@@ -77,7 +77,9 @@ pub(crate) fn installed_local(
 ) -> impl Iterator<Item = (String, &LocalModelSummary)> {
     local_models.iter().filter(|m| m.verified).map(|m| {
         (
-            m.backend_id.clone().unwrap_or_else(|| local_backend_id(&m.id)),
+            m.backend_id
+                .clone()
+                .unwrap_or_else(|| local_backend_id(&m.id)),
             m,
         )
     })
@@ -136,15 +138,23 @@ pub fn inference_status(
                 attested_backend_id: Some(b.id.clone()),
                 ..base
             },
-            None => InferenceStatus { model_id: new_chat_model_id.to_string(), ..base },
+            None => InferenceStatus {
+                model_id: new_chat_model_id.to_string(),
+                ..base
+            },
         },
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RouteTarget {
-    Backend { backend_id: String, model_id: String },
-    HybridProfile { profile_id: String },
+    Backend {
+        backend_id: String,
+        model_id: String,
+    },
+    HybridProfile {
+        profile_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,8 +183,11 @@ pub fn resolve_route_target(
 ) -> Result<RouteTarget, RouteBlocker> {
     match route {
         InferenceRoute::Cloud => {
-            let cands: Vec<&BackendSummary> =
-                inp.backends.iter().filter(|b| is_cloud_candidate(b)).collect();
+            let cands: Vec<&BackendSummary> = inp
+                .backends
+                .iter()
+                .filter(|b| is_cloud_candidate(b))
+                .collect();
             let by_id = |id: &str| cands.iter().copied().find(|b| b.id == id);
             let pick = by_id(inp.current_backend_id)
                 .or_else(|| inp.remembered_cloud_backend_id.and_then(by_id))
@@ -192,7 +205,10 @@ pub fn resolve_route_target(
                 .find(|m| !m.is_empty() && pick.models.iter().any(|x| x == *m))
                 .map(str::to_string)
                 .unwrap_or_else(|| pick.models[0].clone());
-            Ok(RouteTarget::Backend { backend_id: pick.id.clone(), model_id })
+            Ok(RouteTarget::Backend {
+                backend_id: pick.id.clone(),
+                model_id,
+            })
         }
         InferenceRoute::Hybrid => {
             let current = profile_id_from_backend_id(inp.current_backend_id)
@@ -220,7 +236,10 @@ pub fn resolve_route_target(
                 .find(|b| &b.id == backend_id)
                 .and_then(|b| b.models.first().cloned())
                 .unwrap_or_else(|| summary.id.clone());
-            Ok(RouteTarget::Backend { backend_id: backend_id.clone(), model_id })
+            Ok(RouteTarget::Backend {
+                backend_id: backend_id.clone(),
+                model_id,
+            })
         }
     }
 }

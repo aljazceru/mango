@@ -86,6 +86,7 @@ pub async fn call_extraction_llm(
     backend: &crate::llm::BackendConfig,
     messages: &[(String, String)],
     model: &str,
+    pinned_tls_public_key_fp: Option<&str>,
 ) -> anyhow::Result<Vec<String>> {
     let transcript = bounded_transcript(messages);
 
@@ -105,6 +106,7 @@ pub async fn call_extraction_llm(
         model,
         vec![system_msg, user_msg],
         EXTRACTION_MAX_TOKENS,
+        pinned_tls_public_key_fp,
     )
     .await?;
     let choice = response.choices.first();

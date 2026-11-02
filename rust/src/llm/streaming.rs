@@ -22,6 +22,16 @@ fn cached_chat_client(
     transport: super::transport::ProviderTransportKind,
     pinned_tls_public_key_fp: Option<&str>,
 ) -> Result<async_openai::Client<async_openai::config::OpenAIConfig>, LlmError> {
+    if transport == super::transport::ProviderTransportKind::OpenAiCompatible
+        && backend.tee_type != super::TeeType::Unknown
+        && pinned_tls_public_key_fp
+            .is_none_or(|fp| fp.len() != 64 || !fp.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(LlmError::AuthError {
+            reason: "attested TLS pin required for this TEE backend; re-verify attestation"
+                .to_string(),
+        });
+    }
     let key = (
         backend.id.clone(),
         backend.base_url.clone(),
@@ -85,7 +95,12 @@ pub struct ChatMessage {
 /// Boxed inside CoreMsg to avoid bloating the enum (per RESEARCH.md anti-pattern note).
 #[derive(Debug)]
 pub enum InternalEvent {
-    /// A token chunk from SSE stream
+    /// A token chunk from SSE stream.
+    ///
+    /// Raw (unscoped) form emitted by provider transports. In production the
+    /// actor wraps every producer channel in a turn-stamping forwarder, so raw
+    /// variants only arrive via test injection; scoped delivery is
+    /// [`InternalEvent::TurnScoped`].
     StreamChunk { token: String },
     /// Stream completed naturally (received [DONE] or stream ended)
     StreamDone,
@@ -93,10 +108,19 @@ pub enum InternalEvent {
     StreamError { error: LlmError },
     /// Stream was cancelled by user via StopGeneration action
     StreamCancelled,
+    /// A stream event stamped with the turn that produced it (stream turn
+    /// identity). Events whose `turn_id` is not the actor's current turn are
+    /// dropped before they can mutate stream state.
+    TurnScoped {
+        turn_id: u64,
+        event: ScopedStreamEvent,
+    },
     /// Attestation verification result from a background attestation task (Phase 3).
     /// Carries the full AttestationEvent so the actor loop can update AppState
-    /// and persist to the SQLite cache.
-    AttestationResult(crate::attestation::AttestationEvent),
+    /// and persist to the SQLite cache, plus the actor-issued request id: only
+    /// the latest request for a still-present, still-matching backend config is
+    /// applied (`0` = untracked/test result, accepted without a request check).
+    AttestationResult(crate::attestation::AttestationEvent, u64),
     /// Result of a background health check against a backend.
     /// Used by Plan 02 actor loop to call mark_failed / mark_success on the router.
     HealthCheckResult {
@@ -147,13 +171,16 @@ pub enum InternalEvent {
     /// Chat compaction completed.
     ///
     /// Delivered from the compaction task back to the actor loop. The actor
-    /// persists the summary + covered ordinal and, when `retry_after` is set,
-    /// re-sends the pending turn with the compacted prompt.
+    /// persists the summary only while its covered prefix still matches. A
+    /// requested retry is dropped if its conversation is no longer visible.
     ConversationCompactionComplete {
         conversation_id: String,
         /// Message count the summary covers (in `list_messages` order).
         covered_count: u64,
-        /// Re-send the pending turn after persisting the summary.
+        /// IDs of the entire covered prefix, including previously summarized
+        /// rows, captured in `list_messages` order when compaction started.
+        expected_covered_ids: Vec<String>,
+        /// Re-send the captured conversation's pending turn after persistence.
         retry_after: bool,
         /// Summary text on success; human-readable reason on failure.
         result: Result<String, String>,
@@ -163,6 +190,8 @@ pub enum InternalEvent {
     /// CRITICAL: Tool dispatch MUST happen on actor thread, NOT inside async task
     /// (dispatch_tools calls runtime.block_on which panics inside Tokio).
     ChatToolCallsReady {
+        /// Turn that ran the detection round; stale results are dropped.
+        turn_id: u64,
         conv_id: String,
         tool_calls: Vec<async_openai::types::chat::ChatCompletionMessageToolCall>,
         /// Full ChatCompletionRequestMessage history up to and including user message.
@@ -170,10 +199,37 @@ pub enum InternalEvent {
         pre_tool_messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage>,
         backend_id: String,
         model: String,
+        /// Tool names the turn advertised to the model. The actor executes
+        /// only these names; anything else is an error result, not a dispatch.
+        allowed_tools: Vec<String>,
     },
     /// Non-streaming tool round returned a final answer (no tools called) (Phase 27).
     /// Actor emits the text as StreamChunk + StreamDone.
-    ChatToolNone { conv_id: String, text: String },
+    ChatToolNone {
+        turn_id: u64,
+        conv_id: String,
+        text: String,
+    },
+    /// Tool execution results for calls delegated off the actor thread.
+    /// Network tools run in a spawned task so Stop/Lock stay responsive;
+    /// carries the same turn id and is dropped when stale.
+    ChatToolResults {
+        turn_id: u64,
+        conv_id: String,
+        tool_calls: Vec<async_openai::types::chat::ChatCompletionMessageToolCall>,
+        pre_tool_messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage>,
+        backend_id: String,
+        model: String,
+        /// `(tool_call_id, result_text)` covering every call in `tool_calls`.
+        results: Vec<(String, String)>,
+    },
+    /// One-shot contextvm auto-discovery for a deferred send finished; the
+    /// actor resumes the parked turn pipeline for `turn_id` in `conv_id`.
+    ContextvmAutoDiscoverForTurn {
+        turn_id: u64,
+        conv_id: String,
+        result: Result<Vec<crate::contextvm::DiscoveredTool>, String>,
+    },
     /// Result of a background Brave Search API key validation call.
     ///
     /// Sent by spawn_brave_api_key_validation back to the actor loop.
@@ -190,13 +246,72 @@ pub enum InternalEvent {
     /// Sent by the AttemptBiometricUnlock handler after the platform biometric
     /// prompt resolves. Processed in the InternalEvent branch so the actor loop
     /// is not blocked while the system biometric UI is displayed (CR-03).
-    BiometricResult { success: bool },
+    BiometricResult { success: bool, generation: u64 },
     /// Phase 35 — discovery query completed. Carries the merged result
     /// (announcements list or error message) for AppState update.
     /// Spawned by AppAction::DiscoverContextvmTools / RetryContextvmDiscovery.
     ContextvmDiscoveryComplete {
         result: Result<Vec<crate::contextvm::DiscoveredTool>, String>,
     },
+}
+
+/// Stream events carried inside [`InternalEvent::TurnScoped`]. Mirrors the raw
+/// `StreamChunk`/`StreamDone`/`StreamError`/`StreamCancelled` variants but is
+/// only produced by the turn-stamping forwarder.
+#[derive(Debug)]
+pub enum ScopedStreamEvent {
+    Chunk { token: String },
+    Done,
+    Error { error: LlmError },
+    Cancelled,
+}
+
+/// Wrap a producer `core_tx` in a forwarder that stamps every stream event
+/// with `turn_id`, then forwards it as [`InternalEvent::TurnScoped`].
+///
+/// Provider transports (tinfoil/ppq/venice/redpill/local/generic) keep their
+/// existing unscoped `core_tx` signature — the forwarder runs as a cheap relay
+/// task on the same runtime, so no provider file needs the turn id.
+/// Non-stream events pass through unwrapped.
+pub fn spawn_turn_scoped_forwarder(
+    runtime: &tokio::runtime::Runtime,
+    core_tx: flume::Sender<crate::CoreMsg>,
+    turn_id: u64,
+) -> flume::Sender<crate::CoreMsg> {
+    let (fwd_tx, fwd_rx) = flume::unbounded::<crate::CoreMsg>();
+    runtime.spawn(async move {
+        while let Ok(msg) = fwd_rx.recv_async().await {
+            let out = match msg {
+                crate::CoreMsg::InternalEvent(event) => {
+                    let event = match *event {
+                        InternalEvent::StreamChunk { token } => InternalEvent::TurnScoped {
+                            turn_id,
+                            event: ScopedStreamEvent::Chunk { token },
+                        },
+                        InternalEvent::StreamDone => InternalEvent::TurnScoped {
+                            turn_id,
+                            event: ScopedStreamEvent::Done,
+                        },
+                        InternalEvent::StreamError { error } => InternalEvent::TurnScoped {
+                            turn_id,
+                            event: ScopedStreamEvent::Error { error },
+                        },
+                        InternalEvent::StreamCancelled => InternalEvent::TurnScoped {
+                            turn_id,
+                            event: ScopedStreamEvent::Cancelled,
+                        },
+                        event => event,
+                    };
+                    crate::CoreMsg::InternalEvent(Box::new(event))
+                }
+                other => other,
+            };
+            if core_tx.send(out).is_err() {
+                break;
+            }
+        }
+    });
+    fwd_tx
 }
 
 /// Spawn an async-openai streaming task on the given Tokio runtime.
@@ -592,6 +707,39 @@ mod tests {
         ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
         CreateChatCompletionRequestArgs, ImageDetail, ImageUrl,
     };
+
+    #[tokio::test]
+    async fn generic_tee_streaming_requires_a_valid_pin_before_cache_lookup() {
+        let mut backend = crate::llm::BackendConfig {
+            id: "streaming-pin-preflight".to_string(),
+            name: "Streaming pin preflight".to_string(),
+            base_url: "https://localhost/v1/".to_string(),
+            api_key: "test-key".to_string(),
+            models: vec!["test-model".to_string()],
+            tee_type: crate::llm::TeeType::Unknown,
+            max_concurrent_requests: 1,
+            supports_tool_use: false,
+        };
+        let transport = crate::llm::ProviderTransportKind::OpenAiCompatible;
+        assert!(super::cached_chat_client(&backend, transport, None).is_ok());
+        backend.tee_type = crate::llm::TeeType::IntelTdx;
+        let short_pin = "a".repeat(63);
+        let non_hex_pin = "g".repeat(64);
+        for pin in [
+            None,
+            Some(""),
+            Some("not-a-pin"),
+            Some(short_pin.as_str()),
+            Some(non_hex_pin.as_str()),
+        ] {
+            assert!(matches!(
+                super::cached_chat_client(&backend, transport, pin),
+                Err(crate::llm::LlmError::AuthError { .. })
+            ));
+        }
+        let valid_pin = "ab".repeat(32);
+        assert!(super::cached_chat_client(&backend, transport, Some(&valid_pin)).is_ok());
+    }
 
     /// Regression (debug session `image-upload-still-broken-after-fix`):
     /// a multipart User message (`Content::Array` with Text + ImageUrl parts) must

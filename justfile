@@ -171,7 +171,7 @@ build-android:
   # Bundle libc++_shared.so required by ONNX Runtime
   NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_HOME:-${HOME}/Android/Sdk}/ndk/28.2.13676358}"
   PREBUILT="$NDK_HOME/toolchains/llvm/prebuilt"
-  HOST_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+  HOST_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64"
   SYSROOT="$PREBUILT/$HOST_TAG/sysroot/usr/lib"
   cp "$SYSROOT/aarch64-linux-android/libc++_shared.so" \
     android/app/src/main/jniLibs/arm64-v8a/
@@ -194,7 +194,7 @@ build-android-release:
     build -p {{CORE_CRATE}} --release
   NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_HOME:-${HOME}/Android/Sdk}/ndk/28.2.13676358}"
   PREBUILT="$NDK_HOME/toolchains/llvm/prebuilt"
-  HOST_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+  HOST_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64"
   SYSROOT="$PREBUILT/$HOST_TAG/sysroot/usr/lib"
   cp "$SYSROOT/aarch64-linux-android/libc++_shared.so" \
     android/app/src/main/jniLibs/arm64-v8a/

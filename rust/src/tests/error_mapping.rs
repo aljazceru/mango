@@ -58,3 +58,31 @@ fn test_api_error_display() {
     let msg = e.display_message();
     assert!(msg.contains("500"), "got: {}", msg);
 }
+
+#[test]
+fn api_error_response_preserves_http_status() {
+    use async_openai::error::{ApiError, ApiErrorResponse, OpenAIError};
+
+    for status in [400, 401, 429] {
+        let error = crate::llm::error::map_openai_error(OpenAIError::ApiError(ApiErrorResponse {
+            status_code: reqwest::StatusCode::from_u16(status).unwrap(),
+            api_error: ApiError {
+                message: "request rejected".into(),
+                r#type: None,
+                param: None,
+                code: None,
+            },
+        }));
+        match (status, error) {
+            (
+                400,
+                LlmError::ApiError {
+                    status_code: 400, ..
+                },
+            )
+            | (401, LlmError::AuthError { .. })
+            | (429, LlmError::RateLimited { .. }) => {}
+            (status, error) => panic!("HTTP {status} was not preserved: {error:?}"),
+        }
+    }
+}

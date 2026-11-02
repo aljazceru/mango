@@ -2,7 +2,6 @@ package dev.disobey.mango.ui
 
 import android.content.Context
 import android.net.Uri
-import android.provider.DocumentsContract
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -32,7 +31,7 @@ class DirectorySyncWorker(
         val manager = AppManager.getInstance(applicationContext)
         val sources = manager.state.directorySources
         for (source in sources) {
-            val tree = resolveTreeUri(applicationContext, source) ?: continue
+            val tree = resolveTreeUri(manager, source) ?: continue
             try {
                 syncDirectory(applicationContext, source, Uri.parse(tree)) { action ->
                     manager.dispatch(action)
@@ -67,35 +66,20 @@ class DirectorySyncWorker(
 
 /**
  * DirectorySourceSummary does NOT carry the platform-specific handles across the
- * UniFFI boundary (T-32-I2). On Android the tree URI is recovered from the
- * ContentResolver's persistable-permission list, which survives process death
- * and device reboot (Pitfall 4 / D-18).
+ * UniFFI boundary (T-32-I2). The exact tree URI stored per source id is fetched
+ * through `FfiApp.getDirectoryTreeUri` — display-name matching is gone, so two
+ * folders with the same basename can never resolve to the same grant.
  *
- * Matching strategy: derive the display name from each persisted tree URI using
- * the same rule the picker used, and match against the source's displayName.
- * This keeps the URI inside the app without ever crossing UniFFI (T-32-I2).
+ * Returns null while locked or when the source has no stored tree URI.
  */
-internal fun resolveTreeUri(
-    context: Context,
+internal suspend fun resolveTreeUri(
+    manager: AppManager,
     source: DirectorySourceSummary,
-): String? {
-    val persisted = try {
-        context.contentResolver.persistedUriPermissions
-    } catch (_: SecurityException) {
-        return null
+): String? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    try {
+        manager.getDirectoryTreeUri(source.id)
+    } catch (e: Exception) {
+        Log.e("DirectorySyncWorker", "getDirectoryTreeUri(${source.id}) failed: ${e.message}")
+        null
     }
-    for (grant in persisted) {
-        if (!grant.isReadPermission) continue
-        val uri = grant.uri
-        val name = try {
-            DocumentsContract.getTreeDocumentId(uri)
-                .substringAfterLast(':')
-                .substringAfterLast('/')
-                .ifEmpty { "Folder" }
-        } catch (_: Exception) {
-            continue
-        }
-        if (name == source.displayName) return uri.toString()
-    }
-    return null
 }

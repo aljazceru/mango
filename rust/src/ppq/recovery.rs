@@ -26,7 +26,7 @@ use aes_gcm::{
 use argon2::{Algorithm, Argon2, Params, Version};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryError {
@@ -79,7 +79,21 @@ const MAX_P: u8 = 4;
 const RECOVERY_FORMAT: &str = "mango.ppq.recovery";
 const DEFAULT_BACKEND_ID: &str = "ppq-ai";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
+struct InnerDocumentRef<'a> {
+    format: &'a str,
+    version: u8,
+    credit_id: &'a str,
+    api_key: &'a str,
+    backend_id: &'a str,
+    #[serde(default)]
+    account_created_at: Option<&'a str>,
+    exported_at: &'a str,
+}
+
+/// Decrypt-side document. Drop zeroizes the secret fields so the plaintext
+/// copies made by deserialization are wiped with the struct (audit finding).
+#[derive(Deserialize)]
 struct InnerDocument {
     format: String,
     version: u8,
@@ -91,6 +105,13 @@ struct InnerDocument {
     exported_at: String,
 }
 
+impl Drop for InnerDocument {
+    fn drop(&mut self) {
+        self.credit_id.zeroize();
+        self.api_key.zeroize();
+    }
+}
+
 fn derive_key(
     password: &str,
     salt: &[u8],
@@ -98,14 +119,13 @@ fn derive_key(
     t: u32,
     p: u8,
 ) -> Result<Zeroizing<[u8; 32]>, RecoveryError> {
-    let password_copy = Zeroizing::new(password.to_string());
     let params =
         Params::new(m_kib, t, p as u32, Some(32)).map_err(|_| RecoveryError::InvalidFile)?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut key = Zeroizing::new([0u8; 32]);
     argon
-        .hash_password_into(password_copy.as_bytes(), salt, &mut key[..])
+        .hash_password_into(password.as_bytes(), salt, &mut key[..])
         .map_err(|_| RecoveryError::InvalidFile)?;
     Ok(key)
 }
@@ -121,14 +141,16 @@ pub fn encrypt_recovery_document(
         return Err(RecoveryError::InvalidFile);
     }
 
-    let inner = InnerDocument {
-        format: RECOVERY_FORMAT.to_string(),
+    // Borrowed serialization avoids plaintext secret copies on the heap
+    // (audit finding): only the Zeroizing JSON buffer holds them.
+    let inner = InnerDocumentRef {
+        format: RECOVERY_FORMAT,
         version: VERSION,
-        credit_id: credit_id.to_string(),
-        api_key: api_key.to_string(),
-        backend_id: DEFAULT_BACKEND_ID.to_string(),
-        account_created_at: account_created_at.map(Into::into),
-        exported_at: exported_at.to_string(),
+        credit_id,
+        api_key,
+        backend_id: DEFAULT_BACKEND_ID,
+        account_created_at,
+        exported_at,
     };
     let plaintext =
         Zeroizing::new(serde_json::to_vec(&inner).map_err(|_| RecoveryError::InvalidFile)?);
@@ -222,7 +244,7 @@ pub fn decrypt_recovery_document(
             .map_err(|_| RecoveryError::WrongPasswordOrCorruptFile)?,
     );
 
-    let inner: InnerDocument =
+    let mut inner: InnerDocument =
         serde_json::from_slice(plaintext.as_slice()).map_err(|_| RecoveryError::InvalidFile)?;
     if inner.format != RECOVERY_FORMAT
         || inner.version != VERSION
@@ -233,12 +255,13 @@ pub fn decrypt_recovery_document(
         return Err(RecoveryError::InvalidFile);
     }
 
+    // Fields are `take`n because InnerDocument's Drop zeroizes in place.
     Ok(RecoveryDocument {
-        credit_id: Zeroizing::new(inner.credit_id),
-        api_key: Zeroizing::new(inner.api_key),
-        backend_id: inner.backend_id,
-        account_created_at: inner.account_created_at,
-        exported_at: inner.exported_at,
+        credit_id: Zeroizing::new(std::mem::take(&mut inner.credit_id)),
+        api_key: Zeroizing::new(std::mem::take(&mut inner.api_key)),
+        backend_id: std::mem::take(&mut inner.backend_id),
+        account_created_at: inner.account_created_at.take(),
+        exported_at: std::mem::take(&mut inner.exported_at),
     })
 }
 

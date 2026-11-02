@@ -1,6 +1,9 @@
 package dev.disobey.mango
 
 import android.content.Context
+import android.content.Intent
+import android.os.SystemClock
+
 import android.os.Handler
 import android.os.Looper
 import androidx.fragment.app.FragmentActivity
@@ -36,22 +39,47 @@ import dev.disobey.mango.rust.LocalLlmCapabilityStatus
 import dev.disobey.mango.rust.Router
 import dev.disobey.mango.rust.Screen
 import dev.disobey.mango.rust.SensitiveActionAuth
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/**
+ * Lock-timeout predicate on elapsedRealtime-style monotonic values:
+ * true when a finite timeout was armed (backgroundedAt > 0) and has elapsed,
+ * or when the clock appears inverted (fail closed). timeoutSeconds < 0 = Never.
+ */
+internal fun shouldLockAfterBackground(backgroundedAt: Long, now: Long, timeoutSeconds: Long): Boolean {
+    if (backgroundedAt <= 0 || timeoutSeconds < 0) {
+        return false
+    }
+    val elapsed = now - backgroundedAt
+    return elapsed < 0 || elapsed >= timeoutSeconds * 1000L
+}
+
+/**
+ * Startup failed before any UI existed: EncryptedSharedPreferences / MasterKey /
+ * Rust core construction threw. Surfaced to MainActivity so it can show a
+ * retry/recovery screen instead of crashing; NOTHING is auto-cleared.
+ */
+class AppManagerInitException(message: String, cause: Throwable?) : Exception(message, cause)
 
 class AppManager private constructor(context: Context, activity: FragmentActivity?) : AppReconciler {
     /** §7.5: activity-rebindable biometric bridge injected into Rust. */
     private lateinit var biometricProxy: RebindableBiometricProvider
     val biometricRebindable: RebindableBiometricProvider? get() = if (::biometricProxy.isInitialized) biometricProxy else null
 
+
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val ffiApp: FfiApp
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private lateinit var ffiApp: FfiApp
     private var lastRevApplied: ULong = 0UL
 
-    private val _stateFlow: MutableStateFlow<AppState>
+    private lateinit var _stateFlow: MutableStateFlow<AppState>
     val stateFlow: StateFlow<AppState> get() = _stateFlow.asStateFlow()
 
     // True once the first reconcile() call from the Rust actor has arrived.
@@ -167,31 +195,56 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         private set
 
     init {
+        try {
+            initCore(context, activity)
+        } catch (e: Throwable) {
+            throw AppManagerInitException(
+                "Secure storage or core initialization failed",
+                e,
+            )
+        }
+    }
+
+    private fun initCore(context: Context, activity: FragmentActivity?) {
         val dataDir = context.filesDir.absolutePath
-        val masterKey = MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        val prefs = EncryptedSharedPreferences.create(
-            context,
-            "keychain_encrypted",
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-        val keychain = object : KeychainProvider {
-            override fun store(service: String, key: String, value: String): Boolean {
+        val masterKey = try {
+            MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+        } catch (e: Throwable) {
+            throw AppManagerInitException("Keystore master key unavailable", e)
+        }
+        val prefs = try {
+            EncryptedSharedPreferences.create(
+                context,
+                "keychain_encrypted",
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+            )
+        } catch (e: Throwable) {
+            throw AppManagerInitException("Encrypted keychain unavailable", e)
+        }
+        // The biometric DEK slot is held only wrapped under an auth-bound
+        // Keystore key (see BiometricDekStore / MangoKeychain); the Never /
+        // no-lock bypass uses its own "dek-bypass" slot.
+        val dekStore = BiometricDekStore(context) {
+            // Wrapping key invalidated by an enrollment change: drop the
+            // enrollment marker so the core stops offering biometric unlock.
+            prefs.edit().remove(MangoKeychain.BIOMETRIC_FLAG_ID).commit()
+        }
+        val keychain = MangoKeychain(
+            plain = object : PlainSecretStore {
+                override fun get(key: String): String? = prefs.getString(key, null)
                 // commit() (synchronous) per plan §6.2: the Rust secret store relies on
                 // store() returning success only after the write would survive process
                 // death. apply() is async and can silently lose the credential.
-                return prefs.edit().putString("$service::$key", value).commit()
-            }
-            override fun load(service: String, key: String): String? {
-                return prefs.getString("$service::$key", null)
-            }
-            override fun delete(service: String, key: String): Boolean {
-                return prefs.edit().remove("$service::$key").commit()
-            }
-        }
+                override fun put(key: String, value: String): Boolean =
+                    prefs.edit().putString(key, value).commit()
+                override fun remove(key: String): Boolean = prefs.edit().remove(key).commit()
+            },
+            bound = dekStore,
+        )
         // Real on-device embedding via ONNX Runtime + XNNPACK EP (Phase 11, EMBD-03/05).
         // Falls back to a zero-vector provider if model initialisation fails so the app
         // remains functional even on devices where ONNX Runtime cannot load the model.
@@ -217,7 +270,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         // current activity on every onCreate, so rotation/recreation can never
         // leave Rust holding a stale weak activity reference. The initial
         // activity (if any) is attached immediately here.
-        val biometricProxy = RebindableBiometricProvider()
+        val biometricProxy = RebindableBiometricProvider(dekStore)
         activity?.let { biometricProxy.attach(it) }
         val biometric: BiometricProvider = biometricProxy
         this.biometricProxy = biometricProxy
@@ -228,6 +281,7 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
         _stateFlow = MutableStateFlow(initial)
         ffiApp.listenForUpdates(this)
     }
+
 
     fun dispatch(action: AppAction) {
         ffiApp.dispatch(action)
@@ -247,6 +301,105 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
     // crossing the persistence/SAF permission boundary (T-32-I2 / D-02).
     fun listDirectoryFingerprints(sourceId: String): List<DirectoryFingerprint> {
         return ffiApp.listDirectoryFingerprints(sourceId)
+    }
+
+    /** The exact persisted SAF tree URI for a source id (null when none/locked). */
+    fun getDirectoryTreeUri(sourceId: String): String? = ffiApp.getDirectoryTreeUri(sourceId)
+
+    /** FIFO barrier: blocks until the actor processed everything dispatched so far. */
+    fun syncActor() = ffiApp.sync()
+
+    // ── Lock deadline (process-wide, monotonic) ──────────────────────────────
+    // The unlocked core lives in this process-wide singleton, so the
+    // background timestamp must too — an activity-own timestamp resets to zero
+    // on recreation and on back-to-launcher + relaunch, silently disabling the
+    // timeout. SystemClock.elapsedRealtime is immune to wall-clock changes.
+    private val backgroundLock = Any()
+    /** elapsedRealtime (ms) when the app last went to background; 0 = none. */
+    private var backgroundedAtElapsed: Long = 0L
+
+    fun onAppBackgrounded() {
+        synchronized(backgroundLock) {
+            if (backgroundedAtElapsed == 0L) {
+                backgroundedAtElapsed = SystemClock.elapsedRealtime()
+            }
+        }
+    }
+
+    /**
+     * Enforce the configured lock timeout for ANY activity attach/resume:
+     * returns true (and clears the marker) when the app must re-lock. The
+     * marker is consumed either way so a stale deadline can never fire twice.
+     */
+    fun enforceLockDeadline(): Boolean {
+        val marker: Long = synchronized(backgroundLock) {
+            val m = backgroundedAtElapsed
+            backgroundedAtElapsed = 0L
+            m
+        }
+        return shouldLockAfterBackground(
+            backgroundedAt = marker,
+            now = SystemClock.elapsedRealtime(),
+            timeoutSeconds = state.lockTimeoutSeconds,
+        )
+    }
+
+    // ── Persisted SAF grant reconciliation ───────────────────────────────────
+    private val appContext = context.applicationContext
+    private var grantsReconciledKey: Set<String>? = null
+
+    /**
+     * Release persisted tree grants that no current directory source needs.
+     * Runs after the actor reports a hydrated, UNLOCKED state — never while
+     * locked or before hydration, so a pre-unlock snapshot can never revoke
+     * grants a wiped/decoy session did not re-add.
+     */
+    fun maybeReconcileDirectoryGrants() {
+        val s = state
+        if (!isReady) return
+        if (s.router.currentScreen is Screen.Locked) return
+        val key = s.directorySources.map { it.id }.toSet()
+        synchronized(this) {
+            if (grantsReconciledKey == key) return
+            grantsReconciledKey = key
+        }
+        val referenced = HashSet<String>(s.directorySources.size)
+        try {
+            for (source in s.directorySources) {
+                val uri = ffiApp.getDirectoryTreeUri(source.id)
+                // A locked/errored read would make reconciliation blind —
+                // abort instead of revoking real grants.
+                    ?: throw IllegalStateException("tree_uri lookup failed for ${source.id}")
+                referenced += uri
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w("AppManager", "directory grant reconcile aborted: ${e.message}")
+            synchronized(this) { grantsReconciledKey = null }
+            return
+        }
+        if (state.rev != s.rev || state.router.currentScreen is Screen.Locked) {
+            synchronized(this) { grantsReconciledKey = null }
+            return
+        }
+        val resolver = appContext.contentResolver
+        val grants = try {
+            resolver.persistedUriPermissions
+        } catch (_: SecurityException) {
+            return
+        }
+        for (grant in grants) {
+            val uriString = grant.uri.toString()
+            if (uriString in referenced) continue
+            try {
+                resolver.releasePersistableUriPermission(
+                    grant.uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            } catch (e: Exception) {
+                android.util.Log.w("AppManager", "releasePersistableUriPermission failed: ${e.message}")
+            }
+        }
     }
 
     /**
@@ -376,6 +529,9 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
                     // Mark ready on the first reconcile so the UI renders the real
                     // initial state rather than the hardcoded Screen.Home default.
                     if (!isReady) isReady = true
+                    // Reconcile persisted SAF grants against the freshly
+                    // applied state off the main thread.
+                    ioScope.launch { maybeReconcileDirectoryGrants() }
                 }
             }
         }
@@ -389,5 +545,16 @@ class AppManager private constructor(context: Context, activity: FragmentActivit
             instance ?: synchronized(this) {
                 instance ?: AppManager(context.applicationContext, activity).also { instance = it }
             }
+
+        /**
+         * Construct the singleton off the main thread (Keystore, ONNX model
+         * copy, native probe) so startup never blocks the UI thread. Errors
+         * propagate as AppManagerInitException for the caller to surface.
+         */
+        suspend fun warmInstance(context: Context, activity: FragmentActivity? = null): AppManager =
+            withContext(Dispatchers.IO) {
+                getInstance(context, activity)
+            }
     }
+
 }

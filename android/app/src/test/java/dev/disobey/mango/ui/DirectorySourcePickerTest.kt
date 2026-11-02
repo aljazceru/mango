@@ -137,4 +137,21 @@ class DirectorySourcePickerTest {
             containsAnnotation,
         )
     }
+    @Test
+    fun `stream cap accepts exact boundary and stops oversized providers`() {
+        val bytes = byteArrayOf(1, 2, 3)
+        org.junit.Assert.assertArrayEquals(bytes, readBytesCapped(bytes.inputStream(), 3))
+        val oversized = object : java.io.InputStream() {
+            var reads = 0
+            override fun read(): Int {
+                reads += 1
+                check(reads <= 4) { "Read beyond cap plus one byte" }
+                return 1
+            }
+        }
+        org.junit.Assert.assertNull(readBytesCapped(oversized, 3))
+        assertEquals(4, oversized.reads)
+        org.junit.Assert.assertArrayEquals(byteArrayOf(), readBytesCapped(byteArrayOf().inputStream(), 0))
+    }
+
 }

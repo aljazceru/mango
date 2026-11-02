@@ -4,7 +4,13 @@ use crate::llm::{BackendSummary, HealthStatus, TeeType};
 use crate::routing::route_mode::*;
 use crate::routing::{HybridProfile, LocalPreprocessing, RoutingPolicy};
 
-pub(crate) fn backend(id: &str, name: &str, tee: TeeType, models: &[&str], key: bool) -> BackendSummary {
+pub(crate) fn backend(
+    id: &str,
+    name: &str,
+    tee: TeeType,
+    models: &[&str],
+    key: bool,
+) -> BackendSummary {
     BackendSummary {
         id: id.into(),
         name: name.into(),
@@ -28,7 +34,11 @@ pub(crate) fn local_model(id: &str, name: &str, verified: bool) -> LocalModelSum
         downloaded: verified,
         verified,
         path: None,
-        backend_id: if verified { Some(format!("local-{id}")) } else { None },
+        backend_id: if verified {
+            Some(format!("local-{id}"))
+        } else {
+            None
+        },
     }
 }
 
@@ -45,22 +55,50 @@ pub(crate) fn profile(id: &str) -> HybridProfile {
     }
 }
 
-fn fixtures() -> (Vec<BackendSummary>, Vec<HybridProfile>, Vec<LocalModelSummary>) {
+fn fixtures() -> (
+    Vec<BackendSummary>,
+    Vec<HybridProfile>,
+    Vec<LocalModelSummary>,
+) {
     (
         vec![
-            backend("tinfoil", "Tinfoil", TeeType::IntelTdx, &["glm-5-3", "llama-4"], true),
-            backend("ppq-ai", "PPQ.AI", TeeType::AmdSevSnp, &["gpt-oss-120b"], true),
-            backend("local-qwen3", "Qwen3 1.7B", TeeType::Unknown, &["qwen3"], true),
+            backend(
+                "tinfoil",
+                "Tinfoil",
+                TeeType::IntelTdx,
+                &["glm-5-3", "llama-4"],
+                true,
+            ),
+            backend(
+                "ppq-ai",
+                "PPQ.AI",
+                TeeType::AmdSevSnp,
+                &["gpt-oss-120b"],
+                true,
+            ),
+            backend(
+                "local-qwen3",
+                "Qwen3 1.7B",
+                TeeType::Unknown,
+                &["qwen3"],
+                true,
+            ),
         ],
         vec![profile("p1")],
-        vec![local_model("qwen3", "Qwen3 1.7B", true), local_model("gemma3", "Gemma 3 4B", false)],
+        vec![
+            local_model("qwen3", "Qwen3 1.7B", true),
+            local_model("gemma3", "Gemma 3 4B", false),
+        ],
     )
 }
 
 #[test]
 fn route_is_derived_from_backend_id_prefix() {
     assert_eq!(route_for_backend_id("hybrid:p1"), InferenceRoute::Hybrid);
-    assert_eq!(route_for_backend_id("local-qwen3"), InferenceRoute::OnDevice);
+    assert_eq!(
+        route_for_backend_id("local-qwen3"),
+        InferenceRoute::OnDevice
+    );
     assert_eq!(route_for_backend_id("tinfoil"), InferenceRoute::Cloud);
     assert_eq!(route_for_backend_id(""), InferenceRoute::Cloud);
 }
@@ -142,8 +180,17 @@ fn inputs<'a>(
 #[test]
 fn cloud_keeps_current_cloud_backend_and_model() {
     let (b, h, l) = fixtures();
-    let t = resolve_route_target(InferenceRoute::Cloud, &inputs(&b, &h, &l, "ppq-ai", "gpt-oss-120b"));
-    assert_eq!(t, Ok(RouteTarget::Backend { backend_id: "ppq-ai".into(), model_id: "gpt-oss-120b".into() }));
+    let t = resolve_route_target(
+        InferenceRoute::Cloud,
+        &inputs(&b, &h, &l, "ppq-ai", "gpt-oss-120b"),
+    );
+    assert_eq!(
+        t,
+        Ok(RouteTarget::Backend {
+            backend_id: "ppq-ai".into(),
+            model_id: "gpt-oss-120b".into()
+        })
+    );
 }
 
 #[test]
@@ -154,7 +201,10 @@ fn cloud_from_device_restores_remembered_backend_and_model() {
     i.remembered_cloud_model_id = Some("gpt-oss-120b");
     assert_eq!(
         resolve_route_target(InferenceRoute::Cloud, &i),
-        Ok(RouteTarget::Backend { backend_id: "ppq-ai".into(), model_id: "gpt-oss-120b".into() })
+        Ok(RouteTarget::Backend {
+            backend_id: "ppq-ai".into(),
+            model_id: "gpt-oss-120b".into()
+        })
     );
 }
 
@@ -162,9 +212,21 @@ fn cloud_from_device_restores_remembered_backend_and_model() {
 fn cloud_without_memory_skips_failed_and_unkeyed_backends() {
     let (mut b, h, l) = fixtures();
     b[0].health_status = HealthStatus::Failed; // tinfoil failed
-    b.insert(0, backend("redpill", "Redpill", TeeType::IntelTdx, &[], false)); // not configured
-    let t = resolve_route_target(InferenceRoute::Cloud, &inputs(&b, &h, &l, "local-qwen3", "qwen3"));
-    assert_eq!(t, Ok(RouteTarget::Backend { backend_id: "ppq-ai".into(), model_id: "gpt-oss-120b".into() }));
+    b.insert(
+        0,
+        backend("redpill", "Redpill", TeeType::IntelTdx, &[], false),
+    ); // not configured
+    let t = resolve_route_target(
+        InferenceRoute::Cloud,
+        &inputs(&b, &h, &l, "local-qwen3", "qwen3"),
+    );
+    assert_eq!(
+        t,
+        Ok(RouteTarget::Backend {
+            backend_id: "ppq-ai".into(),
+            model_id: "gpt-oss-120b".into()
+        })
+    );
 }
 
 #[test]
@@ -175,13 +237,22 @@ fn cloud_remembered_model_not_served_falls_back_to_first_model() {
     i.remembered_cloud_model_id = Some("gpt-oss-120b");
     assert_eq!(
         resolve_route_target(InferenceRoute::Cloud, &i),
-        Ok(RouteTarget::Backend { backend_id: "tinfoil".into(), model_id: "glm-5-3".into() })
+        Ok(RouteTarget::Backend {
+            backend_id: "tinfoil".into(),
+            model_id: "glm-5-3".into()
+        })
     );
 }
 
 #[test]
 fn cloud_blocked_without_configured_provider() {
-    let b = vec![backend("qvac-local", "QVAC", TeeType::Unknown, &["m"], true)];
+    let b = vec![backend(
+        "qvac-local",
+        "QVAC",
+        TeeType::Unknown,
+        &["m"],
+        true,
+    )];
     let t = resolve_route_target(InferenceRoute::Cloud, &inputs(&b, &[], &[], "", ""));
     assert_eq!(t, Err(RouteBlocker::NoCloudProvider));
 }
@@ -192,11 +263,15 @@ fn hybrid_uses_current_or_first_profile() {
     let h = vec![profile("p1"), profile("p2")];
     assert_eq!(
         resolve_route_target(InferenceRoute::Hybrid, &inputs(&b, &h, &l, "hybrid:p2", "")),
-        Ok(RouteTarget::HybridProfile { profile_id: "p2".into() })
+        Ok(RouteTarget::HybridProfile {
+            profile_id: "p2".into()
+        })
     );
     assert_eq!(
         resolve_route_target(InferenceRoute::Hybrid, &inputs(&b, &h, &l, "tinfoil", "")),
-        Ok(RouteTarget::HybridProfile { profile_id: "p1".into() })
+        Ok(RouteTarget::HybridProfile {
+            profile_id: "p1".into()
+        })
     );
     assert_eq!(
         resolve_route_target(InferenceRoute::Hybrid, &inputs(&b, &[], &l, "tinfoil", "")),
@@ -208,24 +283,45 @@ fn hybrid_uses_current_or_first_profile() {
 fn on_device_picks_verified_model_or_explains_why_not() {
     let (b, h, l) = fixtures();
     assert_eq!(
-        resolve_route_target(InferenceRoute::OnDevice, &inputs(&b, &h, &l, "tinfoil", "glm-5-3")),
-        Ok(RouteTarget::Backend { backend_id: "local-qwen3".into(), model_id: "qwen3".into() })
+        resolve_route_target(
+            InferenceRoute::OnDevice,
+            &inputs(&b, &h, &l, "tinfoil", "glm-5-3")
+        ),
+        Ok(RouteTarget::Backend {
+            backend_id: "local-qwen3".into(),
+            model_id: "qwen3".into()
+        })
     );
     let mut unsupported = inputs(&b, &h, &l, "tinfoil", "");
     unsupported.local_supported = false;
-    assert_eq!(resolve_route_target(InferenceRoute::OnDevice, &unsupported), Err(RouteBlocker::LocalUnsupported));
+    assert_eq!(
+        resolve_route_target(InferenceRoute::OnDevice, &unsupported),
+        Err(RouteBlocker::LocalUnsupported)
+    );
     let none = vec![local_model("gemma3", "Gemma 3 4B", false)];
     assert_eq!(
-        resolve_route_target(InferenceRoute::OnDevice, &inputs(&b, &h, &none, "tinfoil", "")),
+        resolve_route_target(
+            InferenceRoute::OnDevice,
+            &inputs(&b, &h, &none, "tinfoil", "")
+        ),
         Err(RouteBlocker::NoLocalModel)
     );
 }
 
 #[test]
 fn blockers_point_to_the_screen_that_fixes_them() {
-    assert_eq!(blocker_setup_screen(&RouteBlocker::NoCloudProvider), Some(crate::Screen::SettingsProviders));
-    assert_eq!(blocker_setup_screen(&RouteBlocker::NoHybridProfile), Some(crate::Screen::SettingsHybridRouting));
-    assert_eq!(blocker_setup_screen(&RouteBlocker::NoLocalModel), Some(crate::Screen::SettingsLocalModels));
+    assert_eq!(
+        blocker_setup_screen(&RouteBlocker::NoCloudProvider),
+        Some(crate::Screen::SettingsProviders)
+    );
+    assert_eq!(
+        blocker_setup_screen(&RouteBlocker::NoHybridProfile),
+        Some(crate::Screen::SettingsHybridRouting)
+    );
+    assert_eq!(
+        blocker_setup_screen(&RouteBlocker::NoLocalModel),
+        Some(crate::Screen::SettingsLocalModels)
+    );
     assert_eq!(blocker_setup_screen(&RouteBlocker::LocalUnsupported), None);
     assert!(!blocker_message(&RouteBlocker::NoLocalModel).is_empty());
 }

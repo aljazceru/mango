@@ -1,0 +1,31 @@
+# cargo-audit ignores: advisories with NO available fix in our dependency
+# graph. Keep in sync with deny.toml — every entry needs a reason and a
+# removal condition.
+[advisories]
+ignore = [
+    # crypto-bigint 0.5.5 (only 0.7.6+ is patched) is pinned by
+    # elliptic-curve 0.13 via ecdsa 0.16 -> p256/p384 0.13, required by
+    # dcap-qvl-webpki and sev — both still on the 0.13 curve stack with no
+    # compatible release. Remove when dcap-qvl/sev move to elliptic-curve
+    # 0.14 (crypto-bigint 0.7.x is already patched in this lockfile).
+    "RUSTSEC-2026-0387",
+    # zip 8.6.0 remains only via docx-rs (0.4.22 is the latest release and
+    # pins zip 8); rbook already moved to zip 9. The flagged APIs are
+    # filesystem extraction (`ZipArchive::extract`, ZipStreamReader, symlink
+    # targets); docx-rs only reads archives in memory and never calls them.
+    # Remove when docx-rs releases with zip >= 9.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+    # rsa 0.9 Marvin timing attack — no patched release exists. Reached via
+    # jsonwebtoken (local JWT verify), dcap-qvl-webpki and sev (attestation
+    # chains), none of which do remote RSA private-key operations.
+    "RUSTSEC-2023-0071",
+    # Unmaintained informational notices with no maintained upgrade path:
+    # basic-toml via uniffi 0.32; zvariant/zvariant_derive/zbus_names via
+    # keyring -> zbus 5. Remove when upstreams migrate.
+    "RUSTSEC-2026-0374",
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+]

@@ -204,7 +204,9 @@ pub fn decode_response(response: &contextvm_sdk::JsonRpcMessage, _tool_name: &st
             .get("message")
             .and_then(|m| m.as_str())
             .unwrap_or("(no message)");
-        return format_jsonrpc_error(code, msg);
+        // Route through the 16 KiB cap: a provider-supplied error message is
+        // untrusted output that ends up in the follow-up prompt.
+        return truncate_result(format_jsonrpc_error(code, msg));
     }
 
     // Success: extract result.content[0].text per MCP spec.

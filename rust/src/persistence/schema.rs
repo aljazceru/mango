@@ -495,6 +495,15 @@ CREATE TABLE IF NOT EXISTS model_context_limits (
 );
 ";
 
+/// Migration v29: retain same-name providers without transferring tool approval.
+///
+/// Disabled announcements coexist; only explicit enable may select the provider for a name.
+pub const MIGRATION_V29: &str = "
+DROP INDEX IF EXISTS idx_contextvm_tools_name;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contextvm_tools_name
+    ON contextvm_tools(tool_name) WHERE enabled = 1;
+";
+
 /// All migrations in order.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
@@ -525,6 +534,7 @@ pub const MIGRATIONS: &[&str] = &[
     MIGRATION_V26,
     MIGRATION_V27,
     MIGRATION_V28,
+    MIGRATION_V29,
 ];
 
 #[cfg(test)]

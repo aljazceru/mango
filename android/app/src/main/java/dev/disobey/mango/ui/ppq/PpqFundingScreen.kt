@@ -147,8 +147,9 @@ fun PpqFundingScreen(
                 onCheckStatus = onCheckStatus,
             )
 
-            if (summary.fundingPhase == PpqFundingPhase.AWAITING_PAYMENT) {
-                Row(
+            when (summary.fundingPhase) {
+                PpqFundingPhase.AWAITING_PAYMENT,
+                PpqFundingPhase.UNKNOWN_AFTER_CREATE -> Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -165,7 +166,30 @@ fun PpqFundingScreen(
                         Text("Cancel")
                     }
                 }
+
+                // Expired/errored invoices keep a way out: cancelling clears the
+                // funding row and the amount-entry form reappears. Without this
+                // the user is stuck on a dead invoice.
+                PpqFundingPhase.EXPIRED,
+                PpqFundingPhase.ERROR -> TextButton(
+                    onClick = onCancel,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Cancel & new invoice")
+                }
+
+                else -> {}
             }
+        }
+
+        // Redacted server-side error from the account summary (never raw
+        // bodies or credentials) — surfaced so a failed create/check is visible.
+        summary.error?.let { err ->
+            Text(
+                text = err,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
 
         if (summary.fundingPhase == PpqFundingPhase.CREATING_INVOICE) {

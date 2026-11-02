@@ -16,11 +16,17 @@ fn make_app() -> std::sync::Arc<FfiApp> {
         Box::new(NullBiometricProvider),
     );
     app.sync();
+    app.test_verify_backend_attestation("tinfoil", "AmdSevSnp");
     app
 }
 
 /// Helper: sleep to let the actor process a dispatched action.
 fn wait(app: &FfiApp) {
+    app.sync();
+}
+
+fn cancel_stream(app: &FfiApp) {
+    app.test_send_internal(InternalEvent::StreamCancelled);
     app.sync();
 }
 
@@ -216,6 +222,7 @@ fn test_load_conversation_populates_messages() {
         force_role: None,
     });
     wait(&app);
+    cancel_stream(&app);
 
     // Navigate away to Home, then reload
     app.dispatch(AppAction::PushScreen {
@@ -447,6 +454,7 @@ fn test_retry_deletes_assistant_and_resends() {
     wait(&app);
 
     // Inject a completed stream
+    cancel_stream(&app);
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "The answer is 4.".into(),
     });
@@ -502,6 +510,7 @@ fn test_edit_truncates_and_resends() {
     });
     wait(&app);
     std::thread::sleep(Duration::from_millis(5)); // ensure distinct timestamp
+    cancel_stream(&app);
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Reply 1".into(),
     });
@@ -516,6 +525,7 @@ fn test_edit_truncates_and_resends() {
     });
     wait(&app);
     std::thread::sleep(Duration::from_millis(5)); // ensure distinct timestamp
+    cancel_stream(&app);
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Reply 2".into(),
     });
@@ -763,6 +773,7 @@ fn test_stream_done_persists_assistant_message() {
         force_role: None,
     });
     wait(&app);
+    cancel_stream(&app);
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Rust is a systems programming language.".into(),
     });
@@ -818,6 +829,7 @@ fn test_auto_title_on_first_response() {
         force_role: None,
     });
     wait(&app);
+    cancel_stream(&app);
     app.test_send_internal(InternalEvent::StreamChunk {
         token: "Rust is great!".into(),
     });
@@ -901,6 +913,7 @@ fn oversized_message_content_is_clamped_in_state_and_on_reload() {
 
     // Reopen the conversation: the clamp must survive a LoadConversation pass.
     let conv_id = app.state().current_conversation_id.clone().unwrap();
+    cancel_stream(&app);
     app.dispatch(AppAction::LoadConversation {
         conversation_id: conv_id,
     });
@@ -1140,6 +1153,7 @@ fn retry_strips_attachment_placeholder() {
     });
     wait(&app);
 
+    cancel_stream(&app);
     // RetryLastMessage re-sends the last user turn (no assistant exists yet —
     // the assistant-removal step is skipped, the user replay still runs).
     app.dispatch(AppAction::RetryLastMessage);

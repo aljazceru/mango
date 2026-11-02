@@ -867,6 +867,8 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
+
+    internal fun ensureInitialized() = Unit
     external fun uniffi_mango_core_checksum_func_known_provider_presets(
     ): Int
     external fun uniffi_mango_core_checksum_func_model_supports_vision(
@@ -884,6 +886,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown(
     ): Int
     external fun uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark(
+    ): Int
+    external fun uniffi_mango_core_checksum_method_ffiapp_get_directory_tree_uri(
     ): Int
     external fun uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report(
     ): Int
@@ -965,6 +969,8 @@ internal object UniffiLib {
         uniffiCallbackInterfaceLocalLlmProvider.register(this)
         
     }
+
+    internal fun ensureInitialized() = Unit
     external fun uniffi_mango_core_fn_clone_ffiapp(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun uniffi_mango_core_fn_free_ffiapp(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -982,6 +988,8 @@ internal object UniffiLib {
     external fun uniffi_mango_core_fn_method_ffiapp_export_conversation_markdown(`ptr`: Long,`conversationId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(`ptr`: Long,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_mango_core_fn_method_ffiapp_get_directory_tree_uri(`ptr`: Long,`sourceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_mango_core_fn_method_ffiapp_get_raw_attestation_report(`ptr`: Long,`backendId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -1150,115 +1158,118 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_mango_core_checksum_func_known_provider_presets() != 16128) {
+    if ((lib.uniffi_mango_core_checksum_func_known_provider_presets() and 0xFFFF) != 16128) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_func_model_supports_vision() != 1192) {
+    if ((lib.uniffi_mango_core_checksum_func_model_supports_vision() and 0xFFFF) != 1192) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_func_local_model_catalog() != 54432) {
+    if ((lib.uniffi_mango_core_checksum_func_local_model_catalog() and 0xFFFF) != 54432) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_confirm_delete_all_data() != 32915) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_confirm_delete_all_data() and 0xFFFF) != 32915) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_confirm_forget_managed_ppq() != 56233) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_confirm_forget_managed_ppq() and 0xFFFF) != 56233) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_create_ppq_recovery_backup() != 35739) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_create_ppq_recovery_backup() and 0xFFFF) != 35739) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_dispatch() != 14382) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_dispatch() and 0xFFFF) != 14382) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown() != 60488) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_export_conversation_markdown() and 0xFFFF) != 60488) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() != 13014) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_get_directory_bookmark() and 0xFFFF) != 13014) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() != 38325) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_get_directory_tree_uri() and 0xFFFF) != 52302) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints() != 60041) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_get_raw_attestation_report() and 0xFFFF) != 38325) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() != 39763) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_list_directory_fingerprints() and 0xFFFF) != 60041) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() != 26433) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_listen_for_updates() and 0xFFFF) != 39763) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_restore_ppq_recovery_backup() != 49907) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_read_encrypted_image() and 0xFFFF) != 26433) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_state() != 37810) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_restore_ppq_recovery_backup() and 0xFFFF) != 49907) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_ffiapp_sync() != 35082) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_state() and 0xFFFF) != 37810) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() != 7388) {
+    if ((lib.uniffi_mango_core_checksum_method_ffiapp_sync() and 0xFFFF) != 35082) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_token() != 18480) {
+    if ((lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_error() and 0xFFFF) != 7388) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled() != 45499) {
+    if ((lib.uniffi_mango_core_checksum_method_localgenerationcontext_emit_token() and 0xFFFF) != 18480) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress() != 13883) {
+    if ((lib.uniffi_mango_core_checksum_method_localgenerationcontext_is_cancelled() and 0xFFFF) != 45499) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_constructor_ffiapp_new() != 21241) {
+    if ((lib.uniffi_mango_core_checksum_method_localmodeldownloadcontext_emit_progress() and 0xFFFF) != 13883) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_appreconciler_reconcile() != 30340) {
+    if ((lib.uniffi_mango_core_checksum_constructor_ffiapp_new() and 0xFFFF) != 21241) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_biometricprovider_biometric_status() != 45522) {
+    if ((lib.uniffi_mango_core_checksum_method_appreconciler_reconcile() and 0xFFFF) != 30340) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_biometricprovider_authenticate() != 26821) {
+    if ((lib.uniffi_mango_core_checksum_method_biometricprovider_biometric_status() and 0xFFFF) != 45522) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_filepickerprovider_pick_file() != 55219) {
+    if ((lib.uniffi_mango_core_checksum_method_biometricprovider_authenticate() and 0xFFFF) != 26821) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_keychainprovider_store() != 24008) {
+    if ((lib.uniffi_mango_core_checksum_method_filepickerprovider_pick_file() and 0xFFFF) != 55219) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_keychainprovider_load() != 2921) {
+    if ((lib.uniffi_mango_core_checksum_method_keychainprovider_store() and 0xFFFF) != 24008) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_keychainprovider_delete() != 6109) {
+    if ((lib.uniffi_mango_core_checksum_method_keychainprovider_load() and 0xFFFF) != 2921) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_embeddingprovider_embed() != 39608) {
+    if ((lib.uniffi_mango_core_checksum_method_keychainprovider_delete() and 0xFFFF) != 6109) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_load_model() != 65082) {
+    if ((lib.uniffi_mango_core_checksum_method_embeddingprovider_embed() and 0xFFFF) != 39608) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_download_model_file() != 62788) {
+    if ((lib.uniffi_mango_core_checksum_method_localllmprovider_load_model() and 0xFFFF) != 65082) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_platform_http_request() != 15192) {
+    if ((lib.uniffi_mango_core_checksum_method_localllmprovider_download_model_file() and 0xFFFF) != 62788) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_generate() != 55144) {
+    if ((lib.uniffi_mango_core_checksum_method_localllmprovider_platform_http_request() and 0xFFFF) != 15192) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_unload() != 45033) {
+    if ((lib.uniffi_mango_core_checksum_method_localllmprovider_generate() and 0xFFFF) != 55144) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path() != 61589) {
+    if ((lib.uniffi_mango_core_checksum_method_localllmprovider_unload() and 0xFFFF) != 45033) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_device_capability() != 56121) {
+    if ((lib.uniffi_mango_core_checksum_method_localllmprovider_loaded_model_path() and 0xFFFF) != 61589) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_mango_core_checksum_method_localllmprovider_max_prompt_tokens() != 28256) {
+    if ((lib.uniffi_mango_core_checksum_method_localllmprovider_device_capability() and 0xFFFF) != 56121) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_mango_core_checksum_method_localllmprovider_max_prompt_tokens() and 0xFFFF) != 28256) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1267,10 +1278,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
  * @suppress
  */
 public fun uniffiEnsureInitialized() {
-    IntegrityCheckingUniffiLib
-    // UniffiLib() initialized as objects are used, but we still need to explicitly
-    // reference it so initialization across crates works as expected.
-    UniffiLib
+    // Call arbitrary methods on IntegrityCheckingUniffiLib and UniffiLib to ensure that
+    // their init blocks run. This ensures initialization across crates works as expected.
+    IntegrityCheckingUniffiLib.ensureInitialized()
+    UniffiLib.ensureInitialized()
 }
 
 // Async support
@@ -1808,6 +1819,14 @@ public interface FfiAppInterface {
     fun `getDirectoryBookmark`(`sourceId`: kotlin.String): kotlin.ByteArray?
     
     /**
+     * Return the persisted SAF tree URI for a directory source, or None if the
+     * source doesn't exist or has no tree URI (Desktop/iOS sources). Errors
+     * while the database is locked. Used by the Android sync pipeline to
+     * resolve the exact persistable grant for a source id.
+     */
+    fun `getDirectoryTreeUri`(`sourceId`: kotlin.String): kotlin.String?
+    
+    /**
      * Return the raw attestation report blob for `backend_id`, if available.
      *
      * Per D-12: raw blobs are not carried in AppState (too large for frequent snapshots).
@@ -2101,6 +2120,27 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.uniffi_mango_core_fn_method_ffiapp_get_directory_bookmark(
+        it,
+        
+        FfiConverterString.lower(`sourceId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Return the persisted SAF tree URI for a directory source, or None if the
+     * source doesn't exist or has no tree URI (Desktop/iOS sources). Errors
+     * while the database is locked. Used by the Android sync pipeline to
+     * resolve the exact persistable grant for a source id.
+     */
+    @Throws(FfiException::class)override fun `getDirectoryTreeUri`(`sourceId`: kotlin.String): kotlin.String? {
+            return FfiConverterOptionalString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.uniffi_mango_core_fn_method_ffiapp_get_directory_tree_uri(
         it,
         
         FfiConverterString.lower(`sourceId`),_status)

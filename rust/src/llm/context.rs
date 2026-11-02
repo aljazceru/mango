@@ -60,7 +60,10 @@ pub fn parse_context_overflow(reason: &str) -> Option<ContextOverflow> {
 fn first_u64_after(text: &str, needle: &str) -> Option<u64> {
     let haystack = text.to_lowercase();
     let position = haystack.find(needle)? + needle.len();
-    let digits: String = text[position..]
+    // Slice the lowercased haystack: `position` is a byte offset into it, and
+    // lowercasing can change UTF-8 length (e.g. 'İ'), so the offset is not
+    // valid for `text`. Both are equivalent for the digits being extracted.
+    let digits: String = haystack[position..]
         .chars()
         .skip_while(|c| !c.is_ascii_digit())
         .take_while(|c| c.is_ascii_digit() || *c == ',')
@@ -178,6 +181,20 @@ mod tests {
         assert_eq!(
             parse_context_overflow("model overloaded, retry later"),
             None
+        );
+    }
+
+    #[test]
+    fn unicode_expansion_before_needle_does_not_panic() {
+        // 'İ' lowercases to 'i\u{307}' (1 char -> 3 bytes): a byte offset from
+        // the lowercased string can exceed the original's length. Slicing the
+        // haystack keeps this a parse, not a panic.
+        assert_eq!(
+            parse_context_overflow("İ maximum context length is 8192 tokens"),
+            Some(ContextOverflow {
+                input_tokens: None,
+                limit_tokens: 8192,
+            })
         );
     }
 

@@ -11,7 +11,7 @@ use rustls::{
     SignatureScheme,
 };
 use sha2::{Digest, Sha256};
-use x509_cert::der::{Decode, Encode};
+use x509_parser::prelude::{FromDer, X509Certificate};
 
 #[derive(Debug)]
 pub enum TlsPinError {
@@ -104,14 +104,11 @@ pub(crate) fn attested_transport_provider_supports_post_quantum() -> bool {
 }
 
 pub fn certificate_public_key_fp_from_der(der: &[u8]) -> Result<String, TlsPinError> {
-    let cert = x509_cert::Certificate::from_der(der)
+    let (_, cert) = X509Certificate::from_der(der)
         .map_err(|e| TlsPinError::InvalidCertificate(e.to_string()))?;
-    let spki = cert
-        .tbs_certificate()
-        .subject_public_key_info()
-        .to_der()
-        .map_err(|e: x509_cert::der::Error| TlsPinError::InvalidCertificate(e.to_string()))?;
-    Ok(hex::encode(Sha256::digest(spki)))
+    // `public_key().raw` is the borrowed DER of the SubjectPublicKeyInfo —
+    // identical bytes to re-encoding it, without the extra allocation.
+    Ok(hex::encode(Sha256::digest(cert.public_key().raw)))
 }
 
 pub fn live_tls_public_key_fp(response: &reqwest::Response) -> Result<String, TlsPinError> {
@@ -151,6 +148,9 @@ pub fn plain_https_client(timeout: Duration) -> Result<reqwest::Client, TlsPinEr
     reqwest::Client::builder()
         .no_hickory_dns()
         .no_proxy()
+        // Account-management calls carry root credentials in custom headers;
+        // a 307/308 to another origin would forward them (audit finding).
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .timeout(timeout)
         .use_preconfigured_tls(config)
@@ -296,5 +296,50 @@ impl ServerCertVerifier for PinnedServerCertVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.inner.supported_verify_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Self-signed RSA fixture; the pinned fingerprint below is the SHA-256
+    // of the DER-encoded SubjectPublicKeyInfo, matching the output of the
+    // previous x509-cert-based implementation on this same cert.
+    const FIXTURE_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIDHTCCAgWgAwIBAgIUX+LhtkIezZMdAHxWyyVT9XwE//owDQYJKoZIhvcNAQEL
+BQAwHjEcMBoGA1UEAwwTZmluZ2VycHJpbnQtZml4dHVyZTAeFw0yNjExMDIwNjAy
+NDhaFw0yNzExMDIwNjAyNDhaMB4xHDAaBgNVBAMME2ZpbmdlcnByaW50LWZpeHR1
+cmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDZCCoHPOH53HFglj6D
+Rv9kiYv+0B0QCc3QUm/Lo+Taps+ivsASDkIohBlN3XYJJf/PU/C2GU/trzQJPdae
+n0ez02qP+B/91bnGGfd6xIzM83tB2F+nr7v55psnf1RhEUQWo/kYgia/9qlVPYZ1
+6Idzd2iyKwfDkUFNTvwEhcyp8G0PxJDHCafPgbjBSbM3crzwuz74DxCplhILmuDN
+YNS+nHVE0YeZK49T71YfaHvx4vC/tb52PW65B/GnnYrk/mPJC/93ox4TxbH3rphK
+q1tBnBKQdOnJGz/Hs2QCNTMWkd2BXangLk1TOm2QMLEfvJRYo8ky/3YUlqPYuURr
+x1SLAgMBAAGjUzBRMB0GA1UdDgQWBBRsHoTKKyQKXOYC9eB4QNMletiyqzAfBgNV
+HSMEGDAWgBRsHoTKKyQKXOYC9eB4QNMletiyqzAPBgNVHRMBAf8EBTADAQH/MA0G
+CSqGSIb3DQEBCwUAA4IBAQBCD6Ax3cTTPlrAXKM5xztc8Dcw9eY8XeY9uBf1B5Ky
+WUBaySNxyUIQzvYgau3UicAZLfcXRN6BicL8X4xRkOC03mbXaVIhrNrj+ky1ZOpf
+f+SE5zccNXuxDBKAJLcG+6anbNvgmY00Bhfxy9aVA2icqI/A5VLDwRBF8jLU52bY
+ERqyIb1m33SQ+2JHNzeEc9zTsBThKRKXlQtdm+2f+dLIp82UVvSLdSmReFNV6rUb
+ryInjBPO6+r2/hYCUEcyzzD4vyfZMTufdWVQRyU6+d9lwIQg6/RYcBpKGtccmXV+
+z7asJfk1oLWjA7YsBiZv0KJq3GJ/2cQlV21zL7GKiRQl
+-----END CERTIFICATE-----";
+
+    #[test]
+    fn fingerprint_matches_spki_sha256() {
+        let (_, pem) = x509_parser::pem::parse_x509_pem(FIXTURE_CERT_PEM.as_bytes()).unwrap();
+        assert_eq!(
+            certificate_public_key_fp_from_der(&pem.contents).unwrap(),
+            "e8d83a4ba14bfadb58a900b765773894952104738c8dbe2ea4bfeddbbd8654b5"
+        );
+    }
+
+    #[test]
+    fn fingerprint_rejects_garbage_der() {
+        assert!(matches!(
+            certificate_public_key_fp_from_der(b"not a certificate"),
+            Err(TlsPinError::InvalidCertificate(_))
+        ));
     }
 }

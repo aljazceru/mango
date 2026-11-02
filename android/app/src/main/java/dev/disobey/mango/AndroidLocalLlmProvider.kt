@@ -28,7 +28,6 @@ private const val MAX_MODEL_REDIRECTS = 10
 private const val MODEL_RESPONSE_SNIFF_BYTES = 8192
 private const val MIN_API_LEVEL_FOR_LOCAL_LLM = 31
 private const val LOCAL_STORAGE_RESERVE_BYTES = 512L * 1024L * 1024L
-private const val LOCAL_STORAGE_MARGIN_PERCENT = 25L
 private val GGUF_MAGIC = byteArrayOf(0x47, 0x47, 0x55, 0x46)
 
 class AndroidLocalLlmProvider(context: Context) : LocalLlmProvider {
@@ -210,15 +209,9 @@ class AndroidLocalLlmProvider(context: Context) : LocalLlmProvider {
             throw LocalLlmException.Unsupported(capability.reason ?: "local inference is unavailable")
         }
 
-        val storageBytes = availableStorageBytes(appContext)
-        val modelBytes = file.length().toULong()
-        val requiredStorage = (modelBytes * (100UL + LOCAL_STORAGE_MARGIN_PERCENT.toULong())) / 100UL
-        val requiredTotal = requiredStorage + LOCAL_STORAGE_RESERVE_BYTES.toULong()
-        if (storageBytes < requiredTotal) {
-            throw LocalLlmException.Unsupported(
-                "Not enough free storage: required ${formatBytes(requiredTotal)} (including ${LOCAL_STORAGE_MARGIN_PERCENT}% margin), available ${formatBytes(storageBytes)}"
-            )
-        }
+        // No model-sized disk check here: loading mmap()s the already-installed
+        // file and copies nothing. The disk requirement lives in the Rust
+        // download pre-check (catalog size + reserve before any bytes flow).
 
         try {
             AndroidLlamaEngine.ensureInitialized(appContext)
@@ -252,8 +245,11 @@ class AndroidLocalLlmProvider(context: Context) : LocalLlmProvider {
             }
             // Prompt formatting (ChatML/Llama-3/Gemma/Phi...) is handled in native
             // via common_chat_templates_apply using each model's embedded template.
+            // The JSON crosses JNI as raw UTF-8 bytes: GetStringUTFChars would
+            // hand native code *modified* UTF-8 whose surrogate-pair encoding of
+            // supplementary characters (emoji) the strict JSON parser rejects.
             val promptCode = AndroidLlamaEngine.nativeProcessPrompt(
-                promptJson,
+                promptJson.toByteArray(Charsets.UTF_8),
                 LOCAL_MAX_TOKENS,
             )
             if (promptCode != 0) {
@@ -298,12 +294,17 @@ class AndroidLocalLlmProvider(context: Context) : LocalLlmProvider {
     @Synchronized
     override fun loadedModelPath(): String? = loadedPath
 
-    override fun deviceCapability(): DeviceCapability = capability
+    override fun deviceCapability(): DeviceCapability =
+        // Free space is re-probed on every call so the Rust download pre-check
+        // decides on current storage, not on a launch-time snapshot.
+        capability.copy(availableStorageBytes = availableStorageBytes(appContext))
 
     // The engine's real prompt budget: context window minus the generation
-    // reserve. 0 = unknown/disabled (no client-side pre-check in the core).
+    // budget and the native 8-token reserve — identical to the formula
+    // nativeProcessPrompt enforces (n_ctx - max_tokens - 8). Known at engine
+    // level, so it is reported even before a model is loaded.
     override fun maxPromptTokens(): UInt =
-        if (loadedPath != null) (LOCAL_CONTEXT_TOKENS - LOCAL_MAX_TOKENS).toUInt() else 0u
+        (LOCAL_CONTEXT_TOKENS - LOCAL_MAX_TOKENS - 8).coerceAtLeast(1).toUInt()
 }
 
 private fun isBridgeResponse(url: URL, contentType: String, contentLength: Long): Boolean {
@@ -490,13 +491,6 @@ private fun availableStorageBytes(context: Context): ULong {
     }
 }
 
-private fun formatBytes(bytes: ULong): String = when {
-    bytes >= 1024UL * 1024UL * 1024UL ->
-        String.format("%.1f GiB", bytes.toDouble() / (1024.0 * 1024.0 * 1024.0))
-    bytes >= 1024UL * 1024UL ->
-        String.format("%.1f MiB", bytes.toDouble() / (1024.0 * 1024.0))
-    else -> "$bytes B"
-}
 
 private fun localThreadCount(): Int {
     val cores = Runtime.getRuntime().availableProcessors()
@@ -534,7 +528,7 @@ private object AndroidLlamaEngine {
 
     external fun nativeInit(nativeLibDir: String)
     external fun nativeLoadModel(modelPath: String, contextSize: Int, threadCount: Int): Int
-    external fun nativeProcessPrompt(prompt: String, maxTokens: Int): Int
+    external fun nativeProcessPrompt(prompt: ByteArray, maxTokens: Int): Int
     external fun nativeNextToken(): String?
     external fun nativeLastError(): String?
     external fun nativeUnload()

@@ -944,7 +944,7 @@ fn actor_check_topup_settles_and_refreshes_balance() {
     for _ in 0..50 {
         app.sync();
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if app.state().ppq.funding.is_none() {
+        if app.state().ppq.balance_display.as_deref() == Some("1.5") {
             break;
         }
     }
@@ -966,8 +966,12 @@ fn actor_check_topup_settles_and_refreshes_balance() {
     std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
 }
 
+/// Audit fix: an account-wide balance rise no longer proves an unknown
+/// invoice was paid — another payment could have moved the balance.
+/// The invoice stays unresolved (UnknownAfterCreate); the refreshed
+/// balance still updates.
 #[test]
-fn actor_unknown_status_reconciles_by_balance() {
+fn actor_unknown_status_stays_unknown_despite_balance_rise() {
     let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use crate::AppAction;
     use std::io::{Read, Write as IoWrite};
@@ -1000,7 +1004,6 @@ fn actor_unknown_status_reconciles_by_balance() {
     let kc = RecordingKeychain::default();
     seed_ppq_credentials(&kc);
     let app = make_actor_app(kc.clone());
-    // Seed a last-balance snapshot of 1.0 so the 2.0 refresh reads as a rise.
     app.dispatch(AppAction::Noop);
     app.sync();
     app.test_set_ppq_setting(crate::ppq::account::SETTING_LAST_BALANCE, "1.0");
@@ -1012,25 +1015,27 @@ fn actor_unknown_status_reconciles_by_balance() {
         expires_at: crate::ppq_now_secs() + 600,
     });
     app.sync();
-    assert_eq!(
-        app.state().ppq.funding_phase,
-        crate::PpqFundingPhase::AwaitingPayment
-    );
 
     app.dispatch(AppAction::CheckPpqTopup);
+    // Wait for status + balance refresh to apply.
     for _ in 0..50 {
         app.sync();
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if app.state().ppq.funding.is_none() {
+        if app.state().ppq.balance_display.as_deref() == Some("2.0") {
             break;
         }
     }
     let st = app.state();
-    assert!(
-        st.ppq.funding.is_none(),
-        "balance reconciliation must clear an unknown-status paid invoice"
-    );
     assert_eq!(st.ppq.balance_display.as_deref(), Some("2.0"));
+    assert!(
+        st.ppq.funding.is_some(),
+        "an unrelated balance rise must not clear the pending invoice"
+    );
+    assert_eq!(
+        st.ppq.funding_phase,
+        crate::PpqFundingPhase::UnknownAfterCreate,
+        "invoice outcome stays unknown — balance rise is not proof of payment"
+    );
 
     std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
 }
@@ -1320,6 +1325,7 @@ fn late_ppq_replies_after_lock_unlock_are_dropped_and_session_recovers() {
     app.test_send_ppq_event_at_epoch(
         stale_epoch,
         crate::PpqTaskEvent::BalanceRefreshed {
+            request_id: 1,
             balance: "7.7".into(),
         },
     );
@@ -1333,6 +1339,7 @@ fn late_ppq_replies_after_lock_unlock_are_dropped_and_session_recovers() {
     app.test_send_ppq_event_at_epoch(
         stale_epoch,
         crate::PpqTaskEvent::BalanceRefreshed {
+            request_id: 1,
             balance: "7.7".into(),
         },
     );
@@ -1344,6 +1351,7 @@ fn late_ppq_replies_after_lock_unlock_are_dropped_and_session_recovers() {
     // A reply carrying the CURRENT epoch (as any task spawned now would)
     // is applied: the session is fully usable after lock/unlock.
     app.test_send_ppq_event(crate::PpqTaskEvent::BalanceRefreshed {
+        request_id: 1,
         balance: "5.0".into(),
     });
     app.sync();
@@ -1713,6 +1721,16 @@ fn replacement_restore_swaps_backend_key_and_drops_prior_epoch_events() {
     let app = make_actor_app(kc.clone());
     assert_eq!(ppq_backend_summary_has_key(&app), Some(true));
     let stale_epoch = app.test_ppq_task_epoch();
+    for setting in [
+        crate::ppq::account::SETTING_LAST_BALANCE,
+        crate::ppq::account::SETTING_BALANCE_AT,
+        crate::ppq::account::SETTING_BACKUP_AT,
+        crate::ppq::account::SETTING_CREATED_AT,
+        crate::ppq::account::SETTING_FIRST_FUNDING_REMIND,
+        crate::ppq::account::SETTING_PENDING_INVOICE,
+    ] {
+        app.test_set_ppq_setting(setting, "50");
+    }
 
     // Backup of a DIFFERENT account (B): a replacement restore.
     let bytes = crate::ppq::recovery::encrypt_recovery_document(
@@ -1733,6 +1751,20 @@ fn replacement_restore_swaps_backend_key_and_drops_prior_epoch_events() {
         .expect("ffi call succeeds");
     app.sync();
     assert!(result.success, "acknowledged replacement must succeed");
+    assert_eq!(
+        app.test_get_ppq_setting(crate::ppq::account::SETTING_LAST_BALANCE)
+            .as_deref(),
+        Some("3.5")
+    );
+    for setting in [
+        crate::ppq::account::SETTING_BACKUP_AT,
+        crate::ppq::account::SETTING_CREATED_AT,
+        crate::ppq::account::SETTING_FIRST_FUNDING_REMIND,
+        crate::ppq::account::SETTING_PENDING_INVOICE,
+    ] {
+        assert_eq!(app.test_get_ppq_setting(setting).as_deref(), Some(""));
+    }
+    assert!(app.state().ppq.balance_updated_at.is_some());
     assert_eq!(
         ppq_values(&kc),
         (
@@ -1763,6 +1795,7 @@ fn replacement_restore_swaps_backend_key_and_drops_prior_epoch_events() {
     app.test_send_ppq_event_at_epoch(
         stale_epoch,
         crate::PpqTaskEvent::BalanceRefreshed {
+            request_id: 1,
             balance: "9.9".into(),
         },
     );
@@ -2280,6 +2313,7 @@ fn late_health_attestation_and_stream_results_after_lock_wipe_are_dropped() {
             freshness: None,
             orchestrated_components: None,
         },
+        0,
     ));
     app.sync();
     let st = app.state();
@@ -2470,4 +2504,428 @@ fn change_pin_validates_new_pin() {
         app.state().toast.as_deref(),
         Some("New PIN must be different from the current PIN.")
     );
+}
+
+// ── Audit-fix regressions ────────────────────────────────────────────────────
+
+/// Audit (BYOK overwrite): storing a ppq-ai key via UpdateBackendApiKey must
+/// reclassify the account as ExternalKey, and provisioning must be refused
+/// against the STORED credentials — never overwrite an existing key.
+#[test]
+fn byok_key_store_reclassifies_and_refuses_provision() {
+    let kc = RecordingKeychain::default();
+    let app = make_actor_app(kc.clone());
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+
+    app.dispatch(AppAction::UpdateBackendApiKey {
+        backend_id: "ppq-ai".into(),
+        api_key: "sk-test-byok-abcdefghij".into(),
+    });
+    app.sync();
+    assert_eq!(
+        app.state().ppq.mode,
+        crate::PpqAccountMode::ExternalKey,
+        "storing a BYOK ppq-ai key must mark the account ExternalKey"
+    );
+
+    app.dispatch(AppAction::ProvisionManagedPpq);
+    app.sync();
+    assert_eq!(
+        app.state().ppq.error.as_deref(),
+        Some("external_key_present"),
+        "automatic provisioning must not overwrite an existing BYOK key"
+    );
+}
+
+/// Audit (expiry): an invoice whose deadline passed while the app was away
+/// still gets a final status check — a payment made just before expiry is
+/// observed as settled instead of being labelled expired.
+#[test]
+fn expired_pending_invoice_still_gets_final_status_check() {
+    let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use std::io::{Read, Write as IoWrite};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let responses = [
+            // 1) status check for the expired invoice: it settled.
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"invoice_id":"invx","status":"Settled","amount":50,"currency":"SATS","created_at":1000,"expires_at":1900,"amount_paid":0.0000005,"amount_due":0}"#
+            ),
+            // 2) post-settle balance refresh.
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                r#"{"balance":3.0}"#
+            ),
+        ];
+        for resp in responses {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp);
+            let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.flush();
+        }
+    });
+    std::env::set_var("MANGO_PPQ_TEST_BASE_URL", format!("http://{addr}"));
+
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    let now = crate::ppq_now_secs();
+    app.test_send_ppq_event(crate::PpqTaskEvent::InvoiceCreated {
+        invoice_id: "invx".into(),
+        bolt11: Zeroizing::new("lnbc50n1SANITIZED".to_string()),
+        amount_sats: 50,
+        created_at: now - 600,
+        expires_at: now - 1, // already past its payment deadline
+    });
+    app.sync();
+
+    app.dispatch(AppAction::CheckPpqTopup);
+    for _ in 0..50 {
+        app.sync();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if app.state().ppq.balance_display.as_deref() == Some("3.0") {
+            break;
+        }
+    }
+    let st = app.state();
+    assert!(
+        st.ppq.funding.is_none(),
+        "a final post-expiry check must observe the settlement"
+    );
+    assert!(
+        st.ppq.funding_phase == crate::PpqFundingPhase::Idle
+            || st.ppq.funding_phase == crate::PpqFundingPhase::Confirmed,
+        "settled after expiry must not be labelled Expired"
+    );
+    std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+}
+
+/// Audit (expiry): the pending invoice identity survives a restart past its
+/// deadline — it is kept for reconciliation instead of being discarded.
+#[test]
+fn expired_pending_invoice_survives_restart_for_reconciliation() {
+    let dir = ppq_temp_dir("expiredrestart");
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_dir_actor_app(&dir, kc.clone());
+    let now = crate::ppq_now_secs();
+    app.test_send_ppq_event(crate::PpqTaskEvent::InvoiceCreated {
+        invoice_id: "invr".into(),
+        bolt11: Zeroizing::new("lnbc50n1SANITIZED".to_string()),
+        amount_sats: 50,
+        created_at: now - 600,
+        expires_at: now - 1,
+    });
+    app.sync();
+    drop(app);
+
+    let app2 = make_dir_actor_app(&dir, kc.clone());
+    app2.sync();
+    let st = app2.state();
+    assert_eq!(
+        st.ppq.funding_phase,
+        crate::PpqFundingPhase::Expired,
+        "unresolved invoice must not be discarded at startup"
+    );
+    assert!(
+        st.ppq.funding.is_some(),
+        "the invoice stays visible for a final status check"
+    );
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&dir).parent().unwrap());
+}
+
+/// Audit (balance ordering): a result from an older balance request must
+/// never overwrite a newer applied balance.
+#[test]
+fn stale_balance_result_cannot_overwrite_newer() {
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    app.test_send_ppq_event(crate::PpqTaskEvent::BalanceRefreshed {
+        request_id: 2,
+        balance: "2.0".into(),
+    });
+    app.sync();
+    assert_eq!(app.state().ppq.balance_display.as_deref(), Some("2.0"));
+
+    // An older request's result arriving late is dropped.
+    app.test_send_ppq_event(crate::PpqTaskEvent::BalanceRefreshed {
+        request_id: 1,
+        balance: "1.0".into(),
+    });
+    app.sync();
+    assert_eq!(
+        app.state().ppq.balance_display.as_deref(),
+        Some("2.0"),
+        "older balance result must not roll back the display"
+    );
+    // Equally-stale failures are dropped too.
+    app.test_send_ppq_event(crate::PpqTaskEvent::BalanceFailed {
+        request_id: 1,
+        code: "offline",
+    });
+    app.sync();
+    assert!(app.state().ppq.error.is_none());
+}
+
+/// Audit (status-failure identity): a late status-check failure for an
+/// already-settled invoice must not drag the confirmed state into Error;
+/// creation failures still surface unconditionally.
+#[test]
+fn late_status_failure_does_not_undo_settlement() {
+    let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Point at a dead-but-reachable endpoint so the settle-triggered balance
+    // refresh fails instantly instead of touching the network.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener); // OS refuses connections -> immediate Offline
+    std::env::set_var("MANGO_PPQ_TEST_BASE_URL", format!("http://{addr}"));
+
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_actor_app(kc.clone());
+    let now = crate::ppq_now_secs();
+    app.test_send_ppq_event(crate::PpqTaskEvent::InvoiceCreated {
+        invoice_id: "inv1".into(),
+        bolt11: Zeroizing::new("lnbc50n1SANITIZED".to_string()),
+        amount_sats: 50,
+        created_at: now - 600,
+        expires_at: now + 600,
+    });
+    app.sync();
+    app.test_send_ppq_event(crate::PpqTaskEvent::StatusChecked {
+        invoice_id: "inv1".into(),
+        outcome: "settled",
+        next_poll_at: 0,
+    });
+    app.sync();
+    assert_eq!(
+        app.state().ppq.funding_phase,
+        crate::PpqFundingPhase::Confirmed
+    );
+
+    // The duplicate check that now fails late: invoice gate must drop it.
+    app.test_send_ppq_event(crate::PpqTaskEvent::StatusCheckFailed {
+        invoice_id: "inv1".into(),
+        code: "offline",
+        uncertain: false,
+    });
+    app.sync();
+    assert_eq!(
+        app.state().ppq.funding_phase,
+        crate::PpqFundingPhase::Confirmed,
+        "a late failure must not undo a confirmed settlement"
+    );
+
+    // Drain the settle-triggered refresh before releasing the global URL.
+    for _ in 0..100 {
+        app.sync();
+        if app.state().ppq.error.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Creation failures (no invoice identity) still apply.
+    app.test_send_ppq_event(crate::PpqTaskEvent::InvoiceFailed {
+        code: "offline",
+        uncertain: false,
+    });
+    app.sync();
+    assert_eq!(
+        app.state().ppq.funding_phase,
+        crate::PpqFundingPhase::Error,
+        "invoice creation failures stay distinct and still apply"
+    );
+    std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+}
+
+/// Audit (restore must not block the actor): while remote validation is
+/// held mid-flight, LockApp is processed immediately; the in-flight restore
+/// is then cancelled and its FFI reply completes instead of hanging.
+#[test]
+fn restore_validation_does_not_block_lock() {
+    let _env_guard = PPQ_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use std::io::{Read, Write as IoWrite};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    // Held server: accepts the balance request but never responds until
+    // released — remote validation stays in flight.
+    let (accepted_tx, accepted_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp);
+            let _ = accepted_tx.send(()); // validation request in flight
+            let _ = release_rx.recv(); // hold the response
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"balance\":1.0}",
+            );
+            let _ = sock.flush();
+        }
+    });
+    std::env::set_var("MANGO_PPQ_TEST_BASE_URL", format!("http://{addr}"));
+
+    let dir = ppq_temp_dir("restorelock");
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let app = make_dir_actor_app(&dir, kc.clone());
+    app.dispatch(AppAction::SetupPin {
+        pin: "1234".into(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    app.sync();
+
+    // Same-account backup: not a replacement, no acknowledgement needed.
+    let bytes = crate::ppq::recovery::encrypt_recovery_document(
+        "00000000-0000-4000-8000-000000000000",
+        "sk-test-abcdefghijklmnop",
+        None,
+        "2026-09-03T00:00:00Z",
+        "correct-horse-battery",
+    )
+    .unwrap();
+
+    let app2 = app.clone();
+    let handle = std::thread::spawn(move || {
+        app2.restore_ppq_recovery_backup(
+            bytes,
+            "correct-horse-battery".to_string(),
+            crate::SensitiveActionAuth::Biometric,
+            true,
+        )
+    });
+
+    // Wait until the spawned validation request is actually in flight —
+    // otherwise LockApp could be processed before the restore message and
+    // the test would only exercise the "locked" pre-flight refusal.
+    accepted_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("validation request reached the server");
+
+    // With the old rt.block_on restore the actor would be stuck inside the
+    // FFI call and LockApp could not run until validation returned.
+    app.dispatch(AppAction::LockApp);
+    app.sync();
+    assert!(
+        is_locked(&app),
+        "lock must be processed while restore validation is pending"
+    );
+
+    // Session invalidation cancels the task; the reply completes.
+    let result = handle
+        .join()
+        .expect("restore thread")
+        .expect("ffi call returns");
+    assert!(!result.success);
+    assert_eq!(result.error_code.as_deref(), Some("cancelled"));
+    let _ = release_tx.send(()); // unstick the server thread (best effort)
+    std::env::remove_var("MANGO_PPQ_TEST_BASE_URL");
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&dir).parent().unwrap());
+}
+
+#[test]
+fn provision_checks_keychain_even_when_summary_is_stale() {
+    let kc = RecordingKeychain::default();
+    let app = make_actor_app(kc.clone());
+    kc.store(
+        API_KEY_SERVICE.into(),
+        API_KEY_KEY.into(),
+        "sk-existing-byok-123456".into(),
+    );
+    assert_eq!(app.state().ppq.mode, crate::PpqAccountMode::None);
+    app.dispatch(AppAction::ProvisionManagedPpq);
+    app.sync();
+    assert_eq!(
+        app.state().ppq.error.as_deref(),
+        Some("external_key_present")
+    );
+}
+
+#[tokio::test]
+async fn account_client_does_not_follow_root_credential_redirects() {
+    let server = ScriptedServer::spawn(vec![http_response(
+        307,
+        &[("Location", "http://127.0.0.1:1/keys")],
+        "",
+    )]);
+    let (credit, _) = creds();
+    let result = server.client().create_device_key(&credit, "device").await;
+    assert!(matches!(result, Err(PpqError::InvalidResponse)));
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn failed_restore_suppresses_unresolved_mixed_credentials_immediately() {
+    #[derive(Clone)]
+    struct FailedRollback(RecordingKeychain, Arc<std::sync::atomic::AtomicBool>);
+    impl KeychainProvider for FailedRollback {
+        fn store(&self, service: String, key: String, value: String) -> bool {
+            if key == API_KEY_KEY && value == "sk-test-qrstuvwxyz123456" {
+                self.1.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.0.store(service, key, value);
+                return false;
+            }
+            if key == API_KEY_KEY && self.1.load(std::sync::atomic::Ordering::SeqCst) {
+                return false;
+            }
+            self.0.store(service, key, value)
+        }
+        fn load(&self, service: String, key: String) -> Option<String> {
+            self.0.load(service, key)
+        }
+        fn delete(&self, service: String, key: String) -> bool {
+            self.0.delete(service, key)
+        }
+    }
+    let kc = RecordingKeychain::default();
+    seed_ppq_credentials(&kc);
+    let failing = FailedRollback(
+        kc.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    let app = FfiApp::new(
+        "".into(),
+        Box::new(failing),
+        Box::new(crate::NullEmbeddingProvider),
+        crate::EmbeddingStatus::Active,
+        Box::new(crate::NullLocalLlmProvider),
+        Box::new(TrueBiometric),
+    );
+    app.sync();
+    let epoch = app.test_ppq_task_epoch();
+    let (reply, result) = flume::bounded(1);
+    app.test_send_ppq_event(crate::PpqTaskEvent::RestoreValidated {
+        credit_id: Zeroizing::new("11111111-1111-4111-8111-111111111111".into()),
+        api_key: Zeroizing::new("sk-test-qrstuvwxyz123456".into()),
+        validated_balance: Some("0".into()),
+        account_created_at: None,
+        is_replacement: true,
+        reply,
+    });
+    assert!(
+        !result
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
+            .success
+    );
+    app.sync();
+    assert_eq!(app.state().ppq.error.as_deref(), Some("recovery_required"));
+    assert_eq!(ppq_backend_summary_has_key(&app), Some(false));
+    assert!(app.test_ppq_task_epoch() > epoch);
+    let loads = count_ppq_key_loads(&kc);
+    app.dispatch(AppAction::RefreshPpqAccount);
+    app.dispatch(AppAction::CheckPpqTopup);
+    app.sync();
+    assert_eq!(count_ppq_key_loads(&kc), loads);
 }

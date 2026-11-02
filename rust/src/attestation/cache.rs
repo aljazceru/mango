@@ -58,7 +58,7 @@ impl<'a> AttestationCache<'a> {
                 "SELECT tee_type, status, report_blob, verified_at, expires_at,
                         shape, freshness, orchestrated_components
                  FROM attestation_cache
-                 WHERE backend_id = ?1 AND expires_at > ?2
+                 WHERE backend_id = ?1 AND expires_at > ?2 AND verified_at <= ?2
                  ORDER BY verified_at DESC
                  LIMIT 1",
             )
@@ -143,6 +143,23 @@ impl<'a> AttestationCache<'a> {
                         .as_ref()
                         .and_then(|v| serde_json::to_string(v).ok()),
                 ],
+            )
+            .map_err(|e| AttestationError::CacheFailed {
+                reason: e.to_string(),
+            })?;
+        Ok(())
+    }
+
+    /// Delete every cached attestation row for a backend.
+    ///
+    /// Called on a genuine (non-transient) verification failure so a stale
+    /// `Verified` row cannot be rehydrated on the next unlock/restart, and on
+    /// backend removal so trust cannot be resurrected by re-adding the id.
+    pub fn delete_for_backend(&self, backend_id: &str) -> Result<(), AttestationError> {
+        self.conn
+            .execute(
+                "DELETE FROM attestation_cache WHERE backend_id = ?1",
+                rusqlite::params![backend_id],
             )
             .map_err(|e| AttestationError::CacheFailed {
                 reason: e.to_string(),

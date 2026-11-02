@@ -73,33 +73,46 @@ fun DocumentLibraryScreen(
 
     var showAddMenu by remember { mutableStateOf(false) }
 
-    // Cache URIs by display name so the first Sync Now can resolve even before
-    // the source row re-appears in AppState. Mirrors DirectorySourcesScreen.
-    val pickedUrisByName = remember { mutableStateOf<Map<String, Uri>>(emptyMap()) }
+    val manager = remember { dev.disobey.mango.AppManager.getInstance(context.applicationContext) }
 
     val openDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
-        uri?.let {
+        uri ?: return@rememberLauncherForActivityResult
+        // Provider query + stream read + FFI conversion run on IO with a hard
+        // stream cap: a large or slow cloud document must not OOM or freeze
+        // the UI thread in the activity-result callback.
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val contentResolver = context.contentResolver
-            val filename = contentResolver.query(it, null, null, null, null)?.use { cursor ->
-                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                cursor.moveToFirst()
-                if (nameIndex >= 0) cursor.getString(nameIndex) else "document"
-            } ?: it.lastPathSegment ?: "document"
-
             try {
-                val bytes = contentResolver.openInputStream(it)?.use { stream ->
-                    stream.readBytes()
-                } ?: return@let
-                onDispatch(
-                    AppAction.IngestDocument(
-                        filename = filename,
-                        content = bytes,
-                    )
-                )
+            val filename = contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else "document"
+            } ?: uri.lastPathSegment ?: "document"
+
+                val bytes = contentResolver.openInputStream(uri)?.use { stream ->
+                    readBytesCapped(stream, MAX_FILE_BYTES)
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (bytes == null) {
+                        onDispatch(
+                            AppAction.ShowToast(
+                                message = "Document exceeds the 32 MB limit or could not be read.",
+                            )
+                        )
+                    } else {
+                        onDispatch(
+                            AppAction.IngestDocument(
+                                filename = filename,
+                                content = bytes,
+                            )
+                        )
+                    }
+                }
             } catch (e: Exception) {
-                onDispatch(AppAction.ShowToast(message = "Could not read document"))
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onDispatch(AppAction.ShowToast(message = "Could not read document"))
+                }
             }
         }
     }
@@ -108,7 +121,6 @@ fun DocumentLibraryScreen(
     // persisted URI permission is taken inside rememberDirectoryPicker, so
     // bookmark rehydration remains intact.
     val openFolderPicker = rememberDirectoryPicker { uri, displayName ->
-        pickedUrisByName.value = pickedUrisByName.value + (displayName to uri)
         onDispatch(
             AppAction.AddDirectorySource(
                 displayName = displayName,
@@ -120,15 +132,13 @@ fun DocumentLibraryScreen(
         )
     }
 
-    // Kick an initial sync for any newly-added folder whose URI is cached but
-    // whose file_count is still 0 — matches DirectorySourcesScreen behavior.
+    // Kick an initial sync for any newly-added folder whose file_count is still
+    // 0 — the URI resolves by source id, so same-named folders never cross.
     LaunchedEffect(appState.directorySources.map { it.id to it.fileCount }) {
         for (source in appState.directorySources) {
             if (source.fileCount > 0L) continue
-            val uri = pickedUrisByName.value[source.displayName] ?: continue
-            scope.launch {
-                syncDirectory(context, source, uri) { action -> onDispatch(action) }
-            }
+            val uri = resolveTreeUri(manager, source)?.let(Uri::parse) ?: continue
+            syncDirectory(context, source, uri) { action -> onDispatch(action) }
         }
     }
 

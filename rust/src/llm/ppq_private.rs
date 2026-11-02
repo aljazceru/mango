@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -907,18 +908,21 @@ async fn fetch_and_verify_attestation(
         })?
         .json()
         .await
-        .map_err(|error| LlmError::NetworkError {
-            reason: format!("Invalid PPQ private attestation bundle JSON: {error}"),
+        .map_err(|error| {
+            evidence_error(format!(
+                "Invalid PPQ private attestation bundle JSON: {error}"
+            ))
         })?;
 
     let report_blob = decode_attestation_body(&bundle.enclave_attestation_report.body)?;
-    let (_tls_public_key_fp, hpke_public_key_hex, hpke_public_key) =
+    let (tls_public_key_fp, hpke_public_key_hex, hpke_public_key) =
         verify_sev_attestation_bundle(&bundle, &report_blob, snp_policy)?;
     verify_certificate_binding(
         &bundle.enclave_cert,
         &bundle.domain,
         &bundle.enclave_attestation_report,
         &hpke_public_key_hex,
+        &tls_public_key_fp,
     )?;
     verify_hpke_key_endpoint(&client, &bundle.domain, &hpke_public_key).await?;
 
@@ -956,34 +960,27 @@ fn verify_sev_attestation_bundle(
     snp_policy: &crate::attestation::SnpPolicy,
 ) -> Result<(String, String, [u8; 32]), LlmError> {
     if bundle.enclave_attestation_report.format != "https://tinfoil.sh/predicate/sev-snp-guest/v2" {
-        return Err(LlmError::NetworkError {
-            reason: format!(
-                "Unsupported PPQ private attestation format: {}",
-                bundle.enclave_attestation_report.format
-            ),
-        });
+        return Err(evidence_error(format!(
+            "Unsupported PPQ private attestation format: {}",
+            bundle.enclave_attestation_report.format
+        )));
     }
 
-    if report_blob.len() != 1184 {
-        return Err(LlmError::NetworkError {
-            reason: format!("Unexpected SNP report size: {}", report_blob.len()),
-        });
+    if report_blob.len() != SNP_REPORT_SIZE {
+        return Err(evidence_error(format!(
+            "Unexpected SNP report size: {}",
+            report_blob.len()
+        )));
     }
 
-    let report =
-        sev::firmware::guest::AttestationReport::from_bytes(report_blob).map_err(|error| {
-            LlmError::NetworkError {
-                reason: format!("Invalid SEV-SNP report: {error}"),
-            }
-        })?;
+    let report = sev::firmware::guest::AttestationReport::from_bytes(report_blob)
+        .map_err(|error| evidence_error(format!("Invalid SEV-SNP report: {error}")))?;
     let generation = match (report.cpuid_fam_id, report.cpuid_mod_id) {
         (Some(family), Some(model)) => {
             sev::Generation::identify_cpu(family, model).map_err(|error| {
-                LlmError::NetworkError {
-                    reason: format!(
-                        "Unknown AMD generation family={family:#x} model={model:#x}: {error}"
-                    ),
-                }
+                evidence_error(format!(
+                    "Unknown AMD generation family={family:#x} model={model:#x}: {error}"
+                ))
             })?
         }
         _ => sev::Generation::Genoa,
@@ -1003,22 +1000,17 @@ fn verify_sev_attestation_bundle(
             sev::certs::snp::builtin::turin::ASK,
         ),
         sev::Generation::Venice => {
-            return Err(LlmError::NetworkError {
-                reason: "Venice SEV-SNP generation is not yet supported".into(),
-            })
+            return Err(evidence_error(
+                "Venice SEV-SNP generation is not yet supported".to_string(),
+            ))
         }
     };
-    let ca_chain = sev::certs::snp::ca::Chain::from_pem(ark_pem, ask_pem).map_err(|error| {
-        LlmError::NetworkError {
-            reason: format!("Invalid AMD SEV CA chain: {error}"),
-        }
-    })?;
+    let ca_chain = sev::certs::snp::ca::Chain::from_pem(ark_pem, ask_pem)
+        .map_err(|error| evidence_error(format!("Invalid AMD SEV CA chain: {error}")))?;
 
     let vcek_der = base64::engine::general_purpose::STANDARD
         .decode(&bundle.vcek)
-        .map_err(|error| LlmError::NetworkError {
-            reason: format!("Invalid base64 VCEK certificate: {error}"),
-        })?;
+        .map_err(|error| evidence_error(format!("Invalid base64 VCEK certificate: {error}")))?;
     verify_snp_signature_with_vcek(&ca_chain, &report, &vcek_der)?;
     verify_snp_policy(&report, snp_policy)?;
 
@@ -1036,20 +1028,15 @@ fn verify_snp_signature_with_vcek(
     report: &sev::firmware::guest::AttestationReport,
     vcek_der: &[u8],
 ) -> Result<(), LlmError> {
-    let vcek = sev::certs::snp::Certificate::from_der(vcek_der).map_err(|error| {
-        LlmError::NetworkError {
-            reason: format!("Invalid VCEK certificate: {error}"),
-        }
-    })?;
+    let vcek = sev::certs::snp::Certificate::from_der(vcek_der)
+        .map_err(|error| evidence_error(format!("Invalid VCEK certificate: {error}")))?;
     let chain = sev::certs::snp::Chain {
         ca: ca_chain.clone(),
         vek: vcek,
     };
     (&chain, report)
         .verify()
-        .map_err(|error| LlmError::NetworkError {
-            reason: format!("SNP signature verification failed: {error}"),
-        })?;
+        .map_err(|error| evidence_error(format!("SNP signature verification failed: {error}")))?;
     Ok(())
 }
 
@@ -1063,19 +1050,17 @@ fn verify_snp_policy(
 ) -> Result<(), LlmError> {
     let guest_policy = report.policy;
     if !guest_policy.smt_allowed() {
-        return Err(LlmError::NetworkError {
-            reason: "SNP guest policy disallows SMT".to_string(),
-        });
+        return Err(evidence_error("SNP guest policy disallows SMT".to_string()));
     }
     if guest_policy.migrate_ma_allowed() {
-        return Err(LlmError::NetworkError {
-            reason: "SNP guest policy allows migration agents".to_string(),
-        });
+        return Err(evidence_error(
+            "SNP guest policy allows migration agents".to_string(),
+        ));
     }
     if guest_policy.debug_allowed() {
-        return Err(LlmError::NetworkError {
-            reason: "SNP guest policy allows debug mode".to_string(),
-        });
+        return Err(evidence_error(
+            "SNP guest policy allows debug mode".to_string(),
+        ));
     }
     if report.current_tcb.bootloader < snp_policy.minimum_bootloader
         || report.current_tcb.tee < snp_policy.minimum_tee
@@ -1086,20 +1071,20 @@ fn verify_snp_policy(
         || report.reported_tcb.snp < snp_policy.minimum_snp
         || report.reported_tcb.microcode < snp_policy.minimum_microcode
     {
-        return Err(LlmError::NetworkError {
-            reason: "SNP TCB is below the required minimum".to_string(),
-        });
+        return Err(evidence_error(
+            "SNP TCB is below the required minimum".to_string(),
+        ));
     }
     let info = report.plat_info;
     if !info.smt_enabled() {
-        return Err(LlmError::NetworkError {
-            reason: "SNP platform info shows SMT disabled".to_string(),
-        });
+        return Err(evidence_error(
+            "SNP platform info shows SMT disabled".to_string(),
+        ));
     }
     if !info.tsme_enabled() {
-        return Err(LlmError::NetworkError {
-            reason: "SNP platform info shows TSME disabled".to_string(),
-        });
+        return Err(evidence_error(
+            "SNP platform info shows TSME disabled".to_string(),
+        ));
     }
     Ok(())
 }
@@ -1109,46 +1094,69 @@ fn verify_certificate_binding(
     expected_domain: &str,
     attestation_doc: &AttestationDoc,
     expected_hpke_key_hex: &str,
+    expected_tls_public_key_fp: &str,
 ) -> Result<(), LlmError> {
-    let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).map_err(|error| LlmError::NetworkError {
-        reason: format!("Failed to parse enclave certificate PEM: {error}"),
+    let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).map_err(|error| {
+        evidence_error(format!("Failed to parse enclave certificate PEM: {error}"))
     })?;
-    let (_, cert) =
-        X509Certificate::from_der(&pem.contents).map_err(|error| LlmError::NetworkError {
-            reason: format!("Failed to parse enclave certificate DER: {error}"),
-        })?;
+    let (_, cert) = X509Certificate::from_der(&pem.contents).map_err(|error| {
+        evidence_error(format!("Failed to parse enclave certificate DER: {error}"))
+    })?;
+
+    // Validity window: an expired or not-yet-valid bundled certificate must
+    // not receive a fresh verification lifetime (SNP bundle replay gate).
+    let validity = cert.validity();
+    let now = now_secs() as i64;
+    let not_before = validity.not_before.timestamp();
+    let not_after = validity.not_after.timestamp();
+    if now < not_before || now > not_after {
+        return Err(evidence_error(format!(
+            "Enclave certificate outside validity window: not_before={} not_after={} now={}",
+            not_before, not_after, now
+        )));
+    }
+
+    // The certificate's subject public key must be the TLS key bound into the
+    // SNP report (report_data[..32] = SHA-256 of the SPKI DER). Without this
+    // the SAN hash checks could anchor a DIFFERENT certificate to the report.
+    // x509_parser keeps the raw DER slice of the SPKI in `public_key().raw`.
+    let spki_der = cert.public_key().raw;
+    let cert_tls_fp = hex::encode(Sha256::digest(spki_der));
+    if cert_tls_fp != expected_tls_public_key_fp {
+        return Err(evidence_error(
+            "Enclave certificate key does not match the report-bound TLS key".to_string(),
+        ));
+    }
 
     let sans = extract_dns_sans(&cert)?;
     if !domain_matches_sans(&sans, expected_domain) {
-        return Err(LlmError::NetworkError {
-            reason: format!(
-                "Certificate domain mismatch: enclave certificate is not valid for {expected_domain}"
-            ),
-        });
+        return Err(evidence_error(format!(
+            "Certificate domain mismatch: enclave certificate is not valid for {expected_domain}"
+        )));
     }
 
     let hpke_bytes = decode_prefixed_san_data(&sans, "hpke")?;
     let hpke_public_key_hex = hex::encode(hpke_bytes);
     if hpke_public_key_hex != expected_hpke_key_hex {
-        return Err(LlmError::NetworkError {
-            reason: "HPKE key mismatch between certificate and attestation report".to_string(),
-        });
+        return Err(evidence_error(
+            "HPKE key mismatch between certificate and attestation report".to_string(),
+        ));
     }
 
     let attestation_hash_bytes = decode_prefixed_san_data(&sans, "hatt")?;
-    let attestation_hash =
-        String::from_utf8(attestation_hash_bytes).map_err(|error| LlmError::NetworkError {
-            reason: format!("Invalid attestation hash encoding in certificate SAN: {error}"),
-        })?;
+    let attestation_hash = String::from_utf8(attestation_hash_bytes).map_err(|error| {
+        evidence_error(format!(
+            "Invalid attestation hash encoding in certificate SAN: {error}"
+        ))
+    })?;
     let expected_hash = hex::encode(Sha256::digest(format!(
         "{}{}",
         attestation_doc.format, attestation_doc.body
     )));
     if attestation_hash != expected_hash {
-        return Err(LlmError::NetworkError {
-            reason: "Attestation hash mismatch between certificate and attestation bundle"
-                .to_string(),
-        });
+        return Err(evidence_error(
+            "Attestation hash mismatch between certificate and attestation bundle".to_string(),
+        ));
     }
 
     Ok(())
@@ -1183,11 +1191,9 @@ async fn verify_hpke_key_endpoint(
         .trim()
         .to_ascii_lowercase();
     if media_type != APPLICATION_OHTTP_KEYS {
-        return Err(LlmError::NetworkError {
-            reason: format!(
-                "Invalid HPKE key endpoint content type: expected {APPLICATION_OHTTP_KEYS}, got {content_type}"
-            ),
-        });
+        return Err(evidence_error(format!(
+            "Invalid HPKE key endpoint content type: expected {APPLICATION_OHTTP_KEYS}, got {content_type}"
+        )));
     }
     let bytes = response
         .bytes()
@@ -1197,27 +1203,25 @@ async fn verify_hpke_key_endpoint(
         })?;
     let parsed_key = parse_ohttp_public_key(&bytes)?;
     if &parsed_key != expected_hpke_key {
-        return Err(LlmError::NetworkError {
-            reason: "HPKE key endpoint returned a different public key than the attested key"
-                .to_string(),
-        });
+        return Err(evidence_error(
+            "HPKE key endpoint returned a different public key than the attested key".to_string(),
+        ));
     }
     Ok(())
 }
 
 fn parse_ohttp_public_key(data: &[u8]) -> Result<[u8; 32], LlmError> {
     if data.len() < 39 {
-        return Err(LlmError::NetworkError {
-            reason: format!("Invalid OHTTP key config length: {}", data.len()),
-        });
+        return Err(evidence_error(format!(
+            "Invalid OHTTP key config length: {}",
+            data.len()
+        )));
     }
     let public_key_len = 32usize;
     let public_key_start = 3usize;
     let public_key_end = public_key_start + public_key_len;
     if data.len() < public_key_end {
-        return Err(LlmError::NetworkError {
-            reason: "Truncated OHTTP key config".to_string(),
-        });
+        return Err(evidence_error("Truncated OHTTP key config".to_string()));
     }
     let mut public_key = [0u8; 32];
     public_key.copy_from_slice(&data[public_key_start..public_key_end]);
@@ -1226,9 +1230,9 @@ fn parse_ohttp_public_key(data: &[u8]) -> Result<[u8; 32], LlmError> {
 
 fn extract_dns_sans(cert: &X509Certificate<'_>) -> Result<Vec<String>, LlmError> {
     let Ok(Some(extension)) = cert.subject_alternative_name() else {
-        return Err(LlmError::NetworkError {
-            reason: "Enclave certificate is missing Subject Alternative Names".to_string(),
-        });
+        return Err(evidence_error(
+            "Enclave certificate is missing Subject Alternative Names".to_string(),
+        ));
     };
     let mut sans = Vec::new();
     for general_name in &extension.value.general_names {
@@ -1237,10 +1241,9 @@ fn extract_dns_sans(cert: &X509Certificate<'_>) -> Result<Vec<String>, LlmError>
         }
     }
     if sans.is_empty() {
-        return Err(LlmError::NetworkError {
-            reason: "Enclave certificate does not contain DNS Subject Alternative Names"
-                .to_string(),
-        });
+        return Err(evidence_error(
+            "Enclave certificate does not contain DNS Subject Alternative Names".to_string(),
+        ));
     }
     Ok(sans)
 }
@@ -1279,9 +1282,9 @@ fn decode_prefixed_san_data(sans: &[String], prefix: &str) -> Result<Vec<u8>, Ll
         .map(|label| label.get(2..).unwrap_or_default())
         .collect::<String>();
     if joined.is_empty() {
-        return Err(LlmError::NetworkError {
-            reason: format!("Certificate SANs do not contain {prefix} data"),
-        });
+        return Err(evidence_error(format!(
+            "Certificate SANs do not contain {prefix} data"
+        )));
     }
     decode_base32_upper(&joined)
 }
@@ -1294,12 +1297,10 @@ fn decode_base32_upper(input: &str) -> Result<Vec<u8>, LlmError> {
     for byte in input.bytes() {
         let byte = byte.to_ascii_uppercase();
         let Some(index) = alphabet.iter().position(|candidate| *candidate == byte) else {
-            return Err(LlmError::NetworkError {
-                reason: format!(
-                    "Invalid base32 character in certificate SAN data: {}",
-                    byte as char
-                ),
-            });
+            return Err(evidence_error(format!(
+                "Invalid base32 character in certificate SAN data: {}",
+                byte as char
+            )));
         };
         value = (value << 5) | index as u32;
         bits += 5;
@@ -1311,18 +1312,54 @@ fn decode_base32_upper(input: &str) -> Result<Vec<u8>, LlmError> {
     Ok(output)
 }
 
+/// Exact decompressed size of an SNP attestation report; decode reads at most
+/// SNP_REPORT_SIZE+1 bytes and requires exactly SNP_REPORT_SIZE.
+const SNP_REPORT_SIZE: usize = 1184;
+/// Maximum accepted compressed size for the base64+gzip attestation body.
+/// A 1,184-byte SNP report compresses to a few KB; anything larger is an
+/// attempt to make us decompress a bomb.
+const MAX_ATTESTATION_BODY_COMPRESSED: usize = 65_536;
+
 fn decode_attestation_body(body: &str) -> Result<Vec<u8>, LlmError> {
+    if body.len() > MAX_ATTESTATION_BODY_COMPRESSED.div_ceil(3) * 4 {
+        return Err(evidence_error("Encoded attestation body too large"));
+    }
     let encoded = base64::engine::general_purpose::STANDARD
         .decode(body)
-        .map_err(|error| LlmError::NetworkError {
-            reason: format!("Invalid attestation body encoding: {error}"),
-        })?;
-    let mut decoder = GzDecoder::new(encoded.as_slice());
+        .map_err(|error| evidence_error(format!("Invalid attestation body encoding: {error}")))?;
+    if encoded.len() > MAX_ATTESTATION_BODY_COMPRESSED {
+        return Err(evidence_error(format!(
+            "Attestation body too large: {} bytes (max {})",
+            encoded.len(),
+            MAX_ATTESTATION_BODY_COMPRESSED
+        )));
+    }
     let mut out = Vec::new();
-    std::io::Read::read_to_end(&mut decoder, &mut out).map_err(|error| LlmError::NetworkError {
-        reason: format!("Invalid attestation body compression: {error}"),
-    })?;
+    std::io::Read::read_to_end(
+        &mut GzDecoder::new(encoded.as_slice()).take((SNP_REPORT_SIZE + 1) as u64),
+        &mut out,
+    )
+    .map_err(|error| evidence_error(format!("Invalid attestation body compression: {error}")))?;
+    if out.len() != SNP_REPORT_SIZE {
+        return Err(evidence_error(format!(
+            "Invalid attestation body size: {} bytes (expected {})",
+            out.len(),
+            SNP_REPORT_SIZE
+        )));
+    }
     Ok(out)
+}
+
+/// Attestation evidence/cryptographic/policy failures are wrapped in
+/// `ApiError { status_code: 0 }` inside this module so the boundary mapping in
+/// `llm_to_attestation_error` can distinguish them from real I/O failures:
+/// only genuine I/O (NetworkError / non-zero ApiError) stays transient.
+/// `status_code: 0` never originates from an HTTP response.
+fn evidence_error(reason: impl Into<String>) -> LlmError {
+    LlmError::ApiError {
+        status_code: 0,
+        reason: reason.into(),
+    }
 }
 
 fn llm_to_attestation_error(error: LlmError) -> AttestationError {
@@ -1366,6 +1403,30 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attestation_decode_is_bounded_and_failures_are_not_transient() {
+        use std::io::Write;
+        for size in [SNP_REPORT_SIZE - 1, SNP_REPORT_SIZE, 1_000_000] {
+            let mut gzip =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            gzip.write_all(&vec![0; size]).unwrap();
+            let body = base64::engine::general_purpose::STANDARD.encode(gzip.finish().unwrap());
+            let result = decode_attestation_body(&body);
+            if size == SNP_REPORT_SIZE {
+                assert_eq!(result.unwrap().len(), size);
+            } else {
+                let error = llm_to_attestation_error(result.unwrap_err());
+                assert!(matches!(error, AttestationError::QuoteVerification { .. }));
+                assert!(!error.is_transient());
+            }
+        }
+        assert!(decode_attestation_body(&"A".repeat(100_000)).is_err());
+        assert!(llm_to_attestation_error(LlmError::NetworkError {
+            reason: "connection reset".into(),
+        })
+        .is_transient());
+    }
 
     // Live diagnostic: real sealed handshake against production. Ignored by
     // default; run with PPQ_LIVE_KEY=<account api key> to inspect the raw

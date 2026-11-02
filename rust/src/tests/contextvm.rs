@@ -46,7 +46,7 @@ fn ctx_03_per_tool_enable_persists_across_launches() {
     crate::persistence::queries::upsert_contextvm_tool(db.conn(), &row).unwrap();
     crate::persistence::queries::update_contextvm_tool_enabled(db.conn(), "pkA:smoke", true)
         .unwrap();
-    let r = crate::persistence::queries::get_contextvm_tool_by_name(db.conn(), "smoke")
+    let r = crate::persistence::queries::get_contextvm_tool_by_id(db.conn(), "pkA:smoke")
         .unwrap()
         .unwrap();
     assert!(r.enabled);
@@ -79,7 +79,7 @@ fn ctx_05_enabled_tools_appear_in_openai_tools_array() {
         provider_nip05: None,
         last_seen_at: 1,
     };
-    let tools = crate::agent::tools::build_chat_tools_with_contextvm(false, false, &[desc]);
+    let tools = crate::agent::tools::build_chat_tools_with_contextvm(true, false, false, &[desc]);
     let names: Vec<String> = tools
         .iter()
         .filter_map(|t| match t {
@@ -1052,7 +1052,7 @@ fn test_build_chat_tools_with_contextvm_appends_remote() {
     };
     let tools_no_remote = crate::agent::tools::build_chat_tools(false, false);
     let tools_with_remote =
-        crate::agent::tools::build_chat_tools_with_contextvm(false, false, &[desc]);
+        crate::agent::tools::build_chat_tools_with_contextvm(true, false, false, &[desc]);
     assert_eq!(tools_with_remote.len(), tools_no_remote.len() + 1);
     let last = tools_with_remote.last().expect("at least one tool");
     match last {
@@ -1073,8 +1073,134 @@ fn test_build_chat_tools_with_contextvm_caps_at_8_via_finalise() {
     assert_eq!(finalised.len(), 8);
     let baseline = crate::agent::tools::build_chat_tools(false, false);
     let with_remote =
-        crate::agent::tools::build_chat_tools_with_contextvm(false, false, &finalised);
+        crate::agent::tools::build_chat_tools_with_contextvm(true, false, false, &finalised);
     assert_eq!(with_remote.len(), baseline.len() + 8);
+}
+
+#[test]
+fn chat_tools_disabled_omits_every_local_tool_but_keeps_remote_tools() {
+    use async_openai::types::chat::ChatCompletionTools;
+    let remote = fixture_descriptor("translate", 1);
+    for include_docs in [false, true] {
+        for has_brave_key in [false, true] {
+            assert!(crate::agent::tools::build_chat_tools_with_contextvm(
+                false,
+                include_docs,
+                has_brave_key,
+                &[],
+            )
+            .is_empty());
+            let tools = crate::agent::tools::build_chat_tools_with_contextvm(
+                false,
+                include_docs,
+                has_brave_key,
+                std::slice::from_ref(&remote),
+            );
+            assert_eq!(tools.len(), 1);
+            assert!(matches!(
+                &tools[0],
+                ChatCompletionTools::Function(tool) if tool.function.name == "translate"
+            ));
+        }
+    }
+}
+
+fn discovered_tool(provider: &str) -> crate::contextvm::DiscoveredTool {
+    crate::contextvm::DiscoveredTool {
+        provider_pubkey_hex: provider.into(),
+        provider_display_name: None,
+        provider_name: None,
+        provider_about: None,
+        provider_picture: None,
+        provider_nip05: None,
+        tool_name: "translate".into(),
+        description: format!("tool from {provider}"),
+        schema_json: r#"{"type":"object"}"#.into(),
+    }
+}
+
+#[test]
+fn discovery_merge_preserves_approval_only_for_the_same_provider() {
+    use crate::persistence::queries;
+    let db = crate::persistence::Database::open(":memory:").unwrap();
+    crate::merge_discovered_contextvm_tools(db.conn(), vec![discovered_tool("pkA")]).unwrap();
+    let first = queries::get_contextvm_tool_by_id(db.conn(), "pkA:translate")
+        .unwrap()
+        .unwrap();
+    assert!(!first.enabled);
+    queries::update_contextvm_tool_enabled(db.conn(), &first.id, true).unwrap();
+
+    let mut refreshed = discovered_tool("pkA");
+    refreshed.description = "updated description".into();
+    crate::merge_discovered_contextvm_tools(db.conn(), vec![refreshed]).unwrap();
+    let row = queries::get_contextvm_tool_by_id(db.conn(), "pkA:translate")
+        .unwrap()
+        .unwrap();
+    assert!(row.enabled);
+    assert_eq!(row.provider_pubkey, "pkA");
+    assert_eq!(row.description, "updated description");
+
+    queries::update_contextvm_tool_enabled(db.conn(), &row.id, false).unwrap();
+    crate::merge_discovered_contextvm_tools(db.conn(), vec![discovered_tool("pkA")]).unwrap();
+    assert!(
+        !queries::get_contextvm_tool_by_id(db.conn(), "pkA:translate")
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+}
+
+#[test]
+fn discovery_merge_cannot_replace_an_enabled_provider_with_a_name_collision() {
+    use crate::persistence::queries;
+    let db = crate::persistence::Database::open(":memory:").unwrap();
+    crate::merge_discovered_contextvm_tools(db.conn(), vec![discovered_tool("pkA")]).unwrap();
+    queries::update_contextvm_tool_enabled(db.conn(), "pkA:translate", true).unwrap();
+    let approved = queries::get_contextvm_tool_by_id(db.conn(), "pkA:translate")
+        .unwrap()
+        .unwrap();
+
+    crate::merge_discovered_contextvm_tools(db.conn(), vec![discovered_tool("pkB")]).unwrap();
+    assert_eq!(
+        queries::list_enabled_contextvm_tools(db.conn()).unwrap(),
+        vec![approved.clone()]
+    );
+
+    let rows = queries::list_all_contextvm_tools(db.conn()).unwrap();
+    assert_eq!(rows.len(), 2);
+    let competing = queries::get_contextvm_tool_by_id(db.conn(), "pkB:translate")
+        .unwrap()
+        .unwrap();
+    assert!(!competing.enabled);
+    assert_eq!(competing.provider_pubkey, "pkB");
+
+    crate::merge_discovered_contextvm_tools(db.conn(), vec![discovered_tool("pkB")]).unwrap();
+    assert_eq!(
+        queries::list_all_contextvm_tools(db.conn()).unwrap().len(),
+        2
+    );
+    let enabled = queries::list_enabled_contextvm_tools(db.conn()).unwrap();
+    assert_eq!(enabled, vec![approved]);
+
+    queries::update_contextvm_tool_enabled(db.conn(), "pkB:translate", true).unwrap();
+    crate::merge_discovered_contextvm_tools(
+        db.conn(),
+        vec![discovered_tool("pkA"), discovered_tool("pkB")],
+    )
+    .unwrap();
+    let enabled = queries::list_enabled_contextvm_tools(db.conn()).unwrap();
+    assert_eq!(enabled.len(), 1);
+    assert_eq!(enabled[0].id, "pkB:translate");
+    assert!(
+        !queries::get_contextvm_tool_by_id(db.conn(), "pkA:translate")
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    assert_eq!(
+        queries::list_all_contextvm_tools(db.conn()).unwrap().len(),
+        2
+    );
 }
 
 // ── Phase 36 GREEN tests (Wave 1) ───────────────────────────────────────

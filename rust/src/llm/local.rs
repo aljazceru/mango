@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use once_cell::sync::Lazy;
 use tokio_util::sync::CancellationToken;
@@ -10,6 +10,15 @@ use super::local_models::{
     LocalModelPreset,
 };
 use super::streaming::InternalEvent;
+
+/// One provider-wide critical section for the check/load/generate sequence.
+///
+/// The platform engine holds a single shared model handle: task A loading
+/// model A must not be interleaved with task B unloading it and loading
+/// model B before A calls `generate`. Per-backend semaphores do not cover
+/// this because two different local models live behind different semaphores.
+/// Held only on blocking worker threads (spawn_blocking), never on the actor.
+static LOCAL_MODEL_SEQUENCE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Device-side capability summary for local LLM inference.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
@@ -141,9 +150,22 @@ impl LocalLlmError {
     pub fn into_llm_error(self) -> LlmError {
         match self {
             LocalLlmError::ModelMissing { path } => LlmError::ModelNotFound { model_id: path },
-            LocalLlmError::Unsupported { reason }
-            | LocalLlmError::LoadFailed { reason }
-            | LocalLlmError::GenerationFailed { reason } => LlmError::NetworkError { reason },
+            LocalLlmError::Unsupported { reason } | LocalLlmError::LoadFailed { reason } => {
+                LlmError::NetworkError { reason }
+            }
+            // A generation failure that states the engine's context limit is a
+            // real context overflow, not a network fault: surface it as a 400
+            // ApiError so the actor's existing overflow branch learns the limit
+            // and offers compaction instead of misreporting a transport error.
+            LocalLlmError::GenerationFailed { reason } => {
+                match super::context::parse_context_overflow(&reason) {
+                    Some(_) => LlmError::ApiError {
+                        status_code: 400,
+                        reason,
+                    },
+                    None => LlmError::NetworkError { reason },
+                }
+            }
             LocalLlmError::NotLoaded => LlmError::NetworkError {
                 reason: "local model is not loaded".to_string(),
             },
@@ -492,6 +514,12 @@ fn run_local_generation_with_preset_blocking(
     core_tx: flume::Sender<crate::CoreMsg>,
     cancel_token: CancellationToken,
 ) {
+    // Serialize the whole check/load/generate sequence: the platform engine
+    // has ONE model slot, so another task must not swap the model between
+    // `ensure_local_model_loaded` and `generate` (see LOCAL_MODEL_SEQUENCE_LOCK).
+    let _sequence_guard = LOCAL_MODEL_SEQUENCE_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     if let Err(error) = ensure_local_model_loaded(&provider, &data_dir, &preset) {
         let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(
             InternalEvent::StreamError {
@@ -635,6 +663,11 @@ pub(crate) fn complete_local_blocking_with_preset(
     preset: &LocalModelPreset,
     messages: &[super::streaming::ChatMessage],
 ) -> Result<String, LlmError> {
+    // Same provider-wide critical section as the streaming path: check/load
+    // and generate must stay atomic across the shared model slot.
+    let _sequence_guard = LOCAL_MODEL_SEQUENCE_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     ensure_local_model_loaded(&provider, &data_dir, preset)
         .map_err(|error| error.into_llm_error())?;
 
@@ -651,7 +684,7 @@ pub(crate) fn complete_local_blocking_with_preset(
     for msg in rx.drain() {
         if let crate::CoreMsg::InternalEvent(event) = msg {
             match *event {
-                InternalEvent::StreamChunk { token } => output.push_str(&token),
+                InternalEvent::StreamChunk { token, .. } => output.push_str(&token),
                 InternalEvent::StreamError { error } => return Err(error),
                 _ => {}
             }
@@ -659,7 +692,6 @@ pub(crate) fn complete_local_blocking_with_preset(
     }
     Ok(output)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,5 +705,35 @@ mod tests {
             LocalLlmCapabilityStatus::Unknown | LocalLlmCapabilityStatus::RuntimeNotPackaged
         ));
         assert!(provider.load_model("/tmp/model.gguf".to_string()).is_err());
+    }
+
+    #[test]
+    fn generation_overflow_maps_to_api_400() {
+        // The native engine reports overflow as text matching the provider
+        // formats parse_context_overflow recognizes; it must become the same
+        // 400 ApiError the actor uses to learn limits and offer compaction.
+        let err = LocalLlmError::GenerationFailed {
+            reason:
+                "local prompt exceeds maximum context length is 1848 tokens, requested 3000 tokens"
+                    .to_string(),
+        };
+        match err.into_llm_error() {
+            LlmError::ApiError {
+                status_code,
+                reason,
+            } => {
+                assert_eq!(status_code, 400);
+                assert!(reason.contains("maximum context length"));
+            }
+            other => panic!("expected 400 ApiError, got {other:?}"),
+        }
+
+        let err = LocalLlmError::GenerationFailed {
+            reason: "plain decode failure".to_string(),
+        };
+        match err.into_llm_error() {
+            LlmError::NetworkError { .. } => {}
+            other => panic!("expected NetworkError, got {other:?}"),
+        }
     }
 }

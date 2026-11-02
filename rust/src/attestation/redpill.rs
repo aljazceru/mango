@@ -29,13 +29,71 @@ use crate::llm::LlmError;
 
 const HTTP_TIMEOUT_SECS: u64 = 30;
 
-// REPORTDATA at TDX v4 quote bytes [568..632] (header 48B + body offset 520..584)
+// Raw TDX v4 quote offsets, retained ONLY for tests that synthesize a
+// debug-bit-set quote by byte-mutating a v4 fixture. Verification paths read
+// attributes/REPORTDATA from the parsed `dcap_qvl::quote::Report` so TDX v5
+// quotes (6-byte body header inserted after the quote header) decode
+// correctly -- never use these offsets on live quote bytes.
 pub(crate) const REPORTDATA_OFFSET: usize = 568;
 pub(crate) const REPORTDATA_LEN: usize = 64;
-// td_attributes is at body offset 120..128 (quote offset 48 + 120..48 + 128)
 pub(crate) const TD_ATTRIBUTES_OFFSET: usize = 48 + 120;
 pub(crate) const ATTESTATION_PATH: &str = "/v1/attestation/report";
 pub(crate) const ATTESTATION_TTL_SECS: u64 = 5 * 60; // 5 min per CONTEXT D-20
+
+/// Security-relevant fields read from a PARSED TDX report (version-safe:
+/// works for both quote v4 and v5 since `dcap_qvl::Quote::parse` normalises
+/// the layout). SGX enclave reports and unparseable quotes are rejected.
+#[derive(Clone, Copy)]
+pub(crate) struct ParsedTdxReport {
+    pub td_attributes: [u8; 8],
+    pub xfam: [u8; 8],
+    pub tee_tcb_svn: [u8; 16],
+    pub mr_seam: [u8; 48],
+    pub report_data: [u8; 64],
+}
+
+/// Parse a TDX quote and extract the security fields Mango appraises.
+/// Fails closed on parse errors and on non-TDX (SGX) reports.
+pub(crate) fn parse_tdx_report(quote_bytes: &[u8]) -> Result<ParsedTdxReport, RedpillError> {
+    let quote = dcap_qvl::quote::Quote::parse(quote_bytes)
+        .map_err(|e| RedpillError::QuoteDecode(format!("TDX quote parse: {e}")))?;
+    match &quote.report {
+        dcap_qvl::quote::Report::TD10(td) => Ok(ParsedTdxReport {
+            td_attributes: td.td_attributes,
+            xfam: td.xfam,
+            tee_tcb_svn: td.tee_tcb_svn,
+            mr_seam: td.mr_seam,
+            report_data: td.report_data,
+        }),
+        dcap_qvl::quote::Report::TD15(td) => Ok(ParsedTdxReport {
+            td_attributes: td.base.td_attributes,
+            xfam: td.base.xfam,
+            tee_tcb_svn: td.base.tee_tcb_svn,
+            mr_seam: td.base.mr_seam,
+            report_data: td.base.report_data,
+        }),
+        dcap_qvl::quote::Report::SgxEnclave(_) => Err(RedpillError::QuoteDecode(
+            "SGX enclave report is not a TDX TD10/TD15 report".into(),
+        )),
+    }
+}
+
+/// Apply the configured TdxPolicy (min TEE TCB SVN, MRSEAM allowlist, fixed
+/// TD attributes/XFAM) to a parsed report. Reuses the endpoint policy check
+/// so a single allowlist governs every TDX path.
+pub(crate) fn apply_tdx_policy(
+    parsed: &ParsedTdxReport,
+    policy: &super::policy::TdxPolicy,
+) -> Result<(), RedpillError> {
+    super::endpoint::verify_tdx_policy(
+        &parsed.tee_tcb_svn,
+        &parsed.mr_seam,
+        &parsed.td_attributes,
+        &parsed.xfam,
+        policy,
+    )
+    .map_err(RedpillError::Inner)
+}
 
 /// Re-export the Venice model-ecdsa REPORTDATA decoder. Single source of truth —
 /// the model layout in Shape A and the model component of Shape B are byte-identical
@@ -166,10 +224,14 @@ pub fn quote_bytes(s: &str) -> Result<Vec<u8>, RedpillError> {
 // ── Debug-mode gate (D-07 / RED-08) ──────────────────────────────────────────
 
 /// Return true iff the TDX quote's `td_attributes` debug bit is CLEAR (production enclave).
-/// Returns false (=> reject) on too-short quotes or debug-bit set.
+/// Returns false (=> reject) on unparseable/non-TDX quotes or debug-bit set.
+/// Reads attributes from the PARSED report so TDX v5 quotes are handled;
+/// raw-offset reads would misread v5's shifted layout.
 /// Reference: `redpill-verifier::chutes.ts` and Python `decode-report-data.py`.
 pub fn debug_mode_disabled(quote_bytes: &[u8]) -> bool {
-    quote_bytes.len() > TD_ATTRIBUTES_OFFSET && (quote_bytes[TD_ATTRIBUTES_OFFSET] & 0x01) == 0
+    parse_tdx_report(quote_bytes)
+        .map(|r| (r.td_attributes[0] & 0x01) == 0)
+        .unwrap_or(false)
 }
 
 // ── REPORTDATA decoders (D-08 / D-09 / D-10 / D-11) ──────────────────────────
@@ -469,7 +531,8 @@ pub(crate) fn component_quote_bytes(
     let raw = quote.unwrap_or("").trim();
     let bytes = quote_bytes(raw)
         .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: component })?;
-    if bytes.len() < REPORTDATA_OFFSET + REPORTDATA_LEN {
+    // Fails closed when the quote is not a parseable TD10/TD15 TDX report.
+    if parse_tdx_report(&bytes).is_err() {
         return Err(RedpillError::OrchestratedComponentFailed { failed: component });
     }
     Ok(bytes)
@@ -481,7 +544,7 @@ async fn verify_flat(
     requested_model: &str,
     value: &serde_json::Value,
     nonce: &[u8; 32],
-    _policy: &super::policy::TdxPolicy,
+    policy: &super::policy::TdxPolicy,
 ) -> Result<VerifiedRedpillAttestation, RedpillError> {
     let intel_quote = value
         .get("intel_quote")
@@ -497,17 +560,12 @@ async fn verify_flat(
     )
     .await?;
 
-    if !debug_mode_disabled(&q) {
+    let parsed = parse_tdx_report(&q)?;
+    if (parsed.td_attributes[0] & 0x01) != 0 {
         return Err(RedpillError::DebugMode);
     }
-
-    if q.len() < REPORTDATA_OFFSET + REPORTDATA_LEN {
-        return Err(RedpillError::QuoteDecode(
-            "quote too short for REPORTDATA".into(),
-        ));
-    }
-    let mut rd = [0u8; 64];
-    rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
+    apply_tdx_policy(&parsed, policy)?;
+    let rd = parsed.report_data;
 
     if let Some(pk_hex) = value
         .get("signing_key")
@@ -571,7 +629,7 @@ async fn verify_orchestrated(
     value: &serde_json::Value,
     nonce: &[u8; 32],
     is_near_ai: bool,
-    _policy: &super::policy::TdxPolicy,
+    policy: &super::policy::TdxPolicy,
 ) -> Result<VerifiedRedpillAttestation, RedpillError> {
     let resp: RedpillOrchestratedResponse = serde_json::from_value(value.clone())
         .map_err(|e| RedpillError::Network(format!("orchestrated parse: {e}")))?;
@@ -596,12 +654,14 @@ async fn verify_orchestrated(
         )
         .await
         .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "gateway" })?;
-        if !debug_mode_disabled(&q) {
+        let parsed = parse_tdx_report(&q)
+            .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "gateway" })?;
+        if (parsed.td_attributes[0] & 0x01) != 0 {
             return Err(RedpillError::DebugMode);
         }
-        let mut rd = [0u8; 64];
-        rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
-        verify_redpill_gateway_reportdata(&rd, &gw_addr_hex, nonce)
+        apply_tdx_policy(&parsed, policy)
+            .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "gateway" })?;
+        verify_redpill_gateway_reportdata(&parsed.report_data, &gw_addr_hex, nonce)
             .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "gateway" })?;
     }
 
@@ -617,11 +677,14 @@ async fn verify_orchestrated(
         )
         .await
         .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "model" })?;
-        if !debug_mode_disabled(&q) {
+        let parsed = parse_tdx_report(&q)
+            .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "model" })?;
+        if (parsed.td_attributes[0] & 0x01) != 0 {
             return Err(RedpillError::DebugMode);
         }
-        let mut rd = [0u8; 64];
-        rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
+        apply_tdx_policy(&parsed, policy)
+            .map_err(|_| RedpillError::OrchestratedComponentFailed { failed: "model" })?;
+        let rd = parsed.report_data;
 
         if let Some(ref pk_hex) = m0.signing_key {
             verify_redpill_model_reportdata(&rd, pk_hex, nonce)
@@ -675,16 +738,22 @@ async fn verify_orchestrated(
         .map_err(|_| RedpillError::OrchestratedComponentFailed {
             failed: "compose_manager",
         })?;
-        if !debug_mode_disabled(&q) {
+        let parsed =
+            parse_tdx_report(&q).map_err(|_| RedpillError::OrchestratedComponentFailed {
+                failed: "compose_manager",
+            })?;
+        if (parsed.td_attributes[0] & 0x01) != 0 {
             return Err(RedpillError::DebugMode);
         }
-        let mut rd = [0u8; 64];
-        rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
-        verify_redpill_compose_manager_reportdata(&rd, &cm.actions_hash, nonce).map_err(|_| {
+        apply_tdx_policy(&parsed, policy).map_err(|_| {
             RedpillError::OrchestratedComponentFailed {
                 failed: "compose_manager",
             }
         })?;
+        verify_redpill_compose_manager_reportdata(&parsed.report_data, &cm.actions_hash, nonce)
+            .map_err(|_| RedpillError::OrchestratedComponentFailed {
+                failed: "compose_manager",
+            })?;
     }
 
     Ok(VerifiedRedpillAttestation {
@@ -707,7 +776,7 @@ async fn verify_chutes(
     requested_model: &str,
     value: &serde_json::Value,
     _nonce: &[u8; 32],
-    _policy: &super::policy::TdxPolicy,
+    policy: &super::policy::TdxPolicy,
 ) -> Result<VerifiedRedpillAttestation, RedpillError> {
     let resp: RedpillChutesResponse = serde_json::from_value(value.clone())
         .map_err(|e| RedpillError::Network(format!("chutes parse: {e}")))?;
@@ -727,11 +796,8 @@ async fn verify_chutes(
     );
 
     let q = quote_bytes(entry_intel_quote)?;
-    if q.len() < REPORTDATA_OFFSET + REPORTDATA_LEN {
-        return Err(RedpillError::QuoteDecode("chutes quote too short".into()));
-    }
-    let mut rd = [0u8; 64];
-    rd.copy_from_slice(&q[REPORTDATA_OFFSET..REPORTDATA_OFFSET + REPORTDATA_LEN]);
+    let parsed = parse_tdx_report(&q)?;
+    let rd = parsed.report_data;
 
     // Chutes leaves rd[32..64] unconstrained (D-11), so we cannot expect the client
     // ?nonce= to appear there. We slice REPORTDATA ourselves and call the anti-tamper
@@ -750,9 +816,10 @@ async fn verify_chutes(
     )
     .await?;
 
-    if !debug_mode_disabled(&q) {
+    if (parsed.td_attributes[0] & 0x01) != 0 {
         return Err(RedpillError::DebugMode);
     }
+    apply_tdx_policy(&parsed, policy)?;
 
     verify_redpill_chutes_anti_tamper(&rd, entry_nonce, entry_e2e_pubkey)?;
 

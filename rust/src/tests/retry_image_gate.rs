@@ -268,7 +268,10 @@ fn retry_image_turn_routed_to_text_only_hybrid_local_restores_history() {
     let dek_hex = keychain_state
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&("mango".to_string(), "dek".to_string()))
+        .get(&(
+            "mango".to_string(),
+            crate::KEYCHAIN_BYPASS_DEK_KEY.to_string(),
+        ))
         .cloned()
         .expect("no-lock enrollment caches the DEK");
     drop(app);
@@ -503,7 +506,10 @@ fn deferred_image_retry_restores_history_while_attestation_pending() {
     let dek_hex = keychain_state
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&("mango".to_string(), "dek".to_string()))
+        .get(&(
+            "mango".to_string(),
+            crate::KEYCHAIN_BYPASS_DEK_KEY.to_string(),
+        ))
         .cloned()
         .expect("no-lock enrollment caches the DEK");
     drop(app);

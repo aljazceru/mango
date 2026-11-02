@@ -180,6 +180,290 @@ fn test_count_agent_steps() {
     assert_eq!(count_after, 3, "Count should be 3 after inserting 3 steps");
 }
 
+fn checkpoint_actor() -> crate::ActorState {
+    let mut state = crate::image_red_tests::default_actor_state_for_image_tests();
+    insert_agent_session(
+        state.db.as_ref().unwrap().conn(),
+        &make_session("checkpoint", "running"),
+    )
+    .unwrap();
+    // This transport rejects requests locally, so no test needs a live backend.
+    state.backends.push(crate::llm::BackendConfig {
+        id: "tinfoil".into(),
+        name: "Checkpoint test".into(),
+        base_url: "local://checkpoint".into(),
+        api_key: String::new(),
+        models: vec!["checkpoint-model".into()],
+        tee_type: crate::llm::TeeType::Unknown,
+        max_concurrent_requests: 1,
+        supports_tool_use: true,
+    });
+    state.active_agent_sessions.insert(
+        "checkpoint".into(),
+        crate::agent::AgentExecutionState {
+            session_id: "checkpoint".into(),
+            messages: vec![],
+            step_number: 1,
+            backend_id: "tinfoil".into(),
+            model: "checkpoint-model".into(),
+        },
+    );
+    state
+}
+
+fn complete_checkpoint_step(state: &mut crate::ActorState, result: crate::agent::AgentStepResult) {
+    let (core_tx, _core_rx) = flume::unbounded();
+    let (update_tx, _update_rx) = flume::unbounded();
+    let shared = std::sync::Arc::new(std::sync::RwLock::new(state.app_state.clone()));
+    crate::handle_agent_step_complete(
+        state,
+        "checkpoint".into(),
+        1,
+        Ok(result),
+        &core_tx,
+        &shared,
+        &update_tx,
+    );
+}
+
+fn checkpoint_calls() -> Vec<ChatCompletionMessageToolCall> {
+    [("call-a", "1 + 1"), ("call-b", "2 * 3")]
+        .into_iter()
+        .map(|(id, expression)| ChatCompletionMessageToolCall {
+            id: id.into(),
+            function: FunctionCall {
+                name: "calculate".into(),
+                arguments: serde_json::json!({"expression": expression}).to_string(),
+            },
+        })
+        .collect()
+}
+
+#[test]
+fn agent_checkpoint_persists_results_and_resumes_matching_tool_messages() {
+    let mut state = checkpoint_actor();
+    complete_checkpoint_step(
+        &mut state,
+        crate::agent::AgentStepResult::ToolCalls(checkpoint_calls()),
+    );
+    let steps = list_agent_steps(state.db.as_ref().unwrap().conn(), "checkpoint").unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].status, "completed");
+    let results: Vec<(String, String)> =
+        serde_json::from_str(steps[0].result.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        results,
+        vec![("call-a".into(), "2".into()), ("call-b".into(), "6".into())]
+    );
+    let original =
+        serde_json::to_value(&state.active_agent_sessions["checkpoint"].messages).unwrap();
+    assert_eq!(original[0]["tool_calls"][0]["id"], "call-a");
+    assert_eq!(original[1]["tool_call_id"], "call-a");
+    assert_eq!(original[1]["content"], "2");
+    assert_eq!(original[2]["tool_call_id"], "call-b");
+    assert_eq!(original[2]["content"], "6");
+
+    state.active_agent_sessions.remove("checkpoint");
+    update_agent_session_status(
+        state.db.as_ref().unwrap().conn(),
+        "checkpoint",
+        "paused",
+        2000,
+    )
+    .unwrap();
+    let (core_tx, _core_rx) = flume::unbounded();
+    crate::handle_resume_agent_session(&mut state, "checkpoint".into(), &core_tx);
+    let resumed = &state.active_agent_sessions["checkpoint"];
+    assert_eq!(resumed.step_number, 2);
+    let resumed_messages = serde_json::to_value(&resumed.messages).unwrap();
+    assert_eq!(
+        &resumed_messages.as_array().unwrap()[2..],
+        original.as_array().unwrap().as_slice()
+    );
+}
+
+#[test]
+fn agent_checkpoint_replays_multiple_steps_and_reorders_results_by_call_id() {
+    let mut step = make_step("a", "checkpoint", 1, "tool_call");
+    step.action_payload = serde_json::json!([
+        {"id":"a", "name":"calculate", "arguments":"{}"},
+        {"id":"b", "name":"calculate", "arguments":"{}"},
+    ])
+    .to_string();
+    step.result = Some(serde_json::json!([["b", "second"], ["a", "first"]]).to_string());
+    let mut next = make_step("b", "checkpoint", 2, "tool_call");
+    next.action_payload = serde_json::json!([
+        {"id":"c", "name":"calculate", "arguments":"{}"},
+    ])
+    .to_string();
+    next.result = Some(serde_json::json!([["c", "third"]]).to_string());
+    let messages = crate::restore_agent_tool_messages(&[step, next]).unwrap();
+    let messages = serde_json::to_value(messages).unwrap();
+    assert_eq!(messages[0]["role"], "assistant");
+    assert_eq!(messages[1]["tool_call_id"], "a");
+    assert_eq!(messages[1]["content"], "first");
+    assert_eq!(messages[2]["tool_call_id"], "b");
+    assert_eq!(messages[3]["role"], "assistant");
+    assert_eq!(messages[4]["tool_call_id"], "c");
+    assert_eq!(messages[4]["content"], "third");
+}
+
+#[test]
+fn agent_resume_rejects_incomplete_legacy_or_mismatched_checkpoints_visibly() {
+    for (status, payload, result) in [
+        (
+            "running",
+            r#"[{"id":"a","name":"calculate","arguments":"{}"}]"#,
+            Some(r#"[["a","2"]]"#),
+        ),
+        (
+            "completed",
+            r#"[{"id":"a","name":"calculate","arguments":"{}"}]"#,
+            None,
+        ),
+        (
+            "completed",
+            r#"[{"id":"a","name":"calculate","arguments":"{}"}]"#,
+            Some("not json"),
+        ),
+        (
+            "completed",
+            r#"[{"id":"a","name":"calculate","arguments":"{}"}]"#,
+            Some(r#"[["wrong","2"]]"#),
+        ),
+        (
+            "completed",
+            r#"[{"id":"a","name":"calculate","arguments":"{}"},{"id":"b","name":"calculate","arguments":"{}"}]"#,
+            Some(r#"[["a","2"],["a","3"]]"#),
+        ),
+        (
+            "completed",
+            r#"[{"id":"a","name":"calculate"}]"#,
+            Some(r#"[["a","2"]]"#),
+        ),
+        ("completed", "[]", Some("[]")),
+    ] {
+        let mut state = checkpoint_actor();
+        state.active_agent_sessions.clear();
+        let mut step = make_step("bad", "checkpoint", 1, "tool_call");
+        step.status = status.into();
+        step.action_payload = payload.into();
+        step.result = result.map(String::from);
+        insert_agent_step(state.db.as_ref().unwrap().conn(), &step).unwrap();
+        let (core_tx, core_rx) = flume::unbounded();
+        crate::handle_resume_agent_session(&mut state, "checkpoint".into(), &core_tx);
+        assert!(state.active_agent_sessions.is_empty());
+        assert!(
+            core_rx.is_empty(),
+            "Resume must not launch a request with an invalid checkpoint"
+        );
+        assert_eq!(
+            list_agent_sessions(state.db.as_ref().unwrap().conn()).unwrap()[0].status,
+            "failed"
+        );
+        assert!(state
+            .app_state
+            .toast
+            .as_deref()
+            .unwrap()
+            .contains("cannot safely resume"));
+    }
+}
+
+#[test]
+fn agent_checkpoint_write_failures_stop_session_without_advancing() {
+    for trigger in [
+        "CREATE TRIGGER fail_checkpoint BEFORE INSERT ON agent_steps BEGIN SELECT RAISE(ABORT, 'checkpoint insert failed'); END;",
+        "CREATE TRIGGER fail_checkpoint BEFORE UPDATE ON agent_steps BEGIN SELECT RAISE(ABORT, 'checkpoint result failed'); END;",
+        "CREATE TRIGGER fail_checkpoint BEFORE UPDATE ON agent_sessions WHEN NEW.status = 'running' BEGIN SELECT RAISE(ABORT, 'checkpoint status failed'); END;",
+    ] {
+        let mut state = checkpoint_actor();
+        state.db.as_ref().unwrap().conn().execute_batch(trigger).unwrap();
+        let (core_tx, core_rx) = flume::unbounded();
+        let (update_tx, _update_rx) = flume::unbounded();
+        let shared = std::sync::Arc::new(std::sync::RwLock::new(state.app_state.clone()));
+        crate::handle_agent_step_complete(
+            &mut state, "checkpoint".into(), 1,
+            Ok(crate::agent::AgentStepResult::ToolCalls(checkpoint_calls())),
+            &core_tx, &shared, &update_tx,
+        );
+        assert!(state.active_agent_sessions.is_empty());
+        assert!(core_rx.is_empty());
+        assert_eq!(list_agent_sessions(state.db.as_ref().unwrap().conn()).unwrap()[0].status, "failed");
+        assert!(state.app_state.toast.as_deref().unwrap().contains("checkpoint"));
+        let steps = list_agent_steps(state.db.as_ref().unwrap().conn(), "checkpoint").unwrap();
+        if trigger.contains("UPDATE ON agent_steps") {
+            assert_eq!(steps[0].status, "running");
+            assert!(steps[0].result.is_none());
+        }
+    }
+}
+
+#[test]
+fn agent_resume_read_and_status_failures_are_visible() {
+    for statement in [
+        "DROP TABLE agent_steps;",
+        "CREATE TRIGGER fail_resume BEFORE UPDATE ON agent_sessions BEGIN SELECT RAISE(ABORT, 'resume status failed'); END;",
+    ] {
+        let mut state = checkpoint_actor();
+        state.active_agent_sessions.clear();
+        state.db.as_ref().unwrap().conn().execute_batch(statement).unwrap();
+        let (core_tx, core_rx) = flume::unbounded();
+        crate::handle_resume_agent_session(&mut state, "checkpoint".into(), &core_tx);
+        assert!(state.active_agent_sessions.is_empty());
+        assert!(core_rx.is_empty());
+        assert_eq!(state.app_state.agent_sessions[0].status, "failed");
+        assert!(state.app_state.toast.as_deref().unwrap().contains("Agent resume failed"));
+    }
+}
+
+#[test]
+fn agent_final_answer_checkpoint_failure_is_not_reported_as_completed() {
+    for trigger in [
+        "CREATE TRIGGER fail_final BEFORE INSERT ON agent_steps BEGIN SELECT RAISE(ABORT, 'final checkpoint failed'); END;",
+        "CREATE TRIGGER fail_final BEFORE UPDATE ON agent_sessions WHEN NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'final checkpoint failed'); END;",
+    ] {
+        let mut state = checkpoint_actor();
+        state.db.as_ref().unwrap().conn().execute_batch(trigger).unwrap();
+        complete_checkpoint_step(&mut state, crate::agent::AgentStepResult::FinalAnswer("done".into()));
+        assert!(state.active_agent_sessions.is_empty());
+        assert_eq!(list_agent_sessions(state.db.as_ref().unwrap().conn()).unwrap()[0].status, "failed");
+        assert!(state.app_state.toast.as_deref().unwrap().contains("final checkpoint failed"));
+    }
+}
+
+#[test]
+fn agent_tool_checkpoint_survives_database_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("agent.db");
+    {
+        let db = Database::open(path.to_str().unwrap()).unwrap();
+        insert_agent_session(db.conn(), &make_session("checkpoint", "paused")).unwrap();
+        let mut step = make_step("durable", "checkpoint", 1, "tool_call");
+        step.status = "running".into();
+        step.action_payload =
+            r#"[{"id":"durable-call","name":"calculate","arguments":"{}"}]"#.into();
+        insert_agent_step(db.conn(), &step).unwrap();
+        crate::persistence::queries::complete_agent_tool_step(
+            db.conn(),
+            "durable",
+            r#"[["durable-call","saved result"]]"#,
+        )
+        .unwrap();
+        assert!(
+            crate::persistence::queries::complete_agent_tool_step(db.conn(), "missing", "[]",)
+                .is_err()
+        );
+    }
+    let db = Database::open(path.to_str().unwrap()).unwrap();
+    let steps = list_agent_steps(db.conn(), "checkpoint").unwrap();
+    let messages = crate::restore_agent_tool_messages(&steps).unwrap();
+    let messages = serde_json::to_value(messages).unwrap();
+    assert_eq!(messages[0]["tool_calls"][0]["id"], "durable-call");
+    assert_eq!(messages[1]["tool_call_id"], "durable-call");
+    assert_eq!(messages[1]["content"], "saved result");
+}
+
 // ── Tool schema tests ─────────────────────────────────────────────────────────
 
 /// Verify build_agent_tools() returns exactly 7 tools with the correct names.

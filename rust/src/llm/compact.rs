@@ -108,6 +108,9 @@ pub enum CompletionTarget<'a> {
     Remote {
         backend: &'a BackendConfig,
         model: &'a str,
+        /// Attested TLS pin for generic OpenAI-compatible TEE backends —
+        /// threaded into the one-shot client just like streaming turns.
+        pinned_tls_public_key_fp: Option<&'a str>,
     },
     Local {
         provider: Arc<dyn LocalLlmProvider>,
@@ -213,10 +216,20 @@ async fn run_completion(
     messages: Vec<ChatMessage>,
 ) -> Result<String, LlmError> {
     match target {
-        CompletionTarget::Remote { backend, model } => {
+        CompletionTarget::Remote {
+            backend,
+            model,
+            pinned_tls_public_key_fp,
+        } => {
             let api_messages = to_api_messages(&messages)?;
-            let response =
-                super::complete::complete(backend, model, api_messages, SUMMARY_MAX_TOKENS).await?;
+            let response = super::complete::complete(
+                backend,
+                model,
+                api_messages,
+                SUMMARY_MAX_TOKENS,
+                *pinned_tls_public_key_fp,
+            )
+            .await?;
             Ok(response
                 .choices
                 .first()

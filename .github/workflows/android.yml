@@ -31,7 +31,6 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   checks:
     name: Rust checks (fmt/clippy/tests)
-    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +50,12 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo test --workspace
+          # Agent-feature tests are compiled by the clippy pass above but only
+          # run when explicitly enabled.
+          cargo test -p mango_core --all-features
+
+      - name: cargo-deny (advisories/licenses/bans)
+        uses: EmbarkStudios/cargo-deny-action@v2
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Android artifact build: bindings + arm64 cross-compile + llama.cpp + Gradle.
@@ -58,16 +63,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   android:
     name: Android build
-    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    env:
-      # Tag-only release signing (see docs/release/android-signing.md). Secret
-      # values are never printed; Gradle's requireReleaseSigning guard fails
-      # the build if any is blank. KEYSTORE_PATH is exported by the
-      # provisioning step below via $GITHUB_ENV.
-      KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -227,6 +223,13 @@ jobs:
       - name: Build signed release APK
         if: startsWith(github.ref, 'refs/tags/')
         working-directory: android
+        env:
+          # Release-signing secrets reach only this tag-only step — PR and
+          # debug builds never see them. Gradle's requireReleaseSigning guard
+          # fails the build if any is blank.
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew assembleRelease
 
       # Managed PPQ ships in every build — verify the bytes, then stage the

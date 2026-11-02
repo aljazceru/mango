@@ -1236,6 +1236,187 @@ fn test_setup_pin_biometric_stages_dek_and_fake_biometric_unlocks() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Android-like keychain: the biometric DEK slot is only released after the
+/// platform authenticated (the test flips `released` where a CryptoObject
+/// prompt would succeed). Every other slot is ordinary storage.
+#[derive(Clone, Default)]
+struct AuthGatedKeychain {
+    mem: MemoryKeychainProvider,
+    released: Arc<AtomicBool>,
+}
+
+impl KeychainProvider for AuthGatedKeychain {
+    fn store(&self, service: String, key: String, value: String) -> bool {
+        self.mem.store(service, key, value)
+    }
+    fn load(&self, service: String, key: String) -> Option<String> {
+        if service == "mango"
+            && key == crate::KEYCHAIN_DEK_KEY
+            && !self.released.swap(false, Ordering::SeqCst)
+        {
+            return None;
+        }
+        self.mem.load(service, key)
+    }
+    fn delete(&self, service: String, key: String) -> bool {
+        self.mem.delete(service, key)
+    }
+}
+
+fn onboarded_plaintext_dir(name: &str) -> String {
+    let dir = temp_dir(name);
+    let db = Database::open(&db_path(&dir)).expect("plaintext");
+    db.conn()
+        .execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+            ["has_completed_onboarding", "true"],
+        )
+        .expect("complete");
+    dir
+}
+
+fn app_with(dir: &str, keychain: Box<dyn KeychainProvider>) -> Arc<FfiApp> {
+    let app = FfiApp::new(
+        dir.to_string(),
+        keychain,
+        Box::new(NullEmbeddingProvider),
+        EmbeddingStatus::Active,
+        Box::new(NullLocalLlmProvider),
+        Box::new(FakeBiometricProvider::succeeding()),
+    );
+    app.sync();
+    app
+}
+
+fn slot(kc: &MemoryKeychainProvider, key: &str) -> Option<String> {
+    kc.load("mango".into(), key.into())
+}
+
+#[test]
+fn pin_biometric_install_keeps_no_unauthenticated_dek_and_cold_start_needs_auth() {
+    let dir = onboarded_plaintext_dir("bio_no_bypass");
+    let kc = AuthGatedKeychain::default();
+    let app = app_with(&dir, Box::new(kc.clone()));
+    app.dispatch(AppAction::SetupPin {
+        pin: test_pin(),
+        duress_pin: None,
+        enable_biometric: true,
+    });
+    app.sync();
+    assert!(app.state().biometric_login_enabled);
+    let dek = slot(&kc.mem, crate::KEYCHAIN_DEK_KEY).expect("biometric slot staged");
+    let readable_copies: Vec<_> = kc
+        .mem
+        .inner
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|((_, k), v)| **v == dek && k != crate::KEYCHAIN_DEK_KEY)
+        .map(|((_, k), _)| k.clone())
+        .collect();
+    assert!(
+        readable_copies.is_empty(),
+        "unauthenticated DEK copies: {readable_copies:?}"
+    );
+    drop(app);
+
+    // Cold start before authentication: the DEK is unavailable, so the app
+    // must stay locked with the encrypted DB closed.
+    let app2 = app_with(&dir, Box::new(kc.clone()));
+    let state = app2.state();
+    assert!(matches!(state.router.current_screen, Screen::Locked));
+    assert!(
+        state.biometric_login_enabled,
+        "enrollment is read from the marker, not the gated slot"
+    );
+    assert!(
+        state.conversations.is_empty(),
+        "nothing readable before auth"
+    );
+
+    // Authentication releases the DEK exactly once.
+    kc.released.store(true, Ordering::SeqCst);
+    app2.dispatch(AppAction::AttemptBiometricUnlock);
+    assert!(wait_until(
+        &app2,
+        |s| !matches!(s.router.current_screen, Screen::Locked),
+        10_000
+    ));
+
+    // Never adds a bypass copy; a finite timeout removes it again while the
+    // biometric enrollment survives.
+    app2.dispatch(AppAction::SetLockTimeout { seconds: -1 });
+    app2.sync();
+    assert_eq!(
+        slot(&kc.mem, crate::KEYCHAIN_BYPASS_DEK_KEY).as_deref(),
+        Some(dek.as_str())
+    );
+    app2.dispatch(AppAction::SetLockTimeout { seconds: 300 });
+    app2.sync();
+    assert!(slot(&kc.mem, crate::KEYCHAIN_BYPASS_DEK_KEY).is_none());
+    assert!(slot(&kc.mem, crate::KEYCHAIN_BIOMETRIC_FLAG_KEY).is_some());
+    drop(app2);
+    let app3 = app_with(&dir, Box::new(kc.clone()));
+    assert!(matches!(app3.state().router.current_screen, Screen::Locked));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn biometric_success_without_released_dek_disenrolls() {
+    let dir = onboarded_plaintext_dir("bio_invalidated");
+    let kc = AuthGatedKeychain::default();
+    let app = app_with(&dir, Box::new(kc.clone()));
+    app.dispatch(AppAction::SetupPin {
+        pin: test_pin(),
+        duress_pin: None,
+        enable_biometric: true,
+    });
+    app.sync();
+    drop(app);
+    let app2 = app_with(&dir, Box::new(kc.clone()));
+    app2.dispatch(AppAction::AttemptBiometricUnlock);
+    assert!(wait_until(&app2, |s| !s.biometric_login_enabled, 10_000));
+    assert!(matches!(app2.state().router.current_screen, Screen::Locked));
+    assert!(slot(&kc.mem, crate::KEYCHAIN_BIOMETRIC_FLAG_KEY).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn legacy_shared_dek_slot_is_split_preserving_never_and_biometric() {
+    let dir = onboarded_plaintext_dir("legacy_dek_split");
+    let kc = MemoryKeychainProvider::default();
+    let app = app_with(&dir, Box::new(kc.clone()));
+    app.dispatch(AppAction::SetupPin {
+        pin: test_pin(),
+        duress_pin: None,
+        enable_biometric: false,
+    });
+    app.sync();
+    app.dispatch(AppAction::SetLockTimeout { seconds: -1 });
+    app.sync();
+    drop(app);
+
+    // Rewrite the keychain into the pre-split layout: one shared "dek" slot.
+    let dek = slot(&kc, crate::KEYCHAIN_BYPASS_DEK_KEY).expect("bypass cached");
+    kc.delete("mango".into(), crate::KEYCHAIN_BYPASS_DEK_KEY.into());
+    kc.store("mango".into(), crate::KEYCHAIN_DEK_KEY.into(), dek.clone());
+
+    let app2 = app_with(&dir, Box::new(kc.clone()));
+    let state = app2.state();
+    assert!(
+        !matches!(state.router.current_screen, Screen::Locked),
+        "Never still bypasses"
+    );
+    assert_eq!(
+        slot(&kc, crate::KEYCHAIN_BYPASS_DEK_KEY).as_deref(),
+        Some(dek.as_str())
+    );
+    // Legacy semantics: the shared slot also meant "biometric enabled".
+    assert!(state.biometric_login_enabled);
+    assert!(slot(&kc, crate::KEYCHAIN_BIOMETRIC_FLAG_KEY).is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_setup_pin_keychain_store_failure_does_not_enable_biometric() {
     let dir = temp_dir("keychain_fail");

@@ -71,6 +71,7 @@ fn test_attestation_verified_event_updates_state() {
             freshness: None,
             orchestrated_components: None,
         },
+        0,
     ));
     wait_for_update(&app);
 
@@ -95,11 +96,14 @@ fn test_attestation_verified_event_updates_state() {
 fn test_attestation_failed_event_updates_state() {
     let app = create_test_app();
 
-    app.test_send_internal(InternalEvent::AttestationResult(AttestationEvent::Failed {
-        backend_id: "fail_be".to_string(),
-        reason: "bad quote".to_string(),
-        is_transient: false,
-    }));
+    app.test_send_internal(InternalEvent::AttestationResult(
+        AttestationEvent::Failed {
+            backend_id: "fail_be".to_string(),
+            reason: "bad quote".to_string(),
+            is_transient: false,
+        },
+        0,
+    ));
     wait_for_update(&app);
 
     let state = app.state();
@@ -135,6 +139,7 @@ fn test_attestation_nvidia_verified_event() {
             freshness: None,
             orchestrated_components: None,
         },
+        0,
     ));
     wait_for_update(&app);
 
@@ -174,6 +179,7 @@ fn test_raw_report_retrieval() {
             freshness: None,
             orchestrated_components: None,
         },
+        0,
     ));
     wait_for_update(&app);
 
@@ -216,16 +222,20 @@ fn test_attestation_verified_is_sticky_against_transient_failure() {
             freshness: None,
             orchestrated_components: None,
         },
+        0,
     ));
     wait_for_update(&app);
 
     // Then: simulate a transient 429 / network failure on re-attestation.
     // is_transient=true because this was a CollateralFetch/NetworkError (never reached the TEE).
-    app.test_send_internal(InternalEvent::AttestationResult(AttestationEvent::Failed {
-        backend_id: "sticky_be".to_string(),
-        reason: "AMD KDS returned HTTP 429 Too Many Requests".to_string(),
-        is_transient: true,
-    }));
+    app.test_send_internal(InternalEvent::AttestationResult(
+        AttestationEvent::Failed {
+            backend_id: "sticky_be".to_string(),
+            reason: "AMD KDS returned HTTP 429 Too Many Requests".to_string(),
+            is_transient: true,
+        },
+        0,
+    ));
     wait_for_update(&app);
 
     let state = app.state();
@@ -274,16 +284,20 @@ fn test_attestation_genuine_failure_downgrades_verified() {
             freshness: None,
             orchestrated_components: None,
         },
+        0,
     ));
     wait_for_update(&app);
 
     // Then: simulate a genuine cryptographic verification failure (bad signature,
     // measurement mismatch, etc.) — is_transient=false.
-    app.test_send_internal(InternalEvent::AttestationResult(AttestationEvent::Failed {
-        backend_id: "genuine_fail_be".to_string(),
-        reason: "TDX quote verification failed: signature mismatch".to_string(),
-        is_transient: false,
-    }));
+    app.test_send_internal(InternalEvent::AttestationResult(
+        AttestationEvent::Failed {
+            backend_id: "genuine_fail_be".to_string(),
+            reason: "TDX quote verification failed: signature mismatch".to_string(),
+            is_transient: false,
+        },
+        0,
+    ));
     wait_for_update(&app);
 
     let state = app.state();
@@ -310,11 +324,14 @@ fn test_attestation_failed_replaced_by_verified() {
     let now = now_secs();
 
     // First: fail (genuine verification failure, not transient).
-    app.test_send_internal(InternalEvent::AttestationResult(AttestationEvent::Failed {
-        backend_id: "recover_be".to_string(),
-        reason: "initial error".to_string(),
-        is_transient: false,
-    }));
+    app.test_send_internal(InternalEvent::AttestationResult(
+        AttestationEvent::Failed {
+            backend_id: "recover_be".to_string(),
+            reason: "initial error".to_string(),
+            is_transient: false,
+        },
+        0,
+    ));
     wait_for_update(&app);
 
     // Then: verify successfully.
@@ -331,6 +348,7 @@ fn test_attestation_failed_replaced_by_verified() {
             freshness: None,
             orchestrated_components: None,
         },
+        0,
     ));
     wait_for_update(&app);
 
@@ -358,19 +376,25 @@ fn test_attestation_status_upsert_non_verified() {
 
     // Start unverified (no entry).
     // Send a first Failed (genuine verification failure).
-    app.test_send_internal(InternalEvent::AttestationResult(AttestationEvent::Failed {
-        backend_id: "upsert_be".to_string(),
-        reason: "first error".to_string(),
-        is_transient: false,
-    }));
+    app.test_send_internal(InternalEvent::AttestationResult(
+        AttestationEvent::Failed {
+            backend_id: "upsert_be".to_string(),
+            reason: "first error".to_string(),
+            is_transient: false,
+        },
+        0,
+    ));
     wait_for_update(&app);
 
     // Send a second Failed with a different reason — should replace.
-    app.test_send_internal(InternalEvent::AttestationResult(AttestationEvent::Failed {
-        backend_id: "upsert_be".to_string(),
-        reason: "second error".to_string(),
-        is_transient: false,
-    }));
+    app.test_send_internal(InternalEvent::AttestationResult(
+        AttestationEvent::Failed {
+            backend_id: "upsert_be".to_string(),
+            reason: "second error".to_string(),
+            is_transient: false,
+        },
+        0,
+    ));
     wait_for_update(&app);
 
     let state = app.state();
@@ -441,6 +465,7 @@ fn test_provider_fallback() {
             tx,
             vcek_cache,
             crate::attestation::TeePolicy::default(),
+            0,
         );
 
         // Poll for up to 10 seconds for the task result
@@ -463,14 +488,18 @@ fn test_provider_fallback() {
     let msg = result.expect("Attestation task did not produce a result within 10 seconds");
 
     match msg {
+        crate::CoreMsg::ConversationAction { .. } | crate::CoreMsg::GetChatTurn { .. } => {
+            panic!("Expected attestation result, got chat message")
+        }
         // Auth continuation events are irrelevant to this test.
         crate::CoreMsg::PinUnlockContinued { .. } => panic!("unexpected"),
         crate::CoreMsg::InternalEvent(event) => match *event {
-            InternalEvent::AttestationResult(AttestationEvent::Failed {
-                backend_id,
-                reason,
-                ..
-            }) => {
+            InternalEvent::AttestationResult(
+                AttestationEvent::Failed {
+                    backend_id, reason, ..
+                },
+                _,
+            ) => {
                 assert_eq!(backend_id, "unreachable_backend");
                 let reason_lower = reason.to_lowercase();
                 assert!(
@@ -503,6 +532,9 @@ fn test_provider_fallback() {
         }
         crate::CoreMsg::GetDirectoryBookmark { .. } => {
             panic!("Expected InternalEvent, got GetDirectoryBookmark")
+        }
+        crate::CoreMsg::GetDirectoryTreeUri { .. } => {
+            panic!("Expected InternalEvent, got GetDirectoryTreeUri")
         }
         crate::CoreMsg::ExportConversationMarkdown { .. } => {
             panic!("Expected InternalEvent, got ExportConversationMarkdown")

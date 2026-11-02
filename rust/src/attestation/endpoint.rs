@@ -177,19 +177,48 @@ fn attestation_url(base_url: &str) -> String {
     format!("{root}{ATTESTATION_PATH}")
 }
 
+/// Maximum accepted sizes for the endpoint's base64+gzip attestation body.
+/// A TDX quote is a few KB compressed; the cap stops a malicious endpoint
+/// from serving an oversized compressed blob, and the decompression cap
+/// stops a gzip bomb before memory is committed.
+const MAX_ATTESTATION_BODY_COMPRESSED: usize = 1_048_576;
+const MAX_ATTESTATION_BODY_DECOMPRESSED: u64 = 65_536;
+
 fn decode_attestation_body(body: &str) -> Result<Vec<u8>, AttestationError> {
+    if body.len() > MAX_ATTESTATION_BODY_COMPRESSED.div_ceil(3) * 4 {
+        return Err(AttestationError::QuoteVerification {
+            reason: "Encoded attestation body too large".into(),
+        });
+    }
     let encoded = base64::engine::general_purpose::STANDARD
         .decode(body)
         .map_err(|e| AttestationError::QuoteVerification {
             reason: format!("Invalid attestation body encoding: {e}"),
         })?;
-    let mut decoder = GzDecoder::new(encoded.as_slice());
+    if encoded.len() > MAX_ATTESTATION_BODY_COMPRESSED {
+        return Err(AttestationError::QuoteVerification {
+            reason: format!(
+                "Attestation body too large: {} bytes (max {})",
+                encoded.len(),
+                MAX_ATTESTATION_BODY_COMPRESSED
+            ),
+        });
+    }
     let mut out = Vec::new();
-    decoder
+    GzDecoder::new(encoded.as_slice())
+        .take(MAX_ATTESTATION_BODY_DECOMPRESSED + 1)
         .read_to_end(&mut out)
         .map_err(|e| AttestationError::QuoteVerification {
             reason: format!("Invalid attestation body compression: {e}"),
         })?;
+    if out.len() as u64 > MAX_ATTESTATION_BODY_DECOMPRESSED {
+        return Err(AttestationError::QuoteVerification {
+            reason: format!(
+                "Attestation body decompressed larger than {} bytes",
+                MAX_ATTESTATION_BODY_DECOMPRESSED
+            ),
+        });
+    }
     Ok(out)
 }
 
@@ -220,6 +249,9 @@ async fn verify_tdx_attestation(
             reason: e.to_string(),
         }
     })?;
+    // A valid signature is not an acceptable TCB verdict -- reject
+    // OutOfDate/ConfigurationNeeded/etc. (see tdx::ACCEPTABLE_TCB_STATUSES).
+    super::tdx::verify_acceptable_tcb_status(&verified.status)?;
     let quote = dcap_qvl::quote::Quote::parse(quote_bytes).map_err(|e| {
         AttestationError::QuoteVerification {
             reason: format!("Invalid TDX quote: {e}"),
@@ -369,7 +401,7 @@ async fn verify_snp_attestation(
     })
 }
 
-fn verify_tdx_policy(
+pub(crate) fn verify_tdx_policy(
     tee_tcb_svn: &[u8; 16],
     mr_seam: &[u8; 48],
     td_attributes: &[u8; 8],
@@ -571,4 +603,18 @@ fn build_vcek_url(product_name: &str, report: &AttestationReport) -> String {
         report.reported_tcb.snp,
         report.reported_tcb.microcode
     )
+}
+#[cfg(test)]
+mod bounded_decode_tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_quote_decompression_is_bounded() {
+        use std::io::Write;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(&vec![0; 1_000_000]).unwrap();
+        let body = base64::engine::general_purpose::STANDARD.encode(gzip.finish().unwrap());
+        assert!(decode_attestation_body(&body).is_err());
+        assert!(decode_attestation_body(&"A".repeat(2_000_000)).is_err());
+    }
 }

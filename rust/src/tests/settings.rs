@@ -266,3 +266,66 @@ fn test_memory_count() {
         "memory_count should remain 0 after deleting nonexistent"
     );
 }
+
+#[test]
+fn default_model_must_belong_to_the_preferred_configured_backend() {
+    let mut actor = crate::image_red_tests::default_actor_state_for_image_tests();
+    let backend = |id: &str, models: &[&str], api_key: &str| crate::llm::BackendConfig {
+        id: id.into(),
+        name: id.into(),
+        base_url: "https://example.invalid/v1".into(),
+        api_key: api_key.into(),
+        models: models.iter().map(|model| (*model).to_string()).collect(),
+        tee_type: crate::llm::TeeType::Unknown,
+        max_concurrent_requests: 1,
+        supports_tool_use: false,
+    };
+    actor.backends = vec![
+        backend("preferred", &["preferred-model", "shared-model"], "key"),
+        backend("other", &["other-model"], "key"),
+        backend("unconfigured", &["other-model"], ""),
+    ];
+    actor.app_state.hybrid_profiles.push(crate::HybridProfile {
+        id: "profile".into(),
+        name: "Hybrid".into(),
+        local_backend_id: "preferred".into(),
+        local_model_id: "preferred-model".into(),
+        remote_backend_id: "other".into(),
+        remote_model_id: "other-model".into(),
+        policy: crate::RoutingPolicy::default(),
+        preprocessing: crate::LocalPreprocessing::default(),
+    });
+
+    for (preferred, saved, expected_backend, expected_model) in [
+        ("preferred", "other-model", "preferred", "preferred-model"),
+        ("preferred", "shared-model", "preferred", "shared-model"),
+        (
+            "preferred",
+            "private/shared-model",
+            "preferred",
+            "private/shared-model",
+        ),
+        ("missing", "other-model", "preferred", "preferred-model"),
+        (
+            "unconfigured",
+            "other-model",
+            "preferred",
+            "preferred-model",
+        ),
+        (
+            "hybrid:profile",
+            "other-model",
+            "hybrid:profile",
+            "preferred-model",
+        ),
+    ] {
+        let conn = actor.db.as_ref().unwrap().conn();
+        queries::set_setting(conn, "default_backend_id", preferred).unwrap();
+        queries::set_setting(conn, "default_model_id", saved).unwrap();
+        assert_eq!(
+            crate::default_backend_and_model(&actor),
+            (expected_backend.to_string(), expected_model.to_string()),
+            "preferred={preferred}, saved={saved}",
+        );
+    }
+}

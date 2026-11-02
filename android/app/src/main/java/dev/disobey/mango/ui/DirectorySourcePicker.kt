@@ -139,13 +139,22 @@ fun rememberDirectoryPicker(onPicked: (Uri, String) -> Unit): () -> Unit {
 }
 
 /**
+ * A tree query failed or returned a null cursor: the enumeration is incomplete,
+ * so treating it as truth would delete valid indexed documents. Fail the pass.
+ */
+class DirectoryEnumerationException(message: String) : Exception(message)
+
+/**
  * Bulk SAF traversal using `DocumentsContract.buildChildDocumentsUriUsingTree` +
  * `ContentResolver.query`. **NEVER** use `DocumentFile.listFiles()` here — that
  * path issues one IPC per child and is 10-100x slower on large vaults
  * (Pitfall 5 in 32-RESEARCH.md).
  *
- * A BFS stack is used with one bulk query per directory level.
+ * A BFS stack is used with one bulk query per directory level. Any failed or
+ * null query throws [DirectoryEnumerationException] — a partial enumeration
+ * must never be diffed as file deletions.
  */
+
 fun traverseTree(
     context: Context,
     treeUri: Uri,
@@ -165,28 +174,28 @@ fun traverseTree(
     while (stack.isNotEmpty()) {
         val parentDocId = stack.removeLast()
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
-        try {
-            context.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
-                while (cursor.moveToNext()) {
-                    val docId = cursor.getString(0) ?: continue
-                    val name = cursor.getString(1) ?: continue
-                    val mtime = cursor.getLong(2) // millis (D-20)
-                    val size = cursor.getLong(3)
-                    val mime = cursor.getString(4) ?: ""
-                    val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
-                    if (matcher.matches(name)) continue
-                    if (isDir) {
-                        stack.addLast(docId)
-                    } else {
-                        results.add(SafChildEntry(docId, name, mtime, size, false))
-                    }
+        val cursor = try {
+            context.contentResolver.query(childrenUri, projection, null, null, null)
+        } catch (se: SecurityException) {
+            throw DirectoryEnumerationException("permission lost for $parentDocId: ${se.message}")
+        } catch (e: Exception) {
+            throw DirectoryEnumerationException("query failed for $parentDocId: ${e.message}")
+        } ?: throw DirectoryEnumerationException("null cursor for $parentDocId")
+        cursor.use {
+            while (it.moveToNext()) {
+                val docId = it.getString(0) ?: continue
+                val name = it.getString(1) ?: continue
+                val mtime = it.getLong(2) // millis (D-20)
+                val size = it.getLong(3)
+                val mime = it.getString(4) ?: ""
+                val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                if (matcher.matches(name)) continue
+                if (isDir) {
+                    stack.addLast(docId)
+                } else {
+                    results.add(SafChildEntry(docId, name, mtime, size, false))
                 }
             }
-        } catch (se: SecurityException) {
-            Log.e("DirectorySourcePicker", "query failed for $parentDocId: ${se.message}")
-            // Continue traversal of other branches; don't abort.
-        } catch (e: Exception) {
-            Log.e("DirectorySourcePicker", "query error for $parentDocId: ${e.message}")
         }
     }
     return results
@@ -199,11 +208,31 @@ fun traverseTree(
  */
 const val MAX_FILE_BYTES: Long = 32L * 1024L * 1024L
 
-/** Read a single file's bytes via a document URI rooted in the persisted tree. */
+/**
+ * Read up to [maxBytes]+1 bytes from a stream; returns null when the stream is
+ * longer than [maxBytes]. Bounds memory even when the provider lies about the
+ * declared file size or the file grows mid-read.
+ */
+fun readBytesCapped(input: java.io.InputStream, maxBytes: Long): ByteArray? {
+    require(maxBytes in 0..Int.MAX_VALUE.toLong())
+    val out = java.io.ByteArrayOutputStream()
+    val buf = ByteArray(8192)
+    while (out.size() <= maxBytes) {
+        val n = input.read(buf, 0, minOf(buf.size.toLong(), maxBytes - out.size() + 1).toInt())
+        if (n < 0) break
+        out.write(buf, 0, n)
+    }
+    return if (out.size() > maxBytes) null else out.toByteArray()
+}
+
+/** Read a single file's bytes via a document URI rooted in the persisted tree.
+ * The cap is enforced on the ACTUAL stream, not the advertised size. */
 fun readFileContent(context: Context, treeUri: Uri, docId: String): ByteArray? {
     val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
     return try {
-        context.contentResolver.openInputStream(fileUri)?.use { it.readBytes() }
+        context.contentResolver.openInputStream(fileUri)?.use {
+            readBytesCapped(it, MAX_FILE_BYTES)
+        }
     } catch (_: SecurityException) {
         null
     } catch (_: Exception) {
@@ -262,7 +291,21 @@ suspend fun syncDirectory(
     dispatch: (AppAction) -> Unit,
 ) = withContext(Dispatchers.IO) {
     val manager = AppManager.getInstance(context.applicationContext)
-    val children = traverseTree(context, treeUri, source.exclusionGlobs)
+
+    // Enumeration must complete before ANY diff runs — a partial listing
+    // (revoked permission, dead provider, null cursor) must never be treated
+    // as file deletions. On failure the previous index stays untouched.
+    val children = try {
+        traverseTree(context, treeUri, source.exclusionGlobs)
+    } catch (e: DirectoryEnumerationException) {
+        Log.e("DirectorySourcePicker", "enumeration failed for ${source.id}: ${e.message}")
+        dispatch(
+            AppAction.ShowToast(
+                message = "Could not read \"${source.displayName}\" — sync skipped, index kept.",
+            )
+        )
+        return@withContext
+    }
 
     // Build (docId, mtime_secs, size) entries. D-08: if mtime == 0 substitute
     // `now` so the diff treats the file as always-modified (fallback signal).
@@ -302,65 +345,77 @@ suspend fun syncDirectory(
         prev.mtimeSecs != e.mtimeSecs || prev.sizeBytes != e.sizeBytes
     }
 
+    fun finalBatch(removed: List<String>) = dispatch(
+        AppAction.SyncDirectoryFiles(
+            sourceId = source.id,
+            files = emptyList(),
+            removedPaths = removed,
+            isFinalBatch = true,
+        )
+    )
+
     if (changed.isEmpty() && removedPaths.isEmpty()) {
         // Nothing to do — fire a single no-op final batch so the actor can update
         // last_synced_at and flip status back to Idle.
-        dispatch(
-            AppAction.SyncDirectoryFiles(
-                sourceId = source.id,
-                files = emptyList(),
-                removedPaths = emptyList(),
-                isFinalBatch = true,
-            )
-        )
+        finalBatch(emptyList())
         return@withContext
     }
 
-    // Chunk changed files into 50-entry batches (T-32-DoS1 — matches the Rust-side
-    // ceiling as defence-in-depth).
-    val chunks = changed.chunked(50)
-    chunks.forEachIndexed { idx, chunk ->
-        val entries: List<DirectoryFileEntry> = chunk.mapNotNull { e ->
-            if (e.sizeBytes > MAX_FILE_BYTES) {
-                Log.w(
-                    "DirectorySourcePicker",
-                    "skipping oversized file ${e.name} (${e.sizeBytes} bytes > $MAX_FILE_BYTES cap)",
-                )
-                return@mapNotNull null
-            }
-            val bytes = readFileContent(context, treeUri, e.docId) ?: return@mapNotNull null
-            DirectoryFileEntry(
-                relativePath = e.docId,
-                mtimeSecs = e.mtimeSecs,
-                sizeBytes = e.sizeBytes,
-                content = bytes,
-            )
-        }
-        val isFinal = idx == chunks.lastIndex
-        // Only the FIRST batch carries the `removedPaths` list so the cascade
-        // fires once; subsequent batches pass an empty list. Matches the iOS
-        // pipeline in 32-05 DirectorySourcePicker.swift.
-        val removedForThisBatch = if (idx == 0) removedPaths else emptyList()
+    // Files are read one at a time and batches are bounded by BYTES (not just
+    // count) so a directory of max-size files cannot OOM the app; the next
+    // batch is only materialized after the actor has processed the previous
+    // one (syncActor is a FIFO barrier over dispatched actions).
+    var batch = mutableListOf<DirectoryFileEntry>()
+    var batchBytes = 0L
+    var batchIndex = 0
+
+    fun flushBatch(lastBatch: Boolean) {
+        // Only the FIRST batch carries `removedPaths` so the cascade fires
+        // once (matches the iOS pipeline in 32-05 DirectorySourcePicker.swift).
+        val removedForThisBatch = if (batchIndex == 0) removedPaths else emptyList()
         dispatch(
             AppAction.SyncDirectoryFiles(
                 sourceId = source.id,
-                files = entries,
+                files = batch.toList(),
                 removedPaths = removedForThisBatch,
-                isFinalBatch = isFinal,
+                isFinalBatch = lastBatch,
             )
         )
+        batchIndex += 1
+        batch = mutableListOf()
+        batchBytes = 0L
+        if (!lastBatch) manager.syncActor()
     }
 
-    // If we had removed paths but no changed files at all, still send a final
-    // batch with the removals.
-    if (chunks.isEmpty() && removedPaths.isNotEmpty()) {
-        dispatch(
-            AppAction.SyncDirectoryFiles(
-                sourceId = source.id,
-                files = emptyList(),
-                removedPaths = removedPaths,
-                isFinalBatch = true,
+    for (e in changed) {
+        if (e.sizeBytes > MAX_FILE_BYTES) {
+            Log.w(
+                "DirectorySourcePicker",
+                "skipping oversized file ${e.name} (${e.sizeBytes} bytes > $MAX_FILE_BYTES cap)",
             )
+            continue
+        }
+        if (batchBytes + MAX_FILE_BYTES > MAX_SYNC_BATCH_BYTES || batch.size >= 50) {
+            flushBatch(lastBatch = false)
+        }
+        val bytes = readFileContent(context, treeUri, e.docId)
+        if (bytes == null) {
+            Log.w("DirectorySourcePicker", "skipping unreadable/oversized stream for ${e.name}")
+            continue
+        }
+        batch += DirectoryFileEntry(
+            relativePath = e.docId,
+            mtimeSecs = e.mtimeSecs,
+            sizeBytes = e.sizeBytes,
+            content = bytes,
         )
+        batchBytes += bytes.size
     }
+
+    // Last batch: pending files (or an empty final batch carrying removals,
+    // including when nothing changed but files were deleted).
+    flushBatch(lastBatch = true)
 }
+
+/** Per-batch byte ceiling: bounds retained file content in flight to the actor. */
+private const val MAX_SYNC_BATCH_BYTES: Long = 64L * 1024L * 1024L

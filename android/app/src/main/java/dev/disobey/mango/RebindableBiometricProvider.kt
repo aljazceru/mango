@@ -15,7 +15,9 @@ import java.lang.ref.WeakReference
  * a live, non-finishing activity; otherwise it fails safe (returns false) —
  * a prompt interrupted by recreation may be retried, never auto-approved.
  */
-class RebindableBiometricProvider : dev.disobey.mango.rust.BiometricProvider {
+class RebindableBiometricProvider(
+    private val dekStore: BiometricDekStore? = null,
+) : dev.disobey.mango.rust.BiometricProvider {
     private val lock = Any()
     private var activityRef: WeakReference<FragmentActivity>? = null
 
@@ -46,9 +48,8 @@ class RebindableBiometricProvider : dev.disobey.mango.rust.BiometricProvider {
     override fun authenticate(reason: String): Boolean {
         val act = currentActivity() ?: return false
         return try {
-            // Fresh prompt bound to the CURRENT activity; blocks until the
+            BiometricProviderImpl(act, dekStore).authenticate(reason)
             // platform callback fires (same contract as BiometricProviderImpl).
-            BiometricProviderImpl(act).authenticate(reason)
         } catch (_: Exception) {
             false
         }

@@ -8,12 +8,19 @@ use crate::llm::{BackendConfig, ProviderKind, TeeType};
 
 pub type CertificateCache = super::endpoint::CertificateCache;
 
+/// Spawn a background attestation verification for `backend`.
+///
+/// `request_id` is the actor-issued identity for this request: the actor
+/// accepts only the latest request for a backend whose configuration still
+/// matches the config captured at spawn time (`0` = untracked legacy/test
+/// result, applied without a request check).
 pub fn spawn_attestation_task(
     runtime: &tokio::runtime::Runtime,
     backend: &BackendConfig,
     core_tx: flume::Sender<crate::CoreMsg>,
     certificate_cache: CertificateCache,
     policy: crate::attestation::TeePolicy,
+    request_id: u64,
 ) {
     let backend = backend.clone();
     let backend_id = backend.id.clone();
@@ -40,7 +47,7 @@ pub fn spawn_attestation_task(
             }
         };
 
-        let internal = crate::llm::InternalEvent::AttestationResult(att_event);
+        let internal = crate::llm::InternalEvent::AttestationResult(att_event, request_id);
         let _ = core_tx.send(crate::CoreMsg::InternalEvent(Box::new(internal)));
     });
 }

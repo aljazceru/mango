@@ -14,6 +14,34 @@ use super::AttestationEvent;
 /// TDX quote minimum size check (DCAP quote header is 48 bytes minimum).
 const MIN_QUOTE_LEN: usize = 48;
 
+/// DCAP TCB verdicts Mango accepts as `Verified`.
+///
+/// `dcap_qvl::verify::verify` returns success for every cryptographically valid
+/// quote whose TCB is merely not `Revoked` -- a correctly signed quote can still
+/// carry `OutOfDate`, `ConfigurationNeeded`, `OutOfDateConfigurationNeeded`, or
+/// `ConfigurationAndSWHardeningNeeded`. Those mean Intel reports the platform or
+/// quoting environment needs security remediation, so they fail closed.
+///
+/// - `UpToDate`: no advisories.
+/// - `SWHardeningNeeded`: microcode update recommended but no exploitable
+///   vulnerability on this workload's software stack (Intel's soft downgrade;
+///   the platform-specific `verify_tdx_policy` SVN/MRSEAM checks still apply).
+pub const ACCEPTABLE_TCB_STATUSES: &[&str] = &["UpToDate", "SWHardeningNeeded"];
+
+/// Reject a verified-but-stale TCB verdict. `status` is the converged
+/// `VerifiedReport::status` string emitted by `dcap_qvl::verify::verify`.
+pub fn verify_acceptable_tcb_status(status: &str) -> Result<(), AttestationError> {
+    if ACCEPTABLE_TCB_STATUSES.contains(&status) {
+        return Ok(());
+    }
+    Err(AttestationError::QuoteVerification {
+        reason: format!(
+            "TDX TCB status '{status}' not acceptable (expected one of {:?})",
+            ACCEPTABLE_TCB_STATUSES
+        ),
+    })
+}
+
 /// Decode a TDX DCAP quote from either hex or base64 encoding.
 ///
 /// Some providers send the intel_quote as a hex string; others use base64.
@@ -83,6 +111,10 @@ pub async fn verify_tdx_quote(
             reason: e.to_string(),
         }
     })?;
+
+    // A valid signature is not an acceptable TCB: reject non-current verdicts
+    // (OutOfDate, ConfigurationNeeded, Revoked, ...). See ACCEPTABLE_TCB_STATUSES.
+    verify_acceptable_tcb_status(&report.status)?;
 
     // Validate nonce: first 32 bytes of TDX report_data must match expected_nonce.
     // Per D-13: nonce validation is mandatory -- prevents replay attacks.

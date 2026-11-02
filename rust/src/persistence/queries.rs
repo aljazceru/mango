@@ -275,6 +275,27 @@ pub fn insert_agent_step(conn: &Connection, row: &AgentStepRow) -> Result<(), Pe
     Ok(())
 }
 
+/// Store tool-call results and mark their pending step complete in one write.
+/// `result` is a JSON array of `(tool_call_id, result_text)` pairs.
+pub fn complete_agent_tool_step(
+    conn: &Connection,
+    step_id: &str,
+    result: &str,
+) -> Result<(), PersistenceError> {
+    let updated = conn
+        .prepare_cached(
+            "UPDATE agent_steps SET result = ?2, status = 'completed'
+             WHERE id = ?1 AND status = 'running'",
+        )?
+        .execute(rusqlite::params![step_id, result])?;
+    if updated != 1 {
+        return Err(PersistenceError::SqliteError {
+            message: format!("Pending agent step not found: {step_id}"),
+        });
+    }
+    Ok(())
+}
+
 /// Update the status of an agent session.
 pub fn update_agent_session_status(
     conn: &Connection,
@@ -525,6 +546,61 @@ pub fn get_message_by_id(
 
 // ── New Phase 5 conversation management queries ───────────────────────────────
 
+fn image_paths_for(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<String>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(sql)?;
+    let paths = stmt
+        .query_map(params, |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(paths)
+}
+
+/// Only remove app-owned image files after their last message reference is gone.
+fn remove_unreferenced_images(
+    conn: &Connection,
+    paths: Vec<String>,
+) -> Result<(), PersistenceError> {
+    let Some(db_path) = conn.path().filter(|path| !path.is_empty()) else {
+        return Ok(());
+    };
+    let Some(data_dir) = std::path::Path::new(db_path).parent() else {
+        return Ok(());
+    };
+    let Ok(images_dir) = data_dir.join("images").canonicalize() else {
+        return Ok(());
+    };
+    let mut referenced =
+        conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM messages WHERE image_path = ?1)")?;
+    for path in paths {
+        if referenced.query_row([&path], |row| row.get::<_, bool>(0))? {
+            continue;
+        }
+        let path = std::path::Path::new(&path);
+        if !path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().ends_with(".jpg.mgo1"))
+        {
+            continue;
+        }
+        let Ok(canonical) = path.canonicalize() else {
+            continue;
+        };
+        if canonical.parent() != Some(images_dir.as_path()) {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(path) {
+            log::warn!(
+                "[images] Failed to remove unreferenced image {}: {error}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Delete a conversation and all its messages.
 ///
 /// Messages are deleted first (FK constraint: messages.conversation_id REFERENCES conversations.id).
@@ -533,10 +609,18 @@ pub fn delete_conversation(
     conn: &Connection,
     conversation_id: &str,
 ) -> Result<(), PersistenceError> {
-    conn.prepare_cached("DELETE FROM messages WHERE conversation_id = ?1")?
+    let tx = conn.unchecked_transaction()?;
+    let images = image_paths_for(
+        &tx,
+        "SELECT DISTINCT image_path FROM messages WHERE conversation_id = ?1 AND image_path IS NOT NULL",
+        [conversation_id],
+    )?;
+    tx.prepare_cached("DELETE FROM messages WHERE conversation_id = ?1")?
         .execute(rusqlite::params![conversation_id])?;
-    conn.prepare_cached("DELETE FROM conversations WHERE id = ?1")?
+    tx.prepare_cached("DELETE FROM conversations WHERE id = ?1")?
         .execute(rusqlite::params![conversation_id])?;
+    tx.commit()?;
+    remove_unreferenced_images(conn, images)?;
     Ok(())
 }
 
@@ -626,14 +710,23 @@ pub fn delete_conversations_older_than(
     conn: &Connection,
     cutoff: i64,
 ) -> Result<u64, PersistenceError> {
-    conn.prepare_cached(
+    let tx = conn.unchecked_transaction()?;
+    let images = image_paths_for(
+        &tx,
+        "SELECT DISTINCT image_path FROM messages WHERE image_path IS NOT NULL AND conversation_id IN
+             (SELECT id FROM conversations WHERE updated_at < ?1)",
+        [cutoff],
+    )?;
+    tx.prepare_cached(
         "DELETE FROM messages WHERE conversation_id IN
              (SELECT id FROM conversations WHERE updated_at < ?1)",
     )?
     .execute(rusqlite::params![cutoff])?;
-    let n = conn
+    let n = tx
         .prepare_cached("DELETE FROM conversations WHERE updated_at < ?1")?
         .execute(rusqlite::params![cutoff])?;
+    tx.commit()?;
+    remove_unreferenced_images(conn, images)?;
     Ok(n as u64)
 }
 
@@ -862,8 +955,23 @@ pub fn delete_messages_after(
     conversation_id: &str,
     after_created_at: i64,
 ) -> Result<(), PersistenceError> {
-    conn.prepare_cached("DELETE FROM messages WHERE conversation_id = ?1 AND created_at > ?2")?
+    let images = image_paths_for(
+        conn,
+        "SELECT DISTINCT image_path FROM messages WHERE conversation_id = ?1 AND created_at > ?2 AND image_path IS NOT NULL",
+        rusqlite::params![conversation_id, after_created_at],
+    )?;
+    let tx = conn.unchecked_transaction()?;
+    // Derived summaries cannot survive deletion of any covered prefix row.
+    tx.prepare_cached(
+        "UPDATE conversations SET compaction_summary = NULL, compaction_covered_count = 0
+         WHERE id = ?1 AND compaction_covered_count >
+             (SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND created_at <= ?2)",
+    )?
+    .execute(rusqlite::params![conversation_id, after_created_at])?;
+    tx.prepare_cached("DELETE FROM messages WHERE conversation_id = ?1 AND created_at > ?2")?
         .execute(rusqlite::params![conversation_id, after_created_at])?;
+    tx.commit()?;
+    remove_unreferenced_images(conn, images)?;
     Ok(())
 }
 
@@ -871,8 +979,68 @@ pub fn delete_messages_after(
 ///
 /// Used for RetryLastMessage: remove the last assistant message so it can be regenerated.
 pub fn delete_message(conn: &Connection, message_id: &str) -> Result<(), PersistenceError> {
-    conn.prepare_cached("DELETE FROM messages WHERE id = ?1")?
+    let tx = conn.unchecked_transaction()?;
+    tx.prepare_cached(
+        "UPDATE conversations SET compaction_summary = NULL, compaction_covered_count = 0
+         WHERE id = (SELECT conversation_id FROM messages WHERE id = ?1)
+           AND compaction_covered_count > (
+               SELECT COUNT(*) FROM messages prefix JOIN messages target ON target.id = ?1
+               WHERE prefix.conversation_id = target.conversation_id
+                 AND (prefix.created_at, prefix.id) < (target.created_at, target.id)
+           )",
+    )?
+    .execute(rusqlite::params![message_id])?;
+    tx.prepare_cached("DELETE FROM messages WHERE id = ?1")?
         .execute(rusqlite::params![message_id])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Return the chunk rowids belonging to a set of documents.
+///
+/// Used to confine RAG vector search results to the documents attached to the
+/// current conversation — an unattached document's chunks must never enter
+/// the outbound prompt.
+pub fn get_chunk_rowids_for_documents(
+    conn: &Connection,
+    document_ids: &[String],
+) -> Result<Vec<i64>, PersistenceError> {
+    if document_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let placeholders: String = document_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id FROM chunks WHERE document_id IN ({})",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = document_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
+    let rows = stmt
+        .query_map(params.as_slice(), |row| row.get(0))?
+        .collect::<Result<Vec<i64>, _>>()?;
+    Ok(rows)
+}
+
+/// Permanent deletion; retry uses SQL-only deletion so rejected sends can restore images.
+pub fn delete_message_with_image_cleanup(
+    conn: &Connection,
+    message_id: &str,
+) -> Result<(), PersistenceError> {
+    let images = image_paths_for(
+        conn,
+        "SELECT image_path FROM messages WHERE id = ?1 AND image_path IS NOT NULL",
+        [message_id],
+    )?;
+    delete_message(conn, message_id)?;
+    remove_unreferenced_images(conn, images)?;
     Ok(())
 }
 
@@ -1667,21 +1835,27 @@ pub struct ContextvmToolRow {
     pub last_seen_at: i64,
 }
 
-/// Insert OR REPLACE — used by discovery to refresh announcements without
-/// flipping a manually-toggled enabled flag back to 0. Callers MUST pass
-/// the existing `enabled` value (read it via `get_contextvm_tool_by_name`
-/// first); this helper does NOT preserve enabled across upserts on its
-/// own — that responsibility lives in the actor handler.
+/// Refresh an announcement by composite id without replacing another provider's row.
+/// Callers preserve approval using `get_contextvm_tool_by_id`; conflicting enabled
+/// names fail rather than silently evicting the approved provider.
 pub fn upsert_contextvm_tool(
     conn: &Connection,
     row: &ContextvmToolRow,
 ) -> Result<(), PersistenceError> {
     conn.prepare_cached(
-        "INSERT OR REPLACE INTO contextvm_tools \
+        "INSERT INTO contextvm_tools \
          (id, tool_name, display_name, description, provider_pubkey, \
           provider_display_name, provider_name, provider_about, provider_picture, \
           provider_nip05, schema_json, enabled, last_seen_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+         ON CONFLICT(id) DO UPDATE SET \
+         tool_name = excluded.tool_name, display_name = excluded.display_name, \
+         description = excluded.description, provider_pubkey = excluded.provider_pubkey, \
+         provider_display_name = excluded.provider_display_name, \
+         provider_name = excluded.provider_name, provider_about = excluded.provider_about, \
+         provider_picture = excluded.provider_picture, provider_nip05 = excluded.provider_nip05, \
+         schema_json = excluded.schema_json, enabled = excluded.enabled, \
+         last_seen_at = excluded.last_seen_at",
     )?
     .execute(rusqlite::params![
         row.id,
@@ -1701,29 +1875,39 @@ pub fn upsert_contextvm_tool(
     Ok(())
 }
 
-/// Flip the `enabled` flag for a tool row by composite id.
+/// Explicitly choose a provider for a name, atomically disabling its competitors.
 pub fn update_contextvm_tool_enabled(
     conn: &Connection,
     id: &str,
     enabled: bool,
 ) -> Result<(), PersistenceError> {
-    conn.prepare_cached("UPDATE contextvm_tools SET enabled = ?2 WHERE id = ?1")?
+    let tx = conn.unchecked_transaction()?;
+    if enabled {
+        tx.prepare_cached(
+            "UPDATE contextvm_tools SET enabled = 0 \
+             WHERE tool_name = (SELECT tool_name FROM contextvm_tools WHERE id = ?1) \
+               AND id != ?1",
+        )?
+        .execute(rusqlite::params![id])?;
+    }
+    tx.prepare_cached("UPDATE contextvm_tools SET enabled = ?2 WHERE id = ?1")?
         .execute(rusqlite::params![id, enabled as i64])?;
+    tx.commit()?;
     Ok(())
 }
 
-/// Fetch a single tool row by `tool_name` (unique). Returns `None` if absent.
-pub fn get_contextvm_tool_by_name(
+/// Fetch one provider's announcement by its stable composite id.
+pub fn get_contextvm_tool_by_id(
     conn: &Connection,
-    tool_name: &str,
+    id: &str,
 ) -> Result<Option<ContextvmToolRow>, PersistenceError> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, tool_name, display_name, description, provider_pubkey, \
                 provider_display_name, provider_name, provider_about, provider_picture, \
                 provider_nip05, schema_json, enabled, last_seen_at \
-         FROM contextvm_tools WHERE tool_name = ?1 LIMIT 1",
+         FROM contextvm_tools WHERE id = ?1",
     )?;
-    let mut rows = stmt.query(rusqlite::params![tool_name])?;
+    let mut rows = stmt.query(rusqlite::params![id])?;
     if let Some(r) = rows.next()? {
         Ok(Some(ContextvmToolRow {
             id: r.get(0)?,

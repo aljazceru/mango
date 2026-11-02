@@ -107,9 +107,12 @@ pub async fn validate_sats_against_limits(
 }
 
 /// Decide whether a status poll may run now (§6.9 step 6: never before
-/// `next_poll_at`, including timer, manual, and resume checks).
+/// `next_poll_at`, including timer, manual, and resume checks). The
+/// payment deadline does NOT end reconciliation: a final check after
+/// `expires_at` is required so an invoice paid just before its deadline
+/// can still be observed as settled (audit: expiry finding).
 pub fn poll_allowed(pending: &PendingInvoice, now_epoch: i64) -> bool {
-    now_epoch >= pending.next_poll_at && now_epoch < pending.expires_at
+    now_epoch >= pending.next_poll_at
 }
 
 /// Map an observed status to the safe funding outcome (§6.9 steps 9-11).
@@ -134,43 +137,24 @@ pub fn outcome_for(status: &InvoiceStatusValue) -> FundingOutcome {
     }
 }
 
-/// Balance-reconciliation for unknown statuses (§6.9 step 11): if the
-/// balance rose above the last persisted snapshot, treat as funded.
-pub fn reconcile_unknown_by_balance(last: Option<&str>, current: &str) -> FundingOutcome {
-    match last {
-        Some(prev) if decimals_gt(current, prev) => FundingOutcome::Settled,
-        _ => FundingOutcome::Unknown,
+/// Compare validated non-negative decimal strings numerically without floats.
+pub fn decimals_gt(a: &str, b: &str) -> bool {
+    let (ai, af) = a.split_once('.').unwrap_or((a, ""));
+    let (bi, bf) = b.split_once('.').unwrap_or((b, ""));
+    let ai = ai.trim_start_matches('0');
+    let bi = bi.trim_start_matches('0');
+    if ai.len() != bi.len() {
+        return ai.len() > bi.len();
     }
-}
-
-/// Compare two non-negative decimal strings numerically without floats.
-fn decimals_gt(a: &str, b: &str) -> bool {
-    let (ai, af) = split_decimal(a);
-    let (bi, bf) = split_decimal(b);
     if ai != bi {
         return ai > bi;
     }
-    let af = pad(af, bf.len());
-    let bf = pad(bf, af.len());
-    af > bf
-}
-
-fn split_decimal(s: &str) -> (String, String) {
-    let (i, f) = match s.split_once('.') {
-        Some((i, f)) => (i, f),
-        None => (s, ""),
-    };
-    // Threat review (low): normalize leading zeros so "01.00" == "1.00".
-    let whole = i.trim_start_matches('0');
-    (whole.to_string(), f.to_string())
-}
-
-fn pad(s: String, len: usize) -> String {
-    let mut s = s;
-    while s.len() < len {
-        s.push('0');
-    }
-    s
+    let len = af.len().max(bf.len());
+    af.bytes()
+        .chain(std::iter::repeat(b'0'))
+        .take(len)
+        .cmp(bf.bytes().chain(std::iter::repeat(b'0')).take(len))
+        .is_gt()
 }
 
 #[cfg(test)]
@@ -234,8 +218,16 @@ mod tests {
         };
         assert!(!poll_allowed(&p, 699));
         assert!(poll_allowed(&p, 700));
-        assert!(!poll_allowed(&p, 900), "expired invoice is never polled");
-
+        // The payment deadline does not end reconciliation: a final
+        // status check stays permitted after expiry.
+        assert!(
+            poll_allowed(&p, 900),
+            "post-expiry reconciliation poll allowed"
+        );
+        assert!(
+            poll_allowed(&p, 1200),
+            "post-expiry reconciliation poll allowed"
+        );
         assert_eq!(
             outcome_for(&InvoiceStatusValue::New),
             FundingOutcome::Pending
@@ -255,28 +247,16 @@ mod tests {
     }
 
     #[test]
-    fn balance_reconciliation_is_decimal_not_float() {
-        assert_eq!(
-            reconcile_unknown_by_balance(Some("0.000001"), "0.000002"),
-            FundingOutcome::Settled
-        );
-        assert_eq!(
-            reconcile_unknown_by_balance(Some("0.08155601999999999"), "0.08155601999999999"),
-            FundingOutcome::Unknown
-        );
-        assert_eq!(
-            reconcile_unknown_by_balance(Some("0.1"), "0.09"),
-            FundingOutcome::Unknown
-        );
-        assert_eq!(
-            reconcile_unknown_by_balance(None, "0.5"),
-            FundingOutcome::Unknown
-        );
-        // 17-digit float noise compares numerically, not lexically:
-        assert_eq!(
-            reconcile_unknown_by_balance(Some("0.08155602"), "0.08155602000000001"),
-            FundingOutcome::Settled
-        );
+    fn decimal_comparison_is_numeric() {
+        assert!(decimals_gt("0.000002", "0.000001"));
+        assert!(!decimals_gt("0.08155601999999999", "0.08155601999999999"));
+        assert!(!decimals_gt("0.09", "0.1"));
+        assert!(decimals_gt("0.08155602000000001", "0.08155602"));
+        assert!(decimals_gt("10", "9"));
+        assert!(!decimals_gt("9", "10"));
+        assert!(!decimals_gt("0.5", "10"));
+        assert!(decimals_gt("10", "0.5"));
+        assert!(!decimals_gt("0001.00", "1"));
     }
 
     #[test]

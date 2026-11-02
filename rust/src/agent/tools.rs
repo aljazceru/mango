@@ -9,7 +9,7 @@
 /// tools. The dispatch_tools signature is extended with runtime, data_dir, and brave_api_key
 /// parameters for the new network/file/math tools.
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
@@ -234,12 +234,21 @@ pub fn build_chat_tools(
 /// that reserved-name collisions are filtered, the 8-tool cap is honoured,
 /// and the descriptor list is sorted by `last_seen_at DESC` then alphabetic.
 /// This function does NOT re-filter; it is a pure append helper.
+///
+/// `local_tools_enabled` is the conversation's tools switch: when false, NO
+/// local tools (file/fetch_url/calculate/doc search/web_search) are offered
+/// at all — auto-discovered remote contextvm tools may still be offered.
 pub fn build_chat_tools_with_contextvm(
+    local_tools_enabled: bool,
     include_doc_search: bool,
     brave_api_key_set: bool,
     remote_descriptors: &[crate::contextvm::ContextvmToolDescriptor],
 ) -> Vec<ChatCompletionTools> {
-    let mut tools = build_chat_tools(include_doc_search, brave_api_key_set);
+    let mut tools = if local_tools_enabled {
+        build_chat_tools(include_doc_search, brave_api_key_set)
+    } else {
+        Vec::new()
+    };
     let remote = crate::contextvm::descriptors_to_chat_tools(remote_descriptors);
     tools.extend(remote);
     tools
@@ -318,7 +327,12 @@ pub fn dispatch_tools(
             }
         };
 
-        results.push((tool_call_id, result));
+        // Every dispatch result passes through the UTF-8-safe 16 KiB cap so a
+        // large file read or remote error can't bloat the follow-up prompt.
+        results.push((
+            tool_call_id,
+            crate::contextvm::invocation::truncate_result(result),
+        ));
     }
 
     results
@@ -436,6 +450,12 @@ pub(crate) fn dispatch_web_search(
     runtime: &tokio::runtime::Runtime,
     brave_api_key: &str,
 ) -> String {
+    runtime.block_on(dispatch_web_search_async(args_str, brave_api_key))
+}
+
+/// Async core of `dispatch_web_search` — runs inside spawned tasks so the
+/// actor thread is never parked on the network.
+pub(crate) async fn dispatch_web_search_async(args_str: &str, brave_api_key: &str) -> String {
     if brave_api_key.is_empty() {
         return "Error: Brave Search API key not configured. Set brave_api_key in settings."
             .to_string();
@@ -458,26 +478,27 @@ pub(crate) fn dispatch_web_search(
         .min(10);
     let count_str = count.to_string();
 
-    let key = brave_api_key.to_string();
-    let result = runtime.block_on(async move {
-        crate::net::tls::ensure_default_crypto_provider();
-        let client = reqwest::Client::builder()
-            .no_hickory_dns()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        client
-            .get("https://api.search.brave.com/res/v1/web/search")
-            .query(&[("q", query.as_str()), ("count", count_str.as_str())])
-            .header("X-Subscription-Token", &key)
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| format!("Error: web search failed: {}", e))?
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| format!("Error: failed to parse search response: {}", e))
-    });
+    crate::net::tls::ensure_default_crypto_provider();
+    let client = reqwest::Client::builder()
+        .no_hickory_dns()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let response = match client
+        .get("https://api.search.brave.com/res/v1/web/search")
+        .query(&[("q", query.as_str()), ("count", count_str.as_str())])
+        .header("X-Subscription-Token", brave_api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(e) => return format!("Error: web search failed: {}", e),
+    };
+    let result = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Error: failed to parse search response: {}", e));
 
     match result {
         Ok(json) => format_brave_results(&json),
@@ -515,6 +536,12 @@ fn format_brave_results(json: &serde_json::Value) -> String {
 
 /// Dispatch URL fetching. Returns plain text extracted from the body element.
 pub(crate) fn dispatch_fetch_url(args_str: &str, runtime: &tokio::runtime::Runtime) -> String {
+    runtime.block_on(dispatch_fetch_url_async(args_str))
+}
+
+/// Async core of `dispatch_fetch_url` — runs inside spawned tasks so the
+/// actor thread is never parked on the network.
+pub(crate) async fn dispatch_fetch_url_async(args_str: &str) -> String {
     let args: serde_json::Value = match serde_json::from_str(args_str) {
         Ok(v) => v,
         Err(e) => return format!("Error: failed to parse fetch_url args: {}", e),
@@ -528,18 +555,9 @@ pub(crate) fn dispatch_fetch_url(args_str: &str, runtime: &tokio::runtime::Runti
         None => return "Error: fetch_url requires 'url' parameter".to_string(),
     };
 
-    let result = runtime.block_on(async move {
-        crate::net::tls::ensure_default_crypto_provider();
-        let client = reqwest::Client::builder()
-            .no_hickory_dns()
-            .redirect(Policy::none())
-            .timeout(Duration::from_secs(15))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        fetch_url_with_guards(&client, url).await
-    });
-
-    let html = match result {
+    crate::net::tls::ensure_default_crypto_provider();
+    // Each hop builds a DNS-pinned client inside fetch_url_with_guards.
+    let html = match fetch_url_with_guards(url).await {
         Ok(h) => h,
         Err(e) => return e,
     };
@@ -551,9 +569,14 @@ pub(crate) fn dispatch_fetch_url(args_str: &str, runtime: &tokio::runtime::Runti
     // Normalize whitespace
     let text: String = extracted.split_whitespace().collect::<Vec<_>>().join(" ");
 
+    // Cap by bytes but slice only on a UTF-8 char boundary.
     const MAX_CHARS: usize = 8000;
     if text.len() > MAX_CHARS {
-        format!("{}... [truncated at 8000 chars]", &text[..MAX_CHARS])
+        let mut end = MAX_CHARS;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}... [truncated at 8000 chars]", &text[..end])
     } else {
         text
     }
@@ -562,9 +585,13 @@ pub(crate) fn dispatch_fetch_url(args_str: &str, runtime: &tokio::runtime::Runti
 const FETCH_URL_MAX_BYTES: usize = 1_048_576;
 const FETCH_URL_MAX_REDIRECTS: usize = 5;
 
-async fn fetch_url_with_guards(client: &reqwest::Client, mut url: Url) -> Result<String, String> {
+async fn fetch_url_with_guards(mut url: Url) -> Result<String, String> {
     for redirect_count in 0..=FETCH_URL_MAX_REDIRECTS {
-        validate_fetch_url(&url).await?;
+        let resolved_addrs = validate_fetch_url(&url).await?;
+        // Resolve once, validate every answer, then pin THIS request to the
+        // validated addresses -- a second lookup inside reqwest could return a
+        // rebinding-attacker's private address (DNS rebinding / SSRF bypass).
+        let client = build_pinned_fetch_client(&url, resolved_addrs)?;
         let response = client
             .get(url.clone())
             .send()
@@ -613,7 +640,35 @@ async fn fetch_url_with_guards(client: &reqwest::Client, mut url: Url) -> Result
     Err("Error: fetch_url redirect handling failed".to_string())
 }
 
-async fn validate_fetch_url(url: &Url) -> Result<(), String> {
+/// Build a reqwest client for one fetch_url hop.
+///
+/// When `resolved_addrs` is non-empty (host is a DNS name, not an IP literal),
+/// the client's DNS is pinned to the already-validated addresses; the original
+/// hostname is retained for TLS SNI/verification and the HTTP Host header.
+fn build_pinned_fetch_client(
+    url: &Url,
+    resolved_addrs: Vec<std::net::SocketAddr>,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .no_hickory_dns()
+        .no_proxy()
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(15));
+    if !resolved_addrs.is_empty() {
+        let host = url
+            .host_str()
+            .ok_or_else(|| "Error: fetch_url requires a host".to_string())?
+            .to_string();
+        builder = builder.resolve_to_addrs(&host, &resolved_addrs);
+    }
+    builder
+        .build()
+        .map_err(|e| format!("Error: failed to build HTTP client: {}", e))
+}
+
+/// Validate a fetch target and return the DNS answers the connection must use.
+/// Returns an empty Vec for IP-literal hosts (no DNS resolution needed).
+async fn validate_fetch_url(url: &Url) -> Result<Vec<std::net::SocketAddr>, String> {
     match url.scheme() {
         "http" | "https" => {}
         scheme => {
@@ -638,14 +693,18 @@ async fn validate_fetch_url(url: &Url) -> Result<(), String> {
                 ip
             ));
         }
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let port = url.port_or_known_default().unwrap_or(443);
-    let resolved = tokio::net::lookup_host((host, port))
+    let resolved: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|e| format!("Error: failed to resolve '{}': {}", host, e))?;
-    for addr in resolved {
+        .map_err(|e| format!("Error: failed to resolve '{}': {}", host, e))?
+        .collect();
+    if resolved.is_empty() {
+        return Err(format!("Error: no addresses resolved for '{host}'"));
+    }
+    for addr in &resolved {
         let ip = addr.ip();
         if is_blocked_fetch_ip(ip) {
             return Err(format!(
@@ -654,7 +713,7 @@ async fn validate_fetch_url(url: &Url) -> Result<(), String> {
             ));
         }
     }
-    Ok(())
+    Ok(resolved)
 }
 
 fn is_blocked_fetch_ip(ip: IpAddr) -> bool {
@@ -728,16 +787,53 @@ pub(crate) fn resolve_sandbox_path(
     let sandbox_canon = sandbox
         .canonicalize()
         .map_err(|e| format!("Error: sandbox path resolution failed: {}", e))?;
-    // Canonicalize the candidate's parent so we can check the prefix without the file existing yet
-    let candidate_parent = candidate.parent().unwrap_or(&candidate);
-    if let Ok(parent_canon) = candidate_parent.canonicalize() {
-        if !parent_canon.starts_with(&sandbox_canon) {
-            return Err("Error: path escapes sandbox".to_string());
-        }
-    }
-    // Also do a non-canonicalized prefix check as a belt-and-suspenders guard
+    // Also do a non-canonicalized prefix check as a belt-and-suspenders guard.
+    // This runs BEFORE strip_prefix so an absolute `relative_path` (which makes
+    // join() discard the sandbox prefix entirely) is rejected here.
     if !candidate.starts_with(&sandbox) {
         return Err("Error: path escapes sandbox".to_string());
+    }
+
+    // Reject symlink components, including the leaf: a symlink inside the
+    // sandbox can point anywhere, so opening the file would escape.
+    let mut probe = sandbox.clone();
+    for component in candidate
+        .strip_prefix(&sandbox)
+        .map_err(|_| "Error: path escapes sandbox".to_string())?
+        .components()
+    {
+        probe.push(component);
+        if probe.is_symlink() {
+            return Err(format!(
+                "Error: path '{}' contains a symlink component",
+                relative_path
+            ));
+        }
+    }
+
+    // Fail closed when containment cannot be established: canonicalize the
+    // deepest existing ancestor and require it to stay inside the sandbox.
+    // (A missing parent used to skip this check, letting `link/new/file`
+    // escape via create_dir_all when `link` pointed outside.)
+    let mut ancestor = Some(candidate.parent().unwrap_or(&candidate));
+    let mut contained = false;
+    while let Some(dir) = ancestor {
+        match dir.canonicalize() {
+            Ok(canon) => {
+                if !canon.starts_with(&sandbox_canon) {
+                    return Err("Error: path escapes sandbox".to_string());
+                }
+                contained = true;
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = dir.parent();
+            }
+            Err(error) => return Err(format!("Error: sandbox path resolution failed: {error}")),
+        }
+    }
+    if !contained {
+        return Err("Error: sandbox path resolution failed".to_string());
     }
 
     Ok(candidate)
@@ -766,10 +862,28 @@ pub(crate) fn dispatch_file(args_str: &str, data_dir: &str) -> String {
     };
 
     match operation.as_str() {
-        "read" => match std::fs::read_to_string(&resolved) {
-            Ok(content) => content,
-            Err(e) => format!("Error: failed to read '{}': {}", path, e),
-        },
+        "read" => {
+            // Bound the read at the I/O boundary (same 1 MiB convention as
+            // fetch_url): the whole file would otherwise be loaded and
+            // forwarded into the follow-up prompt.
+            const FILE_READ_MAX_BYTES: u64 = 1_048_576;
+            let content = std::fs::File::open(&resolved).and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take(FILE_READ_MAX_BYTES + 1).read_to_end(&mut bytes)?;
+                Ok(bytes)
+            });
+            match content {
+                Ok(bytes) if bytes.len() as u64 > FILE_READ_MAX_BYTES => format!(
+                    "Error: file '{}' exceeds {} byte read limit",
+                    path, FILE_READ_MAX_BYTES
+                ),
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(content) => content,
+                    Err(e) => format!("Error: failed to read '{}': {}", path, e),
+                },
+                Err(e) => format!("Error: failed to read '{}': {}", path, e),
+            }
+        }
         "write" => {
             let content = match args.get("content").and_then(|v| v.as_str()) {
                 Some(c) => c.to_string(),
@@ -832,8 +946,67 @@ pub(crate) fn dispatch_calculate(args_str: &str) -> String {
         return "Error: expression too long (max 200 chars)".to_string();
     }
 
-    match evalexpr::eval(&expression) {
+    // evalexpr's builtin math::abs uses unchecked i64::abs, which overflows on
+    // i64::MIN (panic in debug/overflow-checked builds, negative result in
+    // release). Register a checked replacement that returns an eval error.
+    use evalexpr::{ContextWithMutableFunctions, EvalexprError, HashMapContext, Value};
+    let mut context = HashMapContext::new();
+    context
+        .set_function(
+            "math::abs".to_string(),
+            evalexpr::Function::new(|argument: &evalexpr::Value| match argument {
+                Value::Int(n) => n
+                    .checked_abs()
+                    .map(Value::Int)
+                    .ok_or_else(|| EvalexprError::CustomMessage("abs overflow".to_string())),
+                Value::Float(f) => Ok(Value::Float(f.abs())),
+                other => Err(EvalexprError::expected_number(other.clone())),
+            }),
+        )
+        .unwrap_or(());
+
+    match evalexpr::eval_with_context(&expression, &context) {
         Ok(value) => value.to_string(),
         Err(e) => format!("Error: math evaluation failed: {}", e),
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+
+    #[test]
+    fn integer_abs_overflow_returns_error() {
+        assert!(
+            dispatch_calculate(r#"{"expression":"math::abs(-9223372036854775807 - 1)"}"#)
+                .starts_with("Error:")
+        );
+        assert_eq!(dispatch_calculate(r#"{"expression":"math::abs(-7)"}"#), "7");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_rejects_leaf_and_parent_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let data_dir = root.path().to_str().unwrap();
+        std::fs::create_dir(root.path().join("agent_files")).unwrap();
+        symlink(outside.path(), root.path().join("agent_files/link")).unwrap();
+        assert!(resolve_sandbox_path(data_dir, "link").is_err());
+        assert!(resolve_sandbox_path(data_dir, "link/missing/file").is_err());
+        assert!(resolve_sandbox_path(data_dir, "new/file").is_ok());
+    }
+
+    #[test]
+    fn file_read_limit_is_enforced() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().to_str().unwrap();
+        let path = resolve_sandbox_path(data_dir, "large").unwrap();
+        std::fs::write(path, vec![b'x'; 1_048_577]).unwrap();
+        assert!(
+            dispatch_file(r#"{"operation":"read","path":"large"}"#, data_dir)
+                .contains("read limit")
+        );
     }
 }
