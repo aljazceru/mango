@@ -4,11 +4,13 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,8 +26,6 @@ import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,7 +35,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import dev.disobey.mango.ui.theme.MangoTheme
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
@@ -219,16 +220,14 @@ fun DocumentLibraryScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
+                        TintedIcon(
                             Icons.Filled.Description,
-                            contentDescription = null,
-                            modifier = Modifier.size(48.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            MangoTheme.colors.tintKnowledge,
+                            size = 56.dp,
                         )
                         Text(
                             "No documents or folders yet",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            style = MaterialTheme.typography.titleLarge,
                         )
                         Text(
                             "Tap + to add a document or a folder.",
@@ -245,10 +244,8 @@ fun DocumentLibraryScreen(
                 ) {
                     if (appState.directorySources.isNotEmpty()) {
                         item(key = "folders_header") {
-                            Text(
-                                text = "FOLDERS",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            SectionLabel(
+                                "Folders",
                                 modifier = Modifier.padding(vertical = 2.dp)
                             )
                         }
@@ -266,10 +263,8 @@ fun DocumentLibraryScreen(
 
                     if (appState.documents.isNotEmpty()) {
                         item(key = "documents_header") {
-                            Text(
-                                text = "DOCUMENTS",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            SectionLabel(
+                                "Documents",
                                 modifier = Modifier.padding(vertical = 2.dp)
                             )
                         }
@@ -296,13 +291,9 @@ private fun DirectorySourceCompactRow(
     source: DirectorySourceSummary,
     onClick: () -> Unit,
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() },
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+    MangoCard(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = onClick,
     ) {
         Row(
             modifier = Modifier
@@ -310,11 +301,10 @@ private fun DirectorySourceCompactRow(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
+            TintedIcon(
                 Icons.Filled.Folder,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(28.dp),
+                MangoTheme.colors.tintKnowledge,
+                size = 40.dp,
             )
             Spacer(modifier = Modifier.size(12.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -344,71 +334,74 @@ private fun DirectorySourceCompactRow(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DocumentRow(
     doc: DocumentSummary,
     onDelete: () -> Unit,
 ) {
-    Card(
+
+    MangoCard(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // Format icon
-            Icon(
-                imageVector = if (doc.format == "pdf") Icons.Filled.Description else Icons.Default.Article,
+            TintedIcon(
+                icon = if (doc.format == "pdf") Icons.Filled.Description else Icons.Default.Article,
+                tint = MangoTheme.colors.tintKnowledge,
                 contentDescription = doc.format,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .size(32.dp)
-                    .padding(end = 4.dp)
+                size = 40.dp,
             )
 
-            Spacer(modifier = Modifier.padding(horizontal = 4.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = doc.name,
                     style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(modifier = Modifier.height(2.dp))
-                Row(
+                FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     // Format badge
-                    SuggestionChip(
-                        onClick = {},
-                        label = {
-                            Text(
-                                text = doc.format.uppercase(),
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        },
-                        modifier = Modifier.height(24.dp)
-                    )
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.CenterVertically),
+                    ) {
+                        Text(
+                            text = doc.format.uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                    }
                     Text(
                         text = formatSize(doc.sizeBytes),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.CenterVertically),
                     )
                     Text(
                         text = formatDate(doc.ingestionDate),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.CenterVertically),
                     )
                     Text(
                         text = "${doc.chunkCount} chunks",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.CenterVertically),
                     )
                 }
             }

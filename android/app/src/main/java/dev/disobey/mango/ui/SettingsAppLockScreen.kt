@@ -37,8 +37,8 @@ fun rememberAppLockUiState() = remember { AppLockUiState() }
 fun LazyListScope.appLockItems(appState: AppState, onDispatch: (AppAction) -> Unit, ui: AppLockUiState) {
             item {
                 Spacer(Modifier.height(8.dp))
-                SettingsSectionLabel("Security")
-                Card(modifier = Modifier.fillMaxWidth()) {
+                SectionLabel("Security")
+                MangoCard(modifier = Modifier.fillMaxWidth()) {
                     if (appState.noLockMode) {
                         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("App lock", fontWeight = FontWeight.Medium)

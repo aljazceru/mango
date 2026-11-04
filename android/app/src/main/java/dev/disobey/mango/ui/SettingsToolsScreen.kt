@@ -11,7 +11,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -29,7 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import dev.disobey.mango.ui.theme.MangoTheme
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -68,7 +67,7 @@ fun SettingsToolsScreen(
             item {
                 Spacer(Modifier.height(8.dp))
                 SettingsSectionLabel("Tools")
-                Card(modifier = Modifier.fillMaxWidth()) {
+                MangoCard(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Web search", fontWeight = FontWeight.Medium)
                         Text(
@@ -139,7 +138,7 @@ private fun RowStatus(appState: AppState) {
             Icon(
                 Icons.Filled.CheckCircle,
                 contentDescription = null,
-                tint = Color(0xFF2E7D32),
+                tint = MangoTheme.colors.ok,
             )
             Text("Configured", style = MaterialTheme.typography.labelSmall)
         } else {

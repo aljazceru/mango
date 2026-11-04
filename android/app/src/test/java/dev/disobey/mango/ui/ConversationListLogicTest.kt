@@ -1,6 +1,7 @@
 package dev.disobey.mango.ui
 
 import dev.disobey.mango.rust.ConversationSummary
+import dev.disobey.mango.rust.InferenceRoute
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.util.concurrent.TimeUnit
@@ -29,12 +30,6 @@ class ConversationListLogicTest {
         assertEquals("Earlier", conversationDateBucket(now - TimeUnit.DAYS.toMillis(10), now))
     }
 
-    @Test
-    fun `metadata joins only nonblank segments`() {
-        assertEquals("2h ago · gpt-4.1", conversationMetadata("2h ago", "", "gpt-4.1"))
-        assertEquals("llama", conversationMetadata(null, "llama"))
-        assertEquals("", conversationMetadata("", " "))
-    }
 
     private fun conversation(
         id: String,
@@ -50,5 +45,7 @@ class ConversationListLogicTest {
         updatedAt = updatedAt,
         systemPrompt = null,
         toolsEnabled = false,
+        lastMessagePreview = null,
+        route = InferenceRoute.CLOUD,
     )
 }

@@ -2635,6 +2635,17 @@ public struct ConversationSummary: Equatable, Hashable {
      * toggle control can reflect the persisted state without additional queries.
      */
     public var toolsEnabled: Bool
+    /**
+     * Collapsed/truncated preview of the latest user/assistant message, or
+     * None when the conversation has none. Loaded by the conversation-list
+     * query, never persisted.
+     */
+    public var lastMessagePreview: String?
+    /**
+     * Where this conversation's inference runs (cloud TEE / hybrid / on-device),
+     * derived from `backend_id` by `routing::route_mode::route_for_backend_id`.
+     */
+    public var route: InferenceRoute
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2647,7 +2658,16 @@ public struct ConversationSummary: Equatable, Hashable {
          * Phase 27 (CHAT-TOOL-01): whether tool use is enabled for this conversation.
          * Loaded from conversations.tools_enabled (MIGRATION_V16). Exposed to UI so the
          * toggle control can reflect the persisted state without additional queries.
-         */toolsEnabled: Bool) {
+         */toolsEnabled: Bool, 
+        /**
+         * Collapsed/truncated preview of the latest user/assistant message, or
+         * None when the conversation has none. Loaded by the conversation-list
+         * query, never persisted.
+         */lastMessagePreview: String?, 
+        /**
+         * Where this conversation's inference runs (cloud TEE / hybrid / on-device),
+         * derived from `backend_id` by `routing::route_mode::route_for_backend_id`.
+         */route: InferenceRoute) {
         self.id = id
         self.title = title
         self.modelId = modelId
@@ -2655,6 +2675,8 @@ public struct ConversationSummary: Equatable, Hashable {
         self.updatedAt = updatedAt
         self.systemPrompt = systemPrompt
         self.toolsEnabled = toolsEnabled
+        self.lastMessagePreview = lastMessagePreview
+        self.route = route
     }
 
     
@@ -2679,7 +2701,9 @@ public struct FfiConverterTypeConversationSummary: FfiConverterRustBuffer {
                 backendId: FfiConverterString.read(from: &buf), 
                 updatedAt: FfiConverterInt64.read(from: &buf), 
                 systemPrompt: FfiConverterOptionString.read(from: &buf), 
-                toolsEnabled: FfiConverterBool.read(from: &buf)
+                toolsEnabled: FfiConverterBool.read(from: &buf), 
+                lastMessagePreview: FfiConverterOptionString.read(from: &buf), 
+                route: FfiConverterTypeInferenceRoute.read(from: &buf)
         )
     }
 
@@ -2691,6 +2715,8 @@ public struct FfiConverterTypeConversationSummary: FfiConverterRustBuffer {
         FfiConverterInt64.write(value.updatedAt, into: &buf)
         FfiConverterOptionString.write(value.systemPrompt, into: &buf)
         FfiConverterBool.write(value.toolsEnabled, into: &buf)
+        FfiConverterOptionString.write(value.lastMessagePreview, into: &buf)
+        FfiConverterTypeInferenceRoute.write(value.route, into: &buf)
     }
 }
 

@@ -686,6 +686,34 @@ pub fn list_archived_conversations(
     Ok(rows)
 }
 
+/// Latest user/assistant message content per conversation, for list previews.
+///
+/// One windowed pass over the messages table (not N queries); each row is the
+/// newest message by `created_at DESC, id DESC` — same ordering as
+/// `list_messages`. System rows and whitespace-only content are skipped.
+/// Callers collapse whitespace and truncate (see `message_preview` in lib.rs).
+pub fn latest_message_contents(
+    conn: &Connection,
+) -> Result<std::collections::HashMap<String, String>, PersistenceError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT conversation_id, content FROM (
+             SELECT conversation_id, content,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY conversation_id
+                        ORDER BY created_at DESC, id DESC
+                    ) AS rn
+             FROM messages
+             WHERE role IN ('user','assistant') AND TRIM(content) != ''
+         ) WHERE rn = 1",
+    )?;
+    let map = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+    Ok(map)
+}
+
 /// Retention sweep, archive mode: archive active conversations whose
 /// `updated_at` is older than `cutoff`. Already-archived rows are left as-is
 /// (their archived_at timestamp is preserved). Returns the number archived.

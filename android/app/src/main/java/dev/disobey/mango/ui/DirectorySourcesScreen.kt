@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,8 +29,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -50,9 +50,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import dev.disobey.mango.ui.theme.MangoTheme
+import dev.disobey.mango.ui.theme.MonoFamily
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.AppManager
@@ -141,11 +141,25 @@ fun DirectorySourcesScreen(
                         .padding(24.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        "No directory sources yet. Add a folder to sync your notes.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        TintedIcon(
+                            Icons.Filled.Folder,
+                            MangoTheme.colors.tintKnowledge,
+                            size = 56.dp,
+                        )
+                        Text(
+                            "No directory sources yet",
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                        Text(
+                            "Add a folder to sync your notes.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             } else {
                 LazyColumn(
@@ -254,6 +268,7 @@ fun DirectorySourcesScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DirectorySourceRow(
     source: DirectorySourceSummary,
@@ -263,20 +278,17 @@ private fun DirectorySourceRow(
     onRemove: () -> Unit,
     onOpenFolder: () -> Unit,
 ) {
-    // Compact content padding so four buttons fit on one line on a 360dp-wide screen.
     val compactPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
 
-    Card(
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    MangoCard(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
+                TintedIcon(
                     Icons.Filled.Folder,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                    tint = MaterialTheme.colorScheme.primary,
+                    MangoTheme.colors.tintKnowledge,
+                    size = 40.dp,
                 )
                 Spacer(modifier = Modifier.size(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
@@ -306,8 +318,10 @@ private fun DirectorySourceRow(
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
-            // Use compact contentPadding so all four buttons fit on one row without wrapping.
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 OutlinedButton(
                     onClick = onSyncNow,
                     contentPadding = compactPadding,
@@ -385,7 +399,7 @@ private fun ExclusionEditorDialog(
                         .fillMaxWidth()
                         .height(200.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                     ),
                 )
                 if (invalid.isNotEmpty()) {
@@ -430,6 +444,3 @@ private fun String.looksLikeValidGlob(): Boolean {
  */
 private fun formatFileCount(n: Long): String =
     java.text.NumberFormat.getIntegerInstance().format(n)
-
-@Suppress("unused") // referenced via symbol name by Color import deduplication
-private val Unused: Color = Color.Transparent

@@ -41,7 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
+import dev.disobey.mango.ui.theme.MonoFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AppAction
@@ -146,7 +146,7 @@ fun SettingsToolDetailScreen(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     tool.name,
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Medium),
+                    style = MaterialTheme.typography.titleLarge.copy(fontFamily = MonoFamily, fontWeight = FontWeight.Medium),
                 )
                 if (tool.usageCount > 0u && tool.lastUsedLabel != null) {
                     // Locked: "Used 1× — last used {relative}" / "Used {N}× — last used {relative}"
@@ -238,7 +238,7 @@ fun SettingsToolDetailScreen(
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                         ),
                     ) {
                         SelectionContainer {
@@ -251,7 +251,7 @@ fun SettingsToolDetailScreen(
                                 Text(
                                     tool.schemaPretty,
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        fontFamily = FontFamily.Monospace,
+                                        fontFamily = MonoFamily,
                                     ),
                                 )
                             }
@@ -281,10 +281,8 @@ private fun Section(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
+            SectionLabel(
                 label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
                     .weight(1f)
                     .padding(vertical = 4.dp),
@@ -314,7 +312,7 @@ private fun CopyRow(
         }
         Text(
             text,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFamily),
             modifier = Modifier
                 .weight(1f)
                 .clickable(onClick = onClick)

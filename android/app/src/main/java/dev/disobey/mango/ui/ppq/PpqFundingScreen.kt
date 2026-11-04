@@ -1,8 +1,6 @@
 package dev.disobey.mango.ui.ppq
 
-import android.app.Activity
 import android.content.ActivityNotFoundException
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -22,7 +20,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -36,7 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
+import dev.disobey.mango.ui.MangoCard
 import dev.disobey.mango.rust.PpqAccountSummary
 import dev.disobey.mango.rust.PpqFundingPhase
 
@@ -73,13 +70,16 @@ fun PpqFundingScreen(
         }
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+    MangoCard(
+        modifier = modifier.fillMaxWidth(),
     ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
         // Balance line
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -93,7 +93,7 @@ fun PpqFundingScreen(
             )
             Text(
                 text = formatPpqBalance(summary.balanceDisplay),
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.headlineSmall,
             )
         }
 
@@ -213,6 +213,7 @@ fun PpqFundingScreen(
                     Text("Continue")
                 }
             }
+        }
         }
     }
 }

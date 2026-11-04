@@ -1,18 +1,20 @@
 package dev.disobey.mango.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import dev.disobey.mango.ui.theme.*
+import androidx.compose.ui.graphics.vector.ImageVector
+import dev.disobey.mango.ui.theme.MangoTheme
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -22,25 +24,31 @@ import dev.disobey.mango.rust.AgentStepSummary
 import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 
-// Status color helper
-private fun statusColor(status: String, isDark: Boolean): Color = when (status) {
-    "running"              -> if (isDark) DarkAgentRunning else LightAgentRunning
-    "paused"               -> if (isDark) DarkAgentPaused else LightAgentPaused
-    "completed"            -> if (isDark) DarkAgentCompleted else LightAgentCompleted
-    "failed", "cancelled"  -> if (isDark) DarkAgentFailed else LightAgentFailed
-    else                   -> Color.Gray
+private fun statusTone(status: String): PillTone = when (status) {
+    "running", "completed" -> PillTone.OK
+    "paused"               -> PillTone.WARN
+    "failed", "cancelled"  -> PillTone.BAD
+    else                   -> PillTone.NEUTRAL
 }
+
+private fun stepStatusTone(status: String): PillTone = when (status) {
+    "completed" -> PillTone.OK
+    "failed"    -> PillTone.BAD
+    else        -> PillTone.WARN
+}
+
+private fun statusIcon(status: String): ImageVector? = when (status) {
+    "running"   -> Icons.Filled.PlayArrow
+    "paused"    -> Icons.Filled.Pause
+    "completed" -> Icons.Filled.CheckCircle
+    "failed", "cancelled" -> Icons.Filled.Cancel
+    else        -> null
+}
+
 
 private fun formatElapsed(secs: Long): String {
     return if (secs < 60) "${secs}s"
     else "${secs / 60}m ${secs % 60}s"
-}
-
-private fun actionTypeLabel(actionType: String): String = when (actionType) {
-    "tool_call" -> "[Tool]"
-    "final_answer" -> "[Answer]"
-    "error" -> "[Error]"
-    else -> "[Step]"
 }
 
 /**
@@ -54,10 +62,8 @@ fun AgentScreen(
     onDispatch: (AppAction) -> Unit,
     onBack: () -> Unit
 ) {
-    val isDark = isSystemInDarkTheme()
-
     if (appState.currentAgentSessionId != null) {
-        AgentDetailSection(appState = appState, onDispatch = onDispatch, onBack = onBack, isDark = isDark)
+        AgentDetailSection(appState = appState, onDispatch = onDispatch, onBack = onBack)
         return
     }
 
@@ -145,7 +151,6 @@ fun AgentScreen(
                     items(appState.agentSessions) { session ->
                         AgentSessionItem(
                             session = session,
-                            isDark = isDark,
                             onClick = {
                                 onDispatch(AppAction.LoadAgentSession(sessionId = session.id))
                             }
@@ -160,12 +165,9 @@ fun AgentScreen(
 @Composable
 private fun AgentSessionItem(
     session: AgentSessionSummary,
-    isDark: Boolean,
     onClick: () -> Unit
 ) {
-    val color = statusColor(session.status, isDark)
-
-    Card(
+    MangoCard(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -184,18 +186,12 @@ private fun AgentSessionItem(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Status chip
-                Surface(
-                    color = color.copy(alpha = 0.15f),
-                    shape = MaterialTheme.shapes.small
-                ) {
-                    Text(
-                        text = session.status,
-                        color = color,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
+                // Status chip: icon + label, never color alone.
+                StatusPill(
+                    text = session.status,
+                    tone = statusTone(session.status),
+                    icon = statusIcon(session.status),
+                )
                 Text(
                     text = "${session.stepCount} steps",
                     style = MaterialTheme.typography.bodySmall,
@@ -220,11 +216,9 @@ fun AgentDetailSection(
     appState: AppState,
     onDispatch: (AppAction) -> Unit,
     onBack: () -> Unit,
-    isDark: Boolean = isSystemInDarkTheme()
 ) {
     val sessionId = appState.currentAgentSessionId ?: return
     val session = appState.agentSessions.find { it.id == sessionId }
-    val statusCol = statusColor(session?.status ?: "", isDark)
 
     Scaffold(
         topBar = {
@@ -238,17 +232,12 @@ fun AgentDetailSection(
                 },
                 actions = {
                     if (session != null) {
-                        Surface(
-                            color = statusCol.copy(alpha = 0.15f),
-                            shape = MaterialTheme.shapes.small
-                        ) {
-                            Text(
-                                text = session.status,
-                                color = statusCol,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
+                        StatusPill(
+                            text = session.status,
+                            tone = statusTone(session.status),
+                            icon = statusIcon(session.status),
+                            modifier = Modifier.padding(end = 8.dp),
+                        )
                     }
                 }
             )
@@ -275,7 +264,7 @@ fun AgentDetailSection(
                                 onDispatch(AppAction.PauseAgentSession(sessionId = sessionId))
                             }
                         ) {
-                            Text("Pause", color = if (isDark) DarkAgentPaused else LightAgentPaused)
+                            Text("Pause", color = MangoTheme.colors.warn)
                         }
                     }
                     if (session.status == "paused") {
@@ -284,7 +273,7 @@ fun AgentDetailSection(
                                 onDispatch(AppAction.ResumeAgentSession(sessionId = sessionId))
                             }
                         ) {
-                            Text("Resume", color = if (isDark) DarkAgentRunning else LightAgentRunning)
+                            Text("Resume", color = MangoTheme.colors.ok)
                         }
                     }
                     OutlinedButton(
@@ -292,7 +281,7 @@ fun AgentDetailSection(
                             onDispatch(AppAction.CancelAgentSession(sessionId = sessionId))
                         }
                     ) {
-                        Text("Cancel", color = if (isDark) DarkAgentFailed else LightAgentFailed)
+                            Text("Cancel", color = MaterialTheme.colorScheme.error)
                     }
                 }
                 HorizontalDivider()
@@ -338,8 +327,7 @@ fun AgentDetailSection(
 
 @Composable
 private fun AgentStepItem(step: AgentStepSummary) {
-    val isDark = isSystemInDarkTheme()
-    Card(modifier = Modifier.fillMaxWidth()) {
+    MangoCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -361,7 +349,7 @@ private fun AgentStepItem(step: AgentStepSummary) {
                         if (step.toolOrigin == "contextvm") {
                             Spacer(Modifier.width(6.dp))
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
+                                shape = MaterialTheme.shapes.extraSmall,
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                             ) {
                                 Text(
@@ -373,8 +361,11 @@ private fun AgentStepItem(step: AgentStepSummary) {
                             }
                         }
                         Spacer(modifier = Modifier.weight(1f))
-                        Text(step.status, style = MaterialTheme.typography.labelSmall,
-                            color = when(step.status) { "completed" -> Color.Green; "failed" -> Color.Red; else -> Color(0xFFFFA500) })
+                        StatusPill(
+                            text = step.status,
+                            tone = stepStatusTone(step.status),
+                            icon = statusIcon(step.status),
+                        )
                     }
                     step.toolInput?.let {
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)

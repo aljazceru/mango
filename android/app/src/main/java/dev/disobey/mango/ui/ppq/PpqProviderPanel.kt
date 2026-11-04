@@ -10,19 +10,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Warning
+import dev.disobey.mango.ui.PillTone
+import dev.disobey.mango.ui.StatusPill
 import dev.disobey.mango.rust.PpqAccountMode
 import dev.disobey.mango.rust.PpqAccountSummary
 
@@ -58,15 +59,17 @@ fun PpqProviderPanel(
             fontWeight = FontWeight.SemiBold,
         )
 
-        // Balance + last refresh
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        // Balance + last refresh (stacked: the Fraunces headline must not collide
+        // with the timestamp at large font scales)
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                text = "PPQ balance (USD): ${formatPpqBalance(summary.balanceDisplay)}",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "PPQ balance (USD)",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = formatPpqBalance(summary.balanceDisplay),
+                style = MaterialTheme.typography.headlineSmall,
             )
             summary.balanceUpdatedAt?.let { at ->
                 Text(
@@ -78,12 +81,11 @@ fun PpqProviderPanel(
         }
 
         // Backup status
-        Text(
-            text = if (summary.backupConfirmed) "Backup: Saved" else "Backup: Needs backup",
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (summary.backupConfirmed) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.error,
-        )
+        if (summary.backupConfirmed) {
+            StatusPill(text = "Backup: Saved", tone = PillTone.OK, icon = Icons.Filled.CheckCircle)
+        } else {
+            StatusPill(text = "Backup: Needs backup", tone = PillTone.WARN, icon = Icons.Filled.Warning)
+        }
 
         // Pending invoice line
         summary.funding?.let { funding ->

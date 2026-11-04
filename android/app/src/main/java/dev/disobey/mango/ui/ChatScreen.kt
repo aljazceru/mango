@@ -11,18 +11,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import java.io.File
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -30,7 +34,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.outlined.Balance
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
@@ -62,9 +69,13 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -80,11 +91,13 @@ import dev.disobey.mango.rust.BackendRole
 import dev.disobey.mango.rust.DiscoverableTool
 import dev.disobey.mango.rust.HybridProfile
 import dev.disobey.mango.rust.Screen
-import dev.disobey.mango.rust.AttestationStatusEntry
 import dev.disobey.mango.rust.BusyState
 import dev.disobey.mango.rust.DocumentSummary
 import dev.disobey.mango.rust.HealthStatus
 import dev.disobey.mango.rust.UiMessage
+import dev.disobey.mango.ui.theme.MangoTheme
+import dev.disobey.mango.ui.theme.MonoFamily
+import dev.disobey.mango.ui.theme.TintPair
 import dev.disobey.mango.rust.modelSupportsVision
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -357,17 +370,23 @@ fun ChatScreen(
 
     Scaffold(
         topBar = {
-            ChatTopBar(
-                state = state,
-                onBack = onBack,
-                onSelectModel = onSelectModel,
-                onShowSystemPrompt = { showSystemPromptSheet = true },
-                onShowDocAttach = { showDocAttachSheet = true },
-                onShareConversation = onShareConversation,
-                onDispatchAction = onDispatchAction,
-                forceRemoteNext = forceRemoteNext,
-                onToggleForceRemoteNext = { forceRemoteNext = !forceRemoteNext },
-            )
+            Column {
+                ChatTopBar(
+                    state = state,
+                    onBack = onBack,
+                    onShowSystemPrompt = { showSystemPromptSheet = true },
+                    onShowDocAttach = { showDocAttachSheet = true },
+                    onShareConversation = onShareConversation,
+                    onDispatchAction = onDispatchAction,
+                    forceRemoteNext = forceRemoteNext,
+                    onToggleForceRemoteNext = { forceRemoteNext = !forceRemoteNext },
+                )
+                ChatStatusChips(
+                    state = state,
+                    onSelectModel = onSelectModel,
+                    onDispatchAction = onDispatchAction,
+                )
+            }
         },
         bottomBar = {
             ComposeBar(
@@ -384,30 +403,23 @@ fun ChatScreen(
                 onClearAttachment = onClearAttachment,
                 routingLabel = routeChip?.label,
                 routingDetail = routeChip?.detail,
+                routingKind = if (activeHybridProfile != null) RouteKind.HYBRID else null,
                 prefillText = composerPrefill,
                 onPrefillConsumed = { composerPrefill = null },
             )
         },
     ) { innerPadding ->
-        // D-17: welcome placeholder when the current chat is empty and idle.
+        // D-17: empty-chat hero — mark, route card and suggestion grid.
         if (isEmptyIdleChat) {
-            Column(
+            EmptyChatHero(
+                state = state,
+                activeHybridProfile = activeHybridProfile,
+                composerPrefill = { prompt -> composerPrefill = prompt },
+                onDispatchAction = onDispatchAction,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    text = "You're all set! Send your first message to start a confidential conversation.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 32.dp)
-                )
-                Spacer(Modifier.height(16.dp))
-                StarterPromptList(onPrompt = { prompt -> composerPrefill = prompt })
-            }
+            )
         } else {
             Box(
                 modifier = Modifier
@@ -467,17 +479,32 @@ fun ChatScreen(
                     }
 
                     // Messages newest-first (reversed) so the most recent sits just above the dynamic items.
-                    items(state.messages.reversed(), key = { it.id }) { message ->
-                        MessageBubble(
-                            message = message,
-                            isLastAssistant = isLastAssistantMessage(state.messages, message),
-                            isStreaming = false,
-                            onCopy = { onCopy(message.content) },
-                            onRetry = onRetry,
-                            onEdit = { onEdit(message.id, message.content) },
-                            onReadEncryptedImage = onReadEncryptedImage,
-                            fontScale = fontScale,
-                        )
+                    // Provenance dividers: one centered line above an assistant
+                    // message whenever the route changes.
+                    val dividerLabels = state.messages.mapIndexed { i, _ ->
+                        routeDividerLabel(state.messages, i)
+                    }
+                    itemsIndexed(state.messages.reversed(), key = { _, m -> m.id }) { revIndex, message ->
+                        val index = state.messages.size - 1 - revIndex
+                        Column {
+                            dividerLabels[index]?.let { label ->
+                                RouteDivider(
+                                    label = label,
+                                    icon = if (message.routeDecision.equals("local", ignoreCase = true))
+                                        RouteKind.LOCAL.icon else RouteKind.TEE.icon,
+                                )
+                            }
+                            MessageBubble(
+                                message = message,
+                                isLastAssistant = isLastAssistantMessage(state.messages, message),
+                                onCopy = { onCopy(message.content) },
+                                onRetry = onRetry,
+                                onEdit = { onEdit(message.id, message.content) },
+                                onReadEncryptedImage = onReadEncryptedImage,
+                                fontScale = fontScale,
+                                showAssistantHeader = isFirstOfRun(state.messages, index),
+                            )
+                        }
                     }
 
                     // Compaction badge (topmost item in the reversed list)
@@ -606,7 +633,6 @@ fun ChatScreen(
 private fun ChatTopBar(
     state: AppState,
     onBack: () -> Unit,
-    onSelectModel: (String) -> Unit,
     onShowSystemPrompt: () -> Unit,
     onShowDocAttach: () -> Unit = {},
     onShareConversation: (String) -> Unit = {},
@@ -617,26 +643,10 @@ private fun ChatTopBar(
     val currentConversation = state.currentConversationId?.let { id ->
         state.conversations.firstOrNull { it.id == id }
     }
-    val selectedModelId = currentConversation?.modelId
     val activeHybridProfile = currentConversation?.backendId
         ?.takeIf { it.startsWith("hybrid:") }
         ?.removePrefix("hybrid:")
         ?.let { profileId -> state.hybridProfiles.firstOrNull { it.id == profileId } }
-    // Aggregate models from ALL healthy (or degraded) *configured* providers
-    // (API key stored, or local on-device backends that need none) so the picker
-    // shows every available model across providers, not just the active one.
-    val availableModelEntries: List<Pair<String, String>> = state.backends
-        .filter {
-            it.healthStatus != HealthStatus.FAILED && it.models.isNotEmpty()
-                && (it.hasApiKey || it.id.startsWith("local-") || it.id == "qvac-local")
-        }
-        .flatMap { backend -> backend.models.map { modelId -> Pair(modelId, backend.name) } }
-    var showModelMenu by remember { mutableStateOf(false) }
-    val attestationBackendId = activeHybridProfile?.remoteBackendId ?: state.activeBackendId
-    val activeAttestation = attestationBackendId?.let { backendId ->
-        state.attestationStatuses.firstOrNull { it.backendId == backendId }?.status
-    }
-    val hasLocalBackend = state.backends.any { it.id.startsWith("local-") && it.models.isNotEmpty() }
 
     var showConvMenu by remember { mutableStateOf(false) }
     var showToolsSheet by remember { mutableStateOf(false) }
@@ -653,6 +663,7 @@ private fun ChatTopBar(
                 text = currentConversation?.title ?: "New Conversation",
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = if (currentConversation != null) {
                     Modifier.clickable {
                         renameText = currentConversation.title
@@ -669,94 +680,6 @@ private fun ChatTopBar(
             }
         },
         actions = {
-            activeAttestation?.let { status ->
-                AttestationBadge(
-                    status = status,
-                    modifier = Modifier.padding(end = 4.dp),
-                )
-            }
-            // Model picker
-            Box {
-                TextButton(onClick = { showModelMenu = true }) {
-                    Text(
-                        text = activeHybridProfile?.name
-                            ?: selectedModelId?.let { shortModelName(it) }
-                            ?: "Model",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                DropdownMenu(
-                    expanded = showModelMenu,
-                    onDismissRequest = { showModelMenu = false },
-                ) {
-                    availableModelEntries.forEach { (modelId, backendName) ->
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text(
-                                        text = shortModelName(modelId),
-                                        fontWeight = if (modelId == selectedModelId)
-                                            FontWeight.Bold else FontWeight.Normal,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                    Text(
-                                        text = backendName,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            },
-                            leadingIcon = if (modelId == selectedModelId) {
-                                { Icon(Icons.Default.Check, contentDescription = "Selected") }
-                            } else null,
-                            onClick = {
-                                onSelectModel(modelId)
-                                showModelMenu = false
-                            },
-                        )
-                    }
-                    if (hasLocalBackend && state.hybridProfiles.isNotEmpty()) {
-                        HorizontalDivider()
-                        state.hybridProfiles.forEach { profile ->
-                            val selected = activeHybridProfile?.id == profile.id
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(
-                                            text = profile.name,
-                                            fontWeight = if (selected)
-                                                FontWeight.Bold else FontWeight.Normal,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                        )
-                                        Text(
-                                            text = "${shortModelName(profile.localModelId)} -> ${shortModelName(profile.remoteModelId)}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                },
-                                leadingIcon = if (selected) {
-                                    { Icon(Icons.Default.Check, contentDescription = "Selected") }
-                                } else null,
-                                onClick = {
-                                    currentConversation?.let { conversation ->
-                                        onDispatchAction(
-                                            AppAction.OverrideConversationBackend(
-                                                conversationId = conversation.id,
-                                                backendId = "hybrid:${profile.id}",
-                                            ),
-                                        )
-                                    }
-                                    onDispatchAction(
-                                        AppAction.SetActiveHybridProfile(profileId = profile.id),
-                                    )
-                                    showModelMenu = false
-                                },
-                            )
-                        }
-                    }
-                }
-            }
             // Collapsed "..." menu: Documents, Instructions, Tools
             Box {
                 IconButton(onClick = { showConvMenu = true }) {
@@ -968,6 +891,161 @@ private fun ChatTopBar(
     }
 }
 
+// MARK: - Chat Status Chips
+
+/// Chip row under the chat top bar: attestation badge + model picker. It lives
+/// below the app bar so the header can grow at large font scales instead of
+/// clipping inside the TopAppBar's fixed-height title slot.
+@Composable
+private fun ChatStatusChips(
+    state: AppState,
+    onSelectModel: (String) -> Unit,
+    onDispatchAction: (AppAction) -> Unit,
+) {
+    val currentConversation = state.currentConversationId?.let { id ->
+        state.conversations.firstOrNull { it.id == id }
+    }
+    val selectedModelId = currentConversation?.modelId
+    val activeHybridProfile = currentConversation?.backendId
+        ?.takeIf { it.startsWith("hybrid:") }
+        ?.removePrefix("hybrid:")
+        ?.let { profileId -> state.hybridProfiles.firstOrNull { it.id == profileId } }
+    // Aggregate models from ALL healthy (or degraded) *configured* providers
+    // (API key stored, or local on-device backends that need none) so the picker
+    // shows every available model across providers, not just the active one.
+    val availableModelEntries: List<Pair<String, String>> = state.backends
+        .filter {
+            it.healthStatus != HealthStatus.FAILED && it.models.isNotEmpty()
+                && (it.hasApiKey || it.id.startsWith("local-") || it.id == "qvac-local")
+        }
+        .flatMap { backend -> backend.models.map { modelId -> Pair(modelId, backend.name) } }
+    var showModelMenu by remember { mutableStateOf(false) }
+    val attestationBackendId = activeHybridProfile?.remoteBackendId ?: state.activeBackendId
+    val activeAttestation = attestationBackendId?.let { backendId ->
+        state.attestationStatuses.firstOrNull { it.backendId == backendId }?.status
+    }
+    val hasLocalBackend = state.backends.any { it.id.startsWith("local-") && it.models.isNotEmpty() }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 56.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        activeAttestation?.let { status ->
+            AttestationBadge(
+                status = status,
+                verifiedLabel = attestationBackendId
+                    ?.let { id -> state.backends.firstOrNull { it.id == id } }
+                    ?.let { attestationTeeLabel(it.teeType) },
+            )
+        }
+        // Model chip (mono + chevron) opens the model picker.
+        Box(modifier = Modifier.weight(1f, fill = false)) {
+            Surface(
+                onClick = { showModelMenu = true },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            ) {
+                Row(
+                    modifier = Modifier.padding(start = 9.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        text = activeHybridProfile?.name
+                            ?: selectedModelId?.let { shortModelName(it) }
+                            ?: "Model",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = MonoFamily,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Icon(
+                        Icons.Default.KeyboardArrowDown,
+                        contentDescription = null,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
+            }
+            DropdownMenu(
+                expanded = showModelMenu,
+                onDismissRequest = { showModelMenu = false },
+            ) {
+                availableModelEntries.forEach { (modelId, backendName) ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(
+                                    text = shortModelName(modelId),
+                                    fontWeight = if (modelId == selectedModelId)
+                                        FontWeight.Bold else FontWeight.Normal,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    text = backendName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        leadingIcon = if (modelId == selectedModelId) {
+                            { Icon(Icons.Default.Check, contentDescription = "Selected") }
+                        } else null,
+                        onClick = {
+                            onSelectModel(modelId)
+                            showModelMenu = false
+                        },
+                    )
+                }
+                if (hasLocalBackend && state.hybridProfiles.isNotEmpty()) {
+                    HorizontalDivider()
+                    state.hybridProfiles.forEach { profile ->
+                        val selected = activeHybridProfile?.id == profile.id
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(
+                                        text = profile.name,
+                                        fontWeight = if (selected)
+                                            FontWeight.Bold else FontWeight.Normal,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Text(
+                                        text = "${shortModelName(profile.localModelId)} -> ${shortModelName(profile.remoteModelId)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            },
+                            leadingIcon = if (selected) {
+                                { Icon(Icons.Default.Check, contentDescription = "Selected") }
+                            } else null,
+                            onClick = {
+                                currentConversation?.let { conversation ->
+                                    onDispatchAction(
+                                        AppAction.OverrideConversationBackend(
+                                            conversationId = conversation.id,
+                                            backendId = "hybrid:${profile.id}",
+                                        ),
+                                    )
+                                }
+                                onDispatchAction(
+                                    AppAction.SetActiveHybridProfile(profileId = profile.id),
+                                )
+                                showModelMenu = false
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 // MARK: - Helper
 
 private fun isLastAssistantMessage(messages: List<UiMessage>, message: UiMessage): Boolean {
@@ -1015,6 +1093,220 @@ private fun hybridRouteChip(
         label = "Hybrid ready · local by default",
         detail = "Routing reason: local default",
     )
+}
+
+// MARK: - Empty Chat Hero
+
+/// Empty-conversation hero: brand mark + prompt, a route card describing where
+/// this chat runs, and a 2x2 grid of suggestion cards.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun EmptyChatHero(
+    state: AppState,
+    activeHybridProfile: HybridProfile?,
+    composerPrefill: (String) -> Unit,
+    onDispatchAction: (AppAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val currentConversation = state.currentConversationId?.let { id ->
+        state.conversations.firstOrNull { it.id == id }
+    }
+    val backendId = currentConversation?.backendId ?: state.activeBackendId
+    val routeKind = chatRouteKind(backendId, activeHybridProfile)
+    val backendName = when {
+        activeHybridProfile != null -> activeHybridProfile.name
+        routeKind != RouteKind.TEE -> routeKind.label
+        else -> backendId
+            ?.let { id -> state.backends.firstOrNull { it.id == id }?.name }
+            ?: RouteKind.TEE.label
+    }
+    val modelId = activeHybridProfile?.remoteModelId
+        ?: currentConversation?.modelId
+        ?: state.defaultModelId
+    val attestationBackendId = activeHybridProfile?.remoteBackendId ?: backendId
+    val attestation = attestationBackendId?.let { id ->
+        state.attestationStatuses.firstOrNull { it.backendId == id }?.status
+    }
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(28.dp))
+        MangoMark(64.dp)
+        Spacer(Modifier.height(14.dp))
+        Text(
+            text = "What's on your mind?",
+            style = MaterialTheme.typography.headlineMedium,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(18.dp))
+
+        // Route card: where this chat runs + trust status.
+        MangoCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+        ) {
+            FlowRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                RouteAvatar(routeKind)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "This chat runs in",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = backendName,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    modelId?.let { id ->
+                        Text(
+                            text = shortModelName(id),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = MonoFamily,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                attestation?.let { status ->
+                    StatusPill(
+                        text = badgeLabel(status),
+                        tone = attestationPillTone(status),
+                        icon = badgeIcon(status),
+                    )
+                }
+            }
+        }
+
+        // Suggestion grid (2x2).
+        val docFoldersLabel = "Ask my document folders"
+        val suggestions: List<SuggestionSpec> = starterPrompts().map { text ->
+            SuggestionSpec(
+                text = text,
+                icon = when {
+                    text.startsWith("Summarize") -> Icons.Outlined.Description
+                    text.startsWith("Draft") -> Icons.Outlined.Edit
+                    else -> Icons.Outlined.Balance
+                },
+                tint = when {
+                    text.startsWith("Summarize") -> MangoTheme.colors.tee
+                    text.startsWith("Draft") -> MangoTheme.colors.local
+                    else -> MangoTheme.colors.hybrid
+                },
+                onClick = { composerPrefill(text) },
+            )
+        } + SuggestionSpec(
+            text = docFoldersLabel,
+            icon = Icons.Outlined.FolderOpen,
+            tint = MangoTheme.colors.tintPrivacy,
+            onClick = {
+                if (state.directorySources.isEmpty()) {
+                    onDispatchAction(AppAction.PushScreen(screen = Screen.DirectorySources))
+                } else {
+                    // Directory sources feed retrieval automatically; prefill a
+                    // prompt that exercises it.
+                    composerPrefill("Summarize what's in my document folders")
+                }
+            },
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            suggestions.chunked(2).forEach { rowItems ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    rowItems.forEach { spec ->
+                        SuggestionCard(spec, modifier = Modifier.weight(1f))
+                    }
+                    if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+private data class SuggestionSpec(
+    val text: String,
+    val icon: ImageVector,
+    val tint: TintPair,
+    val onClick: () -> Unit,
+)
+
+@Composable
+private fun SuggestionCard(spec: SuggestionSpec, modifier: Modifier = Modifier) {
+    MangoCard(modifier = modifier, onClick = spec.onClick) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            TintedIcon(icon = spec.icon, tint = spec.tint, size = 30.dp)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = spec.text,
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+    }
+}
+
+/// Where this chat's inference runs, derived from the conversation's backend.
+internal fun chatRouteKind(backendId: String?, profile: HybridProfile?): RouteKind = when {
+    profile != null || backendId?.startsWith("hybrid:") == true -> RouteKind.HYBRID
+    backendId?.startsWith("local-") == true || backendId == "qvac-local" -> RouteKind.LOCAL
+    else -> RouteKind.TEE
+}
+
+/// True when this message starts a consecutive run of assistant messages
+/// (the "Mango" label header goes above the first of a run).
+internal fun isFirstOfRun(messages: List<UiMessage>, index: Int): Boolean {
+    val message = messages.getOrNull(index) ?: return false
+    if (message.role != "assistant") return false
+    return messages.getOrNull(index - 1)?.role != "assistant"
+}
+
+/// Centered provenance divider rendered when the route changes mid-thread.
+@Composable
+private fun RouteDivider(label: String, icon: ImageVector) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        HorizontalDivider(modifier = Modifier.width(16.dp))
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        HorizontalDivider(modifier = Modifier.width(16.dp))
+    }
 }
 
 // MARK: - Document Attachment Sheet

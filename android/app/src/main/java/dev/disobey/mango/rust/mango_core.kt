@@ -3853,6 +3853,19 @@ data class ConversationSummary (
      * toggle control can reflect the persisted state without additional queries.
      */
     var `toolsEnabled`: kotlin.Boolean
+    , 
+    /**
+     * Collapsed/truncated preview of the latest user/assistant message, or
+     * None when the conversation has none. Loaded by the conversation-list
+     * query, never persisted.
+     */
+    var `lastMessagePreview`: kotlin.String?
+    , 
+    /**
+     * Where this conversation's inference runs (cloud TEE / hybrid / on-device),
+     * derived from `backend_id` by `routing::route_mode::route_for_backend_id`.
+     */
+    var `route`: InferenceRoute
     
 ){
     
@@ -3876,6 +3889,8 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
             FfiConverterLong.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterTypeInferenceRoute.read(buf),
         )
     }
 
@@ -3886,7 +3901,9 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
             FfiConverterString.allocationSize(value.`backendId`) +
             FfiConverterLong.allocationSize(value.`updatedAt`) +
             FfiConverterOptionalString.allocationSize(value.`systemPrompt`) +
-            FfiConverterBoolean.allocationSize(value.`toolsEnabled`)
+            FfiConverterBoolean.allocationSize(value.`toolsEnabled`) +
+            FfiConverterOptionalString.allocationSize(value.`lastMessagePreview`) +
+            FfiConverterTypeInferenceRoute.allocationSize(value.`route`)
     )
 
     override fun write(value: ConversationSummary, buf: ByteBuffer) {
@@ -3897,6 +3914,8 @@ public object FfiConverterTypeConversationSummary: FfiConverterRustBuffer<Conver
             FfiConverterLong.write(value.`updatedAt`, buf)
             FfiConverterOptionalString.write(value.`systemPrompt`, buf)
             FfiConverterBoolean.write(value.`toolsEnabled`, buf)
+            FfiConverterOptionalString.write(value.`lastMessagePreview`, buf)
+            FfiConverterTypeInferenceRoute.write(value.`route`, buf)
     }
 }
 

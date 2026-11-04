@@ -1,7 +1,6 @@
 package dev.disobey.mango.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -13,11 +12,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -101,9 +101,11 @@ fun OnboardingScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .safeDrawingPadding()
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp)
-                .padding(top = 48.dp, bottom = 32.dp),
+                .padding(vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Progress dots
@@ -171,6 +173,8 @@ private fun WelcomeStep(onDispatch: (AppAction) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        MangoMark(96.dp)
+
         Text(
             text = "Mango",
             style = MaterialTheme.typography.headlineLarge,
@@ -363,12 +367,12 @@ private fun BackendSetupStep(
                         .background(
                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
                                     else MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(8.dp),
+                            shape = MaterialTheme.shapes.extraSmall,
                         )
                         .border(
                             width = if (isSelected) 1.5.dp else 0.dp,
                             color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                            shape = RoundedCornerShape(8.dp),
+                            shape = MaterialTheme.shapes.extraSmall,
                         )
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -629,7 +633,7 @@ private fun AttestationResultArea(
     selectedPresetId: String,
     onDispatch: (AppAction) -> Unit,
 ) {
-    val isDark = isSystemInDarkTheme()
+
     when (result) {
         is AttestationStatus.Verified -> {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -641,14 +645,14 @@ private fun AttestationResultArea(
                     Icon(
                         imageVector = Icons.Filled.CheckCircle,
                         contentDescription = "Verified",
-                        tint = if (isDark) DarkOnboardingSuccess else LightOnboardingSuccess,
+                        tint = MangoTheme.colors.ok,
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
                         text = "This app verified recent ${teeLabel ?: "TEE"} evidence for your backend.",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
-                        color = if (isDark) DarkOnboardingSuccess else LightOnboardingSuccess
+                        color = MangoTheme.colors.ok
                     )
                 }
 
@@ -676,7 +680,7 @@ private fun AttestationResultArea(
                             .fillMaxWidth()
                             .background(
                                 color = MaterialTheme.colorScheme.surfaceVariant,
-                                shape = RoundedCornerShape(8.dp)
+                                shape = MaterialTheme.shapes.extraSmall
                             )
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -777,17 +781,11 @@ private fun AttestationResultArea(
 
 @Composable
 private fun ReadyToChatStep(onDispatch: (AppAction) -> Unit) {
-    val isDark = isSystemInDarkTheme()
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Icon(
-            imageVector = Icons.Filled.CheckCircle,
-            contentDescription = "Ready",
-            tint = if (isDark) DarkOnboardingSuccess else LightOnboardingSuccess,
-            modifier = Modifier.size(64.dp)
-        )
+        MangoMark(96.dp)
 
         Text(
             text = "You're ready!",

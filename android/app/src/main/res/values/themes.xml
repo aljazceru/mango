@@ -1,3 +1,6 @@
 <resources>
-    <style name="Theme.App" parent="Theme.AppCompat.Light.NoActionBar" />
+    <style name="Theme.App" parent="Theme.AppCompat.Light.NoActionBar">
+        <!-- Ripe background: no white flash before Compose draws. -->
+        <item name="android:windowBackground">#FFF7EC</item>
+    </style>
 </resources>

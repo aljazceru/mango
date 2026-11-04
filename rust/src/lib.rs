@@ -82,6 +82,13 @@ pub struct ConversationSummary {
     /// Loaded from conversations.tools_enabled (MIGRATION_V16). Exposed to UI so the
     /// toggle control can reflect the persisted state without additional queries.
     pub tools_enabled: bool,
+    /// Collapsed/truncated preview of the latest user/assistant message, or
+    /// None when the conversation has none. Loaded by the conversation-list
+    /// query, never persisted.
+    pub last_message_preview: Option<String>,
+    /// Where this conversation's inference runs (cloud TEE / hybrid / on-device),
+    /// derived from `backend_id` by `routing::route_mode::route_for_backend_id`.
+    pub route: routing::route_mode::InferenceRoute,
 }
 
 /// Lightweight agent session summary for the UI agent session list.
@@ -4348,37 +4355,81 @@ fn clamp_message_content(content: String) -> String {
     out
 }
 
+/// Max chars kept for `ConversationSummary.last_message_preview`.
+const MAX_PREVIEW_CHARS: usize = 140;
+
+/// Collapse a raw message body into a one-line list preview: whitespace runs
+/// become single spaces, trimmed, truncated on a char boundary with "…".
+/// None for empty/whitespace-only input.
+fn message_preview(content: Option<&str>) -> Option<String> {
+    let collapsed: String = content?.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    if collapsed.chars().count() <= MAX_PREVIEW_CHARS {
+        return Some(collapsed);
+    }
+    let mut out: String = collapsed.chars().take(MAX_PREVIEW_CHARS).collect();
+    out.push('…');
+    Some(out)
+}
+
+/// Build a ConversationSummary from a row plus the preview map produced by
+/// `latest_message_contents`. Route is derived from backend_id in one place
+/// (hybrid: prefix → Hybrid, local- backend → OnDevice, else Cloud).
+fn conversation_summary(
+    row: &persistence::queries::ConversationRow,
+    previews: &HashMap<String, String>,
+) -> ConversationSummary {
+    ConversationSummary {
+        id: row.id.clone(),
+        title: row.title.clone(),
+        model_id: row.model_id.clone(),
+        backend_id: row.backend_id.clone(),
+        updated_at: row.updated_at,
+        system_prompt: row.system_prompt.clone(),
+        tools_enabled: row.tools_enabled,
+        last_message_preview: message_preview(previews.get(&row.id).map(String::as_str)),
+        route: routing::route_mode::route_for_backend_id(&row.backend_id),
+    }
+}
+
+/// Same as conversation_summary for the lighter archived-row type.
+fn archived_summary(
+    row: &persistence::queries::ArchivedConversationRow,
+    previews: &HashMap<String, String>,
+) -> ConversationSummary {
+    ConversationSummary {
+        id: row.id.clone(),
+        title: row.title.clone(),
+        model_id: row.model_id.clone(),
+        backend_id: row.backend_id.clone(),
+        updated_at: row.updated_at,
+        system_prompt: row.system_prompt.clone(),
+        tools_enabled: row.tools_enabled,
+        last_message_preview: message_preview(previews.get(&row.id).map(String::as_str)),
+        route: routing::route_mode::route_for_backend_id(&row.backend_id),
+    }
+}
+
 /// Refresh the conversations list in AppState from SQLite.
 fn refresh_conversations(actor_state: &mut ActorState) {
     let Some(db) = actor_state.db.as_ref() else {
         log::debug!("[state] refresh_conversations skipped while DB is locked");
         return;
     };
+    // One extra query for all previews; every message-mutation path funnels
+    // through here, so previews stay live on send/stream/edit/delete.
+    let previews = persistence::queries::latest_message_contents(db.conn()).unwrap_or_default();
     let rows = persistence::queries::list_active_conversations(db.conn()).unwrap_or_default();
     actor_state.app_state.conversations = rows
         .iter()
-        .map(|row| ConversationSummary {
-            id: row.id.clone(),
-            title: row.title.clone(),
-            model_id: row.model_id.clone(),
-            backend_id: row.backend_id.clone(),
-            updated_at: row.updated_at,
-            system_prompt: row.system_prompt.clone(),
-            tools_enabled: row.tools_enabled,
-        })
+        .map(|row| conversation_summary(row, &previews))
         .collect();
     let archived = persistence::queries::list_archived_conversations(db.conn()).unwrap_or_default();
     actor_state.app_state.archived_conversations = archived
         .iter()
-        .map(|row| ConversationSummary {
-            id: row.id.clone(),
-            title: row.title.clone(),
-            model_id: row.model_id.clone(),
-            backend_id: row.backend_id.clone(),
-            updated_at: row.updated_at,
-            system_prompt: row.system_prompt.clone(),
-            tools_enabled: row.tools_enabled,
-        })
+        .map(|row| archived_summary(row, &previews))
         .collect();
 }
 
@@ -9544,32 +9595,18 @@ fn load_post_unlock(
     // append the freshly created first conversation).
     let conversation_rows =
         persistence::queries::list_active_conversations(db.conn()).unwrap_or_default();
+    let conversation_previews =
+        persistence::queries::latest_message_contents(db.conn()).unwrap_or_default();
     let mut conversations: Vec<ConversationSummary> = conversation_rows
         .iter()
-        .map(|row| ConversationSummary {
-            id: row.id.clone(),
-            title: row.title.clone(),
-            model_id: row.model_id.clone(),
-            backend_id: row.backend_id.clone(),
-            updated_at: row.updated_at,
-            system_prompt: row.system_prompt.clone(),
-            tools_enabled: row.tools_enabled,
-        })
+        .map(|row| conversation_summary(row, &conversation_previews))
         .collect();
     // Archived conversations for the Settings archived section (retention).
     let archived_conversations: Vec<ConversationSummary> =
         persistence::queries::list_archived_conversations(db.conn())
             .unwrap_or_default()
             .iter()
-            .map(|row| ConversationSummary {
-                id: row.id.clone(),
-                title: row.title.clone(),
-                model_id: row.model_id.clone(),
-                backend_id: row.backend_id.clone(),
-                updated_at: row.updated_at,
-                system_prompt: row.system_prompt.clone(),
-                tools_enabled: row.tools_enabled,
-            })
+            .map(|row| archived_summary(row, &conversation_previews))
             .collect();
     // Load agent sessions only when the product surface is enabled. Existing
     // rows remain in SQLite, but release builds do not surface them to users.
@@ -10096,15 +10133,10 @@ fn load_post_unlock(
                             })?;
                         if let Some(row) = rows.into_iter().find(|r| r.id == conv_id) {
                             if !conversations.iter().any(|c| c.id == conv_id) {
-                                conversations.push(ConversationSummary {
-                                    id: row.id,
-                                    title: row.title,
-                                    model_id: row.model_id,
-                                    backend_id: row.backend_id,
-                                    updated_at: row.updated_at,
-                                    system_prompt: row.system_prompt,
-                                    tools_enabled: row.tools_enabled,
-                                });
+                                // Fresh first-run conversation has no messages yet;
+                                // reuse the same row->summary path for consistency.
+                                conversations
+                                    .push(conversation_summary(&row, &conversation_previews));
                             }
                         }
                         Ok(Screen::Chat {
@@ -19066,6 +19098,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Cloud,
             });
         let action = AppAction::AttachImage {
             filename: "a.png".to_string(),
@@ -19114,6 +19148,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Cloud,
             });
 
         let action = AppAction::AttachImage {
@@ -19223,6 +19259,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Cloud,
             });
         // The send-time gate runs before prepare_image_for_api, so any file works.
         let tmp = std::env::temp_dir().join("send-gate-probe.jpg");
@@ -19284,6 +19322,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Cloud,
             });
 
         // Write a tiny tmp file so metadata() succeeds inside the handler.
@@ -19325,6 +19365,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Hybrid,
             });
         actor_state.app_state.hybrid_profiles.push(HybridProfile {
             id: "default_hybrid".to_string(),
@@ -19377,6 +19419,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Hybrid,
             });
         actor_state.app_state.hybrid_profiles.push(HybridProfile {
             id: "default_hybrid".to_string(),
@@ -19430,6 +19474,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Hybrid,
             });
 
         assert_eq!(model_id_for_stream_retry(&actor_state), "qwen3-vl-30b");
@@ -20243,6 +20289,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Hybrid,
             });
         persistence::queries::insert_conversation(
             actor_state.db.as_ref().unwrap().conn(),
@@ -20366,6 +20414,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Cloud,
             });
         persistence::queries::insert_conversation(
             actor_state.db.as_ref().unwrap().conn(),
@@ -20454,6 +20504,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Hybrid,
             });
         persistence::queries::insert_conversation(
             actor_state.db.as_ref().unwrap().conn(),
@@ -20521,6 +20573,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::OnDevice,
             });
         persistence::queries::insert_conversation(
             actor_state.db.as_ref().unwrap().conn(),
@@ -20756,6 +20810,8 @@ mod image_red_tests {
                 updated_at: 0,
                 system_prompt: None,
                 tools_enabled: false,
+                last_message_preview: None,
+                route: routing::route_mode::InferenceRoute::Cloud,
             });
 
         let conn = actor_state.db.as_ref().unwrap().conn();

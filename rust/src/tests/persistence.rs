@@ -377,6 +377,77 @@ fn test_messages_ordered_by_created_at() {
     assert_eq!(msgs[2].id, "msg3");
 }
 
+/// ConversationSummary.last_message_preview / route rules (Ripe redesign):
+/// latest user/assistant message only (system + empty skipped), whitespace
+/// collapsed, truncated on a char boundary with "…", None when absent; route
+/// derived from backend_id (hybrid: → Hybrid, local- → OnDevice, else Cloud).
+#[test]
+fn test_conversation_summary_preview_and_route() {
+    use crate::routing::route_mode::{route_for_backend_id, InferenceRoute};
+
+    fn msg(id: &str, conv: &str, role: &str, content: &str, created_at: i64) -> MessageRow {
+        MessageRow {
+            id: id.into(),
+            conversation_id: conv.into(),
+            role: role.into(),
+            content: content.into(),
+            created_at,
+            token_count: None,
+            image_path: None,
+            route_backend_id: None,
+            route_model_id: None,
+            route_decision: None,
+            route_reason: None,
+            route_provider_name: None,
+            route_tee_label: None,
+            route_tee_verified: None,
+        }
+    }
+
+    let db = Database::open(":memory:").unwrap();
+    for id in ["c1", "c2", "c3"] {
+        insert_conversation(
+            db.conn(),
+            &ConversationRow {
+                id: id.into(),
+                title: "T".into(),
+                model_id: "m".into(),
+                backend_id: "tinfoil".into(),
+                system_prompt: None,
+                created_at: 1,
+                updated_at: 1,
+                tools_enabled: false,
+            },
+        )
+        .unwrap();
+    }
+    // c1: newest rows are a system row and an empty assistant row — both must
+    // be skipped in favor of the older user message.
+    insert_message(db.conn(), &msg("a1", "c1", "user", "  hello\n world\t ", 1)).unwrap();
+    insert_message(db.conn(), &msg("a2", "c1", "assistant", "   ", 2)).unwrap();
+    insert_message(db.conn(), &msg("a3", "c1", "system", "sys", 3)).unwrap();
+    // c2: long assistant body gets truncated.
+    insert_message(db.conn(), &msg("b1", "c2", "assistant", &"x".repeat(200), 1)).unwrap();
+    // c3: no messages at all.
+
+    let previews = queries::latest_message_contents(db.conn()).unwrap();
+    assert_eq!(
+        crate::message_preview(previews.get("c1").map(String::as_str)),
+        Some("hello world".to_string()),
+        "system/empty skipped, whitespace collapsed"
+    );
+    let truncated = crate::message_preview(previews.get("c2").map(String::as_str)).unwrap();
+    assert_eq!(truncated.chars().count(), 141, "140 chars + ellipsis");
+    assert!(truncated.ends_with('…'));
+    assert_eq!(crate::message_preview(previews.get("c3").map(String::as_str)), None);
+    assert_eq!(crate::message_preview(Some("  \n\t ")), None);
+
+    assert_eq!(route_for_backend_id("hybrid:abc"), InferenceRoute::Hybrid);
+    assert_eq!(route_for_backend_id("local-qwen3"), InferenceRoute::OnDevice);
+    assert_eq!(route_for_backend_id("tinfoil"), InferenceRoute::Cloud);
+    assert_eq!(route_for_backend_id("deleted-provider"), InferenceRoute::Cloud);
+}
+
 #[test]
 fn test_message_route_metadata_round_trips() {
     let db = Database::open(":memory:").unwrap();

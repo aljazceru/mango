@@ -12,8 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -36,6 +35,9 @@ import androidx.compose.ui.unit.dp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import dev.disobey.mango.ui.MangoCard
+import dev.disobey.mango.ui.theme.MangoTheme
+import dev.disobey.mango.ui.theme.MonoFamily
 import dev.disobey.mango.rust.PpqFundingSummary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -107,12 +109,8 @@ fun PpqInvoiceCard(
     // dead invoice. Cancel/New invoice stay reachable on the screen.
     val expired = expiresAt > 0L && now >= expiresAt
 
-    Card(
+    MangoCard(
         modifier = modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        ),
     ) {
         Column(
             modifier = Modifier
@@ -127,34 +125,38 @@ fun PpqInvoiceCard(
             ) {
                 Text(
                     text = "${funding.amountSats} sats",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
                     text = if (expired) "Expired" else "Expires in ${formatExpiryCountdown(expiresAt, now)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (expired) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (expired) MangoTheme.colors.warn else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
-            qrBitmap?.let { bmp ->
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Lightning invoice QR code",
-                    modifier = Modifier
-                        .size(192.dp)
-                        .align(Alignment.CenterHorizontally),
-                )
-            } ?: Text(
-                text = "Generating QR code...",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // QR stays black-on-white even in dark theme — wallets must scan it.
+            Surface(
+                color = androidx.compose.ui.graphics.Color.White,
                 modifier = Modifier.align(Alignment.CenterHorizontally),
-            )
+            ) {
+                qrBitmap?.let { bmp ->
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "Lightning invoice QR code",
+                        modifier = Modifier
+                            .size(192.dp),
+                    )
+                } ?: Text(
+                    text = "Generating QR code...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = androidx.compose.ui.graphics.Color.Black,
+                    modifier = Modifier.padding(24.dp),
+                )
+            }
 
             Text(
                 text = bolt11,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFamily),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,

@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
@@ -23,13 +22,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -51,10 +48,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
+import dev.disobey.mango.ui.theme.MangoTheme
+import dev.disobey.mango.ui.theme.MonoFamily
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -163,28 +163,54 @@ fun TrustedProvidersScreen(
             }
 
             // ── Trusted section ──────────────────────────────────────────────
-            item { SettingsSectionLabel("Trusted") }
+            item { SectionLabel("Trusted") }
 
             if (appState.trustedProviders.isEmpty()) {
                 item {
-                    Text(
-                        text = "No trusted providers yet.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-                    )
+                    MangoCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            TintedIcon(
+                                Icons.Outlined.VerifiedUser,
+                                MangoTheme.colors.tintPrivacy,
+                                size = 48.dp,
+                            )
+                            Text(
+                                text = "No trusted providers yet.",
+                                style = MaterialTheme.typography.titleLarge,
+                            )
+                            Text(
+                                text = "Providers you trust will appear here.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             } else {
-                items(appState.trustedProviders, key = { "trusted:${it.pubkey}" }) { provider ->
-                    val resolvedName = providerDisplayName(
-                        provider.pubkey, appState.contextvmTools, provider
-                    ).ifBlank { null }
-                    TrustedProviderRow(
-                        name = resolvedName,
-                        npub = provider.npub,
-                        onTap = { detailPubkey = provider.pubkey },
-                        onRemove = { confirmRemovePubkey = provider.pubkey },
-                    )
+                item {
+                    MangoCard(modifier = Modifier.fillMaxWidth()) {
+                        appState.trustedProviders.forEachIndexed { index, provider ->
+                            if (index > 0) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(start = 66.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant,
+                                )
+                            }
+                            val resolvedName = providerDisplayName(
+                                provider.pubkey, appState.contextvmTools, provider
+                            ).ifBlank { null }
+                            TrustedProviderRow(
+                                name = resolvedName,
+                                npub = provider.npub,
+                                onTap = { detailPubkey = provider.pubkey },
+                                onRemove = { confirmRemovePubkey = provider.pubkey },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -192,7 +218,7 @@ fun TrustedProvidersScreen(
             if (allDiscoveredProviders.isNotEmpty()) {
                 item {
                     Spacer(Modifier.height(8.dp))
-                    SettingsSectionLabel("Discovered")
+                    SectionLabel("Discovered")
                     Spacer(Modifier.height(4.dp))
                     OutlinedTextField(
                         value = searchQuery,
@@ -214,24 +240,34 @@ fun TrustedProvidersScreen(
                         )
                     }
                 } else {
-                    items(filteredDiscoveredProviders, key = { "disc:${it.providerPubkey}" }) { tool ->
-                        val name = tool.providerName
-                            ?: tool.providerDisplayName
-                            ?: if (tool.npub.length > 12) "${tool.npub.take(12)}…" else tool.npub
-                        val toolCount = appState.contextvmTools.count { it.providerPubkey == tool.providerPubkey }
-                        DiscoveredProviderRow(
-                            name = name,
-                            toolCount = toolCount,
-                            onTap = { detailPubkey = tool.providerPubkey },
-                            onTrust = {
-                                onDispatch(
-                                    AppAction.AddTrustedProvider(
-                                        pubkey = tool.providerPubkey,
-                                        label = null,
+                    item {
+                        MangoCard(modifier = Modifier.fillMaxWidth()) {
+                            filteredDiscoveredProviders.forEachIndexed { index, tool ->
+                                if (index > 0) {
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(start = 66.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant,
                                     )
+                                }
+                                val name = tool.providerName
+                                    ?: tool.providerDisplayName
+                                    ?: if (tool.npub.length > 12) "${tool.npub.take(12)}…" else tool.npub
+                                val toolCount = appState.contextvmTools.count { it.providerPubkey == tool.providerPubkey }
+                                DiscoveredProviderRow(
+                                    name = name,
+                                    toolCount = toolCount,
+                                    onTap = { detailPubkey = tool.providerPubkey },
+                                    onTrust = {
+                                        onDispatch(
+                                            AppAction.AddTrustedProvider(
+                                                pubkey = tool.providerPubkey,
+                                                label = null,
+                                            )
+                                        )
+                                    },
                                 )
-                            },
-                        )
+                            }
+                        }
                     }
                 }
             }
@@ -324,7 +360,7 @@ fun TrustedProvidersScreen(
                 ) {
                     Text(
                         text = npub,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFamily),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                         maxLines = 2,
@@ -338,11 +374,7 @@ fun TrustedProvidersScreen(
                 HorizontalDivider()
 
                 // Tools list
-                Text(
-                    text = "TOOLS",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                SectionLabel("Tools")
                 if (providerTools.isEmpty()) {
                     Text(
                         text = "No tools cached. Open Discover Tools to refresh.",
@@ -422,67 +454,21 @@ private fun TrustedProviderRow(
     onTap: () -> Unit,
     onRemove: () -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(),
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onTap)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onTap)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                if (!name.isNullOrBlank()) {
-                    Text(
-                        text = name,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                }
-                Text(
-                    text = npub,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            IconButton(onClick = onRemove) {
-                Icon(
-                    Icons.Filled.Delete,
-                    contentDescription = "Remove",
-                    tint = MaterialTheme.colorScheme.error,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DiscoveredProviderRow(
-    name: String,
-    toolCount: Int,
-    onTap: () -> Unit,
-    onTrust: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onTap)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
+        TintedIcon(
+            Icons.Outlined.VerifiedUser,
+            MangoTheme.colors.tintPrivacy,
+            size = 40.dp,
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            if (!name.isNullOrBlank()) {
                 Text(
                     text = name,
                     style = MaterialTheme.typography.bodyMedium,
@@ -491,23 +477,69 @@ private fun DiscoveredProviderRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    text = when (toolCount) {
-                        1 -> "1 tool"
-                        else -> "$toolCount tools"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
-            Spacer(Modifier.width(8.dp))
-            OutlinedButton(onClick = onTrust) {
-                Text("Trust")
-            }
+            Text(
+                text = npub,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFamily),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        IconButton(onClick = onRemove) {
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = "Remove",
+                tint = MaterialTheme.colorScheme.error,
+            )
         }
     }
 }
-
+@Composable
+private fun DiscoveredProviderRow(
+    name: String,
+    toolCount: Int,
+    onTap: () -> Unit,
+    onTrust: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onTap)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TintedIcon(
+            Icons.Outlined.Public,
+            MangoTheme.colors.tintPrivacy,
+            size = 40.dp,
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = when (toolCount) {
+                    1 -> "1 tool"
+                    else -> "$toolCount tools"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        OutlinedButton(onClick = onTrust) {
+            Text("Trust")
+        }
+    }
+}
 @Composable
 private fun AddTrustedProviderDialog(
     onConfirm: (pubkey: String, label: String?) -> Unit,

@@ -53,7 +53,7 @@ fun SystemPromptSheet(
         ) {
             Text(
                 "Instructions",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleLarge,
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(

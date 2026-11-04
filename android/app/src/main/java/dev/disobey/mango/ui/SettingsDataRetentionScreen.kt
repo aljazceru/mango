@@ -81,7 +81,8 @@ fun DataRetentionDialogs(appState: AppState, onDispatch: (AppAction) -> Unit, ui
 @OptIn(ExperimentalMaterial3Api::class)
 fun LazyListScope.dataRetentionItems(appState: AppState, onDispatch: (AppAction) -> Unit, ui: DataRetentionUiState) {
     item {
-        Card(modifier = Modifier.fillMaxWidth()) {
+        SectionLabel("Data & retention")
+        MangoCard(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Conversation retention", fontWeight = FontWeight.Medium)
                         Text(
@@ -188,7 +189,7 @@ fun LazyListScope.dataRetentionItems(appState: AppState, onDispatch: (AppAction)
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SettingsSectionLabel("Danger zone")
+                        SectionLabel("Danger zone")
                         Text("Delete all chats", fontWeight = FontWeight.Medium)
                         Text(
                             "Remove every conversation and message stored on this device.",

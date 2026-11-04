@@ -65,4 +65,24 @@ class SettingsSummariesTest {
         assertEquals("glm-5-3", statusCardModelLabel(false, "glm-5-3", "Qwen3 1.7B"))
         assertEquals("No model yet", statusCardModelLabel(false, "", null))
     }
+
+    @Test
+    fun `model fit buckets by required RAM over device RAM`() {
+        val gb = 1024UL * 1024UL * 1024UL
+        assertEquals(LocalModelFit.RUNS_GREAT, localModelFit(1UL * gb, 8UL * gb))
+        assertEquals(LocalModelFit.GOOD, localModelFit(4UL * gb, 8UL * gb))
+        assertEquals(LocalModelFit.TIGHT, localModelFit(6UL * gb, 8UL * gb))
+        assertEquals(LocalModelFit.WONT_FIT, localModelFit(9UL * gb, 8UL * gb))
+        assertEquals(LocalModelFit.WONT_FIT, localModelFit(1UL * gb, 0UL))
+    }
+
+    @Test
+    fun `model fit labels carry the RAM need for tight fits`() {
+        assertEquals("Runs great", localModelFitLabel(LocalModelFit.RUNS_GREAT, "2.0 GiB"))
+        assertEquals("Good", localModelFitLabel(LocalModelFit.GOOD, "2.0 GiB"))
+        assertEquals("Tight, needs 6.5 GiB", localModelFitLabel(LocalModelFit.TIGHT, "6.5 GiB"))
+        assertEquals("Won't fit", localModelFitLabel(LocalModelFit.WONT_FIT, "9.0 GiB"))
+        assertEquals(4, LocalModelFit.RUNS_GREAT.filledSegments)
+        assertEquals(0, LocalModelFit.WONT_FIT.filledSegments)
+    }
 }

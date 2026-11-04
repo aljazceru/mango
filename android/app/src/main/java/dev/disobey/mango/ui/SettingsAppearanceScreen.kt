@@ -7,8 +7,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -63,10 +63,10 @@ fun SettingsAppearanceScreen(
         ) {
             item {
                 Spacer(Modifier.height(8.dp))
-                SettingsSectionLabel("Theme")
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column {
-                        options.forEach { (value, label) ->
+                SectionLabel("Theme")
+                MangoCard(modifier = Modifier.fillMaxWidth()) {
+                        options.forEachIndexed { index, (value, label) ->
+                            if (index > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -91,7 +91,6 @@ fun SettingsAppearanceScreen(
                                 }
                             }
                         }
-                    }
                 }
             }
 
@@ -103,10 +102,10 @@ fun SettingsAppearanceScreen(
                     "xlarge" to "Extra Large",
                 )
                 Spacer(Modifier.height(16.dp))
-                SettingsSectionLabel("Text Size")
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column {
-                        fontOptions.forEach { (value, label) ->
+                SectionLabel("Text Size")
+                MangoCard(modifier = Modifier.fillMaxWidth()) {
+                        fontOptions.forEachIndexed { index, (value, label) ->
+                            if (index > 0) HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -124,7 +123,6 @@ fun SettingsAppearanceScreen(
                                 }
                             }
                         }
-                    }
                 }
             }
 

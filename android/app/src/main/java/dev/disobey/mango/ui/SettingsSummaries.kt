@@ -52,3 +52,29 @@ internal fun statusCardModelLabel(onDevice: Boolean, modelId: String, localModel
     modelId.isNotBlank() -> modelId
     else -> "No model yet"
 }
+
+/** How well a local model fits the device, from required vs. total RAM. */
+internal enum class LocalModelFit(val filledSegments: Int) {
+    RUNS_GREAT(4),
+    GOOD(3),
+    TIGHT(2),
+    WONT_FIT(0),
+}
+
+/** 4-segment fit meter: required RAM as a fraction of device RAM. */
+internal fun localModelFit(minRamBytes: ULong, totalRamBytes: ULong): LocalModelFit {
+    if (totalRamBytes == 0UL || minRamBytes > totalRamBytes) return LocalModelFit.WONT_FIT
+    val frac = minRamBytes.toDouble() / totalRamBytes.toDouble()
+    return when {
+        frac <= 0.35 -> LocalModelFit.RUNS_GREAT
+        frac <= 0.65 -> LocalModelFit.GOOD
+        else -> LocalModelFit.TIGHT
+    }
+}
+
+internal fun localModelFitLabel(fit: LocalModelFit, minRam: String): String = when (fit) {
+    LocalModelFit.RUNS_GREAT -> "Runs great"
+    LocalModelFit.GOOD -> "Good"
+    LocalModelFit.TIGHT -> "Tight, needs $minRam"
+    LocalModelFit.WONT_FIT -> "Won't fit"
+}

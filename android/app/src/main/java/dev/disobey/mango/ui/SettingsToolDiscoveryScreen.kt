@@ -1,6 +1,5 @@
 package dev.disobey.mango.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,18 +13,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material3.Text
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.outlined.Construction
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -33,9 +32,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
+import dev.disobey.mango.ui.theme.MangoTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -429,10 +427,8 @@ private fun ToolListGroupedOrEmptySearch(
 
                 // Provider header
                 item {
-                    Text(
-                        text = providerName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    SectionLabel(
+                        providerName,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
                     )
                 }
@@ -496,13 +492,12 @@ private fun ToolRow(
 ) {
     val providerLabel =
         tool.providerDisplayName ?: (tool.providerPubkey.take(8) + "…")
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            // Phase 36: whole-row tap navigates to the detail screen.
-            // The Switch absorbs its own click via Compose default — toggling
-            // enabled does NOT navigate.
-            .clickable { onRowTap(tool) },
+    MangoCard(
+        modifier = Modifier.fillMaxWidth(),
+        // Phase 36: whole-row tap navigates to the detail screen.
+        // The Switch absorbs its own click via Compose default — toggling
+        // enabled does NOT navigate.
+        onClick = { onRowTap(tool) },
     ) {
         Column(
             modifier = Modifier
@@ -513,6 +508,11 @@ private fun ToolRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                TintedIcon(
+                    Icons.Outlined.Construction,
+                    MangoTheme.colors.tintTools,
+                    size = 32.dp,
+                )
                 Text(
                     tool.name,
                     style = MaterialTheme.typography.bodyMedium,
@@ -562,16 +562,8 @@ private fun ToolRow(
  */
 @Composable
 private fun UsedBadge(count: UInt) {
-    val label = if (count == 1u) "Used 1×" else "Used ${count}×"
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-        )
-    }
+    StatusPill(
+        text = if (count == 1u) "Used 1×" else "Used ${count}×",
+        tone = PillTone.NEUTRAL,
+    )
 }

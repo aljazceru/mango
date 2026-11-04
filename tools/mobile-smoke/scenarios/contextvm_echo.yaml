@@ -49,12 +49,12 @@ steps:
         - tap_text: Unlock
 
   - wait_for_text:
-      text: Conversations
+      text: Chats
       tries: 45
       label: home
 
   # ── Settings → Tools → Trusted providers ─────────────────────────────
-  - tap_text: Settings
+  - tap_desc: Settings
   - wait_for_text:
       text: Settings
       label: settings
@@ -135,7 +135,7 @@ steps:
 
   - back: {}
   - wait_for_text:
-      text: Conversations
+      text: Chats
       label: home-for-chat
 
   # ── Send a message that should trigger the echo tool ─────────────────

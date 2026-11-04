@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
@@ -22,7 +21,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -43,7 +41,6 @@ fun SettingsDefaultsScreen(
     onDispatch: (AppAction) -> Unit,
     onBack: () -> Unit = { onDispatch(AppAction.PopScreen) },
 ) {
-    val isDark = isSystemInDarkTheme()
     var defaultModelExp by remember { mutableStateOf(false) }
     var defaultModel by remember { mutableStateOf(appState.defaultModelId ?: "") }
     var defaultInstructions by remember { mutableStateOf(appState.globalSystemPrompt ?: "") }
@@ -82,11 +79,9 @@ fun SettingsDefaultsScreen(
         ) {
             item {
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "DEFAULTS",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                SectionLabel(
+                    "Defaults",
+                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
                 )
 
                 if (allModelEntries.isEmpty()) {
@@ -108,7 +103,6 @@ fun SettingsDefaultsScreen(
                             readOnly = true,
                             label = { Text("Default Model") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = defaultModelExp) },
-                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )
                         ExposedDropdownMenu(
@@ -161,7 +155,6 @@ fun SettingsDefaultsScreen(
                     onValueChange = { defaultInstructions = it },
                     label = { Text("Default Instructions") },
                     modifier = Modifier.fillMaxWidth().height(120.dp),
-                    shape = RoundedCornerShape(8.dp),
                     maxLines = 6
                 )
                 Spacer(Modifier.height(6.dp))
@@ -173,7 +166,6 @@ fun SettingsDefaultsScreen(
                         ))
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp)
                 ) { Text("Save Instructions") }
 
                 Spacer(Modifier.height(32.dp))

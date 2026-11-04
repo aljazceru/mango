@@ -10,6 +10,10 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Box
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.MenuBook
+import androidx.compose.material.icons.outlined.SmartToy
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -164,20 +168,27 @@ fun MainApp(
                 state = state,
                 onSelect = { id -> manager.dispatch(AppAction.LoadConversation(conversationId = id)) },
                 onNew = { manager.dispatch(AppAction.NewConversation) },
+                // Ask-bar send: NewConversation first, then SendMessage picks up
+                // the fresh conversation id. SendMessage alone would append to
+                // the previous chat (PopScreen keeps current_conversation_id).
+                onAsk = { text ->
+                    manager.dispatch(AppAction.NewConversation)
+                    manager.dispatch(AppAction.SendMessage(text = text, forceRole = null))
+                },
                 onDelete = { id -> manager.dispatch(AppAction.DeleteConversation(id = id)) },
                 onRename = { id, title -> manager.dispatch(AppAction.RenameConversation(id = id, title = title)) },
                 onFork = { id -> manager.dispatch(AppAction.ForkConversation(id = id)) },
                 topBarActions = {
                     if (FeatureFlags.AGENTS_ENABLED) {
-                        TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Agents)) }) {
-                            Text("Agents")
+                        IconButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Agents)) }) {
+                            Icon(Icons.Outlined.SmartToy, contentDescription = "Agents")
                         }
                     }
-                    TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Documents)) }) {
-                        Text("Library")
+                    IconButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Documents)) }) {
+                        Icon(Icons.Outlined.MenuBook, contentDescription = "Library")
                     }
-                    TextButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Settings)) }) {
-                        Text("Settings")
+                    IconButton(onClick = { manager.dispatch(AppAction.PushScreen(screen = Screen.Settings)) }) {
+                        Icon(Icons.Outlined.Tune, contentDescription = "Settings")
                     }
                 },
             )

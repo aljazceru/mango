@@ -88,10 +88,10 @@ fun PpqDestructivePreflightDialog(
                 if (biometricAvailable) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text("Use biometrics", fontWeight = FontWeight.Medium)
                             Text(
                                 "Authenticate with fingerprint or face",

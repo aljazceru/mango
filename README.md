@@ -32,6 +32,12 @@ Mango can set up a PPQ account automatically inside the app, so you do not need 
 - BYOK and custom providers still supported
 
 
+## Appearance
+
+On Android, choose **Settings → Appearance → Follow System**, **Force Light** (Ripe), or **Force Dark** (Enclave). The selection applies to the whole screen, including the background, text, cards, and system-bar icons.
+
+Layouts accommodate larger system text with wrapping labels and scrollable forms. Onboarding and PIN forms also stay clear of system bars and the on-screen keyboard.
+
 ## Screenshots 
 <img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/2666953a-0299-4ae9-84db-e23a6ef1d265" />
 <img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/b3647fe2-99e4-4b1d-913c-7f315be5826b" />

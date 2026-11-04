@@ -10,7 +10,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.GppBad
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.foundation.clickable
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material.icons.Icons
@@ -19,8 +27,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
@@ -36,7 +42,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.size
 import android.widget.Toast
@@ -49,7 +54,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -89,7 +94,8 @@ fun SettingsProvidersScreen(
     onDispatch: (AppAction) -> Unit,
     onBack: () -> Unit = { onDispatch(AppAction.PopScreen) },
 ) {
-    val isDark = isSystemInDarkTheme()
+    val cardColor = MangoTheme.colors.card
+    val cardColorDim = MaterialTheme.colorScheme.surfaceContainerLow
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val presetKeys = remember { mutableStateMapOf<String, String>() }
@@ -144,16 +150,9 @@ fun SettingsProvidersScreen(
                 val att       = appState.attestationStatuses.find { it.backendId == preset.id }
                 val isOpen    = expanded[preset.id] == true
 
-                Card(
+                MangoCard(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isEnabled)
-                            MaterialTheme.colorScheme.surface
-                        else
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    )
+                    color = if (isEnabled) cardColor else cardColorDim,
                 ) {
                     Column {
                         // Compact header — always visible, tap to expand
@@ -164,6 +163,12 @@ fun SettingsProvidersScreen(
                                 .clickable { expanded[preset.id] = !isOpen }
                                 .padding(horizontal = 12.dp, vertical = 10.dp)
                         ) {
+                            TintedIcon(
+                                Icons.Filled.Cloud,
+                                MangoTheme.colors.tee,
+                                size = 36.dp,
+                            )
+                            Spacer(Modifier.width(10.dp))
                             Text(
                                 preset.name,
                                 style = MaterialTheme.typography.bodyMedium,
@@ -221,7 +226,6 @@ fun SettingsProvidersScreen(
                                                 label = { Text("API Key") },
                                                 modifier = Modifier.fillMaxWidth(),
                                                 singleLine = true,
-                                                shape = RoundedCornerShape(8.dp),
                                                 visualTransformation = PasswordVisualTransformation(),
                                             )
                                             Spacer(Modifier.height(6.dp))
@@ -235,9 +239,7 @@ fun SettingsProvidersScreen(
                                                 },
                                                 enabled = (presetKeys[preset.id] ?: "").isNotBlank(),
                                                 modifier = Modifier.fillMaxWidth(),
-                                                shape = RoundedCornerShape(8.dp),
-                                                colors = ButtonDefaults.buttonColors(containerColor = if (isDark) DarkHealthy else LightHealthy)
-                                            ) { Text("Enable", color = Color.Black, fontWeight = FontWeight.Medium) }
+                                            ) { Text("Enable", fontWeight = FontWeight.Medium) }
                                         }
                                     }
                                 } else if (isEnabled && backend != null) {
@@ -246,24 +248,16 @@ fun SettingsProvidersScreen(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Surface(
-                                            color = healthColorProviders(backend.healthStatus, isDark).copy(alpha = 0.12f),
-                                            shape = RoundedCornerShape(20.dp)
-                                        ) {
-                                            Text(
-                                                healthLabelProviders(backend.healthStatus),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.Medium,
-                                                color = healthColorProviders(backend.healthStatus, isDark),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
+                                        StatusPill(
+                                            text = healthLabelProviders(backend.healthStatus),
+                                            tone = healthPillTone(backend.healthStatus),
+                                            icon = healthPillIcon(backend.healthStatus),
+                                        )
                                         if (att != null) {
-                                            val (label, color) = attestationStyleProviders(att.status, isDark)
-                                            Text(
-                                                label,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = color
+                                            StatusPill(
+                                                text = attestationLabelProviders(att.status),
+                                                tone = attestationPillTone(att.status),
+                                                icon = attestationPillIcon(att.status),
                                             )
                                         }
                                     }
@@ -311,18 +305,11 @@ fun SettingsProvidersScreen(
 
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         if (backend.isActive) {
-                                            Surface(
-                                                color = if (isDark) DarkHealthyDim else LightHealthyDim,
-                                                shape = RoundedCornerShape(20.dp)
-                                            ) {
-                                                Text(
-                                                    "Default",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = if (isDark) DarkHealthy else LightHealthy,
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                                )
-                                            }
+                                            StatusPill(
+                                                text = "Default",
+                                                tone = PillTone.OK,
+                                                icon = Icons.Filled.Check,
+                                            )
                                         } else {
                                             TextButton(
                                                 onClick = { onDispatch(AppAction.SetDefaultBackend(backendId = preset.id)) }
@@ -350,7 +337,6 @@ fun SettingsProvidersScreen(
                                         label = { Text(if (keyOptional) "API Key (optional)" else "API Key") },
                                         modifier = Modifier.fillMaxWidth(),
                                         singleLine = true,
-                                        shape = RoundedCornerShape(8.dp),
                                         visualTransformation = PasswordVisualTransformation()
                                     )
                                     Spacer(Modifier.height(6.dp))
@@ -364,9 +350,7 @@ fun SettingsProvidersScreen(
                                         },
                                         enabled = keyOptional || (presetKeys[preset.id] ?: "").isNotBlank(),
                                         modifier = Modifier.fillMaxWidth(),
-                                        shape = RoundedCornerShape(8.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = if (isDark) DarkHealthy else LightHealthy)
-                                    ) { Text("Enable", color = Color.Black, fontWeight = FontWeight.Medium) }
+                                    ) { Text("Enable", fontWeight = FontWeight.Medium) }
                                 }
                             }
                         }
@@ -376,17 +360,11 @@ fun SettingsProvidersScreen(
 
             item {
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    "PROVIDER DEFAULTS",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                SectionLabel(
+                    "Provider defaults",
+                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
                 )
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-                ) {
+                MangoCard(modifier = Modifier.fillMaxWidth()) {
                     Column(
                         modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -651,18 +629,32 @@ private fun healthLabelProviders(s: HealthStatus): String = when (s) {
     HealthStatus.UNKNOWN  -> "Unknown"
 }
 
-private fun healthColorProviders(s: HealthStatus, isDark: Boolean): Color = when (s) {
-    HealthStatus.HEALTHY  -> if (isDark) DarkHealthy else LightHealthy
-    HealthStatus.DEGRADED -> if (isDark) DarkDegraded else LightDegraded
-    HealthStatus.FAILED   -> if (isDark) DarkFailed else LightFailed
-    HealthStatus.UNKNOWN  -> if (isDark) DarkHealthUnknown else LightHealthUnknown
+private fun healthPillTone(s: HealthStatus): PillTone = when (s) {
+    HealthStatus.HEALTHY  -> PillTone.OK
+    HealthStatus.DEGRADED -> PillTone.WARN
+    HealthStatus.FAILED   -> PillTone.BAD
+    HealthStatus.UNKNOWN  -> PillTone.NEUTRAL
 }
 
-private fun attestationStyleProviders(s: AttestationStatus, isDark: Boolean): Pair<String, Color> = when (s) {
-    is AttestationStatus.Verified    -> "Attested"       to (if (isDark) DarkHealthy else LightHealthy)
-    is AttestationStatus.Unverified  -> "Unverified"     to (if (isDark) DarkHealthUnknown else LightHealthUnknown)
-    is AttestationStatus.Failed      -> "Attest Failed"  to (if (isDark) DarkFailed else LightFailed)
-    is AttestationStatus.Expired     -> "Attest Expired" to (if (isDark) DarkDegraded else LightDegraded)
+private fun healthPillIcon(s: HealthStatus): ImageVector = when (s) {
+    HealthStatus.HEALTHY  -> Icons.Filled.CheckCircle
+    HealthStatus.DEGRADED -> Icons.Filled.Warning
+    HealthStatus.FAILED   -> Icons.Filled.Error
+    HealthStatus.UNKNOWN  -> Icons.Filled.HelpOutline
+}
+
+private fun attestationLabelProviders(s: AttestationStatus): String = when (s) {
+    is AttestationStatus.Verified    -> "Attested"
+    is AttestationStatus.Unverified  -> "Unverified"
+    is AttestationStatus.Failed      -> "Attest Failed"
+    is AttestationStatus.Expired     -> "Attest Expired"
+}
+
+private fun attestationPillIcon(s: AttestationStatus): ImageVector = when (s) {
+    is AttestationStatus.Verified    -> Icons.Filled.VerifiedUser
+    is AttestationStatus.Unverified  -> Icons.Outlined.Shield
+    is AttestationStatus.Failed      -> Icons.Filled.GppBad
+    is AttestationStatus.Expired     -> Icons.Filled.Warning
 }
 
 private fun teeTypeLabelProviders(t: TeeType): String = when (t) {

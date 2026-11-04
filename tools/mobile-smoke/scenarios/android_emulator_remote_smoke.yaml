@@ -33,15 +33,15 @@ steps:
         - tap_text: Unlock
 
   - wait_for_text:
-      text: Conversations
+      text: Chats
       tries: 45
       label: home
-  - assert_text: Agents
-  - assert_text: Library
-  - assert_text: Settings
+  - assert_desc: Agents
+  - assert_desc: Library
+  - assert_desc: Settings
   - assert_desc: New Conversation
 
-  - tap_text: Settings
+  - tap_desc: Settings
   - wait_for_text:
       text: Settings
       label: settings
@@ -83,7 +83,7 @@ steps:
       label: settings-after-provider
   - back: {}
   - wait_for_text:
-      text: Conversations
+      text: Chats
       label: home-after-provider
 
   - tap_percent:

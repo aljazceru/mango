@@ -1,16 +1,12 @@
 package dev.disobey.mango.ui
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Help
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Shield
@@ -35,6 +31,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import dev.disobey.mango.rust.AttestationStatus
+import dev.disobey.mango.rust.TeeType
 import dev.disobey.mango.ui.theme.AttestExpiredBgDark
 import dev.disobey.mango.ui.theme.AttestExpiredBgLight
 import dev.disobey.mango.ui.theme.AttestExpiredBorderDark
@@ -59,13 +56,17 @@ import dev.disobey.mango.ui.theme.AttestVerifiedBorderDark
 import dev.disobey.mango.ui.theme.AttestVerifiedBorderLight
 import dev.disobey.mango.ui.theme.AttestVerifiedTextDark
 import dev.disobey.mango.ui.theme.AttestVerifiedTextLight
+import dev.disobey.mango.ui.theme.MangoTheme
 
-/// Capsule-shaped attestation trust badge for the chat top bar.
+/// StatusPill-style attestation chip for the chat top bar. Tap opens details.
 /// Color and icon reflect the attestation status per UI-SPEC.
 @Composable
 fun AttestationBadge(
     status: AttestationStatus,
     modifier: Modifier = Modifier,
+    /// Short TEE name (e.g. "SEV-SNP"); when set the verified pill reads
+    /// "SEV-SNP verified" instead of the generic label.
+    verifiedLabel: String? = null,
 ) {
     var showDetail by remember { mutableStateOf(false) }
     var mounted by remember { mutableStateOf(false) }
@@ -82,7 +83,7 @@ fun AttestationBadge(
     Surface(
         onClick = { showDetail = true },
         modifier = modifier,
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(50),
+        shape = CircleShape,
         color = badgeBackground(status),
         border = BorderStroke(1.dp, badgeStroke(status)),
         tonalElevation = 0.dp,
@@ -99,7 +100,7 @@ fun AttestationBadge(
                 modifier = Modifier.size(12.dp),
             )
             Text(
-                text = badgeLabel(status),
+                text = badgeLabel(status, verifiedLabel),
                 style = MaterialTheme.typography.labelSmall,
                 color = badgeForeground(status),
             )
@@ -127,18 +128,38 @@ private fun AttestationDetailDialog(status: AttestationStatus, onDismiss: () -> 
 
 // MARK: - Status Helpers
 
-private fun badgeLabel(status: AttestationStatus): String = when (status) {
+internal fun badgeLabel(status: AttestationStatus, verifiedLabel: String? = null): String = when (status) {
     is AttestationStatus.Verified ->
         // Pretag C: per-enclave freshness (Redpill/Chutes routes) must not
         // read as a per-request verification — short honest pill.
-        if (status.freshness == "PerEnclave") "Enclave verified" else "Verified"
+        when {
+            verifiedLabel != null -> "$verifiedLabel verified"
+            status.freshness == "PerEnclave" -> "Enclave verified"
+            else -> "Verified"
+        }
     is AttestationStatus.Unverified -> "Not Verified"
     is AttestationStatus.Expired -> "Expired"
     is AttestationStatus.Failed -> "Failed"
 }
 
-private fun badgeIcon(status: AttestationStatus): ImageVector = when (status) {
-    is AttestationStatus.Verified -> Icons.Default.CheckCircle
+/// Pill tone matching this status, for StatusPill-style chips elsewhere.
+internal fun attestationPillTone(status: AttestationStatus): PillTone = when (status) {
+    is AttestationStatus.Verified -> PillTone.OK
+    is AttestationStatus.Expired -> PillTone.WARN
+    is AttestationStatus.Failed -> PillTone.BAD
+    is AttestationStatus.Unverified -> PillTone.NEUTRAL
+}
+
+/// Short TEE chip label for a backend type, or null when not a TEE.
+internal fun attestationTeeLabel(t: TeeType): String? = when (t) {
+    TeeType.INTEL_TDX -> "TDX"
+    TeeType.NVIDIA_H100_CC -> "H100 CC"
+    TeeType.AMD_SEV_SNP -> "SEV-SNP"
+    TeeType.UNKNOWN -> null
+}
+
+internal fun badgeIcon(status: AttestationStatus): ImageVector = when (status) {
+    is AttestationStatus.Verified -> Icons.Default.Shield
     is AttestationStatus.Unverified -> Icons.Default.Help
     is AttestationStatus.Expired -> Icons.Default.Schedule
     is AttestationStatus.Failed -> Icons.Default.Warning
@@ -146,7 +167,7 @@ private fun badgeIcon(status: AttestationStatus): ImageVector = when (status) {
 
 @Composable
 private fun badgeBackground(status: AttestationStatus): Color {
-    val dark = isSystemInDarkTheme()
+    val dark = MangoTheme.colors.isDark
     return when (status) {
         is AttestationStatus.Verified ->   if (dark) AttestVerifiedBgDark else AttestVerifiedBgLight
         is AttestationStatus.Expired ->    if (dark) AttestExpiredBgDark else AttestExpiredBgLight
@@ -157,7 +178,7 @@ private fun badgeBackground(status: AttestationStatus): Color {
 
 @Composable
 private fun badgeForeground(status: AttestationStatus): Color {
-    val dark = isSystemInDarkTheme()
+    val dark = MangoTheme.colors.isDark
     return when (status) {
         is AttestationStatus.Verified ->   if (dark) AttestVerifiedTextDark else AttestVerifiedTextLight
         is AttestationStatus.Expired ->    if (dark) AttestExpiredTextDark else AttestExpiredTextLight
@@ -168,7 +189,7 @@ private fun badgeForeground(status: AttestationStatus): Color {
 
 @Composable
 private fun badgeStroke(status: AttestationStatus): Color {
-    val dark = isSystemInDarkTheme()
+    val dark = MangoTheme.colors.isDark
     return when (status) {
         is AttestationStatus.Verified ->   if (dark) AttestVerifiedBorderDark else AttestVerifiedBorderLight
         is AttestationStatus.Expired ->    if (dark) AttestExpiredBorderDark else AttestExpiredBorderLight

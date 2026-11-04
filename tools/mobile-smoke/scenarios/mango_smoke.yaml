@@ -24,19 +24,19 @@ steps:
             text: "{{MANGO_SMOKE_PIN}}"
         - tap_text: Set PIN and Continue
   - wait_for_text:
-      text: Conversations
+      text: Chats
       tries: 45
       label: home
   - assert_no_text: Agents
-  - assert_text: Library
-  - assert_text: Settings
+  - assert_desc: Library
+  - assert_desc: Settings
   - assert_desc: New Conversation
-  - tap_text: Settings
+  - tap_desc: Settings
   - wait_for_text:
       text: Settings
       label: settings
   - assert_text: New chats use
-  - assert_text: Models
+  - assert_text: MODELS
   - assert_text: Providers
   - tap_text: Providers
   - wait_for_text: Providers
@@ -81,9 +81,9 @@ steps:
   - wait_for_text: Settings
   - back: {}
   - wait_for_text:
-      text: Conversations
+      text: Chats
       label: home-return
-  - tap_text: Library
+  - tap_desc: Library
   - wait_for_desc:
       desc: Add document or folder
       label: library
@@ -108,7 +108,7 @@ steps:
       label: library-return
   - back: {}
   - wait_for_text:
-      text: Conversations
+      text: Chats
       label: home-for-new
   - tap_percent:
       x: 89

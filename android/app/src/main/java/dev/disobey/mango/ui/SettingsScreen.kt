@@ -1,9 +1,9 @@
 package dev.disobey.mango.ui
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -14,13 +14,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.AltRoute
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Handshake
 import androidx.compose.material.icons.outlined.Lock
@@ -28,13 +33,12 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Storage
-import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -42,6 +46,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -50,9 +55,11 @@ import dev.disobey.mango.rust.AppAction
 import dev.disobey.mango.rust.AppState
 import dev.disobey.mango.rust.DiscoverableTool
 import dev.disobey.mango.rust.LocalLlmCapabilityStatus
+import dev.disobey.mango.rust.LocalModelDownloadProgress
 import dev.disobey.mango.rust.LocalModelSummary
 import dev.disobey.mango.rust.Screen
 import dev.disobey.mango.rust.TrustedProvider
+import dev.disobey.mango.ui.theme.MangoTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,7 +74,7 @@ fun SettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings", fontWeight = FontWeight.Medium) },
+                title = { Text("Settings") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -148,7 +155,7 @@ internal fun LocalInferenceToggleRow(
 ) {
     val capability = appState.localDeviceCapability
     val localRuntimeAvailable = capability.status == LocalLlmCapabilityStatus.SUPPORTED
-    Card(modifier = Modifier.fillMaxWidth()) {
+    MangoCard(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -175,7 +182,6 @@ internal fun LocalInferenceToggleRow(
                     localCapabilitySummary(appState),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
                 )
                 appState.localModelsError?.let { error ->
                     Text(
@@ -200,100 +206,131 @@ internal fun LocalInferenceToggleRow(
 @Composable
 internal fun LocalModelRow(
     model: LocalModelSummary,
+    isActive: Boolean,
+    downloadProgress: LocalModelDownloadProgress?,
+    anyDownloadActive: Boolean,
     capabilityTotalRamBytes: ULong,
-    capabilityAvailableRamBytes: ULong,
     capabilitySupported: Boolean,
     capabilityReason: String?,
     capabilityReasonCode: String,
-    activeProgressModelId: String?,
     onDispatch: (AppAction) -> Unit,
 ) {
-    val busy = activeProgressModelId == model.id
-    val anyDownloadActive = activeProgressModelId != null
-    val supported = capabilitySupported &&
-        capabilityTotalRamBytes >= model.minRamBytes
+    val c = MangoTheme.colors
+    val busy = downloadProgress != null
     val installed = model.downloaded && model.verified
+    val supported = capabilitySupported && capabilityTotalRamBytes >= model.minRamBytes
     val downloadEnabled = !installed && supported && !anyDownloadActive
-    val status = when {
-        installed -> "Installed"
-        model.downloaded && !model.verified -> "Needs verification"
-        !supported -> "Unavailable"
-        else -> "Available"
-    }
-    val supportDetail = when {
-        !capabilitySupported ->
-            unsupportedLocalLlmReason(
-                capabilityReason = capabilityReason,
-                reasonCode = capabilityReasonCode,
-                fallback = "This device cannot run packaged local models",
-            )
-        capabilityTotalRamBytes < model.minRamBytes ->
-            "Requires ${formatLocalBytes(model.minRamBytes)} RAM"
-        else -> "Requires ${formatLocalBytes(model.minRamBytes)} RAM"
-    }
 
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(enabled = downloadEnabled) {
-                    onDispatch(AppAction.DownloadLocalModel(modelId = model.id))
-                },
-            verticalAlignment = Alignment.CenterVertically,
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
+            Text(model.name, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "${formatLocalBytes(model.sizeBytes)} · ${model.description}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+            )
+            if (busy) {
                 Text(
-                    model.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    listOf(
-                        model.quantization,
-                        formatLocalBytes(model.sizeBytes),
-                        status,
-                    ).joinToString(" • "),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    model.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    supportDetail,
+                    "${localProgressLabel(downloadProgress!!.stage)}: " +
+                        localProgressBytes(downloadProgress.downloadedBytes, downloadProgress.totalBytes),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (supported || installed) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    },
+                    color = MaterialTheme.colorScheme.primary,
                 )
-            }
-            Spacer(Modifier.width(12.dp))
-            if (installed) {
-                LocalModelActionButton(
-                    text = "Delete",
-                    filled = false,
-                    onClick = { onDispatch(AppAction.DeleteLocalModel(modelId = model.id)) },
-                    enabled = !anyDownloadActive,
-                    compact = true,
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                        .height(5.dp)
+                        .clip(CircleShape),
+                    color = c.accent,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 )
             } else {
-                LocalModelActionButton(
-                    text = when {
-                        busy -> "Downloading"
-                        supported -> "Download"
-                        else -> "Unavailable"
-                    },
-                    filled = supported,
-                    onClick = { onDispatch(AppAction.DownloadLocalModel(modelId = model.id)) },
-                    enabled = downloadEnabled,
-                    compact = true,
+                val fit = localModelFit(model.minRamBytes, capabilityTotalRamBytes)
+                val (segments, onSeg) = when {
+                    !capabilitySupported -> 0 to MaterialTheme.colorScheme.error
+                    fit == LocalModelFit.TIGHT -> fit.filledSegments to c.warn
+                    fit == LocalModelFit.WONT_FIT -> fit.filledSegments to c.warn
+                    else -> fit.filledSegments to c.ok
+                }
+                Row(
+                    modifier = Modifier.padding(top = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    repeat(4) { i ->
+                        Box(
+                            modifier = Modifier
+                                .width(14.dp)
+                                .height(5.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (i < segments) onSeg else MaterialTheme.colorScheme.surfaceContainerHigh
+                                ),
+                        )
+                    }
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        if (!capabilitySupported) unsupportedLocalLlmReason(capabilityReason, capabilityReasonCode, "This device cannot run packaged local models")
+                        else localModelFitLabel(fit, formatLocalBytes(model.minRamBytes)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (!capabilitySupported || fit == LocalModelFit.WONT_FIT) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+        }
+        if (installed) {
+            IconButton(
+                onClick = { onDispatch(AppAction.DeleteLocalModel(modelId = model.id)) },
+                enabled = !anyDownloadActive,
+            ) {
+                Icon(
+                    Icons.Outlined.Delete,
+                    contentDescription = "Delete ${model.name}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            StatusPill(
+                text = if (isActive) "Active" else "Installed",
+                tone = PillTone.OK,
+                icon = Icons.Filled.CheckCircle,
+            )
+        } else if (busy) {
+            // Progress is rendered inline; no cancel action exists in the core.
+        } else if (model.downloaded && !model.verified) {
+            // Corrupt/unverified file stays re-downloadable; the core replaces it.
+            IconButton(
+                onClick = { onDispatch(AppAction.DownloadLocalModel(modelId = model.id)) },
+                enabled = downloadEnabled,
+            ) {
+                Icon(
+                    Icons.Outlined.FileDownload,
+                    contentDescription = "Download ${model.name}",
+                    tint = if (downloadEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            StatusPill(text = "Needs verification", tone = PillTone.WARN, icon = Icons.Filled.Schedule)
+        } else {
+            IconButton(
+                onClick = { onDispatch(AppAction.DownloadLocalModel(modelId = model.id)) },
+                enabled = downloadEnabled,
+            ) {
+                Icon(
+                    Icons.Outlined.FileDownload,
+                    contentDescription = "Download ${model.name}",
+                    tint = if (downloadEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -340,52 +377,6 @@ internal fun compactModelName(modelId: String): String {
         .replace('_', ' ')
         .replace('-', ' ')
         .take(32)
-}
-
-@Composable
-internal fun LocalModelActionButton(
-    text: String,
-    filled: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    compact: Boolean = false,
-) {
-    val colors = MaterialTheme.colorScheme
-    val background = when {
-        !enabled -> colors.onSurface.copy(alpha = 0.12f)
-        filled -> colors.primary
-        else -> colors.surface
-    }
-    val content = when {
-        !enabled -> colors.onSurface.copy(alpha = 0.38f)
-        filled -> colors.onPrimary
-        else -> colors.primary
-    }
-    val border = if (filled) {
-        null
-    } else {
-        BorderStroke(
-            width = 1.dp,
-            color = if (enabled) colors.outline else colors.onSurface.copy(alpha = 0.12f),
-        )
-    }
-
-    Surface(
-        modifier = Modifier
-            .height(if (compact) 36.dp else 48.dp)
-            .clickable(enabled = enabled, onClick = onClick),
-        shape = MaterialTheme.shapes.extraLarge,
-        color = background,
-        contentColor = content,
-        border = border,
-    ) {
-        Box(
-            modifier = Modifier.padding(horizontal = if (compact) 14.dp else 24.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(text, style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge)
-        }
-    }
 }
 
 private fun localCapabilitySummary(appState: AppState): String {
@@ -444,12 +435,7 @@ internal fun fontSizeSummary(fontSize: String): String = when (fontSize) {
 
 @Composable
 internal fun SettingsSectionLabel(label: String) {
-    Text(
-        text = label.uppercase(),
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-    )
+    SectionLabel(label, Modifier.padding(start = 4.dp, bottom = 4.dp))
 }
 
 @Composable
@@ -458,11 +444,10 @@ internal fun SettingsLinkCard(
     subtitle: String? = null,
     onClick: () -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    MangoCard(modifier = Modifier.fillMaxWidth(), onClick = onClick) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick)
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -502,7 +487,7 @@ internal fun lockTimeoutLabel(seconds: Long): String =
 
 @Composable
 internal fun AutoDiscoverToolsRow(appState: AppState, onDispatch: (AppAction) -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    MangoCard(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
