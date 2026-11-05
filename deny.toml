@@ -29,11 +29,13 @@ ignore = [
     # move to elliptic-curve 0.14.
     "RUSTSEC-2026-0387",
     # zip 8.6.0 via docx-rs (latest release still pins zip 8; rbook is on
-    # zip 9). Advisory covers filesystem extraction APIs docx-rs never calls
-    # (it reads archives in memory). Remove when docx-rs uses zip >= 9.
+    # zip 9). Advisories cover filesystem extraction APIs docx-rs never calls;
+    # it reads named entries from an in-memory archive. Remove when docx-rs
+    # uses zip >= 9.
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    "RUSTSEC-2026-0429",
 ]
 
 [bans]
