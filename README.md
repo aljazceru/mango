@@ -39,10 +39,10 @@ On Android, choose **Settings → Appearance → Follow System**, **Force Light*
 Layouts accommodate larger system text with wrapping labels and scrollable forms. Onboarding and PIN forms also stay clear of system bars and the on-screen keyboard.
 
 ## Screenshots 
-<img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/2666953a-0299-4ae9-84db-e23a6ef1d265" />
-<img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/b3647fe2-99e4-4b1d-913c-7f315be5826b" />
-<img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/c508c743-fe7c-4ea7-aaee-9283d9f1369f" />
-<img width="464" height="1041" alt="image" src="https://github.com/user-attachments/assets/7349dc58-d93b-449e-9f47-0b056c70fb2e" />
+<img width="464" height="1041" alt="Discover tools" src="https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/1_tools.png" />
+<img width="464" height="1041" alt="New conversation" src="https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/2_new.png" />
+<img width="464" height="1041" alt="On-device models" src="https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/3_local.png" />
+<img width="464" height="1041" alt="Hybrid routing" src="https://raw.githubusercontent.com/aljazceru/mango/refs/heads/main/fastlane/metadata/android/en-US/images/phoneScreenshots/4_hybrid.png" />
 
 
 ## Features
