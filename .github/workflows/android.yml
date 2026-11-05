@@ -106,6 +106,23 @@ jobs:
             --out-dir android/app/src/main/java \
             --no-format
 
+      # ubuntu-latest no longer ships NDK 28.2. Install the pinned version and
+      # point cargo-ndk at it; the image default is a different NDK.
+      - name: Install pinned Android NDK
+        run: |
+          set -euo pipefail
+          if command -v sdkmanager >/dev/null; then
+            SDKMANAGER=sdkmanager
+          else
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          mkdir -p "$ANDROID_HOME/licenses"
+          printf '%s\n' 24333f8a63b6825ea9c5514f83c2829b004d1fee > "$ANDROID_HOME/licenses/android-sdk-license"
+          "$SDKMANAGER" --install "ndk;${NDK_VERSION}"
+          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
       - name: Cross-compile Rust for Android (arm64)
         run: |
           cargo ndk -o android/app/src/main/jniLibs -P 28 \

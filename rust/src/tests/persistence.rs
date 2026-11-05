@@ -427,7 +427,11 @@ fn test_conversation_summary_preview_and_route() {
     insert_message(db.conn(), &msg("a2", "c1", "assistant", "   ", 2)).unwrap();
     insert_message(db.conn(), &msg("a3", "c1", "system", "sys", 3)).unwrap();
     // c2: long assistant body gets truncated.
-    insert_message(db.conn(), &msg("b1", "c2", "assistant", &"x".repeat(200), 1)).unwrap();
+    insert_message(
+        db.conn(),
+        &msg("b1", "c2", "assistant", &"x".repeat(200), 1),
+    )
+    .unwrap();
     // c3: no messages at all.
 
     let previews = queries::latest_message_contents(db.conn()).unwrap();
@@ -439,13 +443,22 @@ fn test_conversation_summary_preview_and_route() {
     let truncated = crate::message_preview(previews.get("c2").map(String::as_str)).unwrap();
     assert_eq!(truncated.chars().count(), 141, "140 chars + ellipsis");
     assert!(truncated.ends_with('…'));
-    assert_eq!(crate::message_preview(previews.get("c3").map(String::as_str)), None);
+    assert_eq!(
+        crate::message_preview(previews.get("c3").map(String::as_str)),
+        None
+    );
     assert_eq!(crate::message_preview(Some("  \n\t ")), None);
 
     assert_eq!(route_for_backend_id("hybrid:abc"), InferenceRoute::Hybrid);
-    assert_eq!(route_for_backend_id("local-qwen3"), InferenceRoute::OnDevice);
+    assert_eq!(
+        route_for_backend_id("local-qwen3"),
+        InferenceRoute::OnDevice
+    );
     assert_eq!(route_for_backend_id("tinfoil"), InferenceRoute::Cloud);
-    assert_eq!(route_for_backend_id("deleted-provider"), InferenceRoute::Cloud);
+    assert_eq!(
+        route_for_backend_id("deleted-provider"),
+        InferenceRoute::Cloud
+    );
 }
 
 #[test]
